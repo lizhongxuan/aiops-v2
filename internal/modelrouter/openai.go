@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/cloudwego/eino-ext/components/model/openai"
@@ -195,9 +196,10 @@ func NewOpenAIChatModel(ctx context.Context, config OpenAIConfig) (ChatModel, er
 	}
 
 	return &streamGenerateChatModel{
-		inner:       cm,
-		provider:    provider,
-		extraFields: cloneExtraFields(config.ExtraFields),
+		inner:           cm,
+		provider:        provider,
+		extraFields:     cloneExtraFields(config.ExtraFields),
+		nativeWebSearch: providerSupportsNativeWebSearchForConfig(provider, config.BaseURL),
 	}, nil
 }
 
@@ -250,10 +252,11 @@ func openAICompatibleExtraFields(provider string, config ProviderConfig) map[str
 }
 
 type streamGenerateChatModel struct {
-	inner       ChatModel
-	provider    string
-	extraFields map[string]any
-	boundTools  []*schema.ToolInfo
+	inner           ChatModel
+	provider        string
+	extraFields     map[string]any
+	nativeWebSearch bool
+	boundTools      []*schema.ToolInfo
 }
 
 func (m *streamGenerateChatModel) Generate(ctx context.Context, input []*schema.Message, opts ...model.Option) (*schema.Message, error) {
@@ -277,7 +280,7 @@ func (m *streamGenerateChatModel) BindTools(tools []*schema.ToolInfo) error {
 		return fmt.Errorf("openai: chat model is not configured")
 	}
 	m.boundTools = cloneToolInfos(tools)
-	if !providerSupportsNativeWebSearch(m.provider) {
+	if !m.nativeWebSearch {
 		return m.inner.BindTools(tools)
 	}
 	filtered := filterWebSearchToolInfos(tools)
@@ -296,7 +299,7 @@ func (m *streamGenerateChatModel) withProviderNativeTools(opts []model.Option) [
 	if len(tools) == 0 {
 		tools = m.boundTools
 	}
-	nativeExtra := openAICompatibleNativeWebSearchExtraFields(m.provider, tools)
+	nativeExtra := openAICompatibleNativeWebSearchExtraFieldsForCapability(m.provider, m.nativeWebSearch, tools)
 	if len(nativeExtra) == 0 {
 		return opts
 	}
@@ -309,7 +312,11 @@ func (m *streamGenerateChatModel) withProviderNativeTools(opts []model.Option) [
 }
 
 func openAICompatibleNativeWebSearchExtraFields(provider string, toolInfos []*schema.ToolInfo) map[string]any {
-	if !providerSupportsNativeWebSearch(provider) || len(toolInfos) == 0 {
+	return openAICompatibleNativeWebSearchExtraFieldsForCapability(provider, providerSupportsNativeWebSearch(provider), toolInfos)
+}
+
+func openAICompatibleNativeWebSearchExtraFieldsForCapability(provider string, nativeWebSearch bool, toolInfos []*schema.ToolInfo) map[string]any {
+	if !nativeWebSearch || len(toolInfos) == 0 {
 		return nil
 	}
 	hasWebSearch := false
@@ -327,8 +334,17 @@ func openAICompatibleNativeWebSearchExtraFields(provider string, toolInfos []*sc
 	if !hasWebSearch {
 		return nil
 	}
-	tools = append([]any{map[string]any{"type": "web_search"}}, tools...)
+	tools = append([]any{providerNativeWebSearchToolPayload(provider)}, tools...)
 	return map[string]any{"tools": tools}
+}
+
+func providerNativeWebSearchToolPayload(provider string) map[string]any {
+	payload := map[string]any{"type": "web_search"}
+	switch NormalizeProviderID(provider) {
+	case "zhipu":
+		payload["web_search"] = map[string]any{"enable": true}
+	}
+	return payload
 }
 
 func filterWebSearchToolInfos(toolInfos []*schema.ToolInfo) []*schema.ToolInfo {
@@ -356,11 +372,31 @@ func cloneToolInfos(toolInfos []*schema.ToolInfo) []*schema.ToolInfo {
 
 func providerSupportsNativeWebSearch(provider string) bool {
 	switch NormalizeProviderID(provider) {
-	case ProviderOpenAI, ProviderZhipu:
+	case ProviderOpenAI:
 		return true
 	default:
 		return false
 	}
+}
+
+func providerSupportsNativeWebSearchForConfig(provider, baseURL string) bool {
+	if !providerSupportsNativeWebSearch(provider) {
+		return false
+	}
+	return openAIBaseURLSupportsNativeHostedTools(baseURL)
+}
+
+func openAIBaseURLSupportsNativeHostedTools(baseURL string) bool {
+	trimmed := strings.TrimSpace(baseURL)
+	if trimmed == "" {
+		return true
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	return host == "api.openai.com"
 }
 
 func isWebSearchToolInfo(info *schema.ToolInfo) bool {

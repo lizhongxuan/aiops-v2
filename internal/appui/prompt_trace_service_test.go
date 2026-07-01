@@ -224,10 +224,10 @@ func TestPromptTraceServiceReturnsSetupHintWhenTraceDirectoryEmpty(t *testing.T)
 	if len(list.Traces) != 0 {
 		t.Fatalf("traces = %d, want 0 for empty trace root", len(list.Traces))
 	}
-	if !strings.Contains(list.SetupHint, "AIOPS_DEBUG_MODEL_INPUT_TRACE=1") ||
-		!strings.Contains(list.SetupHint, "AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR") ||
+	if !strings.Contains(list.SetupHint, "runtime settings") ||
+		!strings.Contains(list.SetupHint, "Model Input Trace") ||
 		!strings.Contains(list.SetupHint, root) {
-		t.Fatalf("setup hint = %q, want trace env guidance and root path", list.SetupHint)
+		t.Fatalf("setup hint = %q, want runtime settings guidance and root path", list.SetupHint)
 	}
 }
 

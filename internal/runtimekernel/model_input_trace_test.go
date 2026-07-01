@@ -13,6 +13,7 @@ import (
 
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/featureflag"
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/taskdepth"
@@ -21,8 +22,7 @@ import (
 
 func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	compiled := promptcompiler.CompiledPrompt{
 		System: promptcompiler.SystemPrompt{Content: "system layer"},
@@ -41,7 +41,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 		Iteration:  2,
 		Metadata:   map[string]string{"eval.caseId": "case-runtime"},
 		Compiled:   compiled,
-		ModelInput: input,
+		ModelInput: schemaMessagesToModelInputItems(input),
 		VisibleTools: []string{
 			"read_file",
 		},
@@ -80,8 +80,7 @@ func TestModelInputDebugTraceWritesJSONAndMarkdownWhenEnabled(t *testing.T) {
 
 func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	compiled := promptcompiler.CompiledPrompt{
 		Tools: promptcompiler.ToolPromptSet{Content: "# Tool Index\n\n- read_file: Read files."},
@@ -96,7 +95,7 @@ func TestModelInputDebugTraceRecordsPromptSizeMetrics(t *testing.T) {
 		TurnID:       "turn-metrics",
 		Iteration:    1,
 		Compiled:     compiled,
-		ModelInput:   input,
+		ModelInput:   schemaMessagesToModelInputItems(input),
 		VisibleTools: []string{"read_file", "tool_search"},
 	})
 	if err != nil {
@@ -181,8 +180,7 @@ func TestModelInputDedupeRepeatedLongUserEvidence(t *testing.T) {
 
 func TestModelInputTraceWritesContextDedupe(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	input := []*schema.Message{
 		{Role: schema.User, Content: "User evidence repeated from previous turn.\ndigest=sha256:abc\nsummary=restore issue\ndelta_user_request=?"},
@@ -191,7 +189,7 @@ func TestModelInputTraceWritesContextDedupe(t *testing.T) {
 		SessionID:  "sess-context-dedupe",
 		TurnID:     "turn-context-dedupe",
 		Iteration:  0,
-		ModelInput: input,
+		ModelInput: schemaMessagesToModelInputItems(input),
 		PromptInputTrace: promptinput.PromptInputTrace{
 			ContextDedupe: &promptinput.ContextDedupeTrace{
 				RepeatedUserMessageCount: 1,
@@ -244,6 +242,10 @@ func joinedSchemaMessageContent(messages []*schema.Message) string {
 	return b.String()
 }
 
+func schemaMessagesToModelInputItems(messages []*schema.Message) []promptinput.ModelInputItem {
+	return modelrouter.ModelInputItemsFromEinoMessages(messages)
+}
+
 func joinedModelInputItemContent(items []promptinput.ModelInputItem) string {
 	var b strings.Builder
 	for _, item := range items {
@@ -255,17 +257,16 @@ func joinedModelInputItemContent(items []promptinput.ModelInputItem) string {
 
 func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-plan-requirement",
 		TurnID:    "turn-plan-requirement",
 		Iteration: 0,
 		Compiled:  promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			{Role: schema.User, Content: "排查一个复杂问题"},
-		},
+		}),
 		PlanRequirementDecision: &promptinput.PlanRequirementDecisionTrace{
 			Required: true,
 			Decision: "soft",
@@ -289,8 +290,7 @@ func TestModelInputDebugTraceRecordsPlanRequirementDecision(t *testing.T) {
 
 func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	ownerTrace := NewOwnerWriteTrace(OwnerWriteTraceInput{
 		Responsibility: OwnerWriteTurnLifecycle,
@@ -304,9 +304,9 @@ func TestModelInputDebugTraceIncludesOwnerWriteTrace(t *testing.T) {
 		TurnID:    "turn-owner-trace",
 		Iteration: 1,
 		Compiled:  promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			{Role: schema.User, Content: "check owner trace"},
-		},
+		}),
 		OwnerWriteTraces: []OwnerWriteTrace{ownerTrace},
 	})
 	if err != nil {
@@ -363,15 +363,14 @@ func TestBuildModelInputToolTraceFieldsIncludesOwnerWriteTrace(t *testing.T) {
 
 func TestModelInputDebugTraceIncludesToolSurfaceSnapshot(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:                     "sess-tool-surface",
 		TurnID:                        "turn-tool-surface",
 		Iteration:                     1,
 		Compiled:                      promptcompiler.CompiledPrompt{},
-		ModelInput:                    []*schema.Message{{Role: schema.User, Content: "inspect tool surface"}},
+		ModelInput:                    schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "inspect tool surface"}}),
 		VisibleTools:                  []string{"web_search"},
 		ToolSurfaceFingerprint:        "tools:abc",
 		ToolSurfacePolicySnapshotHash: "policy:def",
@@ -454,15 +453,14 @@ func TestBuildModelInputToolTraceFieldsIncludesToolSurfaceSnapshot(t *testing.T)
 
 func TestPermissionSnapshotTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:  "sess-permission-trace",
 		TurnID:     "turn-permission-trace",
 		Iteration:  1,
 		Compiled:   promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{{Role: schema.User, Content: "check permission trace"}},
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "check permission trace"}}),
 		DispatchDecisions: []promptinput.DispatchDecisionTrace{{
 			ToolName:               "exec_command",
 			ToolCallID:             "call-exec",
@@ -572,8 +570,7 @@ func TestModelInputTraceG01FirstTurnFinalTargetBudget(t *testing.T) {
 
 func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	diff := promptinput.DiffTrace(
 		promptinput.PromptInputTrace{Items: []promptinput.TraceItem{
@@ -621,10 +618,84 @@ func TestModelInputDebugTraceWritesPromptInputTraceAndDiff(t *testing.T) {
 	}
 }
 
+func TestModelInputDebugTraceWritesWebSearchPolicyAndRedactedSeeds(t *testing.T) {
+	dir := t.TempDir()
+	setLegacyTraceRootForTest(t, dir)
+
+	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
+		SessionID: "sess-web-search-trace",
+		TurnID:    "turn-web-search-trace",
+		Iteration: 1,
+		Metadata: map[string]string{
+			"aiops.webSearch.policy":           "must_search",
+			"aiops.webSearch.reason":           "explicit_public_web_request",
+			"aiops.webSearch.reasonCodes":      "explicit_public_web_request",
+			"aiops.webSearch.querySeeds":       "PostgreSQL timeline official docs token abc123 120.77.239.90 root",
+			"aiops.webSearch.requireCitations": "true",
+		},
+		WebSearch: &promptinput.WebSearchTrace{
+			Attempted:   true,
+			RetryCount:  1,
+			Adapter:     "custom_public_web:search",
+			SourceCount: 2,
+		},
+		Final: &promptinput.FinalTrace{PublicWebLimitation: true},
+	})
+	if err != nil {
+		t.Fatalf("write trace: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace json: %v", err)
+	}
+	var payload struct {
+		PromptInputTrace struct {
+			WebSearchPolicy struct {
+				Level      string   `json:"level"`
+				QuerySeeds []string `json:"querySeeds"`
+			} `json:"webSearchPolicy"`
+			WebSearch struct {
+				Attempted   bool   `json:"attempted"`
+				RetryCount  int    `json:"retryCount"`
+				Adapter     string `json:"adapter"`
+				SourceCount int    `json:"sourceCount"`
+			} `json:"webSearch"`
+			Final struct {
+				PublicWebLimitation bool `json:"publicWebLimitation"`
+			} `json:"final"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("unmarshal trace json: %v", err)
+	}
+	if payload.PromptInputTrace.WebSearchPolicy.Level != "enabled" {
+		t.Fatalf("webSearchPolicy = %#v", payload.PromptInputTrace.WebSearchPolicy)
+	}
+	if !payload.PromptInputTrace.WebSearch.Attempted || payload.PromptInputTrace.WebSearch.RetryCount != 1 || payload.PromptInputTrace.WebSearch.SourceCount != 2 {
+		t.Fatalf("webSearch trace = %#v", payload.PromptInputTrace.WebSearch)
+	}
+	if !payload.PromptInputTrace.Final.PublicWebLimitation {
+		t.Fatalf("final trace = %#v, want public web limitation", payload.PromptInputTrace.Final)
+	}
+	seeds := strings.Join(payload.PromptInputTrace.WebSearchPolicy.QuerySeeds, " ")
+	for _, forbidden := range []string{"abc123", "120.77.239.90", "root"} {
+		if strings.Contains(seeds, forbidden) {
+			t.Fatalf("query seeds = %#v, leaked %q", payload.PromptInputTrace.WebSearchPolicy.QuerySeeds, forbidden)
+		}
+	}
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read trace markdown: %v", err)
+	}
+	if !strings.Contains(string(markdown), "### Web Search") || !strings.Contains(string(markdown), "policy_level: enabled") {
+		t.Fatalf("markdown missing web search section:\n%s", string(markdown))
+	}
+}
+
 func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-sections",
@@ -645,10 +716,10 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 				CurrentHash: "sha256:abc",
 			}},
 		},
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			{Role: schema.System, Content: "system"},
 			{Role: schema.User, Content: "user"},
-		},
+		}),
 		PromptInputTrace: promptinput.PromptInputTrace{
 			ContextUsage: promptinput.ContextUsage{
 				MaxContextTokens:     1000,
@@ -723,8 +794,7 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 
 func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:                     "sess-tool-discovery",
@@ -781,8 +851,7 @@ func TestTraceIncludesToolDiscoveryEvents(t *testing.T) {
 
 func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:         "sess-skill-discovery",
@@ -826,8 +895,7 @@ func TestTraceIncludesSkillDiscoveryEvents(t *testing.T) {
 
 func TestTraceIncludesRejectedToolCalls(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-rejected",
@@ -858,8 +926,7 @@ func TestTraceIncludesRejectedToolCalls(t *testing.T) {
 
 func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-parallel",
@@ -891,8 +958,7 @@ func TestTraceIncludesParallelDispatchGroups(t *testing.T) {
 
 func TestTraceIncludesAgentSchedulingState(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:      "sess-agent-scheduling",
@@ -960,8 +1026,7 @@ func TestTraceIncludesAgentSchedulingState(t *testing.T) {
 
 func TestTraceIncludesFailedToolSummaries(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-failed-summary",
@@ -991,29 +1056,28 @@ func TestTraceIncludesFailedToolSummaries(t *testing.T) {
 
 func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-response",
 		TurnID:    "turn-response",
 		Iteration: 1,
-		ModelInput: []*schema.Message{
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{
 			schema.UserMessage("show trace"),
-		},
+		}),
 	})
 	if err != nil {
 		t.Fatalf("write trace: %v", err)
 	}
 
-	response := &schema.Message{
-		Role:    schema.Assistant,
-		Content: "模型输出 api_key=ak-output-123",
-		ResponseMeta: &schema.ResponseMeta{Usage: &schema.TokenUsage{
+	response := modelrouter.ProviderResponse{
+		RequestID: "provider-request-hash",
+		Output:    "模型输出 api_key=ak-output-123",
+		Usage: modelrouter.ProviderUsage{
 			PromptTokens:     21,
 			CompletionTokens: 8,
 			TotalTokens:      29,
-		}},
+		},
 	}
 	stats := ModelStreamStats{
 		FirstDeltaMs: 123,
@@ -1059,8 +1123,8 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 	if err := json.Unmarshal(data, &payload); err != nil {
 		t.Fatalf("unmarshal trace json: %v", err)
 	}
-	if len(payload.LLMRequests) != 1 || payload.LLMRequests[0].ID != "llm-1" {
-		t.Fatalf("llmRequests = %#v, want appended llm request", payload.LLMRequests)
+	if len(payload.LLMRequests) != 1 || payload.LLMRequests[0].ID != "provider-request-hash" {
+		t.Fatalf("llmRequests = %#v, want appended provider request id", payload.LLMRequests)
 	}
 	if !strings.Contains(payload.Output, "[REDACTED]") || strings.Contains(payload.Output, "ak-output-123") {
 		t.Fatalf("output was not redacted: %q", payload.Output)
@@ -1081,8 +1145,7 @@ func TestAppendModelTraceResponseRecordsOutputUsageAndDuration(t *testing.T) {
 
 func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
@@ -1125,9 +1188,7 @@ func TestModelInputDebugTraceWritesDiagnosticTrace(t *testing.T) {
 
 func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
-	t.Setenv("AIOPS_DIAGNOSTIC_PROTOCOL", "1")
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("诊断完成", nil),
@@ -1177,8 +1238,7 @@ func TestRunTurnPopulatesDiagnosticTraceInDebugTrace(t *testing.T) {
 
 func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{{
 		Role:    schema.Assistant,
@@ -1273,8 +1333,7 @@ func TestRunTurnRecordsModelTraceResponseUsage(t *testing.T) {
 
 func TestRunTurnInjectsRuntimeEnvironmentContextInDebugTrace(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("诊断完成", nil),
@@ -1347,8 +1406,7 @@ func TestBuildRuntimeDiagnosticTraceCarriesRuntimeEnvironmentContext(t *testing.
 }
 
 func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", t.TempDir())
+	setLegacyTraceDisabledForTest(t)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID: "sess-1",
@@ -1364,15 +1422,14 @@ func TestModelInputDebugTraceDisabledByDefault(t *testing.T) {
 
 func TestModelInputDebugTraceRecordsTaskDepthAndReasoningEffort(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", dir)
+	setLegacyTraceRootForTest(t, dir)
 
 	path, err := writeLegacyTraceForTest(RuntimeTraceDebugRequest{
 		SessionID:  "sess-depth",
 		TurnID:     "turn-depth",
 		Iteration:  0,
 		Compiled:   promptcompiler.CompiledPrompt{},
-		ModelInput: []*schema.Message{{Role: schema.User, Content: "排查异常"}},
+		ModelInput: schemaMessagesToModelInputItems([]*schema.Message{{Role: schema.User, Content: "排查异常"}}),
 		TaskDepth:  taskdepth.Profile{Level: taskdepth.LevelInvestigation, RequiresPlan: true, RequiresEvidence: true},
 		EvidenceCoverage: &EvidenceCoverageDecision{
 			Action:             "continue_gathering",
@@ -1418,15 +1475,27 @@ func TestEnrichCompileContextSetsAgentKindFromSessionType(t *testing.T) {
 	}
 }
 
-func TestEnrichCompileContextAddsWebLearnOfficialSourceGuidance(t *testing.T) {
+func TestEnrichCompileContextAddsWebSearchPolicyGuidance(t *testing.T) {
 	ctx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", map[string]string{
-		"aiops.weblearn.enabled":      "true",
-		"aiops.weblearn.sourcePolicy": "official_first",
+		"aiops.webSearch.policy":           "must_search",
+		"aiops.webSearch.reason":           "explicit_public_web_request",
+		"aiops.webSearch.reasonCodes":      "explicit_public_web_request",
+		"aiops.webSearch.querySeeds":       "PostgreSQL recovery_target_timeline official docs",
+		"aiops.webSearch.requireCitations": "true",
+		"aiops.weblearn.enabled":           "true",
+		"aiops.weblearn.sourcePolicy":      "official_first",
 	}, fixedModelInputTraceTime())
 	content := promptSectionsContentForModelInputTraceTest(ctx.ExtraSections)
 	for _, want := range []string{
-		"WebLearn Source Policy",
-		"web_search/browse_url",
+		"Web Search Policy",
+		"WebSearchPolicy: enabled",
+		"Tool availability: web_search is enabled for this turn",
+		"Reason: explicit_public_web_request",
+		"Query seeds:",
+		"PostgreSQL recovery_target_timeline official docs",
+		"Use web_search when public evidence would materially improve correctness",
+		"web_search",
+		"operation=open",
 		"official documentation",
 		"version-specific documentation",
 		"source URL",
@@ -1434,14 +1503,23 @@ func TestEnrichCompileContextAddsWebLearnOfficialSourceGuidance(t *testing.T) {
 		"官方来源优先",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("WebLearn prompt sections missing %q:\n%s", want, content)
+			t.Fatalf("Web Search prompt sections missing %q:\n%s", want, content)
 		}
+	}
+	if strings.Contains(content, "Use web_search before the final answer") {
+		t.Fatalf("prompt must not force web_search before final answer:\n%s", content)
+	}
+	if strings.Contains(content, "WebLearn Source Policy") {
+		t.Fatalf("prompt should not expose legacy WebLearn title:\n%s", content)
 	}
 }
 
-func TestEnrichCompileContextInjectsOnlyApplicableWebLearnEvidence(t *testing.T) {
+func TestEnrichCompileContextInjectsOnlyApplicableWebSearchEvidence(t *testing.T) {
 	longExcerpt := strings.Repeat("Redis official docs explain latency doctor output. ", 40)
 	ctx := enrichCompileContext(promptcompiler.CompileContext{}, SessionTypeWorkspace, "", map[string]string{
+		"aiops.webSearch.policy":      "enabled",
+		"aiops.webSearch.reason":      "public_technical_knowledge",
+		"aiops.webSearch.querySeeds":  "Redis latency doctor official docs",
 		"aiops.weblearn.enabled":      "true",
 		"aiops.weblearn.sourcePolicy": "official_first",
 		"aiops.weblearn.evidence": `[
@@ -1479,14 +1557,14 @@ func TestEnrichCompileContextInjectsOnlyApplicableWebLearnEvidence(t *testing.T)
 
 	content := promptSectionsContentForModelInputTraceTest(ctx.ExtraSections)
 	for _, want := range []string{
-		"WebLearn Evidence",
+		"Web Search Evidence",
 		"LATENCY DOCTOR",
 		"https://redis.io/docs/latest/commands/latency-doctor/",
 		"applies to Redis 7.2",
 		"Redis official docs explain latency doctor output",
 	} {
 		if !strings.Contains(content, want) {
-			t.Fatalf("WebLearn evidence prompt section missing %q:\n%s", want, content)
+			t.Fatalf("Web Search evidence prompt section missing %q:\n%s", want, content)
 		}
 	}
 	for _, forbidden := range []string{

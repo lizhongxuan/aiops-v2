@@ -106,11 +106,27 @@ func constrainFinalMessageForEvidenceBoundary(text string, decision FinalEvidenc
 	if constrainedFinalShouldBecomeIncomplete(cleaned, decision) {
 		return incompleteFinalFromEvidenceDecision(decision)
 	}
-	prefix := "证据边界：当前证据仍受限，以下内容只能作为待核实判断。"
+	prefix := "证据边界：以下内容只能作为待核实判断。"
 	if strings.Contains(cleaned, "证据边界") || strings.Contains(cleaned, "证据仍不足") {
 		return cleaned
 	}
 	return strings.TrimSpace(prefix + "\n\n" + cleaned)
+}
+
+func sanitizeFinalAssistantContentForCommit(text string, decision FinalEvidenceVerification) (string, bool) {
+	cleaned := strings.TrimSpace(text)
+	if cleaned == "" {
+		return cleaned, false
+	}
+	if !containsRawToolCallMarkup(strings.ToLower(cleaned)) {
+		return cleaned, false
+	}
+	if decision.Action == "" || decision.Action == FinalEvidenceActionAllow {
+		decision.Action = FinalEvidenceActionDowngrade
+	}
+	decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
+	decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "raw_tool_call_markup_final")
+	return incompleteFinalFromEvidenceDecision(decision), true
 }
 
 func constrainedFinalShouldBecomeIncomplete(text string, decision FinalEvidenceVerification) bool {
@@ -238,8 +254,32 @@ func containsInternalFinalFallbackText(text string) bool {
 		strings.Contains(lower, "non_substantive_final_answer") ||
 		strings.Contains(lower, "official-domain fallback results") ||
 		strings.Contains(lower, `{"content"`) ||
+		containsRawToolCallMarkup(lower) ||
 		strings.Contains(lower, "kinds=") ||
 		strings.Contains(lower, "signals=")
+}
+
+func containsRawToolCallMarkup(lower string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(lower))
+	if normalized == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"tool_calls>",
+		"<tool_calls",
+		"<|tool_call",
+		"<｜｜dsml｜｜tool_calls",
+		"<｜｜dsml｜｜invoke",
+		"<｜｜dsml｜｜parameter",
+		"</｜｜dsml｜｜invoke>",
+		"invoke name=\"web_search\"",
+		"invoke name=\"exec_command\"",
+	} {
+		if strings.Contains(normalized, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func anyString(value any) string {

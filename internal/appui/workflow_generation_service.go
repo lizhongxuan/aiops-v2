@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -12,15 +11,17 @@ import (
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 	"aiops-v2/internal/workflowgen"
 )
 
 type WorkflowGenerationChatService struct {
-	sessionStore SessionStore
-	store        workflowgen.SessionStore
-	builder      workflowgen.PlanBuilder
-	generator    workflowgen.GraphGenerator
-	agentEvents  AgentEventService
+	sessionStore    SessionStore
+	store           workflowgen.SessionStore
+	builder         workflowgen.PlanBuilder
+	generator       workflowgen.GraphGenerator
+	agentEvents     AgentEventService
+	runtimeSettings RuntimeSettingsProvider
 
 	mu                   sync.Mutex
 	activeByConversation map[string]string
@@ -32,6 +33,7 @@ func NewWorkflowGenerationChatService(
 	builder workflowgen.PlanBuilder,
 	generator workflowgen.GraphGenerator,
 	agentEvents AgentEventService,
+	runtimeSettings ...RuntimeSettingsProvider,
 ) *WorkflowGenerationChatService {
 	if store == nil {
 		store = workflowgen.NewMemorySessionStore()
@@ -42,12 +44,17 @@ func NewWorkflowGenerationChatService(
 	if generator == nil {
 		generator = workflowgen.RunnerGraphGenerator{}
 	}
+	var provider RuntimeSettingsProvider
+	if len(runtimeSettings) > 0 {
+		provider = runtimeSettings[0]
+	}
 	return &WorkflowGenerationChatService{
 		sessionStore:         sessionStore,
 		store:                store,
 		builder:              builder,
 		generator:            generator,
 		agentEvents:          agentEvents,
+		runtimeSettings:      provider,
 		activeByConversation: map[string]string{},
 	}
 }
@@ -184,7 +191,7 @@ func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.C
 	agent := workflowgen.WorkflowBuilderAgent{
 		Store:          s.store,
 		GraphGenerator: s.generator,
-		Validator:      workflowGenerationValidationProvider(session.Plan, req.Metadata),
+		Validator:      workflowGenerationValidationProvider(session.Plan, req.Metadata, s.runtimeSettingsSnapshot(ctx)),
 	}
 	result, err := agent.GenerateDraft(ctx, workflowgen.GenerateDraftRequest{SessionID: session.ID})
 	if err != nil {
@@ -225,16 +232,22 @@ func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.C
 	return TurnResponse{SessionID: req.SessionID, TurnID: req.TurnID, ClientTurnID: req.ClientTurnID, ClientMessageID: req.ClientMessageID, Status: "completed", Output: final}, true, nil
 }
 
-func workflowGenerationValidationProvider(_ *workflowgen.WorkflowGenerationPlan, metadata map[string]string) workflowgen.WorkflowValidationProvider {
-	override := strings.ToLower(strings.TrimSpace(os.Getenv("AIOPS_WORKFLOW_VALIDATION_PROVIDER")))
-	switch override {
+func (s *WorkflowGenerationChatService) runtimeSettingsSnapshot(ctx context.Context) store.RuntimeSettings {
+	if s != nil && s.runtimeSettings != nil {
+		return s.runtimeSettings.Snapshot(ctx)
+	}
+	return store.DefaultRuntimeSettings()
+}
+
+func workflowGenerationValidationProvider(_ *workflowgen.WorkflowGenerationPlan, metadata map[string]string, settings store.RuntimeSettings) workflowgen.WorkflowValidationProvider {
+	switch strings.ToLower(strings.TrimSpace(settings.Workflow.ValidationProvider)) {
 	case "docker":
-		return workflowgen.DockerValidator{Image: workflowGenerationValidationImages(metadata)[0]}
+		return workflowgen.DockerValidator{Image: workflowGenerationValidationImages(settings, metadata)[0]}
 	}
 	return workflowgen.StaticValidationProvider{}
 }
 
-func workflowGenerationValidationImages(metadata ...map[string]string) []string {
+func workflowGenerationValidationImages(settings store.RuntimeSettings, metadata ...map[string]string) []string {
 	for _, item := range metadata {
 		if image := strings.TrimSpace(item["workflowValidationImage"]); image != "" {
 			return []string{image}
@@ -243,7 +256,7 @@ func workflowGenerationValidationImages(metadata ...map[string]string) []string 
 			return []string{image}
 		}
 	}
-	if image := strings.TrimSpace(os.Getenv("AIOPS_WORKFLOW_VALIDATION_IMAGE")); image != "" {
+	if image := strings.TrimSpace(settings.Workflow.ValidationImage); image != "" {
 		return []string{image}
 	}
 	return []string{"python:3.12-slim"}
@@ -702,7 +715,7 @@ func workflowGenerationValidationDetails(plan *workflowgen.WorkflowGenerationPla
 		"summary":        summary,
 		"scenario":       plan.ValidationStrategy.Scenario,
 		"networkPolicy":  firstNonEmptyString(plan.ValidationStrategy.Network, "none"),
-		"allowedImages":  workflowGenerationValidationImages(),
+		"allowedImages":  workflowGenerationValidationImages(store.DefaultRuntimeSettings()),
 		"sandboxSummary": "Docker Provider 会创建临时工作区，把生成的节点脚本只读挂载到容器内，使用 CPU、内存和网络策略限制执行验证脚本。",
 	}
 	if result != nil && result.Validation != nil {

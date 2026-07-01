@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/tooling"
 )
 
 var (
@@ -20,6 +21,9 @@ func applyChatRuntimeToolSurfaceMetadata(req *runtimekernel.TurnRequest, route C
 		req.Metadata = map[string]string{}
 	}
 	req.Metadata["toolProfile"] = string(route.Mode)
+	if route.Mode == ChatRouteHostBoundOps {
+		req.Metadata["profile"] = runtimekernel.RuntimePromptProfileHostWorker
+	}
 	req.Metadata["aiops.tool.execCommandAllowed"] = boolMetadataString(route.AllowsExecCommand)
 	req.Metadata["aiops.tool.hostMutationAllowed"] = boolMetadataString(route.Mode == ChatRouteHostBoundOps)
 	req.Metadata["aiops.tool.corootRCAAllowed"] = boolMetadataString(route.AllowsCorootRCA)
@@ -31,11 +35,21 @@ func applyChatRuntimeToolSurfaceMetadata(req *runtimekernel.TurnRequest, route C
 	if strings.TrimSpace(route.EnvironmentReadOnlyReason) != "" {
 		req.Metadata["aiops.tool.targetCompatibility"] = "conflict"
 	}
-	if route.AllowsWebLearn {
+	if tooling.ExplicitToolSearchDiscoveryRequested(req.Input) {
+		req.Metadata["aiops.toolSearch.enabled"] = "true"
+		req.Metadata["enableTool"] = appendMetadataListValue(req.Metadata["enableTool"], "tool_search")
+	}
+	webSearchPolicy := runtimekernel.EvaluateWebSearchPolicy(runtimekernel.WebSearchPolicyInput{
+		UserInput:             req.Input,
+		PublicWebAvailable:    route.AllowsWebLearn,
+		CurrentOrPrivateScope: route.RequiresHostBinding || route.Mode == ChatRouteHostBoundOps || route.Mode == ChatRouteMultiHostOps,
+	})
+	applyWebSearchPolicyMetadata(req.Metadata, webSearchPolicy)
+	if webSearchPolicy.Level == runtimekernel.WebSearchEnabled {
 		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "public_web")
 		req.Metadata["aiops.weblearn.enabled"] = "true"
 		req.Metadata["aiops.weblearn.sourcePolicy"] = "official_first"
-		req.Metadata["aiops.weblearn.requiredWhenUnfamiliar"] = "true"
+		req.Metadata["aiops.weblearn.requiredWhenUnfamiliar"] = "false"
 	}
 	if hasExplicitOpsManualMention(req.Input) {
 		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "ops_manual_flow")
@@ -50,6 +64,24 @@ func applyChatRuntimeToolSurfaceMetadata(req *runtimekernel.TurnRequest, route C
 		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "host_ops")
 		applyHostOpsManagerRuntimeMetadata(req.Metadata)
 	}
+}
+
+func applyWebSearchPolicyMetadata(metadata map[string]string, decision runtimekernel.WebSearchPolicyDecision) {
+	if metadata == nil {
+		return
+	}
+	metadata["aiops.webSearch.policy"] = string(decision.Level)
+	metadata["aiops.webSearch.reason"] = strings.TrimSpace(decision.Reason)
+	if len(decision.ReasonCodes) > 0 {
+		metadata["aiops.webSearch.reasonCodes"] = strings.Join(decision.ReasonCodes, ",")
+	}
+	if len(decision.QuerySeeds) > 0 {
+		metadata["aiops.webSearch.querySeeds"] = strings.Join(decision.QuerySeeds, "\n")
+	}
+	if strings.TrimSpace(decision.DisabledBy) != "" {
+		metadata["aiops.webSearch.disabledBy"] = strings.TrimSpace(decision.DisabledBy)
+	}
+	metadata["aiops.webSearch.requireCitations"] = boolMetadataString(decision.RequireCitations)
 }
 
 func hasExplicitOpsManualMention(input string) bool {

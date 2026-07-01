@@ -220,10 +220,6 @@ export function ProcessTranscript({
                 </div>
               ) : null}
               {finalGenerationLabel ? <FinalGenerationDuration label={finalGenerationLabel} /> : null}
-              {/* Bottom status indicator: only when running AND has meaningful content */}
-              {running && hasMeaningful ? (
-                <InlineStatusIndicator blocks={processBlocks} />
-              ) : null}
             </div>
           ) : null}
         </>
@@ -480,7 +476,7 @@ export function getMergedSummaryText(mergedKind: string, count: number): string 
     case "command":
       return count > 1 ? `已运行 ${count} 条命令` : "已运行命令";
     case "search":
-      return `网页检索 ${count} 项`;
+      return `网页搜索 ${count} 项`;
     case "tool":
     case "mcp":
       return `已调用 ${count} 个工具`;
@@ -510,12 +506,13 @@ function toolSummaryIconForKind(kind: string): LucideIcon {
   }
 }
 
-function DisclosureChevron({ open, testId }: { open: boolean; testId?: string }) {
+function DisclosureChevron({ open, testId, className }: { open: boolean; testId?: string; className?: string }) {
   return (
     <ChevronDown
       className={cn(
         "h-3.5 w-3.5 shrink-0 text-slate-400 opacity-0 transition-all group-hover:opacity-100 group-focus-visible:opacity-100",
         open ? "rotate-0 opacity-100" : "-rotate-90",
+        className,
       )}
       data-testid={testId}
       aria-hidden="true"
@@ -531,7 +528,7 @@ function ProcessGroupView({
   turnRunning: boolean;
 }) {
   const blocks = group.kind === "merged" ? group.blocks : [group.block];
-  if (blocks.every(isSearchLikeBlock) && !blocks.some((block) => block.status === "failed")) {
+  if (blocks.every(isSearchLikeBlock)) {
     return <SearchTranscriptFromBlocks blocks={blocks} turnRunning={turnRunning} />;
   }
   if (group.kind === "merged") {
@@ -550,6 +547,10 @@ function SearchTranscriptFromBlocks({
   const searchSummary = summarizeSearchBlocks(blocks);
   const activeSearchQuery = primarySearchQuery(blocks);
   const running = turnRunning && blocks.some(isBlockActive);
+  const failedSearch = blocks.find((block) => block.status === "failed");
+  const failureText = failedSearch
+    ? `检索失败 ${searchQueryForBlock(failedSearch) || stripHtml(failedSearch.text || "") || failedSearch.displayKind || ""}`.trim()
+    : "";
   return (
     <SearchTranscript
       query={activeSearchQuery}
@@ -558,6 +559,7 @@ function SearchTranscriptFromBlocks({
       rows={searchSummary.rows}
       running={running}
       defaultOpen={false}
+      failureText={failureText}
     />
   );
 }
@@ -728,7 +730,7 @@ function CommandDetailRow({
           </div>
           {hasOutput ? (
             <pre
-              className="mt-3 min-h-0 max-h-48 flex-1 overflow-x-auto overflow-y-auto overscroll-contain rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
+              className="mt-3 min-h-0 max-h-[12rem] flex-1 overflow-x-hidden overflow-y-auto overscroll-contain whitespace-pre-wrap break-words rounded-md bg-slate-100 font-mono text-[13px] leading-6 text-slate-500"
               data-testid={`aiops-command-output-${detail.id}`}
             >
               {detail.output}
@@ -839,7 +841,8 @@ function cleanCommandOutput(value?: string) {
 }
 
 function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
-  const output = cleanCommandOutput(block.outputPreview);
+  const rawOutput = cleanCommandOutput(block.outputPreview);
+  const output = block.kind === "command" ? commandTerminalOutputForDisplay(rawOutput, block) : rawOutput;
   if (!output) {
     return "";
   }
@@ -847,6 +850,100 @@ function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
     return truncateToolOutputPreview(output);
   }
   return output;
+}
+
+type CommandTerminalOutputEnvelope = {
+  status?: unknown;
+  stdout?: unknown;
+  stderr?: unknown;
+  output?: unknown;
+  error?: unknown;
+  exitCode?: unknown;
+};
+
+function commandTerminalOutputForDisplay(outputPreview: string, block: AiopsProcessBlock) {
+  const envelope = parseCommandTerminalOutputEnvelope(outputPreview);
+  if (!envelope) {
+    return outputPreview;
+  }
+  const failed = commandOutputFailed(envelope, block);
+  if (failed) {
+    return firstNonEmptyDisplayString(envelope.stderr, envelope.error, envelope.stdout, envelope.output);
+  }
+  return firstNonEmptyDisplayString(envelope.stdout, envelope.output, envelope.stderr, envelope.error);
+}
+
+function parseCommandTerminalOutputEnvelope(outputPreview: string): CommandTerminalOutputEnvelope | null {
+  const text = outputPreview.trim();
+  if (!text) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(text);
+    if (typeof parsed === "string" && parsed.trim().startsWith("{")) {
+      return parseCommandTerminalOutputEnvelope(parsed);
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    const envelope = parsed as CommandTerminalOutputEnvelope;
+    if (
+      ["stdout", "stderr", "output", "error", "exitCode", "status"].some((key) =>
+        Object.prototype.hasOwnProperty.call(envelope, key),
+      )
+    ) {
+      return envelope;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function commandOutputFailed(envelope: CommandTerminalOutputEnvelope, block: AiopsProcessBlock) {
+  const envelopeExitCode = numericValue(envelope.exitCode);
+  const blockExitCode = typeof block.exitCode === "number" ? block.exitCode : undefined;
+  const status = stringValue(envelope.status).toLowerCase();
+  return (
+    block.status === "failed" ||
+    block.status === "rejected" ||
+    (typeof blockExitCode === "number" && blockExitCode !== 0) ||
+    (typeof envelopeExitCode === "number" && envelopeExitCode !== 0) ||
+    status === "error" ||
+    status === "failed" ||
+    status === "failure"
+  );
+}
+
+function firstNonEmptyDisplayString(...values: unknown[]) {
+  for (const value of values) {
+    const text = stringValue(value);
+    if (text.trim()) {
+      return text.trim();
+    }
+  }
+  return "";
+}
+
+function stringValue(value: unknown) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (value === null || value === undefined) {
+    return "";
+  }
+  return String(value);
+}
+
+function numericValue(value: unknown) {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
 }
 
 function truncateToolOutputPreview(value: string) {
@@ -1166,36 +1263,6 @@ function transformThinkingText(raw: string): string {
 }
 
 /**
- * Inline status indicator at the bottom of the timeline while running.
- */
-function InlineStatusIndicator({ blocks }: { blocks: AiopsProcessBlock[] }) {
-  const lastBlock = blocks.length > 0 ? blocks[blocks.length - 1] : undefined;
-  let label: string;
-
-  if (!lastBlock || lastBlock.kind === "reasoning") {
-    label = "正在思考";
-  } else if (
-    (lastBlock.kind === "tool" ||
-      lastBlock.kind === "command" ||
-      lastBlock.kind === "file" ||
-      lastBlock.kind === "search" ||
-      lastBlock.kind === "mcp") &&
-    (lastBlock.status === "running" || lastBlock.status === "queued")
-  ) {
-    label = "正在执行";
-  } else {
-    label = "正在思考";
-  }
-
-  return (
-    <div className="flex items-center gap-1.5 text-xs text-slate-400" data-testid="aiops-inline-status-indicator">
-      <span className="h-1.5 w-1.5 rounded-full bg-slate-300" aria-hidden="true" />
-      <span>{label}</span>
-    </div>
-  );
-}
-
-/**
  * Search transcript: collapsible with max-height constraint.
  * Shows web search references with expandable details.
  */
@@ -1206,6 +1273,7 @@ function SearchTranscript({
   rows,
   running,
   defaultOpen,
+  failureText,
 }: {
   query: string;
   searchCount: number;
@@ -1213,8 +1281,12 @@ function SearchTranscript({
   rows: SearchDetailRow[];
   running: boolean;
   defaultOpen: boolean;
+  failureText?: string;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const visibleRows = running && query
+    ? rows.filter((row) => row.kind !== "query" || row.label !== query)
+    : rows;
 
   useEffect(() => {
     if (defaultOpen) {
@@ -1235,19 +1307,30 @@ function SearchTranscript({
         data-testid="aiops-search-toggle"
       >
         <ToolSummaryIcon kind="search" testId="aiops-search-icon" />
-        <span className="min-w-0 truncate">{searchTranscriptLabel(running, searchCount, resultCount, query)}</span>
+        <span className="min-w-0 truncate">{failureText || searchTranscriptLabel(running, searchCount, resultCount, query)}</span>
         <DisclosureChevron open={open} testId="aiops-search-chevron" />
       </button>
-      {open && rows.length ? (
+      {running && query && !open ? <ActiveSearchStatus query={query} /> : null}
+      {open && (running && query || visibleRows.length) ? (
         <div
           className={cn("space-y-1 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS, TOOL_TRANSCRIPT_CHILD_INDENT_CLASS)}
           data-testid="aiops-search-details"
         >
-          {rows.map((row) => (
+          {running && query ? <ActiveSearchStatus query={query} /> : null}
+          {visibleRows.map((row) => (
             <SearchDetailRowView key={row.id} row={row} />
           ))}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ActiveSearchStatus({ query }: { query: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-1.5 text-sky-600" data-testid="aiops-search-running-status">
+      <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-300" aria-hidden="true" />
+      <span className="min-w-0 truncate">{`正在搜索网页：${query}`}</span>
     </div>
   );
 }
@@ -1265,15 +1348,17 @@ type SearchDetailRow = {
   url: string;
   query: string;
   snippet: string;
+  fetched?: boolean;
+  fetchError?: string;
   kind: "source" | "query";
 };
 
 function SearchDetailRowView({ row }: { row: SearchDetailRow }) {
   const [open, setOpen] = useState(false);
   const detailLines = [
-    row.title ? `检索内容：${row.title}` : "",
-    row.query ? `检索词：${row.query}` : "",
-    row.snippet ? `摘要：${row.snippet}` : "",
+    row.fetched ? "已读取正文" : "",
+    row.fetchError ? `读取失败：${row.fetchError}` : "",
+    row.snippet,
   ].filter(Boolean);
 
   return (
@@ -1292,7 +1377,9 @@ function SearchDetailRowView({ row }: { row: SearchDetailRow }) {
         )}>
           {row.label}
         </span>
-        {detailLines.length ? <DisclosureChevron open={open} testId="aiops-search-detail-chevron" /> : null}
+        {detailLines.length ? (
+          <DisclosureChevron open={open} testId="aiops-search-detail-chevron" className="mt-[5px]" />
+        ) : null}
       </button>
       {open && detailLines.length ? (
         <div
@@ -1348,10 +1435,12 @@ type SearchSource = {
   url: string;
   query?: string;
   snippet?: string;
+  fetched?: boolean;
+  fetchError?: string;
 };
 
 function uniqueSearchSources(sources: SearchSource[]) {
-  const seen = new Set<string>();
+  const seen = new Map<string, number>();
   const result: SearchSource[] = [];
   for (const source of sources) {
     const label = cleanSearchResultText(source.label);
@@ -1360,9 +1449,27 @@ function uniqueSearchSources(sources: SearchSource[]) {
     const snippet = cleanSearchResultText(source.snippet);
     const key = (url || label).toLowerCase();
     if (!label && !url) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push({ label: label || url, url, query, snippet });
+    const existingIndex = seen.get(key);
+    if (existingIndex !== undefined) {
+      const existing = result[existingIndex];
+      result[existingIndex] = {
+        ...existing,
+        query: existing.query || query,
+        snippet: existing.snippet || snippet,
+        fetched: existing.fetched || Boolean(source.fetched),
+        fetchError: existing.fetchError || cleanSearchResultText(source.fetchError),
+      };
+      continue;
+    }
+    seen.set(key, result.length);
+    result.push({
+      label: label || url,
+      url,
+      query,
+      snippet,
+      fetched: Boolean(source.fetched),
+      fetchError: cleanSearchResultText(source.fetchError),
+    });
   }
   return result;
 }
@@ -1375,6 +1482,8 @@ function sourceToSearchDetailRow(source: SearchSource, index: number): SearchDet
     url: source.url,
     query: source.query || "",
     snippet: source.snippet || "",
+    fetched: source.fetched,
+    fetchError: source.fetchError,
     kind: "source",
   };
 }
@@ -1414,7 +1523,14 @@ function searchResultSources(block: AiopsProcessBlock): SearchSource[] {
     const url = extractUrl(result.url);
     const snippet = cleanSearchResultText(result.snippet);
     if (title || snippet || url) {
-      sources.push({ label: title || snippet || url, url, query, snippet });
+      sources.push({
+        label: title || snippet || url,
+        url,
+        query,
+        snippet,
+        fetched: Boolean(result.fetched),
+        fetchError: result.fetchError,
+      });
     }
   }
   const browsedUrl = browseUrlForBlock(block);
@@ -1434,12 +1550,12 @@ function primarySearchQuery(blocks: AiopsProcessBlock[]) {
   return "";
 }
 
-function searchTranscriptLabel(running: boolean, searchCount: number, resultCount: number, query: string) {
-  if (running) {
-    return query ? `正在搜索网页（${query}）` : "正在搜索网页";
+function searchTranscriptLabel(running: boolean, searchCount: number, resultCount: number, _query: string) {
+  const countLabel = `网页搜索 ${Math.max(1, searchCount)} 次`;
+  if (!running || resultCount > 0) {
+    return `${countLabel} · 找到 ${resultCount} 个来源`;
   }
-  const countLabel = `网页检索 ${Math.max(1, searchCount)} 次`;
-  return resultCount > 0 ? `${countLabel} · 找到 ${resultCount} 个来源` : countLabel;
+  return countLabel;
 }
 
 function uniqueLines(lines: string[]) {

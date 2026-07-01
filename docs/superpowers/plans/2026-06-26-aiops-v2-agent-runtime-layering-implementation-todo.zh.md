@@ -16,7 +16,7 @@
 - [x] 最终代码不保留旧 `RunTurn` 成功路径。
 - [x] 最终代码不双写 v1/v2 trace。
 - [x] 最终代码不保留 `EinoKernel` alias。
-- [ ] 最终代码不让 `schema.Message` 穿透到 `promptcompiler`、`promptinput`、`runtimekernel`、`modeltrace`。
+- [x] 最终代码不让 `schema.Message` 穿透到 `promptcompiler`、`promptinput`、`runtimekernel`、`modeltrace`。
 - [x] 历史 trace 文件不迁移；PromptTrace UI 只读新 v2 index 和 v2 document。
 
 ## File Structure
@@ -2395,16 +2395,19 @@ git commit -m "feat(runtime): switch to single layered agent runtime"
 - [x] `EinoKernel`, `NewEinoKernel`, and `EinoKernelConfig` do not exist.
 - [x] `CompileForEino` does not exist.
 - [x] `promptinput.BuildResult.Messages` does not exist.
-- [ ] `modeltrace.Request.ModelInput []*schema.Message` does not exist.
+- [x] `modeltrace.Request.ModelInput []*schema.Message` does not exist.
 - [x] `runtimekernel` does not call `chatModel.Stream` or `chatModel.Generate`.
-- [ ] `promptcompiler`, `promptinput`, `modeltrace`, and `runtimekernel` do not import `github.com/cloudwego/eino/schema`.
+- [x] `promptcompiler`, `promptinput`, `modeltrace`, and `runtimekernel` do not import `github.com/cloudwego/eino/schema`.
 - [x] `ModelInputItem` is the fact source for promptinput, provider request, Trace v2, and promptdiag.
 - [x] `ProviderRequestSnapshot` records `modelInputHash`, `providerMessagesHash`, `requestPropertiesHash`, and `promptCacheKey`.
+- [x] `promptCacheKey` includes model-visible input content and still ignores dynamic client/item ids.
+- [x] Production code does not call legacy `modeltrace.Write`; non-runtime diagnostic traces write `aiops.trace/v2`.
+- [x] Model response trace entries use provider request identity, not UI item identity, as the primary request id.
 - [x] `ProviderMessageAudit` can map every provider message back to a `ModelInputItem`.
 - [x] Tool visible and dispatchable lists come from one `RuntimeToolRouterSnapshot`.
 - [x] Trace v2 does not reconstruct prompt or provider request from markdown.
 - [x] PromptTrace UI reads v2 index/document only.
-- [ ] `preview` never flows into prompt, provider request, or runtime state.
+- [x] `preview` never flows into prompt, provider request, or runtime state.
 - [x] `go test ./...` passes.
 - [x] `npm run build` passes.
 - [x] `./scripts/verify-agent-runtime-single-path.sh` passes.
@@ -2412,7 +2415,8 @@ git commit -m "feat(runtime): switch to single layered agent runtime"
 ## Self-Review Notes
 
 - Spec coverage: tasks cover final types, promptinput fact source, provider adapter, turn loop, kernel rename, tool router snapshot, Trace v2, PromptTrace UI, static guards, and regression verification.
-- Remaining `schema.Message` boundary: production runtime/modeltrace still depend on Eino DTOs at response, legacy trace, context usage, and agent-config-runner boundaries. Removing this safely requires a dedicated provider-response DTO migration rather than a status-only cleanup.
-- Remaining `preview` boundary: `Preview:` text no longer enters model input for externalized tool results, but runtime still stores UI/event `outputPreview` and context-artifact preview fields, so the full "no preview in runtime state" rule remains open.
+- Completed `schema.Message` boundary: production `promptcompiler`/`promptinput`/`runtimekernel`/`modeltrace` no longer import or expose Eino schema DTOs; Eino conversion is confined to `modelrouter`/Eino-facing packages and tests.
+- Completed `preview` boundary: persisted runtime state no longer stores `outputPreview`; model-visible resource/artifact snippets use `ContentSnippet`, and UI previews are derived in appui projection or carried only by live UI event payloads.
 - Ambiguity resolved: no compatibility mode, no feature flag, no old runtime alias, no v1/v2 trace dual write.
 - Highest-risk area covered: `ModelInputItem -> schema.Message` uses strict validation, golden parity, round-trip checks, provider message audit, and hash verification.
+- Code-review fixes completed: static guard now scans all production `modeltrace.Write` calls; opsmanual/spanstream trace writes use Trace v2; `promptCacheKey` changes when model-visible content changes; response trace id is tied to `ProviderResponse.RequestID`/`modelInputHash`.

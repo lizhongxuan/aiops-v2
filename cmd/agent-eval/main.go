@@ -83,7 +83,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		RunPhase:       runPhase,
 		Priority:       priority,
 		Repetitions:    repetitions,
-		Metadata:       evalRunMetadata(),
+		Metadata:       map[string]string{"runtime_settings": "not_loaded_by_agent_eval"},
 		BaselineReport: baseline,
 	}.Run(ctx)
 	if err != nil {
@@ -146,12 +146,4 @@ func printReportTo(w io.Writer, report eval.Report) {
 func printError(stderr io.Writer, err error) int {
 	fmt.Fprintln(stderr, "agent-eval:", err)
 	return 1
-}
-
-func evalRunMetadata() map[string]string {
-	return map[string]string{
-		"AIOPS_DIAGNOSTIC_PROTOCOL":         os.Getenv("AIOPS_DIAGNOSTIC_PROTOCOL"),
-		"AIOPS_DEBUG_MODEL_INPUT_TRACE":     os.Getenv("AIOPS_DEBUG_MODEL_INPUT_TRACE"),
-		"AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR": os.Getenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR"),
-	}
 }

@@ -349,6 +349,31 @@ func TestToolDispatcher_DeferredUnloadedToolReturnsRecoverableError(t *testing.T
 	}
 }
 
+func TestToolDispatcher_MissingNonDeferredToolDoesNotSuggestToolSearch(t *testing.T) {
+	emitter := &testMockEventEmitter{}
+	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{}}, nil, emitter)
+
+	result := dispatcher.Dispatch(
+		context.Background(),
+		"sess-missing",
+		"turn-missing",
+		ToolCall{
+			ID:        "call-missing",
+			Name:      "host_cpu_checker",
+			Arguments: json.RawMessage(`{}`),
+		},
+		SessionTypeHost,
+		ModeChat,
+	)
+
+	if result.Error == "" || !strings.Contains(result.Error, `"errorType":"tool_not_found"`) {
+		t.Fatalf("dispatch error = %q, want structured tool_not_found", result.Error)
+	}
+	if strings.Contains(result.Error, "tool_search") || strings.Contains(result.Error, "requiredAction") {
+		t.Fatalf("dispatch error = %s, must not suggest tool_search for non-deferred missing tool", result.Error)
+	}
+}
+
 func TestToolDispatcher_DeferredUnavailableMCPToolReturnsStructuredRejection(t *testing.T) {
 	registry := mcp.NewRegistry()
 	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{

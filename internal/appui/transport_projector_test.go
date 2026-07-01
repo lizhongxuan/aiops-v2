@@ -1216,6 +1216,52 @@ func TestTransportProjectorBackfillsCommandPreviewFromSnapshotToolResult(t *test
 	}
 }
 
+func TestTransportProjectorUsesTerminalStreamsFromStructuredCommandPreview(t *testing.T) {
+	now := time.Date(2026, 5, 7, 14, 41, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-hostname",
+		"toolName":"exec_command",
+		"inputSummary":"hostname",
+		"outputPreview":{
+			"command":"hostname",
+			"status":"ok",
+			"stdout":"host-a\n",
+			"stderr":"",
+			"exitCode":0,
+			"tool":"exec_command"
+		},
+		"exitCode":0
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-command-structured-preview",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		CompletedAt: ptrTime(now.Add(time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "cmd-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "command", Summary: "host-a", Data: toolResultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+
+	commandBlock := findTransportProcessBlock(t, projected.Turns["turn-command-structured-preview"].Process, AiopsTransportProcessKindCommand)
+	if commandBlock.OutputPreview != "host-a" {
+		t.Fatalf("command output preview = %q, want stdout only", commandBlock.OutputPreview)
+	}
+	if strings.Contains(commandBlock.OutputPreview, "stdout") || strings.Contains(commandBlock.OutputPreview, "tool") {
+		t.Fatalf("command output preview leaked structured envelope: %q", commandBlock.OutputPreview)
+	}
+}
+
 func TestTransportProjectorKeepsCommandTitleSeparateFromResultOnlyOutput(t *testing.T) {
 	now := time.Date(2026, 5, 7, 14, 40, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1518,6 +1564,42 @@ func TestTransportProjectorProjectsFailedTurnState(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorDeduplicatesTerminalRuntimeErrors(t *testing.T) {
+	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-duplicate-error", "thread-duplicate-error")
+	errorText := "模型请求超时：约 1m0s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: dial tcp: i/o timeout"
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-duplicate-error",
+		SessionID: "session-duplicate-error",
+		Lifecycle: runtimekernel.TurnLifecycleFailed,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Minute),
+		Error:     errorText,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "err-1", Type: agentstate.TurnItemTypeError, Status: agentstate.ItemStatusFailed, Payload: agentstate.PayloadEnvelope{Summary: errorText}, CreatedAt: now.Add(time.Second)},
+			{ID: "err-2", Type: agentstate.TurnItemTypeError, Status: agentstate.ItemStatusFailed, Payload: agentstate.PayloadEnvelope{Summary: errorText}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	var runtimeErrors []AiopsProcessBlock
+	for _, block := range projected.Turns["turn-duplicate-error"].Process {
+		if block.DisplayKind == "runtime.error" {
+			runtimeErrors = append(runtimeErrors, block)
+		}
+	}
+	if len(runtimeErrors) != 1 {
+		t.Fatalf("runtime error blocks = %#v, want one deduplicated error", runtimeErrors)
+	}
+	if runtimeErrors[0].Text != errorText {
+		t.Fatalf("runtime error text = %q, want %q", runtimeErrors[0].Text, errorText)
+	}
+}
+
 func TestTransportProjectorProjectsCanceledTurnState(t *testing.T) {
 	now := time.Date(2026, 5, 6, 14, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1774,6 +1856,48 @@ func TestTransportProjectorReordersProcessFromLatestAgentItems(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorProjectsAssistantCommentaryMetadataBeforeTool(t *testing.T) {
+	now := time.Date(2026, 6, 27, 10, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-commentary-metadata",
+		SessionID: "session-commentary-metadata",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(2 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "assistant-commentary-0", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "我会先执行只读命令获取证据，再根据输出整理回答。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete","commentarySource":"runtime_tool_intent","toolCallIds":["call-cpu"]}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "turn-commentary-metadata-tool-call-call-cpu", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "exec_command",
+				Data:    json.RawMessage(`{"toolCallId":"call-cpu","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"top -l 1"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-commentary-metadata", "thread-commentary-metadata"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-commentary-metadata"].Process
+	if len(process) < 2 {
+		t.Fatalf("process = %#v, want commentary before tool", process)
+	}
+	if process[0].Kind != AiopsTransportProcessKindAssistant || process[0].Phase != "commentary" {
+		t.Fatalf("process[0] = %+v, want assistant commentary", process[0])
+	}
+	if process[0].CommentarySource != "runtime_tool_intent" {
+		t.Fatalf("commentarySource = %q, want runtime_tool_intent", process[0].CommentarySource)
+	}
+	if len(process[0].ToolCallIDs) != 1 || process[0].ToolCallIDs[0] != "call-cpu" {
+		t.Fatalf("toolCallIDs = %#v, want call-cpu", process[0].ToolCallIDs)
+	}
+	if process[1].Kind == AiopsTransportProcessKindAssistant {
+		t.Fatalf("process = %#v, final/tool order broken", process)
+	}
+}
+
 func TestTransportProjectorShowsRunningModelCallPlaceholder(t *testing.T) {
 	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -1904,6 +2028,9 @@ func TestTransportProjectorDedupesProviderNativeWebSearchBlocks(t *testing.T) {
 	if block.Status != AiopsTransportProcessStatusCompleted {
 		t.Fatalf("Status = %q, want completed", block.Status)
 	}
+	if block.Operation != "search" {
+		t.Fatalf("Operation = %q, want search", block.Operation)
+	}
 }
 
 func TestTransportProjectorExtractsRuntimeToolCallQueryAndMergesSearchResult(t *testing.T) {
@@ -1969,6 +2096,131 @@ func TestTransportProjectorExtractsRuntimeToolCallQueryAndMergesSearchResult(t *
 	}
 	if block.Text != query {
 		t.Fatalf("Text = %q, want %q", block.Text, query)
+	}
+	if block.Operation != "search" {
+		t.Fatalf("Operation = %q, want search", block.Operation)
+	}
+}
+
+func TestDecodeTransportSearchResultsUsesStructuredResultsWithFetchedStatus(t *testing.T) {
+	raw := json.RawMessage(`{
+		"operation":"search",
+		"query":"postgres docs",
+		"results":[
+			{"title":"PostgreSQL docs","url":"https://www.postgresql.org/docs/current/","snippet":"docs","text":"bounded text","fetched":true},
+			{"title":"Blog","url":"https://example.com/post","snippet":"ignored extra domain","fetchError":"blocked"}
+		],
+		"meta":{"backend":"lightweight_search+internal_fetch","fetchedCount":1}
+	}`)
+	results := decodeTransportSearchResults(raw)
+	if len(results) != 2 || results[0].Title != "PostgreSQL docs" {
+		t.Fatalf("results = %#v", results)
+	}
+	if !results[0].Fetched || results[0].Text != "bounded text" {
+		t.Fatalf("first result = %#v, want fetched text preserved", results[0])
+	}
+	if results[1].FetchError == "" {
+		t.Fatalf("second result = %#v, want fetch error preserved", results[1])
+	}
+}
+
+func TestTransportProjectorSummarizesWebSearchOpenByURL(t *testing.T) {
+	now := time.Date(2026, 6, 29, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	openResult := `{"operation":"open","url":"https://www.postgresql.org/docs/current/","source":"custom_public_web:open","content":"Readable docs","results":[{"title":"PostgreSQL docs","url":"https://www.postgresql.org/docs/current/","snippet":"Readable docs","text":"Readable docs","fetched":true}],"meta":{"backend":"internal_fetch","fetchedCount":1}}`
+	callData := json.RawMessage(`{
+		"id":"call-open-1",
+		"name":"web_search",
+		"arguments":{"operation":"open","url":"https://www.postgresql.org/docs/current/"}
+	}`)
+	resultData := json.RawMessage(`{
+		"toolCallId":"call-open-1",
+		"toolName":"web_search",
+		"outputPreview":` + strconv.Quote(openResult) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-open-url",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "open-call", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "tool_call", Summary: "web_search", Data: callData}, CreatedAt: now},
+			{ID: "open-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool_result", Summary: openResult, Data: resultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-open-url"].Process
+	if len(process) != 1 {
+		t.Fatalf("len(process) = %d, want one merged search block: %#v", len(process), process)
+	}
+	block := process[0]
+	if block.Kind != AiopsTransportProcessKindSearch || block.DisplayKind != "web_search" {
+		t.Fatalf("block = %#v, want web_search block", block)
+	}
+	if !strings.Contains(block.Text, "postgresql.org/docs") {
+		t.Fatalf("Text = %q, want opened URL summary", block.Text)
+	}
+	if len(block.Results) != 1 || !block.Results[0].Fetched {
+		t.Fatalf("Results = %#v, want fetched structured result", block.Results)
+	}
+	if block.Operation != "open" || block.URL != "https://www.postgresql.org/docs/current/" {
+		t.Fatalf("operation/url = %q/%q, want open URL", block.Operation, block.URL)
+	}
+	if block.Adapter != "custom_public_web:open" || block.Backend != "internal_fetch" || block.SourceCount != 1 {
+		t.Fatalf("adapter/backend/sourceCount = %q/%q/%d", block.Adapter, block.Backend, block.SourceCount)
+	}
+}
+
+func TestTransportProjectorPreservesSearchQueryWhenCompletedResultIsSparse(t *testing.T) {
+	now := time.Date(2026, 6, 29, 12, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-1", "thread-1")
+	query := "pg_autoctl standby timeline higher than primary official docs"
+	callData := json.RawMessage(`{
+		"id":"call-search-sparse",
+		"name":"web_search",
+		"arguments":{"operation":"search","query":"` + query + `"}
+	}`)
+	resultData := json.RawMessage(`{
+		"toolCallId":"call-search-sparse",
+		"toolName":"web_search",
+		"outputSummary":"web_search completed"
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-sparse-search",
+		SessionID: "session-1",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "sparse-call", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "web_search", Data: callData}, CreatedAt: now},
+			{ID: "sparse-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Summary: "web_search completed", Data: resultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-sparse-search"].Process
+	if len(process) != 1 {
+		t.Fatalf("len(process) = %d, want one merged search block: %#v", len(process), process)
+	}
+	block := process[0]
+	if block.Text != query || block.InputSummary != query {
+		t.Fatalf("text/inputSummary = %q/%q, want preserved query %q", block.Text, block.InputSummary, query)
+	}
+	if len(block.Queries) != 1 || block.Queries[0] != query {
+		t.Fatalf("Queries = %#v, want preserved query", block.Queries)
+	}
+	if block.Operation != "search" {
+		t.Fatalf("Operation = %q, want search", block.Operation)
 	}
 }
 

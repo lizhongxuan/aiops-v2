@@ -2,7 +2,6 @@ package appui
 
 import (
 	"context"
-	"os"
 	"strings"
 	"time"
 
@@ -34,12 +33,6 @@ func NewRunbookService(pattern string, signer *actionproposal.Signer) RunbookSer
 	catalog, err := runbooks.LoadCatalog(projectRelativePath(pattern))
 	if err != nil {
 		catalog = runbooks.NewCatalog(nil)
-	}
-	if signer == nil {
-		secret := strings.TrimSpace(os.Getenv("AIOPS_ACTION_TOKEN_SECRET"))
-		if secret != "" {
-			signer = actionproposal.NewSigner([]byte(secret), time.Now)
-		}
 	}
 	return &defaultRunbookService{
 		domain:  runbooks.NewService(catalog, signer, runbooks.NewInMemoryInstanceStore(), time.Now),

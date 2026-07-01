@@ -41,6 +41,8 @@ type assistantMessageData struct {
 	TextHash            string
 	Duration            time.Duration
 	GenerationDuration  time.Duration
+	CommentarySource    string
+	ToolCallIDs         []string
 }
 
 type finalMessageBoundaryInput struct {
@@ -89,6 +91,12 @@ func assistantMessageAgentItemData(data assistantMessageData) map[string]any {
 	}
 	if textHash := strings.TrimSpace(data.TextHash); textHash != "" {
 		payload["textHash"] = textHash
+	}
+	if source := strings.TrimSpace(data.CommentarySource); source != "" {
+		payload["commentarySource"] = source
+	}
+	if ids := compactStringList(data.ToolCallIDs); len(ids) > 0 {
+		payload["toolCallIds"] = ids
 	}
 	duration := data.GenerationDuration
 	if duration <= 0 {

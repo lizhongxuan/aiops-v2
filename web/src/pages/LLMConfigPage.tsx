@@ -21,17 +21,20 @@ import {
 import {
   DEFAULT_LLM_CONTEXT_TOKENS,
   DEFAULT_LLM_MAX_OUTPUT_TOKENS,
+  DEFAULT_LLM_REQUEST_TIMEOUT_MS,
   fetchLlmConfig,
   type LlmConfigUpdate,
   type LlmConfigView,
   normalizeLlmContextTokens,
   normalizeLlmMaxOutputTokens,
+  normalizeLlmRequestTimeoutMs,
   updateLlmConfig,
 } from "@/pages/settingsApi";
 import { Field, LoadingState, SelectField, SettingsPageFrame, StatGrid, StatusAlert } from "@/pages/settingsComponents";
 
 type LlmConfigForm = LlmConfigFormDefaults & {
   apiKey: string;
+  requestTimeoutMs: string;
 };
 
 const providerOptions = LLM_PROVIDER_PRESETS.map((provider) => ({ label: provider.label, value: provider.id }));
@@ -69,7 +72,7 @@ function isZhipuBaseURL(baseURL: unknown) {
 }
 
 function formWithApiKey(defaults: LlmConfigFormDefaults): LlmConfigForm {
-  return { ...defaults, apiKey: "" };
+  return { ...defaults, apiKey: "", requestTimeoutMs: String(DEFAULT_LLM_REQUEST_TIMEOUT_MS) };
 }
 
 function formFromConfig(config: LlmConfigView): LlmConfigForm {
@@ -96,6 +99,7 @@ function formFromConfig(config: LlmConfigView): LlmConfigForm {
     maxOutputTokens: String(
       normalizeLlmMaxOutputTokens(config.maxOutputTokens || modelDefaults.maxOutputTokens || DEFAULT_LLM_MAX_OUTPUT_TOKENS, knownModel?.maxOutputTokens),
     ),
+    requestTimeoutMs: String(normalizeLlmRequestTimeoutMs(config.requestTimeoutMs || DEFAULT_LLM_REQUEST_TIMEOUT_MS)),
     temperature: config.temperature === undefined || config.temperature === null ? String(modelDefaults.temperature || "1") : String(config.temperature),
     topP: config.topP === undefined || config.topP === null ? String(modelDefaults.topP || "1") : String(config.topP),
     thinkingType: config.thinkingType || String(modelDefaults.thinkingType || ""),
@@ -142,11 +146,13 @@ export function LLMConfigPage() {
       const outputCap = selectedModelPreset?.maxOutputTokens;
       const normalizedContext = normalizeLlmContextTokens(form.maxContextTokens);
       const normalizedOutput = normalizeLlmMaxOutputTokens(form.maxOutputTokens, outputCap);
+      const normalizedRequestTimeout = normalizeLlmRequestTimeoutMs(form.requestTimeoutMs);
       const payload: LlmConfigUpdate = {
         provider: form.provider,
         model: effectiveModel || providerPreset.defaultModel,
         maxContextTokens: normalizedContext,
         maxOutputTokens: normalizedOutput,
+        requestTimeoutMs: normalizedRequestTimeout,
         reasoningEffort: reasoningOptions.length ? form.reasoningEffort : undefined,
       };
       if (form.apiKey.trim()) payload.apiKey = form.apiKey.trim();
@@ -157,7 +163,7 @@ export function LLMConfigPage() {
       if (providerPreset.supportsTopP) payload.topP = form.topP;
       if (providerPreset.supportsThinking) payload.thinkingType = form.thinkingType;
       if (providerPreset.supportsToolStream) payload.toolStream = form.toolStream;
-      setForm((prev) => ({ ...prev, maxContextTokens: String(normalizedContext), maxOutputTokens: String(normalizedOutput) }));
+      setForm((prev) => ({ ...prev, maxContextTokens: String(normalizedContext), maxOutputTokens: String(normalizedOutput), requestTimeoutMs: String(normalizedRequestTimeout) }));
       const result = await updateLlmConfig(payload);
       await load();
       setMessage({ type: result.ok === false ? "info" : "success", text: result.ok === false ? result.message || result.error || "配置已保存" : "配置已保存" });
@@ -169,7 +175,7 @@ export function LLMConfigPage() {
   }
 
   function selectProvider(provider: string) {
-    setForm(formWithApiKey(defaultFormForProvider(provider)));
+    setForm((prev) => ({ ...formWithApiKey(defaultFormForProvider(provider)), requestTimeoutMs: prev.requestTimeoutMs }));
   }
 
   function selectModel(value: string) {
@@ -284,6 +290,16 @@ export function LLMConfigPage() {
                   step={1000}
                   value={form.maxOutputTokens}
                   onChange={(event) => setForm((prev) => ({ ...prev, maxOutputTokens: event.target.value }))}
+                />
+              </Field>
+              <Field label="请求超时 ms">
+                <Input
+                  data-testid="llm-request-timeout-ms-input"
+                  type="number"
+                  min={1}
+                  step={1000}
+                  value={form.requestTimeoutMs}
+                  onChange={(event) => setForm((prev) => ({ ...prev, requestTimeoutMs: event.target.value }))}
                 />
               </Field>
               {reasoningOptions.length ? (

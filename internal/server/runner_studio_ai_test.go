@@ -11,19 +11,19 @@ import (
 	"aiops-v2/internal/appui"
 )
 
-func TestRunnerStudioAIGenerateDraftProxiesStructuredPatch(t *testing.T) {
-	type upstreamSeen struct {
+func TestRunnerStudioAIGenerateDraftUsesEmbeddedStructuredPatch(t *testing.T) {
+	type embeddedSeen struct {
 		Method string
 		Path   string
 		Body   map[string]any
 	}
-	seen := make(chan upstreamSeen, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	seen := make(chan embeddedSeen, 1)
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode upstream body: %v", err)
+			t.Fatalf("decode embedded body: %v", err)
 		}
-		seen <- upstreamSeen{Method: r.Method, Path: r.URL.EscapedPath(), Body: body}
+		seen <- embeddedSeen{Method: r.Method, Path: r.URL.EscapedPath(), Body: body}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"graph_patch": map[string]any{
@@ -33,12 +33,11 @@ func TestRunnerStudioAIGenerateDraftProxiesStructuredPatch(t *testing.T) {
 				"semantic_changes": []map[string]any{{"title": "add restore", "detail": "shell.run"}},
 			},
 		})
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -65,26 +64,25 @@ func TestRunnerStudioAIGenerateDraftProxiesStructuredPatch(t *testing.T) {
 
 	req := <-seen
 	if req.Method != http.MethodPost || req.Path != "/api/v1/workflows/ai/draft" {
-		t.Fatalf("upstream = %+v, want POST /api/v1/workflows/ai/draft", req)
+		t.Fatalf("embedded = %+v, want POST /api/v1/workflows/ai/draft", req)
 	}
 	for _, forbidden := range []string{"api_key", "apikey", "base_url", "model"} {
 		if _, ok := req.Body[forbidden]; ok {
-			t.Fatalf("upstream body contains frontend LLM field %q: %+v", forbidden, req.Body)
+			t.Fatalf("embedded body contains frontend LLM field %q: %+v", forbidden, req.Body)
 		}
 	}
 }
 
 func TestRunnerStudioAIPatchRequiresDraftWorkflow(t *testing.T) {
-	upstreamHit := make(chan struct{}, 1)
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		upstreamHit <- struct{}{}
+	embeddedHit := make(chan struct{}, 1)
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		embeddedHit <- struct{}{}
 		w.WriteHeader(http.StatusOK)
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()
@@ -106,8 +104,8 @@ func TestRunnerStudioAIPatchRequiresDraftWorkflow(t *testing.T) {
 		t.Fatalf("response = %s, want draft guard explanation", payload)
 	}
 	select {
-	case <-upstreamHit:
-		t.Fatal("non-draft AI patch should not reach upstream")
+	case <-embeddedHit:
+		t.Fatal("non-draft AI patch should not reach embedded runner")
 	default:
 	}
 }
@@ -151,17 +149,16 @@ func TestRunnerStudioAIGenerateDraftUsesEmbeddedHandler(t *testing.T) {
 }
 
 func TestRunnerStudioAIFailureExplanationDoesNotRequireGraphPatch(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	embedded := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"error_explanation": "缺少目标主机，无法生成安全 patch",
 		})
-	}))
-	defer upstream.Close()
+	})
 
 	srv := NewHTTPServer(
 		appui.NewServices(websocketAPITestRuntime{}, nil),
-		WithRunnerStudioUpstreamURL(upstream.URL),
+		WithRunnerStudioHandler(embedded),
 	)
 	ts := httptest.NewServer(srv.Handler())
 	defer ts.Close()

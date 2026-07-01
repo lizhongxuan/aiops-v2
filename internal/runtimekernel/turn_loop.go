@@ -9,7 +9,6 @@ import (
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
-	"github.com/cloudwego/eino/schema"
 )
 
 func (k *RuntimeKernel) buildRuntimeStepContext(
@@ -23,9 +22,9 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	toolSurface RuntimeToolRouterSnapshot,
 	thresholds ContextBudgetThresholds,
 	modelName string,
-) (RuntimeStepContext, promptinput.BuildResult, []*schema.Message, error) {
+) (RuntimeStepContext, promptinput.BuildResult, error) {
 	if session == nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, nil, fmt.Errorf("session is required")
+		return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("session is required")
 	}
 	turnReq := req
 	turnReq.SessionID = firstNonBlankRuntimeString(turnReq.SessionID, session.ID)
@@ -62,15 +61,15 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		},
 	})
 	if err != nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, nil, err
+		return RuntimeStepContext{}, promptinput.BuildResult{}, err
 	}
 	promptBuild, err := buildPromptInputWithContextGovernance(contextMessages, compiled, append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...))
 	if err != nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, nil, err
+		return RuntimeStepContext{}, promptinput.BuildResult{}, err
 	}
-	modelInput, audit, err := modelrouter.ModelInputItemsToEinoMessages(promptBuild.Items)
+	audit, err := modelrouter.ProviderMessageAuditFromModelInputItems(promptBuild.Items)
 	if err != nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, nil, err
+		return RuntimeStepContext{}, promptinput.BuildResult{}, err
 	}
 	providerReq := modelrouter.ProviderRequestSnapshot{
 		Provider:        firstNonBlankRuntimeString(modelCaps.Provider, string(agentKind)),
@@ -98,9 +97,9 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		ProviderRequest: providerReq,
 	}
 	if err := step.Validate(); err != nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, nil, fmt.Errorf("runtime step context: %w", err)
+		return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("runtime step context: %w", err)
 	}
-	return step, promptBuild, modelInput, nil
+	return step, promptBuild, nil
 }
 
 func runtimeToolRouterSnapshotFromCompile(tools []promptcompiler.Tool, visibleToolNames []string, fingerprint string, policy tooling.ToolSurfacePolicySnapshot) RuntimeToolRouterSnapshot {
@@ -123,8 +122,8 @@ func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) 
 	return out
 }
 
-func writeRuntimeStepTrace(step RuntimeStepContext, req RuntimeTraceDebugRequest) (string, error) {
-	if !modeltrace.Enabled() {
+func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContext, req RuntimeTraceDebugRequest) (string, error) {
+	if !traceConfig.Enabled {
 		return "", nil
 	}
 	req.SessionID = step.Turn.SessionID
@@ -135,7 +134,7 @@ func writeRuntimeStepTrace(step RuntimeStepContext, req RuntimeTraceDebugRequest
 		req.VisibleTools = append([]string(nil), step.ToolSurface.ModelVisibleTools...)
 	}
 	traceReq := buildModelInputTraceRequest(req)
-	root := modeltrace.TraceDocumentV2Directory("", step.Turn.SessionID, step.Turn.TurnID)
+	root := modeltrace.TraceDocumentV2Directory(traceConfig.RootDir, step.Turn.SessionID, step.Turn.TurnID)
 	rawRef, err := modeltrace.WriteRawPayloadRef(root, "provider-request", "provider_request", step.ProviderRequest)
 	if err != nil {
 		return "", err
@@ -153,7 +152,6 @@ func writeRuntimeStepTrace(step RuntimeStepContext, req RuntimeTraceDebugRequest
 			PromptInputTrace:   traceReq.PromptInputTrace,
 			PromptInputDiff:    traceReq.PromptInputDiff,
 			DiagnosticTrace:    traceReq.DiagnosticTrace,
-			ProviderMessages:   traceReq.ModelInput,
 		},
 		ProviderRequest: modeltrace.ProviderRequestTrace{
 			ModelInputHash:        step.ProviderRequest.ModelInputHash,
@@ -174,8 +172,7 @@ func writeRuntimeStepTrace(step RuntimeStepContext, req RuntimeTraceDebugRequest
 
 type runtimeStepTraceDocumentV2 struct {
 	RuntimeStepContext
-	PromptInputTrace any               `json:"promptInputTrace,omitempty"`
-	PromptInputDiff  any               `json:"promptInputDiff,omitempty"`
-	DiagnosticTrace  any               `json:"diagnosticTrace,omitempty"`
-	ProviderMessages []*schema.Message `json:"providerMessages,omitempty"`
+	PromptInputTrace any `json:"promptInputTrace,omitempty"`
+	PromptInputDiff  any `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace  any `json:"diagnosticTrace,omitempty"`
 }

@@ -137,6 +137,32 @@ body {
   --sidebar-ring: oklch(0.556 0 0);
 }
 
+.aiops-inline-mention-anchor {
+  position: relative;
+  display: inline-block;
+  white-space: pre;
+  color: transparent;
+}
+
+.aiops-inline-mention-anchor::before {
+  content: attr(data-layout-text);
+  visibility: hidden;
+  white-space: pre;
+}
+
+.aiops-inline-mention-visual {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: max-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  overflow: visible;
+  white-space: nowrap;
+}
+
 @layer base {
   * {
     @apply border-border outline-ring/50;

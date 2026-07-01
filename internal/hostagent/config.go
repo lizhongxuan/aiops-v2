@@ -14,9 +14,15 @@ import (
 
 const defaultHeartbeatInterval = 30 * time.Second
 
+const (
+	ConnectionModeAIOPSPull    = "aiops_pull"
+	ConnectionModeNodePushGRPC = "node_push_grpc"
+)
+
 var defaultCapabilities = []string{"script.shell", "script.python", "terminal"}
 
 type Config struct {
+	ConnectionMode    string            `yaml:"connection_mode"`
 	ServerURL         string            `yaml:"server_url"`
 	GRPCURL           string            `yaml:"grpc_url"`
 	HostID            string            `yaml:"host_id"`
@@ -29,6 +35,7 @@ type Config struct {
 }
 
 type rawConfig struct {
+	ConnectionMode    string            `yaml:"connection_mode"`
 	ServerURL         string            `yaml:"server_url"`
 	GRPCURL           string            `yaml:"grpc_url"`
 	HostID            string            `yaml:"host_id"`
@@ -55,6 +62,7 @@ func Load(path string) (Config, error) {
 	}
 
 	cfg := Config{
+		ConnectionMode:    NormalizeConnectionMode(raw.ConnectionMode, raw.ServerURL, raw.GRPCURL),
 		ServerURL:         strings.TrimRight(strings.TrimSpace(raw.ServerURL), "/"),
 		GRPCURL:           strings.TrimSpace(raw.GRPCURL),
 		HostID:            strings.TrimSpace(raw.HostID),
@@ -89,16 +97,41 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+func NormalizeConnectionMode(value, serverURL, grpcURL string) string {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case "", "default":
+		if strings.TrimSpace(serverURL) != "" || strings.TrimSpace(grpcURL) != "" {
+			return ConnectionModeNodePushGRPC
+		}
+		return ConnectionModeAIOPSPull
+	case ConnectionModeAIOPSPull, "pull", "aiops-pull":
+		return ConnectionModeAIOPSPull
+	case ConnectionModeNodePushGRPC, "grpc_reverse", "node-push-grpc":
+		return ConnectionModeNodePushGRPC
+	default:
+		return mode
+	}
+}
+
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.ServerURL) == "" {
-		return fmt.Errorf("server_url is required")
+	mode := NormalizeConnectionMode(c.ConnectionMode, c.ServerURL, c.GRPCURL)
+	switch mode {
+	case ConnectionModeAIOPSPull, ConnectionModeNodePushGRPC:
+	default:
+		return fmt.Errorf("unsupported connection_mode %q", c.ConnectionMode)
 	}
-	parsed, err := url.Parse(c.ServerURL)
-	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return fmt.Errorf("server_url must be an absolute URL")
+	if mode == ConnectionModeNodePushGRPC && strings.TrimSpace(c.ServerURL) == "" {
+		return fmt.Errorf("server_url is required for node_push_grpc")
 	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return fmt.Errorf("server_url scheme must be http or https")
+	if strings.TrimSpace(c.ServerURL) != "" {
+		parsed, err := url.Parse(c.ServerURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+			return fmt.Errorf("server_url must be an absolute URL")
+		}
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("server_url scheme must be http or https")
+		}
 	}
 	if strings.TrimSpace(c.GRPCURL) != "" {
 		if strings.Contains(c.GRPCURL, "://") {

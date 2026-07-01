@@ -2,7 +2,6 @@ package appui
 
 import (
 	"encoding/json"
-	"os"
 	"strings"
 
 	"aiops-v2/internal/envcontext"
@@ -116,8 +115,8 @@ func BuildChatRuntimeRouteFromIntentFrame(frame runtimecontract.IntentFrame, exi
 	return route
 }
 
-func selectActiveChatRuntimeRoute(legacyRoute ChatRuntimeRoute, intentRoute ChatRuntimeRoute, frame runtimecontract.IntentFrame) (ChatRuntimeRoute, string) {
-	mode := intentFrameRoutingMode()
+func selectActiveChatRuntimeRoute(legacyRoute ChatRuntimeRoute, intentRoute ChatRuntimeRoute, frame runtimecontract.IntentFrame, mode string) (ChatRuntimeRoute, string) {
+	mode = intentFrameRoutingMode(mode)
 	if mode != intentFrameRoutingActive {
 		return legacyRoute, mode
 	}
@@ -128,8 +127,8 @@ func selectActiveChatRuntimeRoute(legacyRoute ChatRuntimeRoute, intentRoute Chat
 	return intentRoute, mode
 }
 
-func intentFrameRoutingMode() string {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("AIOPS_INTENT_FRAME_ROUTING"))) {
+func intentFrameRoutingMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case intentFrameRoutingShadow:
 		return intentFrameRoutingShadow
 	case intentFrameRoutingActive:
@@ -293,17 +292,17 @@ func applyChatRuntimeRouteMetadata(req *runtimekernel.TurnRequest, route ChatRun
 	}
 }
 
-func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute ChatRuntimeRoute, intentRoute ChatRuntimeRoute, frame runtimecontract.IntentFrame) {
+func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute ChatRuntimeRoute, intentRoute ChatRuntimeRoute, activeRoute ChatRuntimeRoute, frame runtimecontract.IntentFrame, routingMode string) {
 	if req == nil {
 		return
 	}
 	if req.Metadata == nil {
 		req.Metadata = map[string]string{}
 	}
-	frame = runtimecontract.NormalizeIntentFrame(frame)
+	frame = intentFrameForActiveRoute(frame, activeRoute)
 	req.Metadata[runtimecontract.MetadataIntentKind] = string(frame.Kind)
 	req.Metadata[runtimecontract.MetadataIntentConfidence] = firstNonEmptyString(frame.Confidence, runtimecontract.ConfidenceLow)
-	req.Metadata["aiops.intent.routingMode"] = intentFrameRoutingMode()
+	req.Metadata["aiops.intent.routingMode"] = intentFrameRoutingMode(routingMode)
 	req.Metadata[runtimecontract.MetadataIntentDataScopes] = strings.Join(intentDataScopeStrings(frame.DataScopes), ",")
 	req.Metadata[runtimecontract.MetadataIntentRiskBudget] = strings.Join(intentRiskStrings(frame.RiskBudget), ",")
 	req.Metadata[runtimecontract.MetadataEvidenceKinds] = strings.Join(frame.Evidence.EvidenceKinds, ",")
@@ -324,6 +323,26 @@ func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute C
 	} else {
 		req.Metadata[runtimecontract.MetadataRouteDiff] = "[]"
 	}
+}
+
+func intentFrameForActiveRoute(frame runtimecontract.IntentFrame, route ChatRuntimeRoute) runtimecontract.IntentFrame {
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	if route.Mode != ChatRouteHostBoundOps || !route.AllowsExecCommand || route.UserProhibitedHostExec {
+		return frame
+	}
+	frame.DataScopes = runtimecontract.AppendDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime)
+	frame.RiskBudget = runtimecontract.AppendActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec)
+	if frame.Kind == runtimecontract.IntentKindUnknown {
+		frame.Kind = runtimecontract.IntentKindVerify
+		frame.Confidence = runtimecontract.ConfidenceMedium
+	}
+	frame.Capabilities = appendCapabilityCandidate(frame.Capabilities, runtimecontract.CapabilityCandidate{
+		Name:       "host_runtime_inspection",
+		DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopeLocalRuntime},
+		Risks:      []runtimecontract.ActionRisk{runtimecontract.ActionRiskHostExec},
+		Reasons:    []string{"selected host route allows read-only runtime inspection"},
+	})
+	return runtimecontract.NormalizeIntentFrame(frame)
 }
 
 type chatRouteSnapshot struct {
@@ -427,6 +446,9 @@ func applyHostOpsManagerRuntimeMetadata(metadata map[string]string) {
 }
 
 func firstRouteTargetHostID(targets []envcontext.TargetRef, mentions []hostops.HostMention) string {
+	if hostID := firstRouteMentionHostID(mentions); hostID != "" {
+		return hostID
+	}
 	for _, target := range targets {
 		if target.Kind != envcontext.TargetKindHost {
 			continue
@@ -438,7 +460,7 @@ func firstRouteTargetHostID(targets []envcontext.TargetRef, mentions []hostops.H
 			return strings.TrimPrefix(strings.TrimSpace(target.ID), "host:")
 		}
 	}
-	return firstRouteMentionHostID(mentions)
+	return ""
 }
 
 func routeTargetRefIDs(targets []envcontext.TargetRef) []string {

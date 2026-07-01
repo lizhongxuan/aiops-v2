@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -42,7 +40,10 @@ func (NoopWorkflowManualLLMSummarizer) SummarizeWorkflowManual(_ context.Context
 }
 
 type EnvWorkflowManualLLMSummarizer struct {
-	Client *http.Client
+	Client  *http.Client
+	BaseURL string
+	APIKey  string
+	Model   string
 }
 
 type WorkflowManualLLMModelRouter interface {
@@ -96,9 +97,6 @@ func resolveDefaultWorkflowManualLLMSummarizer() WorkflowManualLLMSummarizer {
 	defaultWorkflowManualLLMSummarizerState.mu.RUnlock()
 	if summarizer != nil {
 		return summarizer
-	}
-	if workflowManualLLMEnvConfigured() {
-		return EnvWorkflowManualLLMSummarizer{}
 	}
 	return missingWorkflowManualLLMSummarizer{}
 }
@@ -168,7 +166,7 @@ func (s ModelRouterWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx cont
 		schema.SystemMessage(systemPrompt),
 		schema.UserMessage(userPrompt),
 	}
-	_, _ = modeltrace.Write(modeltrace.Request{
+	_, _ = modeltrace.WriteTraceDocumentV2FromRequest(modeltrace.Request{
 		Kind:    "opsmanual-workflow-manual-llm-summary",
 		TraceID: strings.TrimSpace(req.Manual.WorkflowRef.WorkflowID),
 		Metadata: map[string]string{
@@ -181,7 +179,7 @@ func (s ModelRouterWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx cont
 			System:  systemPrompt,
 			Dynamic: userPrompt,
 		},
-		ModelInput: messages,
+		ModelInput: modelrouter.ModelInputItemsFromEinoMessages(messages),
 	})
 	response, err := chatModel.Generate(ctx, messages)
 	if err != nil {
@@ -194,16 +192,18 @@ func (s ModelRouterWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx cont
 }
 
 func (s EnvWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Context, req WorkflowManualLLMSummaryRequest) (WorkflowManualLLMSummaryResult, error) {
-	config, err := loadWorkflowManualLLMConfig()
-	if err != nil {
-		return WorkflowManualLLMSummaryResult{}, err
+	baseURL := strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
+	apiKey := strings.TrimSpace(s.APIKey)
+	model := strings.TrimSpace(s.Model)
+	if baseURL == "" || apiKey == "" || model == "" {
+		return WorkflowManualLLMSummaryResult{}, fmt.Errorf("llm config requires baseURL, apiKey and model")
 	}
 	client := s.Client
 	if client == nil {
 		client = &http.Client{Timeout: 90 * time.Second}
 	}
 	payload := openAIChatCompletionsRequest{
-		Model: config.Model,
+		Model: model,
 		Messages: []openAIChatMessage{
 			{Role: "system", Content: defaultWorkflowManualLLMSystemPrompt()},
 			{Role: "user", Content: workflowManualLLMPrompt(req)},
@@ -214,12 +214,12 @@ func (s EnvWorkflowManualLLMSummarizer) SummarizeWorkflowManual(ctx context.Cont
 	if err != nil {
 		return WorkflowManualLLMSummaryResult{}, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(config.BaseURL), bytes.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, chatCompletionsURL(baseURL), bytes.NewReader(body))
 	if err != nil {
 		return WorkflowManualLLMSummaryResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Authorization", "Bearer "+config.APIKey)
+	httpReq.Header.Set("Authorization", "Bearer "+apiKey)
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		return WorkflowManualLLMSummaryResult{}, err
@@ -358,81 +358,6 @@ func sanitizeManualGenerationUserSummary(summary ManualGenerationUserSummary) Ma
 		Missing:    limitStrings(summary.Missing, 8),
 		NextSteps:  limitStrings(summary.NextSteps, 6),
 	}
-}
-
-type workflowManualLLMConfig struct {
-	BaseURL string
-	APIKey  string
-	Model   string
-}
-
-func loadWorkflowManualLLMConfig() (workflowManualLLMConfig, error) {
-	config := workflowManualLLMConfig{
-		BaseURL: os.Getenv("AIOPS_LLM_BASE_URL"),
-		APIKey:  os.Getenv("AIOPS_LLM_API_KEY"),
-		Model:   os.Getenv("AIOPS_LLM_MODEL"),
-	}
-	if path := strings.TrimSpace(os.Getenv("AIOPS_LLM_CONFIG_FILE")); path != "" {
-		raw, err := readWorkflowManualLLMConfigFile(path)
-		if err != nil {
-			return workflowManualLLMConfig{}, err
-		}
-		var fileConfig struct {
-			BaseURL string `json:"baseURL"`
-			APIKey  string `json:"apiKey"`
-			Model   string `json:"model"`
-		}
-		if err := json.Unmarshal(raw, &fileConfig); err != nil {
-			return workflowManualLLMConfig{}, err
-		}
-		if config.BaseURL == "" {
-			config.BaseURL = fileConfig.BaseURL
-		}
-		if config.APIKey == "" {
-			config.APIKey = fileConfig.APIKey
-		}
-		if config.Model == "" {
-			config.Model = fileConfig.Model
-		}
-	}
-	if strings.TrimSpace(config.BaseURL) == "" || strings.TrimSpace(config.APIKey) == "" || strings.TrimSpace(config.Model) == "" {
-		return workflowManualLLMConfig{}, fmt.Errorf("llm config requires baseURL, apiKey and model")
-	}
-	config.BaseURL = strings.TrimRight(strings.TrimSpace(config.BaseURL), "/")
-	return config, nil
-}
-
-func workflowManualLLMEnvConfigured() bool {
-	for _, key := range []string{"AIOPS_LLM_BASE_URL", "AIOPS_LLM_API_KEY", "AIOPS_LLM_MODEL", "AIOPS_LLM_CONFIG_FILE"} {
-		if strings.TrimSpace(os.Getenv(key)) != "" {
-			return true
-		}
-	}
-	return false
-}
-
-func readWorkflowManualLLMConfigFile(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
-	if err == nil || filepath.IsAbs(path) {
-		return raw, err
-	}
-	wd, wdErr := os.Getwd()
-	if wdErr != nil {
-		return nil, err
-	}
-	for {
-		candidate := filepath.Join(wd, path)
-		raw, readErr := os.ReadFile(candidate)
-		if readErr == nil {
-			return raw, nil
-		}
-		parent := filepath.Dir(wd)
-		if parent == wd {
-			break
-		}
-		wd = parent
-	}
-	return nil, err
 }
 
 func chatCompletionsURL(baseURL string) string {

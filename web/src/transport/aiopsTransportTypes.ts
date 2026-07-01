@@ -227,6 +227,8 @@ export type AiopsProcessBlock = {
   displayKind?: string;
   phase?: AiopsAssistantMessagePhase;
   streamState?: AiopsAssistantMessageStreamState;
+  commentarySource?: "model_prelude" | "runtime_tool_intent" | string;
+  toolCallIds?: string[];
   evidenceBoundary?: "sufficient" | "limited" | "blocked" | string;
   status: AiopsTransportProcessStatus;
   text: string;
@@ -238,6 +240,11 @@ export type AiopsProcessBlock = {
   steps?: AiopsTransportPlanStep[];
   queries?: string[];
   results?: AiopsSearchResult[];
+  operation?: "search" | "open" | string;
+  url?: string;
+  adapter?: string;
+  backend?: string;
+  sourceCount?: number;
   toolCallId?: string;
   checkpointId?: string;
   approvalId?: string;
@@ -307,6 +314,10 @@ export type AiopsSearchResult = {
   title?: string;
   url?: string;
   snippet?: string;
+  text?: string;
+  fetched?: boolean;
+  fetchError?: string;
+  contentType?: string;
 };
 
 export type AiopsTransportApproval = {

@@ -60,7 +60,10 @@ describe("hostMentionSearch", () => {
 
   it("offers @local first for an empty mention query", () => {
     const result = searchHostMentionSuggestions(
-      [{ id: "host-a", name: "pg-primary", ip: "120.77.239.90" } as any],
+      [
+        { id: "server-local", name: "server-local", address: "server-local", status: "online" } as any,
+        { id: "host-a", name: "pg-primary", ip: "120.77.239.90" } as any,
+      ],
       "",
     );
 
@@ -71,6 +74,7 @@ describe("hostMentionSearch", () => {
       hostId: "server-local",
       address: "server-local",
     });
+    expect(result.map((item) => item.mention)).not.toContain("@server-local");
   });
 
   it("matches @local when the user types a local prefix", () => {
@@ -78,6 +82,18 @@ describe("hostMentionSearch", () => {
       mention: "@local",
       hostId: "server-local",
     });
+  });
+
+  it("does not expose server-local inventory as a second local host alias", () => {
+    const result = searchHostMentionSuggestions(
+      [
+        { id: "server-local", name: "server-local", address: "server-local", status: "online" } as any,
+        { id: "host-a", name: "server-app", ip: "10.0.0.9", status: "online" } as any,
+      ],
+      "server",
+    );
+
+    expect(result.map((item) => item.mention)).toEqual(["@10.0.0.9"]);
   });
 
   it("does not search hostname, id, sshUser, labels, or status", () => {
@@ -121,12 +137,53 @@ describe("hostMentionSearch", () => {
       description: "120.77.239.90 · online",
       address: "120.77.239.90",
       score: 100,
+      kind: "host",
+      path: "host://host-a",
+      payload: {
+        hostId: "host-a",
+        address: "120.77.239.90",
+        displayName: "pg-primary",
+        status: "online",
+      },
     };
     const replacementPrefix = "请检查 @120.77.239.90 ";
 
     expect(replaceActiveHostMention("请检查 @pg 的复制", { start: 4, end: 7, query: "pg", raw: "@pg" }, suggestion)).toEqual({
       text: `${replacementPrefix} 的复制`,
       cursor: replacementPrefix.length,
+    });
+  });
+
+  it("returns canonical structured mention fields for local and inventory hosts", () => {
+    const result = searchHostMentionSuggestions(
+      [{ id: "host-a", name: "pg-primary", ip: "120.77.239.90", status: "online" } as any],
+      "pg",
+    );
+
+    expect(result[0]).toMatchObject({
+      key: "host-a",
+      mention: "@120.77.239.90",
+      kind: "host",
+      path: "host://host-a",
+      payload: {
+        hostId: "host-a",
+        address: "120.77.239.90",
+        displayName: "pg-primary",
+        status: "online",
+      },
+    });
+
+    expect(searchHostMentionSuggestions([], "loc")[0]).toMatchObject({
+      key: "local",
+      mention: "@local",
+      kind: "host",
+      path: "host://server-local",
+      payload: {
+        hostId: "server-local",
+        address: "server-local",
+        displayName: "local",
+        status: "online",
+      },
     });
   });
 });

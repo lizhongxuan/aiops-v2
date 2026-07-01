@@ -13,6 +13,7 @@ import {
   ScrollText,
   Server,
   Settings,
+  SlidersHorizontal,
   TerminalSquare,
   Wrench,
 } from "lucide-react";
@@ -50,6 +51,7 @@ const coreItems: NavigationItem[] = [
 const adminItems: NavigationItem[] = [
   { path: "/settings", title: "设置", description: "系统设置", icon: Settings },
   { path: "/settings/llm", title: zhNavigationTitle("/settings/llm"), description: "", icon: Bot, nav: true },
+  { path: "/settings/runtime", title: zhNavigationTitle("/settings/runtime"), description: "运行期参数", icon: SlidersHorizontal, nav: true },
   { path: "/settings/hosts", title: zhNavigationTitle("/settings/hosts"), description: "主机列表", icon: Server, nav: true },
   { path: "/settings/ops-manuals", title: zhNavigationTitle("/settings/ops-manuals"), description: "运维手册与工作流库", icon: BookOpen, nav: true },
   { path: "/settings/experience-packs", title: zhNavigationTitle("/settings/experience-packs"), description: "已迁移到运维手册", icon: LayoutGrid },

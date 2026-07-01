@@ -196,7 +196,7 @@ test("folds only same-class web lookups and commands while preserving MCP and ap
   await page.getByTestId("aiops-process-header").click();
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
-  await expect(transcript).toContainText("网页检索 7 次");
+  await expect(transcript).toContainText("网页搜索 7 次");
   await expect(transcript).toContainText("已运行 2 条命令");
   await expect(transcript).toContainText("read_mcp_resource ops://postgres/runbook");
   await expect(transcript).not.toContainText("等待审批：restart postgres");

@@ -1,3 +1,5 @@
+import { Activity, BookOpen, GitBranch, Server, Wrench } from "lucide-react";
+
 import { cn } from "@/lib/utils";
 
 import type { HostMentionCandidate, SpecialAiMentionCandidate } from "../hostMentions";
@@ -10,7 +12,18 @@ type HostMentionInlineOverlayProps = {
   variant?: HostMentionInlineOverlayVariant;
 };
 
-type InlineMention = HostMentionCandidate | SpecialAiMentionCandidate;
+export type ResourceInlineMentionCandidate = {
+  tokenId: string;
+  raw: string;
+  value: string;
+  start: number;
+  end: number;
+  source: "ops_resource";
+  kind: "ops_manual" | "ops_graph";
+  displayName: string;
+};
+
+export type InlineMention = HostMentionCandidate | SpecialAiMentionCandidate | ResourceInlineMentionCandidate;
 
 type HostMentionTextSegment =
   | { type: "text"; text: string; key: string }
@@ -35,16 +48,28 @@ export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: H
         segment.type === "mention" ? (
           <span
             key={segment.key}
-            data-testid={segment.mention.source === "ai_tool" ? "composer-inline-special-mention" : "composer-inline-host-mention"}
-            data-mention-kind={segment.mention.source === "ai_tool" ? "ai_tool" : "host"}
+            data-testid={inlineMentionTestId(segment.mention)}
+            data-mention-kind={inlineMentionKind(segment.mention)}
+            data-layout-text={segment.text}
             className={cn(
-              "rounded-sm",
-              segment.mention.source === "ai_tool"
+              "aiops-inline-mention-anchor align-baseline",
+              segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
                 ? "bg-blue-50 text-blue-700"
                 : "bg-sky-50 text-sky-700",
             )}
           >
-            {segment.text}
+            <span
+              data-testid="composer-inline-mention-visual"
+              className={cn(
+                "aiops-inline-mention-visual max-w-max rounded-md px-0.5 font-medium",
+                segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
+                  ? "bg-blue-50 text-blue-700"
+                  : "bg-sky-50 text-sky-700",
+              )}
+            >
+              <InlineMentionIcon mention={segment.mention} />
+              <span className="whitespace-nowrap">{inlineMentionLabel(segment.text, segment.mention)}</span>
+            </span>
           </span>
         ) : (
           <span key={segment.key}>{segment.text}</span>
@@ -90,4 +115,52 @@ function buildHostMentionTextSegments(text: string, mentions: InlineMention[]): 
   }
 
   return segments;
+}
+
+function InlineMentionIcon({ mention }: { mention: InlineMention }) {
+  const className = "h-3.5 w-3.5 shrink-0";
+  if (mention.source === "ops_resource") {
+    return mention.kind === "ops_graph"
+      ? <GitBranch className={className} aria-hidden="true" />
+      : <BookOpen className={className} aria-hidden="true" />;
+  }
+  if (mention.source !== "ai_tool") {
+    return <Server className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "coroot") {
+    return <Activity className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "ops_graph") {
+    return <GitBranch className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "ops_manuals" || mention.value === "ops_manus") {
+    return <BookOpen className={className} aria-hidden="true" />;
+  }
+  return <Wrench className={className} aria-hidden="true" />;
+}
+
+function inlineMentionLabel(text: string, mention: InlineMention) {
+  if (mention.source === "ops_resource") {
+    return mention.displayName || mention.value || text.replace(/^@/, "");
+  }
+  if (mention.source !== "ai_tool") {
+    const label = mention.value === "server-local" ? "local" : mention.value;
+    return label || text.replace(/^@/, "");
+  }
+  if (mention.value === "coroot") return "Coroot";
+  if (mention.value === "ops_graph") return "OpsGraph";
+  if (mention.value === "ops_manuals" || mention.value === "ops_manus") return "运维手册";
+  return text.replace(/^@/, "");
+}
+
+function inlineMentionTestId(mention: InlineMention) {
+  if (mention.source === "ai_tool") return "composer-inline-special-mention";
+  if (mention.source === "ops_resource") return "composer-inline-resource-mention";
+  return "composer-inline-host-mention";
+}
+
+function inlineMentionKind(mention: InlineMention) {
+  if (mention.source === "ai_tool") return "ai_tool";
+  if (mention.source === "ops_resource") return mention.kind;
+  return "host";
 }

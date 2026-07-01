@@ -322,7 +322,13 @@ func summarizeAgentToolInput(toolName string, raw json.RawMessage) string {
 	name := strings.ToLower(strings.TrimSpace(toolName))
 	switch name {
 	case "web_search", "search_web":
-		return truncateAgentEventSummary(agentEventStringField(payload, "query"), 180)
+		if strings.EqualFold(agentEventStringField(payload, "operation"), "open") {
+			return truncateAgentEventSummary(agentEventStringField(payload, "url"), 180)
+		}
+		if query := agentEventStringField(payload, "query"); query != "" {
+			return truncateAgentEventSummary(query, 180)
+		}
+		return truncateAgentEventSummary(agentEventStringField(payload, "url"), 180)
 	case "browse_url":
 		return truncateAgentEventSummary(agentEventStringField(payload, "url"), 180)
 	case "exec_command":
@@ -381,6 +387,11 @@ func summarizeAgentToolOutput(toolName, result, errText string) string {
 }
 
 func summarizeWebSearchOutput(payload map[string]any) string {
+	if strings.EqualFold(agentEventStringField(payload, "operation"), "open") {
+		if url := agentEventStringField(payload, "url"); url != "" {
+			return truncateAgentEventSummary("已读取页面："+url, 180)
+		}
+	}
 	content := agentEventStringField(payload, "content")
 	if content == "" {
 		return ""
@@ -504,10 +515,11 @@ func NormalizeRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) ([]Agent
 		decodeAgentEventPayload(normalized.Payload, &payload)
 		normalized.ClientTurnID = payload.ClientTurnID
 	case runtimekernel.EventAssistantIntent:
-		normalized.Kind = AgentEventAssistant
+		normalized.Kind = AgentEventSystem
 		normalized.Phase = AgentEventPhaseDelta
 		normalized.Status = AgentEventStatusRunning
-		normalized.Payload = normalizePayloadWithChannel(event.Payload, "intent")
+		normalized.Visibility = AgentEventVisibilitySecondary
+		normalized.Payload = normalizePayloadWithChannel(event.Payload, "legacy_intent")
 	case runtimekernel.EventAssistantFinalDelta:
 		normalized.Kind = AgentEventAssistant
 		normalized.Phase = AgentEventPhaseDelta

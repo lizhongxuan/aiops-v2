@@ -28,10 +28,45 @@ func TestTurnMetadataKeepsWebSearchVisibleForAdvisor(t *testing.T) {
 		"aiops.route.mode":              "chat_advisory",
 		"aiops.tool.execCommandAllowed": "false",
 		"aiops.route.allowsWebLearn":    "true",
+		"aiops.webSearch.policy":        "enabled",
 		"aiops.weblearn.sourcePolicy":   "official_first",
 	}
 	if !IsToolVisibleForTurnMetadata(meta, metadata) {
 		t.Fatalf("web_search should remain visible for advisory route")
+	}
+}
+
+func TestTurnMetadataMustSearchDoesNotEnablePublicWeb(t *testing.T) {
+	meta := ToolMetadata{Name: "web_search", AlwaysLoad: true, Layer: ToolLayerCore, Pack: "public_web"}
+	metadata := map[string]string{
+		"aiops.route.mode":           "chat_advisory",
+		"aiops.route.allowsWebLearn": "false",
+		"aiops.webSearch.policy":     "must_search",
+		"enableToolPack":             "",
+	}
+	decision := ToolVisibilityDecisionForTurnMetadata(meta, metadata)
+	if decision.Visible {
+		t.Fatalf("decision = %#v, legacy must_search must not enable public web tool visibility", decision)
+	}
+}
+
+func TestTurnMetadataWebSearchPolicyDisabledOverridesLegacyPublicWebMetadata(t *testing.T) {
+	metadata := map[string]string{
+		"aiops.route.mode":              "chat_advisory",
+		"aiops.tool.execCommandAllowed": "false",
+		"aiops.route.allowsWebLearn":    "true",
+		"aiops.weblearn.enabled":        "true",
+		"enableToolPack":                "public_web",
+		"aiops.webSearch.policy":        "disabled",
+	}
+	for _, meta := range []ToolMetadata{
+		{Name: "web_search", AlwaysLoad: true, Layer: ToolLayerCore, Pack: "public_web"},
+		{Name: "browse_url", DeferByDefault: true, Layer: ToolLayerDeferred, Pack: "public_web"},
+	} {
+		decision := ToolVisibilityDecisionForTurnMetadata(meta, metadata)
+		if decision.Visible || decision.Reason != "web_search_policy_disabled" {
+			t.Fatalf("%s decision = %#v, want hidden web_search_policy_disabled", meta.Name, decision)
+		}
 	}
 }
 
@@ -61,7 +96,7 @@ func TestTurnMetadataFilterHidesAlwaysLoadExecCommandDuringAssembly(t *testing.T
 	}
 }
 
-func TestTurnMetadataFilterKeepsNoHostAdvisorToolSurfaceDiscoveryOnly(t *testing.T) {
+func TestTurnMetadataFilterHidesToolSearchForNoHostAdvisorByDefault(t *testing.T) {
 	registry := NewRegistry()
 	for _, meta := range []ToolMetadata{
 		{Name: "tool_search", AlwaysLoad: true, Layer: ToolLayerCore},
@@ -84,8 +119,8 @@ func TestTurnMetadataFilterKeepsNoHostAdvisorToolSurfaceDiscoveryOnly(t *testing
 		"aiops.target.binding":          "none",
 	})
 	names := toolNamesForTurnMetadataTest(tools)
-	if len(names) != 1 || names[0] != "tool_search" {
-		t.Fatalf("assembled tools = %v, want discovery-only tool_search for no-host advisory", names)
+	if len(names) != 0 {
+		t.Fatalf("assembled tools = %v, want no default tools for no-host advisory without explicit capability", names)
 	}
 }
 
@@ -106,18 +141,48 @@ func TestTurnMetadataFilterPublicWebAdvisorUsesDirectWebToolsWithoutToolSearch(t
 	tools := registry.CompileContextWithMetadata("workspace", "chat", map[string]string{
 		"aiops.route.mode":              "chat_advisory",
 		"aiops.route.allowsWebLearn":    "true",
+		"aiops.webSearch.policy":        "enabled",
 		"aiops.tool.execCommandAllowed": "false",
 		"aiops.target.binding":          "none",
 	})
 	names := toolNamesForTurnMetadataTest(tools)
-	for _, want := range []string{"web_search", "browse_url"} {
+	for _, want := range []string{"web_search"} {
 		if !containsStringForTurnMetadataTest(names, want) {
 			t.Fatalf("assembled tools = %v, missing direct public web tool %s", names, want)
 		}
 	}
-	for _, forbidden := range []string{"tool_search", "exec_command", "grep"} {
+	for _, forbidden := range []string{"browse_url", "tool_search", "exec_command", "grep"} {
 		if containsStringForTurnMetadataTest(names, forbidden) {
 			t.Fatalf("assembled tools = %v, should not include %s for direct public web advisor", names, forbidden)
+		}
+	}
+}
+
+func TestTurnMetadataFilterDisabledPolicyRemovesPublicWebPackDuringAssembly(t *testing.T) {
+	registry := NewRegistry()
+	for _, meta := range []ToolMetadata{
+		{Name: "tool_search", AlwaysLoad: true, Layer: ToolLayerCore},
+		{Name: "web_search", AlwaysLoad: true, Layer: ToolLayerCore, Pack: "public_web"},
+		{Name: "browse_url", DeferByDefault: true, Layer: ToolLayerDeferred, Pack: "public_web"},
+	} {
+		if err := registry.Register(&StaticTool{Meta: meta}); err != nil {
+			t.Fatalf("Register(%s) error = %v", meta.Name, err)
+		}
+	}
+
+	tools := registry.CompileContextWithMetadata("workspace", "chat", map[string]string{
+		"aiops.route.mode":              "chat_advisory",
+		"aiops.route.allowsWebLearn":    "true",
+		"aiops.weblearn.enabled":        "true",
+		"aiops.webSearch.policy":        "disabled",
+		"aiops.tool.execCommandAllowed": "false",
+		"aiops.target.binding":          "none",
+		"enableToolPack":                "public_web",
+	})
+	names := toolNamesForTurnMetadataTest(tools)
+	for _, forbidden := range []string{"web_search", "browse_url"} {
+		if containsStringForTurnMetadataTest(names, forbidden) {
+			t.Fatalf("assembled tools = %v, should not include %s for disabled policy", names, forbidden)
 		}
 	}
 }
@@ -148,14 +213,50 @@ func TestTurnMetadataFilterKeepsUserEvidenceRCAInitialSurfaceEvidenceOnly(t *tes
 		"enableToolPack":                "ops_manual_flow",
 	})
 	names := toolNamesForTurnMetadataTest(tools)
-	for _, want := range []string{"tool_search"} {
-		if !containsStringForTurnMetadataTest(names, want) {
-			t.Fatalf("assembled tools = %v, missing %s", names, want)
-		}
-	}
-	for _, forbidden := range []string{"exec_command", "web_search", "grep", "list_mcp_resources", "read_mcp_resource", "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"} {
+	for _, forbidden := range []string{"tool_search", "exec_command", "web_search", "grep", "list_mcp_resources", "read_mcp_resource", "search_ops_manuals", "resolve_ops_manual_params", "run_ops_manual_preflight"} {
 		if containsStringForTurnMetadataTest(names, forbidden) {
 			t.Fatalf("assembled tools = %v, should not include %s for initial user-evidence RCA", names, forbidden)
+		}
+	}
+}
+
+func TestTurnMetadataFilterAllowsToolSearchOnlyForExplicitDeferredDiscovery(t *testing.T) {
+	meta := ToolMetadata{Name: "tool_search", AlwaysLoad: true, Layer: ToolLayerCore}
+	hidden := ToolVisibilityDecisionForTurnMetadata(meta, map[string]string{
+		"aiops.route.mode":              "chat_advisory",
+		"aiops.tool.execCommandAllowed": "false",
+		"aiops.target.binding":          "none",
+	})
+	if hidden.Visible || hidden.Reason != "tool_search_not_enabled" {
+		t.Fatalf("hidden decision = %#v, want tool_search_not_enabled", hidden)
+	}
+	visible := ToolVisibilityDecisionForTurnMetadata(meta, map[string]string{
+		"aiops.route.mode":              "chat_advisory",
+		"aiops.tool.execCommandAllowed": "false",
+		"aiops.target.binding":          "none",
+		"aiops.toolSearch.enabled":      "true",
+	})
+	if !visible.Visible {
+		t.Fatalf("visible decision = %#v, want tool_search visible for explicit deferred discovery", visible)
+	}
+}
+
+func TestExplicitToolSearchDiscoveryRequestedRequiresDeferredDiscoveryIntent(t *testing.T) {
+	cases := []struct {
+		input string
+		want  bool
+	}{
+		{"use tool_search to discover a deferred pack", true},
+		{"调用 tool_search 发现还没暴露的工具包", true},
+		{"@tool_search select a deferred tool", true},
+		{"为什么查看 CPU 要大量使用 tool_search", false},
+		{"不要使用 tool_search，直接执行主机命令", false},
+		{"tool_search 正确用途是什么", false},
+		{"web_search 是否可用，查一下官方文档", false},
+	}
+	for _, tc := range cases {
+		if got := ExplicitToolSearchDiscoveryRequested(tc.input); got != tc.want {
+			t.Fatalf("ExplicitToolSearchDiscoveryRequested(%q) = %t, want %t", tc.input, got, tc.want)
 		}
 	}
 }
@@ -231,12 +332,12 @@ func TestTurnMetadataFilterKeepsHostBoundOpsDirectSurfaceScoped(t *testing.T) {
 		"aiops.target.hostId":             "host-a",
 	})
 	names := toolNamesForTurnMetadataTest(tools)
-	for _, want := range []string{"exec_command", "tool_search"} {
+	for _, want := range []string{"exec_command"} {
 		if !containsStringForTurnMetadataTest(names, want) {
 			t.Fatalf("assembled tools = %v, missing %s", names, want)
 		}
 	}
-	for _, forbidden := range []string{"web_search", "grep", "list_mcp_resources", "read_mcp_resource"} {
+	for _, forbidden := range []string{"tool_search", "web_search", "grep", "list_mcp_resources", "read_mcp_resource"} {
 		if containsStringForTurnMetadataTest(names, forbidden) {
 			t.Fatalf("assembled tools = %v, should not include %s for direct host-bound ops", names, forbidden)
 		}

@@ -155,6 +155,8 @@ type AiopsProcessBlock struct {
 	DisplayKind         string                      `json:"displayKind,omitempty"`
 	Phase               string                      `json:"phase,omitempty"`
 	StreamState         string                      `json:"streamState,omitempty"`
+	CommentarySource    string                      `json:"commentarySource,omitempty"`
+	ToolCallIDs         []string                    `json:"toolCallIds,omitempty"`
 	EvidenceBoundary    string                      `json:"evidenceBoundary,omitempty"`
 	Status              AiopsTransportProcessStatus `json:"status"`
 	Text                string                      `json:"text"`
@@ -166,6 +168,11 @@ type AiopsProcessBlock struct {
 	Steps               []AiopsTransportPlanStep    `json:"steps,omitempty"`
 	Queries             []string                    `json:"queries,omitempty"`
 	Results             []AiopsSearchResult         `json:"results,omitempty"`
+	Operation           string                      `json:"operation,omitempty"`
+	URL                 string                      `json:"url,omitempty"`
+	Adapter             string                      `json:"adapter,omitempty"`
+	Backend             string                      `json:"backend,omitempty"`
+	SourceCount         int                         `json:"sourceCount,omitempty"`
 	ToolCallID          string                      `json:"toolCallId,omitempty"`
 	CheckpointID        string                      `json:"checkpointId,omitempty"`
 	ApprovalID          string                      `json:"approvalId,omitempty"`
@@ -232,9 +239,13 @@ type AiopsTransportPlanStep struct {
 }
 
 type AiopsSearchResult struct {
-	Title   string `json:"title,omitempty"`
-	URL     string `json:"url,omitempty"`
-	Snippet string `json:"snippet,omitempty"`
+	Title       string `json:"title,omitempty"`
+	URL         string `json:"url,omitempty"`
+	Snippet     string `json:"snippet,omitempty"`
+	Text        string `json:"text,omitempty"`
+	Fetched     bool   `json:"fetched,omitempty"`
+	FetchError  string `json:"fetchError,omitempty"`
+	ContentType string `json:"contentType,omitempty"`
 }
 
 type AiopsTransportApproval struct {

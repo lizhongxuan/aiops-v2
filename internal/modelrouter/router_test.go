@@ -283,8 +283,8 @@ func TestResolveModelCapabilitiesForZhipuGLM52(t *testing.T) {
 	if !caps.NativeReasoning || caps.ReasoningEffortApplied != "max" {
 		t.Fatalf("zhipu native reasoning metadata = %#v, want applied max", caps)
 	}
-	if !caps.SupportsNativeWebTool {
-		t.Fatalf("zhipu should use provider-native web_search tool: %#v", caps)
+	if caps.SupportsNativeWebTool {
+		t.Fatalf("zhipu should keep custom web_search tool path for OpenAI-compatible chat completions API: %#v", caps)
 	}
 }
 
@@ -307,6 +307,15 @@ func TestModelRouterReportsReasoningCapability(t *testing.T) {
 	}
 	if got := stringCapabilityField(t, native, "ReasoningFallbackPolicy"); got != "" {
 		t.Fatalf("native reasoning route fallback policy = %q, want empty", got)
+	}
+
+	openAICompatible := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{
+		Provider: "openai",
+		Model:    "deepseek-v4-pro",
+		BaseURL:  "https://api.deepseek.com",
+	})
+	if openAICompatible.SupportsNativeWebTool {
+		t.Fatalf("OpenAI-compatible custom base URL must not claim hosted web_search support: %#v", openAICompatible)
 	}
 
 	fallback := r.ResolveModelCapabilities(AgentKindWorker, ProviderConfig{

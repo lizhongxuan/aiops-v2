@@ -116,7 +116,7 @@ func TestOpenAICompatibleNativeWebSearchToolsPreferProviderTool(t *testing.T) {
 		},
 	}
 
-	for _, provider := range []string{"openai", "zhipu"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			extra := openAICompatibleNativeWebSearchExtraFields(provider, toolInfos)
 			rawTools, ok := extra["tools"].([]any)
@@ -131,6 +131,9 @@ func TestOpenAICompatibleNativeWebSearchToolsPreferProviderTool(t *testing.T) {
 			if !ok || first["type"] != "web_search" {
 				t.Fatalf("first tool = %#v, want native web_search", rawTools[0])
 			}
+			if _, ok := first["web_search"]; ok {
+				t.Fatalf("%s native web_search payload = %#v, should not include zhipu-specific web_search object", provider, first)
+			}
 			if hasFunctionToolNamed(rawTools, "web_search") {
 				t.Fatalf("tools include custom web_search function: %#v", rawTools)
 			}
@@ -143,11 +146,37 @@ func TestOpenAICompatibleNativeWebSearchToolsPreferProviderTool(t *testing.T) {
 	if extra := openAICompatibleNativeWebSearchExtraFields("deepseek", toolInfos); len(extra) != 0 {
 		t.Fatalf("deepseek native web search extra fields = %#v, want none", extra)
 	}
+	if extra := openAICompatibleNativeWebSearchExtraFields("zhipu", toolInfos); len(extra) != 0 {
+		t.Fatalf("zhipu native web search extra fields = %#v, want none for OpenAI-compatible chat completions API", extra)
+	}
 }
 
-func TestStreamGenerateChatModelBindToolsOmitsCustomWebSearchForNativeProvider(t *testing.T) {
+func TestProviderSupportsNativeWebSearchRequiresOpenAIHostedEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		provider string
+		baseURL  string
+		want     bool
+	}{
+		{name: "openai default", provider: "openai", want: true},
+		{name: "openai official", provider: "openai", baseURL: "https://api.openai.com/v1", want: true},
+		{name: "openai compatible deepseek", provider: "openai", baseURL: "https://api.deepseek.com", want: false},
+		{name: "openai compatible zhipu", provider: "openai", baseURL: "https://api.z.ai/api/paas/v4", want: false},
+		{name: "zhipu official", provider: "zhipu", baseURL: "https://api.z.ai/api/paas/v4", want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := providerSupportsNativeWebSearchForConfig(tt.provider, tt.baseURL); got != tt.want {
+				t.Fatalf("providerSupportsNativeWebSearchForConfig(%q, %q) = %v, want %v", tt.provider, tt.baseURL, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStreamGenerateChatModelBindToolsOmitsCustomWebSearchForOpenAINativeProvider(t *testing.T) {
 	capture := &bindCaptureChatModel{}
-	wrapped := &streamGenerateChatModel{inner: capture, provider: "zhipu"}
+	wrapped := &streamGenerateChatModel{inner: capture, provider: "openai", nativeWebSearch: true}
 	toolInfos := []*schema.ToolInfo{
 		{Name: "web_search", Desc: "Custom public web search."},
 		{Name: "read_logs", Desc: "Read local logs."},
@@ -166,13 +195,33 @@ func TestStreamGenerateChatModelBindToolsOmitsCustomWebSearchForNativeProvider(t
 		t.Fatalf("wrapped bound tools should retain web_search for native request rewrite: %#v", wrapped.boundTools)
 	}
 
-	deepseekCapture := &bindCaptureChatModel{}
-	deepseekWrapped := &streamGenerateChatModel{inner: deepseekCapture, provider: "deepseek"}
-	if err := deepseekWrapped.BindTools(toolInfos); err != nil {
-		t.Fatalf("deepseek BindTools() error = %v", err)
+	for _, provider := range []string{"deepseek", "zhipu"} {
+		t.Run(provider, func(t *testing.T) {
+			capture := &bindCaptureChatModel{}
+			wrapped := &streamGenerateChatModel{inner: capture, provider: provider, nativeWebSearch: false}
+			if err := wrapped.BindTools(toolInfos); err != nil {
+				t.Fatalf("%s BindTools() error = %v", provider, err)
+			}
+			if !hasToolInfoNamed(capture.boundTools, "web_search") {
+				t.Fatalf("%s should keep custom web_search function tool: %#v", provider, capture.boundTools)
+			}
+		})
 	}
-	if !hasToolInfoNamed(deepseekCapture.boundTools, "web_search") {
-		t.Fatalf("deepseek should keep custom web_search function tool: %#v", deepseekCapture.boundTools)
+}
+
+func TestStreamGenerateChatModelKeepsCustomWebSearchForOpenAICompatibleEndpoint(t *testing.T) {
+	capture := &bindCaptureChatModel{}
+	wrapped := &streamGenerateChatModel{inner: capture, provider: "openai", nativeWebSearch: false}
+	toolInfos := []*schema.ToolInfo{
+		{Name: "web_search", Desc: "Custom public web search."},
+		{Name: "read_logs", Desc: "Read local logs."},
+	}
+
+	if err := wrapped.BindTools(toolInfos); err != nil {
+		t.Fatalf("BindTools() error = %v", err)
+	}
+	if !hasToolInfoNamed(capture.boundTools, "web_search") {
+		t.Fatalf("OpenAI-compatible endpoint should keep custom web_search function tool: %#v", capture.boundTools)
 	}
 }
 

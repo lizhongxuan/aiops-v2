@@ -31,7 +31,7 @@ func TestNormalizeRuntimeLifecycleEvent(t *testing.T) {
 		channel string
 	}{
 		{name: "turn started", rawType: runtimekernel.EventTurnStarted, kind: AgentEventTurn, phase: AgentEventPhaseStarted, status: AgentEventStatusRunning},
-		{name: "assistant intent", rawType: runtimekernel.EventAssistantIntent, kind: AgentEventAssistant, phase: AgentEventPhaseDelta, status: AgentEventStatusRunning, channel: "intent"},
+		{name: "assistant intent", rawType: runtimekernel.EventAssistantIntent, kind: AgentEventSystem, phase: AgentEventPhaseDelta, status: AgentEventStatusRunning, channel: "legacy_intent"},
 		{name: "assistant final", rawType: runtimekernel.EventAssistantFinalDelta, kind: AgentEventAssistant, phase: AgentEventPhaseDelta, status: AgentEventStatusRunning, channel: "final"},
 		{name: "phase end", rawType: runtimekernel.EventPhaseEnd, kind: AgentEventSystem, phase: AgentEventPhaseCompleted, status: AgentEventStatusCompleted},
 		{name: "process summary", rawType: runtimekernel.EventProcessSummary, kind: AgentEventAssistant, phase: AgentEventPhaseCompleted, status: AgentEventStatusCompleted, channel: "summary"},
@@ -63,6 +63,23 @@ func TestNormalizeRuntimeLifecycleEvent(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAgentEventNormalizerDoesNotPromoteAssistantIntentToPrimaryProcess(t *testing.T) {
+	events, err := NormalizeRuntimeLifecycleEvent(lifecycleEvent(runtimekernel.EventAssistantIntent))
+	if err != nil {
+		t.Fatalf("NormalizeRuntimeLifecycleEvent() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("len(events) = %d, want 1", len(events))
+	}
+	normalized := events[0]
+	if normalized.Visibility == AgentEventVisibilityPrimary {
+		t.Fatalf("normalized = %+v, assistant intent must not be primary Chat process source", normalized)
+	}
+	if normalized.Kind == AgentEventAssistant {
+		t.Fatalf("normalized = %+v, assistant intent must not remain assistant process event", normalized)
 	}
 }
 

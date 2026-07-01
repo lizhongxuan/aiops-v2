@@ -39,7 +39,6 @@ help_output="$("$SCRIPT" --help)"
 assert_contains "$help_output" "Usage:"
 assert_contains "$help_output" "SKIP_WEB_BUILD=1"
 assert_contains "$help_output" "AIOPS_HTTP_ADDR=:18080"
-assert_contains "$help_output" "AIOPS_GRPC_AUTO_PORT=1"
 assert_contains "$help_output" "AIOPS_STORE_DRIVER=postgres"
 assert_contains "$help_output" "AIOPS_ENV_FILE=.data/aiops.env"
 
@@ -78,7 +77,6 @@ coroot_env_record="$(preserve_path "$ROOT_DIR/.data/coroot.env")"
 cat >"$ROOT_DIR/.data/aiops.env" <<'EOF'
 AIOPS_HTTP_ADDR=:19082
 AIOPS_STORE_DRIVER=json
-AIOPS_GRPC_AUTO_PORT=0
 EOF
 cat >"$ROOT_DIR/.env.local" <<'EOF'
 AIOPS_HTTP_ADDR=:19083
@@ -101,7 +99,6 @@ restore_preserved_path "$coroot_env_record"
 
 assert_contains "$default_env_file_output" "AIOPS_HTTP_ADDR=:19082"
 assert_contains "$default_env_file_output" "AIOPS_STORE_DRIVER=json"
-assert_contains "$default_env_file_output" "AIOPS_GRPC_AUTO_PORT=0"
 if [[ "$default_env_file_output" == *"AIOPS_GRPC_ADDR=:19091"* ]]; then
   fail "expected .data/coroot.env not to be loaded automatically"
 fi
@@ -110,13 +107,11 @@ default_dry_run_output="$(
   SKIP_WEB_BUILD=1 \
   SKIP_GO_BUILD=1 \
   AIOPS_ENV_FILE=/tmp/aiops-v2-start-test-missing.env \
-  AIOPS_GRPC_AUTO_PORT=0 \
   "$SCRIPT" --dry-run
 )"
 
 assert_contains "$default_dry_run_output" "AIOPS_HTTP_ADDR=:18080"
 assert_contains "$default_dry_run_output" "AIOPS_GRPC_ADDR=:18090"
-assert_contains "$default_dry_run_output" "AIOPS_GRPC_AUTO_PORT=0"
 assert_contains "$default_dry_run_output" "AIOPS_STORE_DRIVER=postgres"
 
 dry_run_output="$(
@@ -139,7 +134,6 @@ env_file="$(mktemp)"
 cat >"$env_file" <<'EOF'
 AIOPS_HTTP_ADDR=:19081
 AIOPS_STORE_DRIVER=json
-AIOPS_GRPC_AUTO_PORT=0
 EOF
 env_file_output="$(
   env -i \
@@ -152,58 +146,6 @@ env_file_output="$(
 rm -f "$env_file"
 assert_contains "$env_file_output" "AIOPS_HTTP_ADDR=:19081"
 assert_contains "$env_file_output" "AIOPS_STORE_DRIVER=json"
-assert_contains "$env_file_output" "AIOPS_GRPC_AUTO_PORT=0"
-
-if command -v python3 >/dev/null 2>&1; then
-  ready_file="$(mktemp)"
-  python3 - "$ready_file" <<'PY' &
-import pathlib
-import socket
-import sys
-import time
-
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-try:
-    sock.bind(("127.0.0.1", 18090))
-except OSError:
-    pathlib.Path(sys.argv[1]).write_text("already-busy")
-    sys.exit(0)
-sock.listen(1)
-pathlib.Path(sys.argv[1]).write_text("ready")
-try:
-    while True:
-        time.sleep(1)
-finally:
-    sock.close()
-PY
-  listener_pid="$!"
-  cleanup_listener() {
-    kill "$listener_pid" >/dev/null 2>&1 || true
-    wait "$listener_pid" 2>/dev/null || true
-    rm -f "$ready_file"
-  }
-  trap cleanup_listener EXIT
-
-  for _ in {1..50}; do
-    [[ -s "$ready_file" ]] && break
-    sleep 0.1
-  done
-
-  auto_port_output="$(
-    SKIP_WEB_BUILD=1 \
-    SKIP_GO_BUILD=1 \
-    AIOPS_ENV_FILE=/tmp/aiops-v2-start-test-missing.env \
-    "$SCRIPT" --dry-run
-  )"
-
-  if [[ "$auto_port_output" == *"AIOPS_GRPC_ADDR=:18090"* ]]; then
-    fail "expected auto-selected gRPC address when :18090 is busy"
-  fi
-  assert_contains "$auto_port_output" "auto-selected gRPC listen address"
-  cleanup_listener
-  trap - EXIT
-fi
 
 assert_fails_with "AIOPS_POSTGRES_DSN is required when AIOPS_STORE_DRIVER=postgres" \
   env \

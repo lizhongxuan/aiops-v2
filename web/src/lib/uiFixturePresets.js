@@ -2464,6 +2464,315 @@ export function createCorootRcaReportFixtureSessions(overrides = {}) {
   });
 }
 
+export function createCodexLikeProcessTranscriptFixtureState(overrides = {}) {
+  const now = "2026-06-27T10:00:00.000Z";
+  const turnId = "turn-codex-like-process";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "codex-like-process-transcript",
+    threadId: "codex-like-process-transcript",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-27T10:00:08.000Z",
+        updatedAt: "2026-06-27T10:00:08.000Z",
+        user: {
+          id: "user-codex-like-process",
+          text: "@server-local 查看cpu情况",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-tool-search",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-search-tools"],
+            updatedAt: "2026-06-27T10:00:01.000Z",
+          },
+          {
+            id: "tool-search-tools",
+            kind: "tool",
+            displayKind: "tool_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "tool_search",
+            inputSummary: "host CPU monitoring status check server local",
+            queries: ["host CPU monitoring status check server local"],
+            updatedAt: "2026-06-27T10:00:02.000Z",
+          },
+          {
+            id: "assistant-exec-command",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-cpu"],
+            updatedAt: "2026-06-27T10:00:03.000Z",
+          },
+          {
+            id: "cmd-cpu",
+            kind: "command",
+            foldGroupKind: "command",
+            status: "completed",
+            text: "top -l 1 | head",
+            command: "top -l 1 | head",
+            outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
+            updatedAt: "2026-06-27T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-codex-like-process",
+          text: "CPU 当前空闲约 73%，没有看到持续高负载；建议继续观察 load average 和异常进程。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 10,
+    updatedAt: "2026-06-27T10:00:08.000Z",
+    ...overrides,
+  };
+}
+
+export function createCodexLikeProcessTranscriptFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "codex-like-process-transcript",
+    sessions: [
+      {
+        id: "codex-like-process-transcript",
+        kind: "single_host",
+        title: "Codex-like process transcript",
+        status: "completed",
+        messageCount: 1,
+        preview: "@server-local 查看cpu情况",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-27T10:00:08.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createCodexLikeRunningSearchFixtureState(overrides = {}) {
+  const state = createCodexLikeProcessTranscriptFixtureState({
+    sessionId: "codex-like-running-search",
+    threadId: "codex-like-running-search",
+    status: "working",
+  });
+  const turnId = state.currentTurnId;
+  const turn = state.turns[turnId];
+  turn.status = "working";
+  turn.completedAt = undefined;
+  turn.updatedAt = "2026-06-27T10:00:02.000Z";
+  turn.process = [
+    {
+      id: "assistant-tool-search",
+      kind: "assistant",
+      displayKind: "assistant.message",
+      phase: "commentary",
+      streamState: "complete",
+      status: "completed",
+      text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+      commentarySource: "runtime_tool_intent",
+      toolCallIds: ["call-search-tools"],
+      updatedAt: "2026-06-27T10:00:01.000Z",
+    },
+    {
+      id: "tool-search-tools",
+      kind: "tool",
+      displayKind: "web_search",
+      foldGroupKind: "web_lookup",
+      status: "running",
+      text: "正在搜索网页",
+      inputSummary: "pg_autoctl standby timeline higher than primary",
+      queries: ["pg_autoctl standby timeline higher than primary"],
+      updatedAt: "2026-06-27T10:00:02.000Z",
+    },
+  ];
+  turn.final = undefined;
+  state.runtimeLiveness.activeTurns = { [turnId]: true };
+  state.seq = 4;
+  state.updatedAt = "2026-06-27T10:00:02.000Z";
+  return {
+    ...state,
+    ...overrides,
+  };
+}
+
+export function createCodexLikeRunningSearchFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "codex-like-running-search",
+    sessions: [
+      {
+        id: "codex-like-running-search",
+        kind: "single_host",
+        title: "Codex-like running search",
+        status: "running",
+        messageCount: 1,
+        preview: "@server-local 查看cpu情况",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-27T10:00:02.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+export function createWebSearchOpenTranscriptFixtureState(overrides = {}) {
+  const now = "2026-06-29T10:00:00.000Z";
+  const turnId = "turn-web-search-open";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "web-search-open-transcript",
+    threadId: "web-search-open-transcript",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-29T10:00:08.000Z",
+        updatedAt: "2026-06-29T10:00:08.000Z",
+        user: {
+          id: "user-web-search-open",
+          text: "查 PostgreSQL recovery_target_timeline 官方文档",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-search-plan",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先搜索官方文档来源，再打开最相关页面读取正文。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-web-search"],
+            updatedAt: "2026-06-29T10:00:01.000Z",
+          },
+          {
+            id: "web-search-postgres",
+            kind: "search",
+            displayKind: "web_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "PostgreSQL recovery_target_timeline official docs",
+            inputSummary: "PostgreSQL recovery_target_timeline official docs",
+            queries: ["PostgreSQL recovery_target_timeline official docs"],
+            results: [
+              {
+                title: "PostgreSQL official docs: recovery_target_timeline setting",
+                url: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+                snippet: "Official setting reference for selecting latest, current, or a specific recovery target timeline.",
+              },
+              {
+                title: "PostgreSQL official docs: continuous archiving and point-in-time recovery",
+                url: "https://www.postgresql.org/docs/current/continuous-archiving.html",
+                snippet: "Official PostgreSQL recovery guidance, including timeline behavior during archive recovery.",
+              },
+            ],
+            updatedAt: "2026-06-29T10:00:02.000Z",
+          },
+          {
+            id: "assistant-open-docs",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会打开官方参数页面，确认适用范围后再总结。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-web-open"],
+            updatedAt: "2026-06-29T10:00:03.000Z",
+          },
+          {
+            id: "web-open-postgres",
+            kind: "search",
+            displayKind: "web_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+            inputSummary: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+            queries: ["https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE"],
+            results: [
+              {
+                title: "PostgreSQL official docs: recovery_target_timeline setting",
+                url: "https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
+                snippet: "The setting controls which timeline to recover into during archive recovery.",
+                fetched: true,
+                text: "Full bounded page text is intentionally not rendered in the process transcript.",
+              },
+            ],
+            updatedAt: "2026-06-29T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-web-search-open",
+          text: "结论：`recovery_target_timeline=latest` 适用于需要沿最新时间线恢复的场景；实际执行前仍需结合当前集群拓扑和备份状态验证。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 6,
+    updatedAt: "2026-06-29T10:00:08.000Z",
+    ...overrides,
+  };
+}
+
+export function createWebSearchOpenTranscriptFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "web-search-open-transcript",
+    sessions: [
+      {
+        id: "web-search-open-transcript",
+        kind: "single_host",
+        title: "Web search open transcript",
+        status: "completed",
+        messageCount: 1,
+        preview: "查 PostgreSQL recovery_target_timeline 官方文档",
+        selectedHostId: "server-local",
+        lastActivityAt: "2026-06-29T10:00:08.000Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
 export function createTaskTodoPlanModeFixtureState(overrides = {}) {
   const now = "2026-06-07T01:30:00Z";
   const planId = "plan-synthetic-task-todo-1";
@@ -3209,6 +3518,28 @@ export function resolveUiFixturePreset(key = "") {
         name: "coroot-rca-report",
         state: createCorootRcaReportFixtureState(),
         sessions: createCorootRcaReportFixtureSessions(),
+      };
+    case "codex-like-process-transcript":
+    case "codex_like_process_transcript":
+    case "codex-like-process":
+      return {
+        name: "codex-like-process-transcript",
+        state: createCodexLikeProcessTranscriptFixtureState(),
+        sessions: createCodexLikeProcessTranscriptFixtureSessions(),
+      };
+    case "codex-like-running-search":
+    case "codex_like_running_search":
+      return {
+        name: "codex-like-running-search",
+        state: createCodexLikeRunningSearchFixtureState(),
+        sessions: createCodexLikeRunningSearchFixtureSessions(),
+      };
+    case "web-search-open-transcript":
+    case "web_search_open_transcript":
+      return {
+        name: "web-search-open-transcript",
+        state: createWebSearchOpenTranscriptFixtureState(),
+        sessions: createWebSearchOpenTranscriptFixtureSessions(),
       };
     default:
       return null;

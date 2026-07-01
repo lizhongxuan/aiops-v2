@@ -43,6 +43,7 @@ func TestHostBootstrapServiceSubmitsBuiltinWorkflowWithRedactedVars(t *testing.T
 		SSHPort:          22,
 		SSHCredentialRef: "secret://ops/prod-web-01-ssh-key",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	runner := &fakeHostBootstrapRunner{run: HostInstallRun{RunID: "run-1", WorkflowID: BuiltinHostAgentInstallWorkflowID, Status: "queued"}}
 	service := NewHostBootstrapService(repo, runner)
@@ -59,6 +60,12 @@ func TestHostBootstrapServiceSubmitsBuiltinWorkflowWithRedactedVars(t *testing.T
 	}
 	if got := runner.vars["ssh_credential_ref"]; got != "secret://ops/prod-web-01-ssh-key" {
 		t.Fatalf("ssh_credential_ref = %v", got)
+	}
+	if got := runner.vars["connection_mode"]; got != HostConnectionModeAIOPSPull {
+		t.Fatalf("connection_mode = %v, want aiops_pull", got)
+	}
+	if got := runner.vars["agent_server_url"]; got != "" {
+		t.Fatalf("agent_server_url = %v, want empty for default aiops_pull", got)
 	}
 	for key, value := range runner.vars {
 		text := strings.ToLower(key + "=" + fmt.Sprint(value))
@@ -92,7 +99,7 @@ func TestHostBootstrapServiceSubmitsWorkflowWithoutSSHCredentialRef(t *testing.T
 	runner := &fakeHostBootstrapRunner{run: HostInstallRun{RunID: "run-1", WorkflowID: BuiltinHostAgentInstallWorkflowID, Status: "queued"}}
 	service := NewHostBootstrapService(repo, runner)
 
-	run, err := service.Install(context.Background(), "prod-web-01", HostInstallRequest{AgentVersion: "v0.1.0"})
+	run, err := service.Install(context.Background(), "prod-web-01", HostInstallRequest{AgentVersion: "v0.1.0", AgentServerURL: "http://aiops.example.test:18080"})
 	if err != nil {
 		t.Fatalf("Install() error = %v", err)
 	}
@@ -112,6 +119,7 @@ func TestHostBootstrapServiceMapsSubmitFailureToInstallFailed(t *testing.T) {
 		SSHPort:          22,
 		SSHCredentialRef: "secret://ops/prod-web-01-ssh-key",
 		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	runner := &fakeHostBootstrapRunner{err: errors.New("runner unavailable")}
 	service := NewHostBootstrapService(repo, runner)
@@ -124,6 +132,40 @@ func TestHostBootstrapServiceMapsSubmitFailureToInstallFailed(t *testing.T) {
 		t.Fatalf("GetHost() error = %v", err)
 	}
 	if saved.Status != "install_failed" || saved.InstallState != "failed" || !strings.Contains(saved.LastError, "runner unavailable") {
+		t.Fatalf("saved host = %+v", saved)
+	}
+}
+
+func TestHostBootstrapServiceRejectsHostAgentEndpointAsAgentServerURL(t *testing.T) {
+	repo := newHostRepoStub(store.HostRecord{
+		ID:           "prod-web-01",
+		Address:      "10.0.0.11",
+		SSHUser:      "ubuntu",
+		SSHPort:      22,
+		AgentVersion: "v0.1.0",
+	})
+	runner := &fakeHostBootstrapRunner{run: HostInstallRun{RunID: "run-1", WorkflowID: BuiltinHostAgentInstallWorkflowID, Status: "queued"}}
+	service := NewHostBootstrapService(repo, runner)
+
+	_, err := service.Install(context.Background(), "prod-web-01", HostInstallRequest{
+		AgentVersion:   "v0.1.0",
+		AgentServerURL: "http://10.0.0.11:7072",
+		ConnectionMode: HostConnectionModeNodePushGRPC,
+	})
+	if err == nil {
+		t.Fatal("Install() error = nil, want Node endpoint rejection")
+	}
+	if runner.submitCalled {
+		t.Fatal("runner was called after invalid callback URL")
+	}
+	if !strings.Contains(err.Error(), "Node endpoint") {
+		t.Fatalf("Install() error = %v", err)
+	}
+	saved, err := repo.GetHost("prod-web-01")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if saved.Status != "install_failed" || saved.InstallState != "failed" || saved.InstallStep != "validate-agent-server-url" {
 		t.Fatalf("saved host = %+v", saved)
 	}
 }
@@ -167,6 +209,7 @@ func TestHostBootstrapServiceUsesStableIdempotencyKey(t *testing.T) {
 		SSHUser:          "ubuntu",
 		SSHPort:          22,
 		SSHCredentialRef: "secret://ops/prod-web-01-ssh-key",
+		AgentServerURL:   "http://aiops.example.test:18080",
 	})
 	runner := &fakeHostBootstrapRunner{run: HostInstallRun{RunID: "run-1", WorkflowID: BuiltinHostAgentInstallWorkflowID, Status: "queued"}}
 	service := NewHostBootstrapService(repo, runner)

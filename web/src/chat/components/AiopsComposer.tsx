@@ -25,9 +25,12 @@ import {
 } from "react";
 
 import { listHostInventory, type HostInventoryItem } from "@/api/hostInventory";
+import { opsManualsApi, type OpsManualView } from "@/api/opsManuals";
+import { listOpsGraphs } from "@/api/opsgraph";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import type { OpsGraphSummary } from "@/pages/opsgraph/opsGraphTypes";
 import { isAiopsTransportRunning } from "@/transport/aiopsTransportConverter";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 import type {
@@ -41,7 +44,10 @@ import {
   resolveStopDispatchTarget,
 } from "./aiopsComposerActions";
 import type { DisplayHostMention } from "./HostMentionChip";
-import { HostMentionSuggestionPopover } from "./HostMentionSuggestionPopover";
+import {
+  HostMentionSuggestionPopover,
+  type ComposerMentionSuggestion,
+} from "./HostMentionSuggestionPopover";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 import {
@@ -54,9 +60,26 @@ import {
   replaceActiveHostMention,
   searchHostMentionSuggestions,
   type ActiveHostMentionToken,
-  type HostMentionSuggestion,
 } from "../hostMentionSearch";
-import { HostMentionInlineOverlay } from "./HostMentionInlineOverlay";
+import {
+  buildCapabilityMentionBinding,
+  buildHostMentionBinding,
+  buildInputMentionMetadata,
+  buildOpsGraphMentionBinding,
+  buildOpsManualMentionBinding,
+  deriveCapabilityMentionMetadata,
+  deriveHostMentionMetadata,
+  reconcileMentionBindings,
+  type AiopsMentionBinding,
+} from "../inputMentions";
+import {
+  searchCapabilityMentionSuggestions,
+  searchMentionCategorySuggestions,
+  searchOpsGraphMentionSuggestions,
+  searchOpsManualMentionSuggestions,
+  type MentionCategory,
+} from "../mentionCatalog";
+import { HostMentionInlineOverlay, type ResourceInlineMentionCandidate } from "./HostMentionInlineOverlay";
 
 type GenerationConfirmation = {
   action: string;
@@ -73,6 +96,7 @@ const SUPPORTED_CONFIRMATION_ACTIONS = new Set([
   "confirm_runner_workflow_execution",
   "request_runner_workflow_approval",
 ]);
+const LLM_CONFIG_REQUIRED_REASON = "请先在设置中配置 LLM";
 
 type ContextFormField = {
   id: string;
@@ -121,6 +145,10 @@ export function AiopsComposer({
   const state = useAssistantTransportState() as AiopsTransportState;
   const threadIsRunning = useThread((snapshot) => snapshot.isRunning);
   const workspace = useSessionWorkspaceContext();
+  const visibleDisabledReason =
+    workspace.composerDisabledReason === LLM_CONFIG_REQUIRED_REASON
+      ? ""
+      : workspace.composerDisabledReason;
   const sendCommand = useAssistantTransportSendCommand();
   const target = useSessionTargetContext();
   const isRunning = isAiopsTransportRunning(state) || threadIsRunning;
@@ -340,9 +368,9 @@ export function AiopsComposer({
           state={state}
           threadIsRunning={threadIsRunning}
         />
-        {workspace.composerDisabledReason ? (
+        {visibleDisabledReason ? (
           <div className="px-1 text-xs text-amber-700">
-            {workspace.composerDisabledReason}
+            {visibleDisabledReason}
           </div>
         ) : null}
       </div>
@@ -920,12 +948,17 @@ function ComposerBody({
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [hosts, setHosts] = useState<HostInventoryItem[]>([]);
   const [hostInventoryFailed, setHostInventoryFailed] = useState(false);
+  const [opsManuals, setOpsManuals] = useState<OpsManualView[]>([]);
+  const [opsManualsFailed, setOpsManualsFailed] = useState(false);
+  const [opsGraphs, setOpsGraphs] = useState<OpsGraphSummary[]>([]);
+  const [opsGraphsFailed, setOpsGraphsFailed] = useState(false);
   const [activeToken, setActiveToken] = useState<ActiveHostMentionToken | null>(
     null,
   );
   const [inputText, setInputText] = useState("");
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const suppressedSubmittedTextRef = useRef("");
+  const selectedMentionBindingsRef = useRef<AiopsMentionBinding[]>([]);
   const suggestionPopoverId = "host-mention-suggestions";
 
   useEffect(() => {
@@ -951,12 +984,55 @@ function ComposerBody({
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+    opsManualsApi.list({ status: "verified", limit: 100 })
+      .then((payload) => {
+        if (!cancelled) {
+          setOpsManuals(payload.items);
+          setOpsManualsFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpsManualsFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void listOpsGraphs()
+      .then((payload) => {
+        if (!cancelled) {
+          setOpsGraphs(payload.graphs || payload.items || []);
+          setOpsGraphsFailed(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOpsGraphsFailed(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const suggestions = useMemo(
-    () =>
-      activeToken && !hostInventoryFailed
-        ? searchHostMentionSuggestions(hosts, activeToken.query, { limit: 10 })
-        : [],
-    [activeToken, hostInventoryFailed, hosts],
+    () => mentionSuggestionsForToken({
+      activeToken,
+      hosts,
+      hostInventoryFailed,
+      opsManuals,
+      opsManualsFailed,
+      opsGraphs,
+      opsGraphsFailed,
+    }),
+    [activeToken, hostInventoryFailed, hosts, opsGraphs, opsGraphsFailed, opsManuals, opsManualsFailed],
   );
   const composerSnapshotText = composerState?.text || "";
   const suppressedSubmittedText = suppressedSubmittedTextRef.current;
@@ -973,19 +1049,30 @@ function ComposerBody({
     () => parseSpecialAiMentionCandidates(currentComposerText),
     [currentComposerText],
   );
-  const inlineMentions = useMemo(
-    () => mergeInlineMentions(inlineHostMentions, inlineSpecialMentions),
-    [inlineHostMentions, inlineSpecialMentions],
-  );
   const selectedHostMentions = useMemo(
     () => uniqueDisplayHostMentions(inlineHostMentions),
     [inlineHostMentions],
   );
+  const reconciledMentionBindings = useMemo(
+    () =>
+      reconcileMentionBindings(
+        currentComposerText,
+        selectedMentionBindingsRef.current,
+      ),
+    [currentComposerText],
+  );
+  const inlineResourceMentions = useMemo(
+    () => displayResourceMentions(reconciledMentionBindings),
+    [reconciledMentionBindings],
+  );
+  const inlineMentions = useMemo(
+    () => mergeInlineMentions(inlineHostMentions, inlineSpecialMentions, inlineResourceMentions),
+    [inlineHostMentions, inlineResourceMentions, inlineSpecialMentions],
+  );
   const suggestionOpen =
     Boolean(activeToken) &&
     !isRunning &&
-    !workspace.composerDisabledReason &&
-    !hostInventoryFailed;
+    !workspace.composerDisabledReason;
   const hasInlineMentions = inlineMentions.length > 0;
 
   const refreshActiveToken = useCallback(() => {
@@ -1000,14 +1087,100 @@ function ComposerBody({
   }, []);
 
   const applySuggestion = useCallback(
-    (suggestion: HostMentionSuggestion) => {
+    (suggestion: ComposerMentionSuggestion) => {
       const input = inputRef.current;
       if (!input || !activeToken) return;
+      if (suggestion.kind === "category") {
+        const nextText = `${input.value.slice(0, activeToken.start)}${suggestion.prefix}${input.value.slice(activeToken.end)}`;
+        const nextCursor = activeToken.start + suggestion.prefix.length;
+        const nextToken: ActiveHostMentionToken = {
+          start: activeToken.start,
+          end: nextCursor,
+          query: suggestion.prefix.slice(1),
+          raw: suggestion.prefix,
+        };
+        selectedMentionBindingsRef.current = selectedMentionBindingsRef.current.filter(
+          (binding) => binding.range.start !== activeToken.start,
+        );
+        composer.setText(nextText);
+        setInputText(nextText);
+        input.value = nextText;
+        input.setSelectionRange(nextCursor, nextCursor);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        setActiveToken(nextToken);
+        setHighlightedIndex(0);
+        return;
+      }
       const next = replaceActiveHostMention(
         input.value,
         activeToken,
         suggestion,
       );
+      const rawText = next.text.slice(activeToken.start, next.cursor).trim();
+      const existingBindings = selectedMentionBindingsRef.current.filter(
+        (binding) => binding.range.start !== activeToken.start,
+      );
+      selectedMentionBindingsRef.current =
+        suggestion.kind === "capability"
+          ? [
+              ...existingBindings,
+              buildCapabilityMentionBinding({
+                tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                rawText,
+                range: {
+                  start: activeToken.start,
+                  end: activeToken.start + rawText.length,
+                },
+                capability: suggestion.payload.capability,
+              }),
+            ]
+          : suggestion.kind === "resource" && suggestion.payload.resourceKind === "ops_manual"
+            ? [
+                ...existingBindings,
+                buildOpsManualMentionBinding({
+                  tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                  rawText,
+                  range: {
+                    start: activeToken.start,
+                    end: activeToken.start + rawText.length,
+                  },
+                  manualId: suggestion.payload.manualId,
+                  title: suggestion.payload.title,
+                  workflowId: suggestion.payload.workflowId,
+                  status: suggestion.payload.status,
+                }),
+              ]
+            : suggestion.kind === "resource" && suggestion.payload.resourceKind === "ops_graph"
+              ? [
+                  ...existingBindings,
+                  buildOpsGraphMentionBinding({
+                    tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                    rawText,
+                    range: {
+                      start: activeToken.start,
+                      end: activeToken.start + rawText.length,
+                    },
+                    graphId: suggestion.payload.graphId,
+                    name: suggestion.payload.name,
+                    environment: suggestion.payload.environment,
+                  }),
+                ]
+          : [
+              ...existingBindings,
+              buildHostMentionBinding({
+                tokenId: `mention-${activeToken.start}-${suggestion.key}`,
+                rawText,
+                range: {
+                  start: activeToken.start,
+                  end: activeToken.start + rawText.length,
+                },
+                hostId: suggestion.payload.hostId,
+                address: suggestion.payload.address,
+                displayName: suggestion.payload.displayName,
+                status: suggestion.payload.status,
+              }),
+            ];
       composer.setText(next.text);
       setInputText(next.text);
       input.value = next.text;
@@ -1040,6 +1213,7 @@ function ComposerBody({
       setInputText("");
       setActiveToken(null);
       setHighlightedIndex(0);
+      selectedMentionBindingsRef.current = [];
       if (inputRef.current) {
         inputRef.current.value = "";
       }
@@ -1168,6 +1342,7 @@ function ComposerBody({
           state={state}
           threadIsRunning={threadIsRunning}
           hostMentions={selectedHostMentions}
+          mentionBindings={reconciledMentionBindings}
           onComposerCleared={clearComposerInput}
         />
       </div>
@@ -1212,11 +1387,115 @@ function displayHostMentions(
   return mentions;
 }
 
+function mentionSuggestionsForToken({
+  activeToken,
+  hosts,
+  hostInventoryFailed,
+  opsManuals,
+  opsManualsFailed,
+  opsGraphs,
+  opsGraphsFailed,
+}: {
+  activeToken: ActiveHostMentionToken | null;
+  hosts: HostInventoryItem[];
+  hostInventoryFailed: boolean;
+  opsManuals: OpsManualView[];
+  opsManualsFailed: boolean;
+  opsGraphs: OpsGraphSummary[];
+  opsGraphsFailed: boolean;
+}): ComposerMentionSuggestion[] {
+  if (!activeToken) {
+    return [];
+  }
+  const route = mentionMenuRoute(activeToken.query);
+  if (route.kind === "host") {
+    return hostInventoryFailed
+      ? []
+      : searchHostMentionSuggestions(hosts, route.query, { limit: 8 });
+  }
+  if (route.kind === "capability") {
+    return searchCapabilityMentionSuggestions(route.query, {
+      category: route.category,
+    }).slice(0, 8);
+  }
+  if (route.kind === "ops_manuals") {
+    return opsManualsFailed
+      ? []
+      : searchOpsManualMentionSuggestions(opsManuals, route.query, { limit: 8 });
+  }
+  if (route.kind === "ops_graph") {
+    return opsGraphsFailed
+      ? []
+      : searchOpsGraphMentionSuggestions(opsGraphs, route.query, { limit: 8 });
+  }
+  return searchMentionCategorySuggestions(route.query).slice(0, 8);
+}
+
+type MentionMenuRoute =
+  | { kind: "category"; query: string }
+  | { kind: "host"; query: string }
+  | { kind: "capability"; category: Exclude<MentionCategory, "host" | "ops_graph" | "ops_manuals">; query: string }
+  | { kind: "ops_graph"; query: string }
+  | { kind: "ops_manuals"; query: string };
+
+function mentionMenuRoute(query: string): MentionMenuRoute {
+  const normalized = cleanHostText(query);
+  const hostQuery = stripMentionCategoryPrefix(normalized, "host-");
+  if (hostQuery !== null) {
+    return { kind: "host", query: hostQuery };
+  }
+  const monitorQuery = stripMentionCategoryPrefix(normalized, "monitor-");
+  if (monitorQuery !== null) {
+    return { kind: "capability", category: "monitor", query: monitorQuery };
+  }
+  const graphQuery = stripMentionCategoryPrefix(normalized, "opsgraph-");
+  if (graphQuery !== null) {
+    return { kind: "ops_graph", query: graphQuery };
+  }
+  const manualQuery = stripMentionCategoryPrefix(normalized, "manual-");
+  if (manualQuery !== null) {
+    return { kind: "ops_manuals", query: manualQuery };
+  }
+  return { kind: "category", query: normalized };
+}
+
+function stripMentionCategoryPrefix(query: string, prefix: string) {
+  const normalized = query.toLowerCase();
+  return normalized.startsWith(prefix) ? query.slice(prefix.length) : null;
+}
+
 function mergeInlineMentions(
   hostMentions: DisplayHostMention[],
   specialMentions: ReturnType<typeof parseSpecialAiMentionCandidates>,
+  resourceMentions: ResourceInlineMentionCandidate[],
 ) {
-  return [...hostMentions, ...specialMentions].sort((a, b) => a.start - b.start || a.end - b.end);
+  return [...hostMentions, ...specialMentions, ...resourceMentions].sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function displayResourceMentions(bindings: AiopsMentionBinding[]): ResourceInlineMentionCandidate[] {
+  return bindings
+    .filter((binding) => binding.kind === "ops_manual" || binding.kind === "ops_graph")
+    .map((binding) => {
+      const payload = objectPayload(binding.payload);
+      const value =
+        binding.kind === "ops_manual"
+          ? cleanHostText(payload.manualId) || binding.rawText.replace(/^@/, "")
+          : cleanHostText(payload.graphId) || binding.rawText.replace(/^@/, "");
+      const displayName =
+        binding.kind === "ops_manual"
+          ? cleanHostText(payload.title) || value
+          : cleanHostText(payload.name) || value;
+      return {
+        tokenId: binding.tokenId,
+        raw: binding.rawText,
+        value,
+        start: binding.range.start,
+        end: binding.range.end,
+        source: "ops_resource" as const,
+        kind: binding.kind as "ops_manual" | "ops_graph",
+        displayName,
+      };
+    });
 }
 
 function uniqueDisplayHostMentions(
@@ -1271,6 +1550,7 @@ function TargetAwareSendButton({
   state,
   threadIsRunning,
   hostMentions,
+  mentionBindings,
   onComposerCleared,
 }: {
   variant: "default" | "chat";
@@ -1278,6 +1558,7 @@ function TargetAwareSendButton({
   state: AiopsTransportState;
   threadIsRunning: boolean;
   hostMentions: DisplayHostMention[];
+  mentionBindings: AiopsMentionBinding[];
   onComposerCleared: (submittedText: string) => void;
 }) {
   const api = useAssistantApi();
@@ -1369,10 +1650,11 @@ function TargetAwareSendButton({
           message: {
             role: "user",
             metadata: {
-              ...buildHostMentionMetadata(hostMentions),
-              ...buildAiopsSpecialMentionMetadata(text),
+              ...buildInputMentionMetadata(mentionBindings),
+              ...hostMentionMetadataForSubmit(mentionBindings, hostMentions),
+              ...capabilityMetadataForSubmit(mentionBindings, text),
             },
-            ...hostIdMessageField(hostMentions),
+            ...hostIdMessageFieldForSubmit(mentionBindings, hostMentions),
             parts: [{ type: "text", text }],
           },
         } as Parameters<typeof sendCommand>[0];
@@ -1397,6 +1679,62 @@ function hostIdMessageField(hostMentions: DisplayHostMention[]) {
     new Set(hostMentions.map((mention) => cleanHostText(mention.hostId)).filter(Boolean)),
   );
   return hostIds.length === 1 ? { hostId: hostIds[0] } : {};
+}
+
+function hostMentionMetadataForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  hostMentions: DisplayHostMention[],
+) {
+  const structuredMetadata = deriveHostMentionMetadata(mentionBindings);
+  return Object.keys(structuredMetadata).length
+    ? structuredMetadata
+    : buildHostMentionMetadata(hostMentions);
+}
+
+function capabilityMetadataForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  text: string,
+) {
+  const structuredMetadata = deriveCapabilityMentionMetadata(mentionBindings);
+  return Object.keys(structuredMetadata).length
+    ? structuredMetadata
+    : buildAiopsSpecialMentionMetadata(text);
+}
+
+function hostIdMessageFieldForSubmit(
+  mentionBindings: AiopsMentionBinding[],
+  hostMentions: DisplayHostMention[],
+) {
+  const structuredHostIds = Array.from(
+    new Set(
+      mentionBindings
+        .filter((binding) => binding.kind === "host")
+        .map((binding) =>
+          cleanHostText(
+            objectPayload(binding.payload).hostId || decodeHostPath(binding.path),
+          ),
+        )
+        .filter(Boolean),
+    ),
+  );
+  if (structuredHostIds.length === 1) return { hostId: structuredHostIds[0] };
+  if (structuredHostIds.length > 1) return {};
+  return hostIdMessageField(hostMentions);
+}
+
+function decodeHostPath(path: string) {
+  const raw = cleanHostText(path).replace(/^host:\/\//, "");
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function objectPayload(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function BlockedApprovalComposer({

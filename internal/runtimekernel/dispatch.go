@@ -810,10 +810,9 @@ func (d *ToolDispatcher) structuredMissingToolError(name string) (string, toolin
 		}
 	}
 	payload := map[string]string{
-		"errorType":      "tool_not_found",
-		"toolName":       name,
-		"reason":         "tool not found: " + name + "; no registered or deferred tool matches this name",
-		"requiredAction": "call tool_search with capability keywords",
+		"errorType": "tool_not_found",
+		"toolName":  name,
+		"reason":    "tool not found: " + name + "; no registered or deferred tool matches this name",
 	}
 	data, _ := json.Marshal(payload)
 	return string(data), tooling.ToolMetadata{}

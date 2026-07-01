@@ -20,8 +20,8 @@ type ToolDescriptor struct {
 func DecideToolSurface(frame runtimecontract.IntentFrame, approvals ApprovalSnapshot, configured []ToolDescriptor) SurfaceDecision {
 	frame = runtimecontract.NormalizeIntentFrame(frame)
 	decision := SurfaceDecision{
-		AllowToolSearch: true,
-		Reasons:         []string{"tool_search_default_discovery"},
+		AllowToolSearch: false,
+		Reasons:         []string{"tool_search_requires_explicit_deferred_discovery"},
 	}
 
 	if hasOpsKnowledgeScope(frame) || hasCapabilityDataScope(frame, runtimecontract.DataScopeOpsKnowledge) {

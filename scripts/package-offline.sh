@@ -188,12 +188,7 @@ Open \`http://127.0.0.1:8080\`.
 
 ## Required configuration
 
-Before applying, replace these placeholders in \`kubernetes/aiops-v2.yaml\`:
-
-- \`AIOPS_LLM_API_KEY\`
-- \`AIOPS_ACTION_TOKEN_SECRET\`
-
-For an OpenAI-compatible intranet gateway, also set \`AIOPS_LLM_BASE_URL\` in the ConfigMap.
+After startup, open the LLM settings page or call the LLM config API to save the provider, model, base URL, and API key into the aiops data store.
 EOF
 
 (

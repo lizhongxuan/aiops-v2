@@ -244,22 +244,37 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 
 func buildChatRuntimeTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
 	nextMetadata := cloneStringMetadata(metadata)
+	structuredMentions := parseInputMentions(messageText, nextMetadata)
 	mentions := filterHostOpsRouteMentions(hostOpsMentionsFromMetadata(nextMetadata["aiops.hostops.mentions"]))
-	if len(mentions) == 0 {
-		mentions = filterHostOpsRouteMentions(hostops.ParseHostMentions(messageText))
+	if structuredMentions.Present {
+		if structuredMentions.Invalid {
+			mentions = nil
+		} else {
+			mentions = filterHostOpsRouteMentions(inputMentionHostHintsToHostMentions(structuredMentions.Hosts))
+		}
+	} else if len(mentions) == 0 {
+		if inputMentionStrictMode() {
+			mentions = nil
+		} else {
+			mentions = filterHostOpsRouteMentions(hostops.ParseHostMentions(messageText))
+		}
 	}
+	mentionSource, mentionValidation := mentionSourceForCommand(ChatCommand{Content: messageText, Metadata: nextMetadata}, messageText, structuredMentions, mentions)
 	evidence := ExtractUserEvidence(messageText)
 	chatRoute := BuildChatRuntimeRoute(messageText, mentions, evidence)
 	envelope := BuildEvidenceEnvelope(messageText, nil, nil)
 	intentFrame := BuildIntentFrame(messageText, envelope, nil)
 	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, chatRoute)
-	activeRoute, routingMode := selectActiveChatRuntimeRoute(chatRoute, intentRoute, intentFrame)
+	activeRoute, routingMode := selectActiveChatRuntimeRoute(chatRoute, intentRoute, intentFrame, intentFrameRoutingTraceOnly)
+	applyStructuredMentionRouteHints(&activeRoute, structuredMentions)
 	req := &runtimekernel.TurnRequest{Input: messageText, Metadata: nextMetadata}
 	applyChatRuntimeRouteMetadata(req, activeRoute)
-	applyIntentFrameRouteMetadata(req, chatRoute, intentRoute, intentFrame)
+	applyIntentFrameRouteMetadata(req, chatRoute, intentRoute, activeRoute, intentFrame, routingMode)
 	req.Metadata["aiops.route.activeSource"] = routingMode
 	applyChatRuntimeToolSurfaceMetadata(req, activeRoute)
+	applyStructuredCapabilityMetadata(req.Metadata, structuredMentions)
 	applyUserEvidenceMetadata(req, evidence)
+	applyInputMentionDiagnosticValues(req, mentionSource, mentionValidation)
 	applyChatRuntimeRouteHostBinding(req, activeRoute, mentions)
 
 	decision := hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Mentions: append([]hostops.HostMention(nil), mentions...), Reason: strings.Join(activeRoute.Reasons, "; ")}

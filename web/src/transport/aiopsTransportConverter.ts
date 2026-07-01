@@ -78,23 +78,8 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
-  let content: ThreadMessage["content"] = [];
-  const finalText = turn.final?.text?.trim() || "";
-  const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
-  if (finalText && !finalIsRawRuntimeFailure) {
-    content = [{ type: "text", text: finalText }];
-  } else if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
-    const preservedProgress = turn.status === "canceled"
-      ? latestAssistantProcessText(turn.process || [])
-      : latestSubstantialAssistantProcessText(turn.process || []);
-    if (preservedProgress) {
-      content = [{ type: "text", text: preservedProgress }];
-    } else if (finalText) {
-      content = [{ type: "text", text: finalText }];
-    } else if (turn.status === "failed" && state.lastError) {
-      content = [{ type: "text", text: state.lastError }];
-    }
-  }
+  const displayText = assistantDisplayText(state, turn);
+  const content: ThreadMessage["content"] = displayText ? [{ type: "text", text: displayText }] : [];
   return {
     id: `${turn.id}:assistant`,
     role: "assistant",
@@ -109,6 +94,7 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
         turnCompletedAt: turn.completedAt,
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
         finalDurationMs: turn.final?.durationMs,
+        finalText: displayText,
         process: turn.process || [],
         agentRun: agentRunForTurn(state, turn),
         contextGovernance: turn.contextGovernance || [],
@@ -128,6 +114,29 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
       },
     },
   };
+}
+
+function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTurn) {
+  const finalText = turn.final?.text?.trim() || "";
+  const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
+  if (finalText && !finalIsRawRuntimeFailure) {
+    return finalText;
+  }
+  if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
+    const preservedProgress = turn.status === "canceled"
+      ? latestAssistantProcessText(turn.process || [])
+      : latestSubstantialAssistantProcessText(turn.process || []);
+    if (preservedProgress) {
+      return preservedProgress;
+    }
+    if (finalText) {
+      return finalText;
+    }
+    if (turn.status === "failed" && state.lastError) {
+      return state.lastError;
+    }
+  }
+  return "";
 }
 
 function latestAssistantProcessText(process: AiopsTransportTurn["process"]) {

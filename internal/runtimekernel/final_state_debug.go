@@ -5,15 +5,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
-	"os"
 	"strings"
 	"unicode/utf8"
 
 	"aiops-v2/internal/agentstate"
 )
 
-func debugFinalStateLog(sessionID, turnID string, iteration int, event string, snapshot *TurnSnapshot, fields map[string]any) {
-	if !debugFinalStateEnabled() {
+func debugFinalStateLog(cfg RuntimeDebugConfig, sessionID, turnID string, iteration int, event string, snapshot *TurnSnapshot, fields map[string]any) {
+	if !debugFinalStateEnabled(cfg) {
 		return
 	}
 	payload := map[string]any{
@@ -36,17 +35,8 @@ func debugFinalStateLog(sessionID, turnID string, iteration int, event string, s
 	log.Printf("aiops.final_state %s", raw)
 }
 
-func debugFinalStateEnabled() bool {
-	return truthyDebugEnv("AIOPS_DEBUG_FINAL_STATE") || truthyDebugEnv("AIOPS_DEBUG_TRANSCRIPT_PROJECTION")
-}
-
-func truthyDebugEnv(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "on", "debug":
-		return true
-	default:
-		return false
-	}
+func debugFinalStateEnabled(cfg RuntimeDebugConfig) bool {
+	return cfg.FinalState || cfg.TranscriptProjection
 }
 
 func debugFinalStateSnapshot(snapshot *TurnSnapshot) map[string]any {

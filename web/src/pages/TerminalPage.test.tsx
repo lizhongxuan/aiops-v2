@@ -3,6 +3,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppShellChromeProvider, useAppShellChrome } from "@/app/AppShellChromeContext";
+
 import { TerminalPage } from "./TerminalPage";
 
 const terminalWrite = vi.fn();
@@ -57,6 +59,17 @@ class MockWebSocket {
   }
 }
 
+function ChromeActionsProbe() {
+  const { headerActions, headerDescription, headerTitle } = useAppShellChrome();
+  return (
+    <div data-testid="chrome-actions">
+      <span>{headerTitle}</span>
+      <span>{headerDescription}</span>
+      {headerActions}
+    </div>
+  );
+}
+
 describe("TerminalPage", () => {
   let root: Root;
   let container: HTMLDivElement;
@@ -88,9 +101,12 @@ describe("TerminalPage", () => {
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={["/terminal/host-prod-07"]}>
-          <Routes>
-            <Route path="/terminal/:hostId" element={<TerminalPage />} />
-          </Routes>
+          <AppShellChromeProvider>
+            <Routes>
+              <Route path="/terminal/:hostId" element={<TerminalPage />} />
+            </Routes>
+            <ChromeActionsProbe />
+          </AppShellChromeProvider>
         </MemoryRouter>,
       );
     });
@@ -113,5 +129,38 @@ describe("TerminalPage", () => {
       }),
     );
     expect(terminalWrite).toHaveBeenCalledWith(expect.stringContaining("gRPC host client terminal initializing"));
+  });
+
+  it("uses the app top bar for terminal controls and lets the terminal fill the page", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/terminal/host-prod-07"]}>
+          <AppShellChromeProvider>
+            <Routes>
+              <Route path="/terminal/:hostId" element={<TerminalPage />} />
+            </Routes>
+            <ChromeActionsProbe />
+          </AppShellChromeProvider>
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    const chromeActionsText = container.querySelector('[data-testid="chrome-actions"]')?.textContent || "";
+    expect(chromeActionsText).toContain("退出");
+    expect(chromeActionsText).toMatch(/connected|ready/);
+    expect(chromeActionsText).toContain("清屏");
+    expect(chromeActionsText).toContain("Ctrl-C");
+    expect(chromeActionsText).toContain("Fit");
+    expect(container.querySelector('[data-testid="terminal-card-header"]')).toBeNull();
+
+    expect(container.querySelector('[data-testid="terminal-page"]')?.className).toContain("h-full");
+    const terminalShell = container.querySelector('[data-testid="terminal-xterm"]');
+    expect(terminalShell?.className).toContain("flex-1");
+    expect(terminalShell?.className).toContain("min-h-0");
+    expect(terminalShell?.className).not.toContain("h-[620px]");
   });
 });

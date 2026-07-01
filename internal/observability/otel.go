@@ -27,7 +27,7 @@ func Init(ctx context.Context, cfg Config) (*Provider, error) {
 		}, nil
 	}
 	if strings.TrimSpace(cfg.Endpoint) == "" {
-		return nil, fmt.Errorf("otel endpoint is required when AIOPS_OTEL_ENABLED is true")
+		return nil, fmt.Errorf("otel endpoint is required when observability is enabled")
 	}
 	serviceName := strings.TrimSpace(cfg.ServiceName)
 	if serviceName == "" {

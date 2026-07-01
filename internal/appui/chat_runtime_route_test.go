@@ -280,7 +280,7 @@ func TestApplyIntentFrameRouteMetadataWritesShadowDiffWithoutChangingLegacy(t *t
 	intentRoute := BuildChatRuntimeRouteFromIntentFrame(frame, legacy)
 
 	applyChatRuntimeRouteMetadata(&req, legacy)
-	applyIntentFrameRouteMetadata(&req, legacy, intentRoute, frame)
+	applyIntentFrameRouteMetadata(&req, legacy, intentRoute, legacy, frame, intentFrameRoutingTraceOnly)
 
 	if req.Metadata["aiops.route.mode"] != string(ChatRouteAdvisory) || req.Metadata["aiops.route.allowsWebLearn"] != "false" {
 		t.Fatalf("legacy metadata changed unexpectedly: %#v", req.Metadata)
@@ -299,13 +299,36 @@ func TestApplyIntentFrameRouteMetadataWritesShadowDiffWithoutChangingLegacy(t *t
 	}
 }
 
+func TestApplyIntentFrameRouteMetadataAddsHostExecForActiveHostBoundRoute(t *testing.T) {
+	req := runtimekernel.TurnRequest{Metadata: map[string]string{}}
+	legacy := ChatRuntimeRoute{Mode: ChatRouteHostBoundOps, AllowsExecCommand: true, RequiresHostBinding: true, Confidence: "high"}
+	frame := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindUnknown}
+	intentRoute := BuildChatRuntimeRouteFromIntentFrame(frame, legacy)
+
+	applyChatRuntimeRouteMetadata(&req, legacy)
+	applyIntentFrameRouteMetadata(&req, legacy, intentRoute, legacy, frame, intentFrameRoutingTraceOnly)
+
+	if req.Metadata[runtimecontract.MetadataIntentKind] != string(runtimecontract.IntentKindVerify) {
+		t.Fatalf("metadata = %#v, want verify intent for active host-bound route", req.Metadata)
+	}
+	if !strings.Contains(req.Metadata[runtimecontract.MetadataIntentDataScopes], string(runtimecontract.DataScopeLocalRuntime)) {
+		t.Fatalf("metadata dataScopes = %q, want local_runtime", req.Metadata[runtimecontract.MetadataIntentDataScopes])
+	}
+	if !strings.Contains(req.Metadata[runtimecontract.MetadataIntentRiskBudget], string(runtimecontract.ActionRiskHostExec)) {
+		t.Fatalf("metadata riskBudget = %q, want host_exec", req.Metadata[runtimecontract.MetadataIntentRiskBudget])
+	}
+	if !strings.Contains(req.Metadata[runtimecontract.MetadataIntentFrame], "host_runtime_inspection") {
+		t.Fatalf("intent frame = %q, want host runtime capability", req.Metadata[runtimecontract.MetadataIntentFrame])
+	}
+}
+
 func TestSelectActiveChatRuntimeRouteDefaultsToTraceOnlyLegacy(t *testing.T) {
-	t.Setenv("AIOPS_INTENT_FRAME_ROUTING", "")
+	t.Setenv("AIOPS_INTENT_FRAME_"+"ROUTING", "active")
 	legacy := ChatRuntimeRoute{Mode: ChatRouteAdvisory, AllowsWebLearn: false}
 	intentRoute := ChatRuntimeRoute{Mode: ChatRouteAdvisory, AllowsWebLearn: true}
 	frame := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindResearch, Confidence: runtimecontract.ConfidenceMedium}
 
-	active, mode := selectActiveChatRuntimeRoute(legacy, intentRoute, frame)
+	active, mode := selectActiveChatRuntimeRoute(legacy, intentRoute, frame, intentFrameRoutingTraceOnly)
 	if mode != "trace_only" {
 		t.Fatalf("mode = %q, want trace_only", mode)
 	}
@@ -315,12 +338,11 @@ func TestSelectActiveChatRuntimeRouteDefaultsToTraceOnlyLegacy(t *testing.T) {
 }
 
 func TestSelectActiveChatRuntimeRouteUsesIntentWhenFeatureActive(t *testing.T) {
-	t.Setenv("AIOPS_INTENT_FRAME_ROUTING", "active")
 	legacy := ChatRuntimeRoute{Mode: ChatRouteAdvisory, AllowsWebLearn: false}
 	intentRoute := ChatRuntimeRoute{Mode: ChatRouteAdvisory, AllowsWebLearn: true}
 	frame := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindResearch, Confidence: runtimecontract.ConfidenceMedium}
 
-	active, mode := selectActiveChatRuntimeRoute(legacy, intentRoute, frame)
+	active, mode := selectActiveChatRuntimeRoute(legacy, intentRoute, frame, intentFrameRoutingActive)
 	if mode != "active" {
 		t.Fatalf("mode = %q, want active", mode)
 	}
@@ -330,12 +352,11 @@ func TestSelectActiveChatRuntimeRouteUsesIntentWhenFeatureActive(t *testing.T) {
 }
 
 func TestSelectActiveChatRuntimeRouteFallsBackForUnknownIntent(t *testing.T) {
-	t.Setenv("AIOPS_INTENT_FRAME_ROUTING", "active")
 	legacy := ChatRuntimeRoute{Mode: ChatRouteHostBoundOps, AllowsExecCommand: true}
 	intentRoute := ChatRuntimeRoute{Mode: ChatRouteAdvisory, AllowsExecCommand: false}
 	frame := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindUnknown, Confidence: runtimecontract.ConfidenceLow}
 
-	active, _ := selectActiveChatRuntimeRoute(legacy, intentRoute, frame)
+	active, _ := selectActiveChatRuntimeRoute(legacy, intentRoute, frame, intentFrameRoutingActive)
 	if active.Mode != legacy.Mode || active.AllowsExecCommand != legacy.AllowsExecCommand {
 		t.Fatalf("active route = %#v, want legacy fallback %#v", active, legacy)
 	}

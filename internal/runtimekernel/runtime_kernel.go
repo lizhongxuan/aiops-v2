@@ -3,6 +3,7 @@ package runtimekernel
 import (
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,7 +17,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/cloudwego/eino/components/tool"
-	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/actionproposal"
 	"aiops-v2/internal/agentstate"
@@ -26,6 +26,7 @@ import (
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/planning"
 	"aiops-v2/internal/policyengine"
@@ -39,6 +40,9 @@ import (
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
+
+//go:embed prompt_assets/web_search_policy.md
+var webSearchPolicyPromptAsset string
 
 // ---------------------------------------------------------------------------
 // ToolAssemblySource is the interface that the RuntimeKernel uses to access
@@ -138,6 +142,8 @@ type RuntimeKernel struct {
 	artifactRepo     ContextArtifactRepository
 	skillRegistry    *skills.Registry
 	evidenceService  *evidencecore.Service
+	featureFlags     func(context.Context) featureflag.Flags
+	debugConfig      func(context.Context) RuntimeDebugConfig
 
 	turnCancelMu       sync.Mutex
 	inFlightTurnCancel map[string]context.CancelFunc
@@ -164,6 +170,23 @@ type RuntimeKernelConfig struct {
 	ArtifactRepo     ContextArtifactRepository
 	SkillRegistry    *skills.Registry
 	EvidenceService  *evidencecore.Service
+	FeatureFlags     func(context.Context) featureflag.Flags
+	DebugConfig      func(context.Context) RuntimeDebugConfig
+}
+
+type RuntimeDebugConfig struct {
+	ModelInputTrace      bool
+	ModelInputTraceRoot  string
+	FinalState           bool
+	TransportProjection  bool
+	TranscriptProjection bool
+}
+
+func DefaultRuntimeDebugConfig() RuntimeDebugConfig {
+	return RuntimeDebugConfig{
+		ModelInputTrace:     true,
+		ModelInputTraceRoot: modeltrace.DefaultRootDir(""),
+	}
 }
 
 // NewRuntimeKernel creates a new RuntimeKernel with the given dependencies.
@@ -175,6 +198,14 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 	observer := cfg.Observer
 	if observer == nil {
 		observer = NoopObserver{}
+	}
+	featureFlags := cfg.FeatureFlags
+	if featureFlags == nil {
+		featureFlags = func(context.Context) featureflag.Flags { return featureflag.Default() }
+	}
+	debugConfig := cfg.DebugConfig
+	if debugConfig == nil {
+		debugConfig = func(context.Context) RuntimeDebugConfig { return DefaultRuntimeDebugConfig() }
 	}
 	return &RuntimeKernel{
 		tools:              cfg.ToolSource,
@@ -194,9 +225,29 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 		artifactRepo:       cfg.ArtifactRepo,
 		skillRegistry:      cfg.SkillRegistry,
 		evidenceService:    cfg.EvidenceService,
+		featureFlags:       featureFlags,
+		debugConfig:        debugConfig,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
 	}
+}
+
+func (k *RuntimeKernel) runtimeFeatureFlags(ctx context.Context) featureflag.Flags {
+	if k == nil || k.featureFlags == nil {
+		return featureflag.Default()
+	}
+	return k.featureFlags(ctx).Clone()
+}
+
+func (k *RuntimeKernel) runtimeDebugConfig(ctx context.Context) RuntimeDebugConfig {
+	if k == nil || k.debugConfig == nil {
+		return DefaultRuntimeDebugConfig()
+	}
+	cfg := k.debugConfig(ctx)
+	if strings.TrimSpace(cfg.ModelInputTraceRoot) == "" {
+		cfg.ModelInputTraceRoot = modeltrace.DefaultRootDir("")
+	}
+	return cfg
 }
 
 func (k *RuntimeKernel) runtimeObserver() Observer {
@@ -1547,7 +1598,7 @@ func (k *RuntimeKernel) runTurnHook(ctx context.Context, stage hooks.Stage, sess
 }
 
 func (k *RuntimeKernel) compileContext(session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
-	flags := featureflag.FromEnv(os.Getenv)
+	flags := k.runtimeFeatureFlags(context.Background())
 	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
 	if source, ok := k.tools.(metadataToolAssemblySource); ok {
 		compileCtx := promptcompiler.CompileContext{
@@ -1570,14 +1621,27 @@ func (k *RuntimeKernel) compileContext(session SessionType, mode Mode, metadata 
 }
 
 func (k *RuntimeKernel) attachDeferredToolDirectoryContext(ctx promptcompiler.CompileContext, session SessionType, mode Mode, metadata map[string]string) promptcompiler.CompileContext {
+	if !runtimeToolSearchEnabled(metadata) {
+		ctx.DeferredToolCatalog = nil
+		if ctx.MCPHealthSnapshot == nil {
+			ctx.MCPHealthSnapshot = mcpHealthSnapshotForPrompt()
+		}
+		return ctx
+	}
 	if len(ctx.DeferredToolCatalog) == 0 {
 		ctx.DeferredToolCatalog = k.progressiveDiscoveryCatalog(session, mode)
 	}
+	ctx.DeferredToolCatalog = filterDeferredDiscoveryCatalog(ctx.DeferredToolCatalog)
 	ctx.DeferredToolCatalog = tooling.FilterToolsByPackMetadata(ctx.DeferredToolCatalog, metadata)
 	if ctx.MCPHealthSnapshot == nil {
 		ctx.MCPHealthSnapshot = mcpHealthSnapshotForPrompt()
 	}
 	return ctx
+}
+
+func runtimeToolSearchEnabled(metadata map[string]string) bool {
+	return metadataBool(metadata["aiops.toolSearch.enabled"]) ||
+		metadataListContains(metadata["enableTool"], "tool_search")
 }
 
 func mcpHealthSnapshotForPrompt() map[string]string {
@@ -1753,7 +1817,24 @@ func (k *RuntimeKernel) progressiveDiscoveryCatalog(session SessionType, mode Mo
 	if !ok {
 		return nil
 	}
-	return source.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{IncludeDeferredCatalog: true})
+	return filterDeferredDiscoveryCatalog(source.AssembleToolsWithOptions(string(session), string(mode), tooling.AssembleOptions{IncludeDeferredCatalog: true}))
+}
+
+func filterDeferredDiscoveryCatalog(tools []tooling.Tool) []tooling.Tool {
+	if len(tools) == 0 {
+		return nil
+	}
+	out := make([]tooling.Tool, 0, len(tools))
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		if tooling.ToolExcludedFromDeferredDiscovery(toolDef.Metadata()) {
+			continue
+		}
+		out = append(out, toolDef)
+	}
+	return out
 }
 
 func (k *RuntimeKernel) contextBudgetPolicyForSession(session *SessionState, agentKind modelrouter.AgentKind) ContextBudgetPolicy {
@@ -1986,7 +2067,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "call_model", turnSpanID)
 		runtimeToolSurface := runtimeToolRouterSnapshotFromCompile(compileCtx.AssembledTools, visibleToolNames, toolFingerprint, surfacePolicy)
-		stepCtx, promptBuild, modelInput, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, thresholds, modelNameForTrace(chatModel))
+		stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, thresholds, modelNameForTrace(chatModel))
 		if modelErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
@@ -1998,6 +2079,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			promptInputDiff = &diff
 		}
 		toolTraceFields := buildModelInputToolTraceFields(session, snapshot, toolFingerprint, surfacePolicy.Hash)
+		webSearchTrace := promptInputWebSearchTrace(snapshot, dispatchTools)
+		finalTrace := promptInputFinalTrace(snapshot)
 		finalEvidenceTrace := BuildFinalEvidenceState(snapshot, session)
 		planRequirementTrace := planRequirementDecisionTrace(EvaluatePlanRequirement(snapshot.TaskDepth, snapshot, false))
 		planCompletionDecision, planCompletionPresent := evaluateRuntimePlanCompletionGate(session, snapshot)
@@ -2006,9 +2089,13 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
 		uxProgressTrace := BuildUXProgressTrace(snapshot)
 		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
-		tracePath, _ := writeRuntimeStepTrace(stepCtx, RuntimeTraceDebugRequest{
+		debugConfig := k.runtimeDebugConfig(ctx)
+		tracePath, _ := writeRuntimeStepTrace(modeltrace.Config{
+			Enabled: debugConfig.ModelInputTrace,
+			RootDir: debugConfig.ModelInputTraceRoot,
+		}, stepCtx, RuntimeTraceDebugRequest{
 			Metadata:                      turnMetadata,
-			ModelInput:                    modelInput,
+			ModelInput:                    append([]promptinput.ModelInputItem(nil), promptBuild.Items...),
 			PromptInputTrace:              promptBuild.Trace,
 			PromptInputDiff:               promptInputDiff,
 			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
@@ -2029,6 +2116,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			ToolSurfacePolicySnapshotHash: toolTraceFields.ToolSurfacePolicySnapshotHash,
 			ToolSurfaceSnapshot:           toolTraceFields.ToolSurfaceSnapshot,
 			PublicWebBudget:               toolTraceFields.PublicWebBudget,
+			WebSearch:                     webSearchTrace,
+			Final:                         finalTrace,
 			LoadedToolsDelta:              toolTraceFields.LoadedToolsDelta,
 			LoadedPacksDelta:              toolTraceFields.LoadedPacksDelta,
 			SkillIndexHash:                toolTraceFields.SkillIndexHash,
@@ -2083,7 +2172,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			PromptStableHash:  stablePromptHash,
 			PromptFingerprint: promptFingerprint,
 			VisibleTools:      visibleToolNames,
-			MessageCount:      len(modelInput),
+			MessageCount:      len(promptBuild.Items),
 			TraceFile:         traceFile,
 			TraceDiffFile:     traceDiffFile,
 		})
@@ -2096,7 +2185,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		streamStats := ModelStreamStats{}
 		var firstDeltaAt time.Time
 		var lastDeltaAt time.Time
-		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool))
+		effectiveProviderConfig := k.modelRouter.ResolveEffectiveProviderConfig(agentKind, modelrouter.ProviderConfig{})
+		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool), modelrouter.WithEinoRequestTimeoutMs(effectiveProviderConfig.RequestTimeoutMs))
 		providerResponse, genErr := providerAdapter.Call(modelCtx, stepCtx.ProviderRequest, func(delta string) {
 			if delta != "" {
 				now := time.Now()
@@ -2108,31 +2198,24 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				streamStats.DeltaCount++
 				streamStats.OutputChars += utf8.RuneCountInString(delta)
 				iterationAssistantOutput += delta
-				if strings.TrimSpace(iterationAssistantOutput) != "" {
-					upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusRunning, iterationAssistantOutput, assistantMessageData{
-						Iteration:   iteration,
-						Phase:       AssistantMessagePhaseFinalAnswer,
-						StreamState: AssistantMessageStreamStateStreaming,
-						TextHash:    debugTextHash(iterationAssistantOutput),
-					})
-				}
+				upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusRunning, iterationAssistantOutput, assistantMessageData{
+					Iteration:          iteration,
+					Phase:              AssistantMessagePhaseFinalAnswer,
+					StreamState:        AssistantMessageStreamStateStreaming,
+					TextHash:           debugTextHash(iterationAssistantOutput),
+					GenerationDuration: time.Since(modelCallStartedAt),
+				})
 				if streamStats.DeltaCount == 1 || streamStats.DeltaCount%500 == 0 {
 					fields := debugTextFacts(iterationAssistantOutput)
 					fields["assistantMessageID"] = assistantMessageID
 					fields["deltaCount"] = streamStats.DeltaCount
-					fields["phase"] = string(AssistantMessagePhaseFinalAnswer)
-					fields["streamState"] = string(AssistantMessageStreamStateStreaming)
-					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_streaming", snapshot, fields)
+					fields["phase"] = "unclassified"
+					fields["streamState"] = "accumulating"
+					debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_output_accumulating", snapshot, fields)
 				}
 				snapshot.UpdatedAt = time.Now()
 				k.persistTurnSnapshot(session, snapshot)
 			}
-			k.emitRuntimeEvent(EventAssistantFinalDelta, session.ID, turnID, map[string]any{
-				"text":        delta,
-				"phase":       string(AssistantMessagePhaseFinalAnswer),
-				"streamState": string(AssistantMessageStreamStateStreaming),
-				"iteration":   iteration,
-			})
 		}, func(event modelrouter.ReasoningStreamEvent) {
 			if event.Raw || event.PartAdded || strings.TrimSpace(event.Delta) == "" {
 				return
@@ -2169,7 +2252,6 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				"foldable":     true,
 			})
 		})
-		response := providerResponse.Message
 		modelCallDuration := time.Since(modelCallStartedAt)
 		if !firstDeltaAt.IsZero() {
 			streamEnd := time.Now()
@@ -2181,15 +2263,15 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		{
 			fields := debugTextFacts(iterationAssistantOutput)
 			fields["assistantMessageID"] = assistantMessageID
-			fields["finishReason"] = modelResponseFinishReason(response)
+			fields["finishReason"] = providerResponseFinishReason(providerResponse)
 			fields["durationMs"] = modelCallDuration.Milliseconds()
 			fields["firstDeltaMs"] = streamStats.FirstDeltaMs
 			fields["streamMs"] = streamStats.StreamMs
 			fields["deltaCount"] = streamStats.DeltaCount
-			debugFinalStateLog(session.ID, turnID, iteration, "model_response_complete", snapshot, fields)
+			debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "model_response_complete", snapshot, fields)
 		}
 		if genErr != nil {
-			appendModelTraceResponse(tracePath, modelItemID, nil, modelCallDuration, genErr, streamStats)
+			appendModelTraceResponse(tracePath, stepCtx.ProviderRequest.ModelInputHash, modelrouter.ProviderResponse{}, modelCallDuration, genErr, streamStats)
 			hasAssistantMessageDraft := strings.TrimSpace(iterationAssistantOutput) != ""
 			if errors.Is(genErr, context.Canceled) || snapshot.Lifecycle == TurnLifecycleCanceled {
 				finishObservedSpan(modelSpan, "cancelled", genErr.Error(), map[string]any{"error": genErr.Error()})
@@ -2231,11 +2313,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, genErr
 		}
-		appendModelTraceResponse(tracePath, modelItemID, response, modelCallDuration, nil, streamStats)
-		toolCallCount := 0
-		if response != nil {
-			toolCallCount = len(response.ToolCalls)
-		}
+		appendModelTraceResponse(tracePath, modelItemID, providerResponse, modelCallDuration, nil, streamStats)
+		toolCallCount := len(providerResponse.ToolCalls)
 		finishObservedSpan(modelSpan, "completed", "", map[string]any{
 			"output.has_tool_calls":  toolCallCount > 0,
 			"output.tool_call_count": toolCallCount,
@@ -2286,15 +2365,25 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			UpdatedAt:               time.Now(),
 		}
 
-		assistantMsg := runtimeMessageFromSchema(response)
+		assistantMsg := runtimeMessageFromProviderResponse(providerResponse)
 		if assistantMsg.ID == "" {
 			assistantMsg.ID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
 		}
 		if assistantMsg.Timestamp.IsZero() {
 			assistantMsg.Timestamp = time.Now()
 		}
+		if len(assistantMsg.ToolCalls) == 0 {
+			if rawCalls := rawToolCallsFromAssistantText(assistantMsg.Content, turnID, iteration); len(rawCalls) > 0 {
+				assistantMsg.ToolCalls = rawCalls
+				assistantMsg.Content = ""
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["rawToolCallMarkupParsed"] = "true"
+			}
+		}
 		iterState.ToolCalls = append(iterState.ToolCalls, assistantMsg.ToolCalls...)
-		appendProviderNativeWebSearchTurnItems(snapshot, &iterState, turnID, modelrouter.ProviderNativeWebSearchEventsFromExtra(response.Extra))
+		appendProviderNativeWebSearchTurnItems(snapshot, &iterState, turnID, providerResponse.NativeWebSearchEvents)
 		assistantMessageCommitted := false
 		if len(assistantMsg.ToolCalls) > 0 {
 			session.Messages = append(session.Messages, assistantMsg)
@@ -2376,7 +2465,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
 					fields["decisionAction"] = completionDecision.Action
 					fields["decisionReasons"] = completionDecision.Reasons
-					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
+					debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 					k.persistTurnSnapshot(session, snapshot)
 					continue
 				}
@@ -2396,7 +2485,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
 					fields["decisionAction"] = mandatorySkillDecision.Action
 					fields["decisionReasons"] = mandatorySkillDecision.Reasons
-					debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
+					debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 					k.persistTurnSnapshot(session, snapshot)
 					continue
 				}
@@ -2407,7 +2496,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					TurnID:         turnID,
 				}, time.Now())
 			}
-			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent, modelResponseFinishReason(response))
+			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent, providerResponseFinishReason(providerResponse))
 			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
@@ -2421,7 +2510,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				fields["streamState"] = string(AssistantMessageStreamStateIncomplete)
 				fields["decisionAction"] = finalCompletenessDecision.Action
 				fields["decisionReasons"] = finalCompletenessDecision.Reasons
-				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_replaced_for_retry", snapshot, fields)
 				k.persistTurnSnapshot(session, snapshot)
 				continue
 			}
@@ -2451,9 +2540,20 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			finalEvidence := BuildFinalEvidenceState(snapshot, session)
 			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
+			if sanitized, changed := sanitizeFinalAssistantContentForCommit(assistantContent, finalEvidenceDecision); changed {
+				if snapshot.Metadata == nil {
+					snapshot.Metadata = map[string]string{}
+				}
+				snapshot.Metadata["finalRawToolCallMarkupConstrained"] = "true"
+				fields := debugTextFacts(assistantContent)
+				fields["replaceReason"] = "raw_tool_call_markup_final"
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				assistantContent = sanitized
+				finalEvidenceDecision = VerifyFinalEvidence(assistantContent, finalEvidence)
+			}
 			boundaryDecision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
 				Text:                assistantContent,
-				FinishReason:        modelResponseFinishReason(response),
+				FinishReason:        providerResponseFinishReason(providerResponse),
 				PendingToolIntent:   finalMessageHasProcessIntent(assistantContent),
 				FinalEvidenceAction: finalEvidenceDecision.Action,
 				RequiresEvidence:    len(finalEvidence.FailedTools) > 0 || len(finalEvidence.NotChecked) > 0,
@@ -2473,7 +2573,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				fields["decisionReasons"] = finalEvidenceDecision.Reasons
 				fields["boundaryAction"] = string(boundaryDecision.Action)
 				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				if finalMessageHasProcessIntent(assistantContent) {
 					assistantContent = incompleteFinalFromEvidenceDecision(finalEvidenceDecision)
 				} else {
@@ -2494,7 +2594,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				fields["decisionReasons"] = finalEvidenceDecision.Reasons
 				fields["boundaryAction"] = string(boundaryDecision.Action)
 				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				assistantContent = constrainFinalMessageForEvidenceBoundary(assistantContent, finalEvidenceDecision)
 			}
 			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); !finalEvidenceBlocked && blocked {
@@ -2505,7 +2605,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				fields := debugTextFacts(assistantContent)
 				fields["replaceReason"] = "missing_evidence_final_blocker"
 				fields["blockerHash"] = debugTextHash(blocker)
-				debugFinalStateLog(session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				assistantContent = blocker
 				boundaryDecision.Action = FinalMessageBoundaryBlock
 				boundaryDecision.EvidenceBoundary = "blocked"
@@ -2527,16 +2627,16 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			snapshot.Lifecycle = TurnLifecycleCompleted
 			snapshot.ResumeState = TurnResumeStateNone
-			completeAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
-				MessageID:        assistantMsg.ID,
+			commitFinalAssistantOutput(snapshot, assistantOutputCommitInput{
+				TurnID:           turnID,
 				Iteration:        iteration,
-				Phase:            AssistantMessagePhaseFinalAnswer,
-				StreamState:      AssistantMessageStreamStateComplete,
+				MessageID:        assistantMsg.ID,
+				AssistantText:    assistantContent,
+				Duration:         modelCallDuration,
+				FinishReason:     providerResponseFinishReason(providerResponse),
 				EvidenceBoundary: boundaryDecision.EvidenceBoundary,
 				BoundaryAction:   boundaryDecision.Action,
 				EvidenceRefs:     assistantMessageEvidenceRefsFromSnapshot(snapshot),
-				TextHash:         debugTextHash(assistantContent),
-				Duration:         modelCallDuration,
 			})
 			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
@@ -2560,47 +2660,36 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				fields["assistantMessageID"] = assistantMessageID
 				fields["finalStatus"] = string(agentstate.ItemStatusCompleted)
 				fields["durationMs"] = modelCallDuration.Milliseconds()
-				debugFinalStateLog(session.ID, turnID, iteration, "final_committed", snapshot, fields)
+				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "final_committed", snapshot, fields)
 			}
 			k.persistTurnSnapshot(session, snapshot)
 			return assistantContent, nil, nil
 		}
 
-		if assistantContent != "" {
-			progressAllowed := isAssistantProgressContentAllowed(assistantContent)
-			if progressAllowed {
-				completeAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
-					MessageID:   assistantMsg.ID,
-					Iteration:   iteration,
-					Phase:       AssistantMessagePhaseCommentary,
-					StreamState: AssistantMessageStreamStateComplete,
-					TextHash:    debugTextHash(assistantContent),
-					Duration:    modelCallDuration,
-				})
-			} else {
-				removeAgentItem(snapshot, assistantMessageID)
-			}
-			fields := debugTextFacts(assistantContent)
+		commitResult := commitAssistantOutputForIteration(snapshot, assistantOutputCommitInput{
+			TurnID:        turnID,
+			Iteration:     iteration,
+			MessageID:     assistantMsg.ID,
+			UserInput:     req.Input,
+			AssistantText: assistantContent,
+			ToolCalls:     assistantMsg.ToolCalls,
+			Duration:      modelCallDuration,
+			FinishReason:  providerResponseFinishReason(providerResponse),
+		})
+		if len(assistantMsg.ToolCalls) > 0 {
+			fields := debugTextFacts(firstNonEmptyString(commitResult.Text, assistantContent))
 			fields["assistantMessageID"] = assistantMessageID
-			if progressAllowed {
-				fields["phase"] = string(AssistantMessagePhaseCommentary)
-			} else {
-				fields["phase"] = "suppressed"
-				fields["commentaryWasLongOrFinalLike"] = true
-			}
-			fields["hasToolCalls"] = len(assistantMsg.ToolCalls) > 0
+			fields["phase"] = string(AssistantMessagePhaseCommentary)
+			fields["commentarySource"] = commitResult.CommentarySource
+			fields["suppressedRawDraft"] = commitResult.SuppressedRawDraft
+			fields["hasToolCalls"] = true
 			fields["toolCallCount"] = len(assistantMsg.ToolCalls)
-			debugFinalStateLog(session.ID, turnID, iteration, "assistant_content_before_tools_classified", snapshot, fields)
+			debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_commentary_before_tools_committed", snapshot, fields)
 			k.persistTurnSnapshot(session, snapshot)
 		} else if snapshot.FinalOutput != "" {
 			snapshot.FinalOutput = ""
 			snapshot.UpdatedAt = time.Now()
 			k.persistTurnSnapshot(session, snapshot)
-		}
-		if intentText := toolIntentPrelude(req.Input, assistantMsg); intentText != "" {
-			k.emitRuntimeEvent(EventAssistantIntent, session.ID, turnID, map[string]any{
-				"text": intentText,
-			})
 		}
 
 		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface)
@@ -3031,14 +3120,14 @@ func uniqueStrings(values []string) []string {
 
 func synthesisOnlyPromptAsset(toolDispatches int) string {
 	return fmt.Sprintf(
-		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户回答；如果证据不足，给出 budget-limited conclusion，明确已用证据和仍缺证据。不要把证据不足包装成已验证根因，也不要假装调查完整。",
+		"## Synthesis-only phase\n已收集 %d 个工具结果。停止继续调用工具，基于已有工具证据直接给用户回答；如果证据不足，给出 budget-limited conclusion，明确已用证据和仍缺证据。不要把证据不足包装成已验证根因，也不要假装调查完整。不要输出 tool_calls、DSML、invoke 或任何工具调用语法。",
 		toolDispatches,
 	)
 }
 
 func publicWebSynthesisOnlyPromptAsset(publicWebDispatches int) string {
 	return fmt.Sprintf(
-		"## Public-web synthesis-only phase\n已完成 %d 次公开网页/文档检索。停止继续调用 web_search 或 browse_url，基于已收集的权威来源直接给用户最终回答；只引用真正支撑结论的链接，不要继续扩展同义查询。如果证据不足，给出受限结论并列出仍缺的只读证据。",
+		"## Public-web synthesis-only phase\n已完成 %d 次公开网页/文档检索。停止继续调用 web_search，基于已收集的权威来源直接给用户最终回答；只引用真正支撑结论的链接，不要继续扩展同义查询。如果证据不足，给出受限结论并列出仍缺的只读证据。不要输出 tool_calls、DSML、invoke 或任何工具调用语法。",
 		publicWebDispatches,
 	)
 }
@@ -3051,7 +3140,7 @@ func evidenceAwareFinalAnswerPromptAsset(snapshot *TurnSnapshot, limit int) stri
 	lines := []string{
 		"## Evidence-aware final answer",
 		"Use the collected tool evidence summaries below when preparing the final answer. Do not invent evidence; if evidence is incomplete, state the limitation briefly.",
-		"When using web_search or browse_url evidence, cite the specific supporting source inline as `[参考: source title](URL)` immediately after the claim. Do not cite raw search queries as evidence.",
+		"When using web_search evidence, including operation=open evidence, cite the specific supporting source inline as `[参考: source title](URL)` immediately after the claim. Do not cite raw search queries as evidence.",
 		"",
 		"Collected evidence summaries:",
 	}
@@ -3279,32 +3368,32 @@ func toolIntentPrelude(userInput string, assistantMsg Message) string {
 			query = firstNonEmptyLine(userInput)
 		}
 		if query != "" {
-			return fmt.Sprintf("我会先搜索网页核对「%s」，必要时再读取来源或用只读命令校验，最后给出简洁结论。", truncateRunes(query, 80))
+			return fmt.Sprintf("我会先搜索网页核对「%s」，必要时再读取来源或用只读命令校验，最后整理简洁回答。", truncateRunes(query, 80))
 		}
-		return "我会先搜索网页核对关键信息，必要时再读取来源或用只读命令校验，最后给出简洁结论。"
+		return "我会先搜索网页核对关键信息，必要时再读取来源或用只读命令校验，最后整理简洁回答。"
 	case "open_page", "find_in_page":
 		target := toolCallStringField(firstTool, "url", "pattern", "query")
 		if target != "" {
-			return fmt.Sprintf("我会先浏览或检索「%s」里的关键信息，再基于证据给出结论。", truncateRunes(target, 80))
+			return fmt.Sprintf("我会先浏览或检索「%s」里的关键信息，再基于证据整理回答。", truncateRunes(target, 80))
 		}
-		return "我会先浏览或检索网页里的关键信息，再基于证据给出结论。"
-	case "shell_command", "exec_command", "execute_command", "execute_readonly_query", "code_mode":
+		return "我会先浏览或检索网页里的关键信息，再基于证据整理回答。"
+	case "shell_command", "exec_command", "exec_readonly", "execute_command", "execute_readonly_query", "code_mode":
 		command := toolCallStringField(firstTool, "command", "cmd", "query")
 		if command != "" {
-			return fmt.Sprintf("我会先执行只读命令「%s」获取证据，再根据输出给出结论。", truncateRunes(command, 80))
+			return fmt.Sprintf("我会先执行只读命令「%s」获取证据，再根据输出整理回答。", truncateRunes(command, 80))
 		}
-		return "我会先执行只读命令获取证据，再根据输出给出结论。"
+		return "我会先执行只读命令获取证据，再根据输出整理回答。"
 	case "read_file", "list_files", "list_dir", "search_files", "grep":
 		target := toolCallStringField(firstTool, "path", "file", "query", "pattern")
 		if target != "" {
-			return fmt.Sprintf("我会先检查「%s」相关内容，再整理必要证据和结论。", truncateRunes(target, 80))
+			return fmt.Sprintf("我会先检查「%s」相关内容，再整理必要证据和回答。", truncateRunes(target, 80))
 		}
-		return "我会先检查相关文件和上下文，再整理必要证据和结论。"
+		return "我会先检查相关文件和上下文，再整理必要证据和回答。"
 	default:
 		if toolName != "" {
-			return fmt.Sprintf("我会先用 %s 核对关键信息，再给出结论。", toolName)
+			return fmt.Sprintf("我会先用 %s 核对关键信息，再整理回答。", toolName)
 		}
-		return "我会先用可用工具核对关键信息，再给出结论。"
+		return "我会先用可用工具核对关键信息，再整理回答。"
 	}
 }
 
@@ -3516,9 +3605,85 @@ func publicWebToolNames(tools []promptcompiler.Tool) []string {
 		}
 	}
 	if len(names) == 0 {
-		names = append(names, "web_search", "browse_url")
+		names = append(names, "web_search")
 	}
 	return uniqueStrings(names)
+}
+
+func promptInputWebSearchTrace(snapshot *TurnSnapshot, tools []promptcompiler.Tool) *promptinput.WebSearchTrace {
+	if snapshot == nil {
+		return nil
+	}
+	trace := &promptinput.WebSearchTrace{}
+	for _, iteration := range snapshot.Iterations {
+		callsByID := make(map[string]ToolCall, len(iteration.ToolCalls))
+		for _, call := range iteration.ToolCalls {
+			callsByID[call.ID] = call
+			if isPublicWebToolCall(tools, call) {
+				trace.Attempted = true
+			}
+		}
+		for _, result := range iteration.ToolResults {
+			call := callsByID[result.ToolCallID]
+			if !isPublicWebToolCall(tools, call) {
+				continue
+			}
+			trace.Attempted = true
+			if strings.TrimSpace(result.Error) != "" && strings.TrimSpace(trace.FailureReason) == "" {
+				trace.FailureReason = truncateWebSearchSeed(result.Error)
+			}
+			adapter, sourceCount := webSearchTraceAdapterAndSourceCount(result.Content)
+			if trace.Adapter == "" {
+				trace.Adapter = adapter
+			}
+			if sourceCount > trace.SourceCount {
+				trace.SourceCount = sourceCount
+			}
+		}
+	}
+	if !trace.Attempted && trace.RetryCount == 0 && trace.Adapter == "" && trace.SourceCount == 0 && trace.FailureReason == "" {
+		return nil
+	}
+	return trace
+}
+
+func promptInputFinalTrace(snapshot *TurnSnapshot) *promptinput.FinalTrace {
+	if snapshot == nil || !metadataBool(snapshot.Metadata["aiops.webSearch.finalLimited"]) {
+		return nil
+	}
+	return &promptinput.FinalTrace{PublicWebLimitation: true}
+}
+
+func webSearchTraceAdapterAndSourceCount(content string) (string, int) {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return "", 0
+	}
+	var payload struct {
+		Source  string `json:"source"`
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Snippet string `json:"snippet"`
+		} `json:"results"`
+		Meta map[string]any `json:"meta"`
+	}
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return "", 0
+	}
+	adapter := strings.TrimSpace(payload.Source)
+	if adapter == "" && payload.Meta != nil {
+		if source, ok := payload.Meta["source"].(string); ok {
+			adapter = strings.TrimSpace(source)
+		}
+	}
+	sourceCount := 0
+	for _, result := range payload.Results {
+		if strings.TrimSpace(result.Title) != "" || strings.TrimSpace(result.URL) != "" || strings.TrimSpace(result.Snippet) != "" {
+			sourceCount++
+		}
+	}
+	return adapter, sourceCount
 }
 
 func limitPublicWebToolCall(tools []promptcompiler.Tool, call ToolCall, budget PublicWebBudget) ToolCall {
@@ -3900,10 +4065,10 @@ func enrichCompileContext(
 			Content: opsManualReference,
 		})
 	}
-	if webLearn := webLearnPromptSection(metadata); webLearn != "" {
+	if webSearchPolicy := webSearchPolicyPromptSection(metadata); webSearchPolicy != "" {
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
-			Title:   "WebLearn Source Policy",
-			Content: webLearn,
+			Title:   "Web Search Policy",
+			Content: webSearchPolicy,
 		})
 	}
 	if sessionType != SessionTypeHost || hostID != "server-local" {
@@ -4131,22 +4296,66 @@ func opsManualReferencePromptSection(metadata map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
-func webLearnPromptSection(metadata map[string]string) string {
-	if len(metadata) == 0 || !metadataBool(metadata["aiops.weblearn.enabled"]) {
+func webSearchPolicyPromptSection(metadata map[string]string) string {
+	if len(metadata) == 0 {
 		return ""
 	}
-	lines := []string{
-		"When unfamiliar middleware, tool versions, operating-system command semantics, networking behavior, or environment-specific differences matter, use web_search/browse_url before giving operational conclusions.",
-		"Prefer official documentation, vendor docs, project docs, source repositories, and version-specific documentation first; cite the source URL and explain the applicable version or environment when relying on WebLearn.",
-		"Do not use exec_command, bash, shell, or Python as a substitute for WebLearn. Host commands require an explicit @host/@local target and are not available for advisory/evidence-only turns.",
+	policy := webSearchPolicyLevelFromMetadata(metadata)
+	if policy == "" || policy == WebSearchDisabled {
+		return ""
+	}
+	lines := []string{strings.TrimSpace(webSearchPolicyPromptAsset), ""}
+	lines = append(lines, fmt.Sprintf("WebSearchPolicy: %s", policy))
+	lines = append(lines, "Tool availability: web_search is enabled for this turn.")
+	if reason := strings.TrimSpace(metadata["aiops.webSearch.reason"]); reason != "" {
+		lines = append(lines, fmt.Sprintf("Reason: %s", reason))
+	}
+	if reasonCodes := strings.TrimSpace(metadata["aiops.webSearch.reasonCodes"]); reasonCodes != "" {
+		lines = append(lines, fmt.Sprintf("Reason codes: %s", reasonCodes))
+	}
+	lines = append(lines, "Use web_search when public evidence would materially improve correctness; cite source URLs when used.")
+	if querySeeds := webSearchQuerySeedsPromptLines(metadata["aiops.webSearch.querySeeds"]); len(querySeeds) > 0 {
+		lines = append(lines, "Query seeds:")
+		lines = append(lines, querySeeds...)
 	}
 	if strings.EqualFold(strings.TrimSpace(metadata["aiops.weblearn.sourcePolicy"]), "official_first") {
 		lines = append(lines, "Source policy: official_first / 官方来源优先。")
 	}
 	if evidence := webLearnEvidencePromptSection(metadata["aiops.weblearn.evidence"]); evidence != "" {
-		lines = append(lines, "", "WebLearn Evidence", evidence)
+		lines = append(lines, "", "Web Search Evidence", evidence)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func webSearchPolicyLevelFromMetadata(metadata map[string]string) WebSearchPolicyLevel {
+	policy := WebSearchPolicyLevel(strings.ToLower(strings.TrimSpace(metadata["aiops.webSearch.policy"])))
+	switch policy {
+	case WebSearchDisabled, WebSearchEnabled:
+		return policy
+	case "must_search":
+		return WebSearchEnabled
+	}
+	if metadataBool(metadata["aiops.weblearn.enabled"]) {
+		return WebSearchEnabled
+	}
+	return ""
+}
+
+func webSearchQuerySeedsPromptLines(raw string) []string {
+	lines := make([]string, 0, 3)
+	for _, seed := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		seed = sanitizeWebSearchQuerySeed(seed)
+		if seed == "" {
+			continue
+		}
+		lines = append(lines, "- "+truncateWebSearchSeed(seed))
+		if len(lines) >= 3 {
+			break
+		}
+	}
+	return lines
 }
 
 type runtimeWebLearnEvidence struct {
@@ -4457,13 +4666,10 @@ func iterationHasToolResult(iter *IterationState, toolCallID string) bool {
 }
 
 func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[string]any {
-	outputSummary, _, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, result.Content)
+	outputSummary, _, _, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, result.Content)
 	if terminal := terminalEnvelopeFromToolResultContent(result.Content); terminal != nil {
 		if terminal.Command != "" {
 			outputSummary = terminal.Command
-		}
-		if terminal.Stdout != "" {
-			outputPreview, _ = json.Marshal(terminal.Stdout)
 		}
 	}
 	payload := map[string]any{
@@ -4480,9 +4686,6 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	if len(tc.Arguments) > 0 {
 		payload["arguments"] = json.RawMessage(append([]byte(nil), tc.Arguments...))
 	}
-	if len(outputPreview) > 0 {
-		payload["outputPreview"] = outputPreview
-	}
 	if evidenceRefs := evidenceRefsFromToolResultContent(result.Content); len(evidenceRefs) > 0 {
 		payload["evidenceRefs"] = evidenceRefs
 	}
@@ -4492,11 +4695,7 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	if result.Display != nil {
 		payload["displayKind"] = result.Display.Type
 		if len(result.Display.Data) > 0 {
-			if toolDisplayDataShouldStayOutOfPreview(result.Display.Type) {
-				payload["displayData"] = append(json.RawMessage(nil), result.Display.Data...)
-			} else {
-				payload["outputPreview"] = append(json.RawMessage(nil), result.Display.Data...)
-			}
+			payload["displayData"] = append(json.RawMessage(nil), result.Display.Data...)
 		}
 	}
 	if result.MaterializationTier != "" {
@@ -4525,11 +4724,8 @@ func finalCompletenessFailureError(decision FinalCompletenessDecision) error {
 	return fmt.Errorf("assistant message incomplete: %s", reasons)
 }
 
-func modelResponseFinishReason(response *schema.Message) string {
-	if response == nil || response.ResponseMeta == nil {
-		return ""
-	}
-	return strings.TrimSpace(response.ResponseMeta.FinishReason)
+func providerResponseFinishReason(response modelrouter.ProviderResponse) string {
+	return strings.TrimSpace(response.FinishReason)
 }
 
 func compactStringList(values []string) []string {
@@ -4759,7 +4955,7 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
 		WithRuntimeToolRouterSnapshot(runtimeToolSurface).
 		WithVisibleToolMetadata(toolMetadataList(tools)).
-		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(featureflag.FromEnv(os.Getenv))).
+		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(k.runtimeFeatureFlags(context.Background()))).
 		WithResourceLockGate(k.resourceLockGate).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
 	if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
@@ -4793,7 +4989,7 @@ func (k *RuntimeKernel) deferredCatalogLookup(session SessionType, mode Mode) De
 			continue
 		}
 		meta := toolDef.Metadata()
-		if meta.Name == "" || tooling.ToolHiddenFromDiscovery(meta) {
+		if meta.Name == "" || tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolExcludedFromDeferredDiscovery(meta) {
 			continue
 		}
 		if meta.Layer != tooling.ToolLayerDeferred && !meta.DeferByDefault && meta.Pack == "" {
@@ -4838,63 +5034,23 @@ func reasoningItemID(event modelrouter.ReasoningStreamEvent) string {
 	return fmt.Sprintf("%s:reasoning:%d", turnID, event.SummaryIndex)
 }
 
-func runtimeMessagesToSchema(messages []Message) ([]*schema.Message, error) {
-	out := make([]*schema.Message, 0, len(messages))
-	for _, msg := range messages {
-		switch msg.Role {
-		case "system":
-			out = append(out, schema.SystemMessage(msg.Content))
-		case "user":
-			out = append(out, schema.UserMessage(msg.Content))
-		case "assistant":
-			out = append(out, schema.AssistantMessage(msg.Content, schemaToolCallsFromRuntime(msg.ToolCalls)))
-		case "tool":
-			toolCallID := ""
-			if msg.ToolResult != nil {
-				toolCallID = msg.ToolResult.ToolCallID
-			}
-			out = append(out, schema.ToolMessage(msg.Content, toolCallID))
-		default:
-			return nil, fmt.Errorf("unsupported runtime message role %q", msg.Role)
-		}
-	}
-	return out, nil
-}
-
-func runtimeMessageFromSchema(msg *schema.Message) Message {
-	if msg == nil {
-		return Message{}
-	}
+func runtimeMessageFromProviderResponse(response modelrouter.ProviderResponse) Message {
 	return Message{
-		Role:      string(msg.Role),
-		Content:   msg.Content,
-		ToolCalls: runtimeToolCallsFromSchema(msg.ToolCalls),
+		Role:      "assistant",
+		Content:   response.Output,
+		ToolCalls: runtimeToolCallsFromModelInput(response.ToolCalls),
 		Timestamp: time.Now(),
 	}
 }
 
-func runtimeToolCallsFromSchema(toolCalls []schema.ToolCall) []ToolCall {
+func runtimeToolCallsFromModelInput(toolCalls []promptinput.ModelInputToolCall) []ToolCall {
 	out := make([]ToolCall, 0, len(toolCalls))
 	for _, call := range toolCalls {
+		args := append(json.RawMessage(nil), call.Arguments...)
 		out = append(out, ToolCall{
 			ID:        call.ID,
-			Name:      call.Function.Name,
-			Arguments: json.RawMessage(call.Function.Arguments),
-		})
-	}
-	return out
-}
-
-func schemaToolCallsFromRuntime(toolCalls []ToolCall) []schema.ToolCall {
-	out := make([]schema.ToolCall, 0, len(toolCalls))
-	for _, call := range toolCalls {
-		out = append(out, schema.ToolCall{
-			ID:   call.ID,
-			Type: "function",
-			Function: schema.FunctionCall{
-				Name:      call.Name,
-				Arguments: string(call.Arguments),
-			},
+			Name:      call.Name,
+			Arguments: args,
 		})
 	}
 	return out
@@ -5803,6 +5959,19 @@ func (k *RuntimeKernel) markTurnFailedFromError(session *SessionState, snapshot 
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	k.persistTurnSnapshot(session, snapshot)
+	if k.projector != nil {
+		payload, _ := json.Marshal(map[string]any{
+			"error":          errText,
+			"checkpointKind": checkpointKind,
+		})
+		k.projector.Emit(LifecycleEvent{
+			Type:      EventTurnError,
+			SessionID: session.ID,
+			TurnID:    snapshot.ID,
+			Timestamp: now,
+			Payload:   payload,
+		})
+	}
 	return nil
 }
 

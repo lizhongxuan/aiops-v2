@@ -1,4 +1,4 @@
-import { ArrowRight, BookOpen, Bot, Boxes, KeyRound, LayoutGrid, Server, Settings, Wrench } from "lucide-react";
+import { ArrowRight, BookOpen, Bot, Boxes, KeyRound, LayoutGrid, Server, Settings, SlidersHorizontal, Wrench } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { Badge } from "@/components/ui/badge";
@@ -7,6 +7,7 @@ import { SettingsPageFrame } from "@/pages/settingsComponents";
 
 const primaryEntries = [
   { title: "LLM 配置", description: "模型接入、API Key、模型选择", path: "/settings/llm", icon: KeyRound },
+  { title: "运行时配置", description: "Agent、工具、Workflow、Debug 的运行期参数", path: "/settings/runtime", icon: SlidersHorizontal },
   { title: "Hosts", description: "主机清单、标签、会话与接入状态", path: "/settings/hosts", icon: Server },
   { title: "运维手册", description: "已验证手册、待审核候选、执行记录", path: "/settings/ops-manuals", icon: BookOpen },
   { title: "Agent Profile", description: "System prompt 与权限策略", path: "/settings/agent", icon: Bot },

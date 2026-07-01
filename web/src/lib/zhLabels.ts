@@ -123,6 +123,7 @@ export const zhNavigationTitles: LabelMap = {
   "/opsgraph/graphs": "OpsGraph 列表",
   "/runner": "Runner Workflow",
   "/settings/llm": "LLM 配置",
+  "/settings/runtime": "运行时配置",
   "/settings/hosts": "主机列表",
   "/settings/ops_manuals": "运维手册",
   "/settings/experience_packs": "运维手册",

@@ -29,10 +29,10 @@ func TestOpenConfiguredStore(t *testing.T) {
 		}
 	})
 
-	t.Run("mysql requires dsn", func(t *testing.T) {
+	t.Run("mysql driver is not configured through OpenConfiguredStore", func(t *testing.T) {
 		_, err := OpenConfiguredStore(OpenConfig{DataDir: t.TempDir(), Driver: "mysql"})
-		if err == nil || !strings.Contains(err.Error(), "AIOPS_MYSQL_DSN") {
-			t.Fatalf("OpenConfiguredStore() error = %v, want mysql dsn error", err)
+		if err == nil || !strings.Contains(err.Error(), "unsupported store driver") {
+			t.Fatalf("OpenConfiguredStore() error = %v, want unsupported driver error", err)
 		}
 	})
 

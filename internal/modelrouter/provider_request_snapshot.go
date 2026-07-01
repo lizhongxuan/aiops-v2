@@ -49,6 +49,7 @@ func (r *ProviderRequestSnapshot) ComputeHashes() {
 		"tools":           r.Tools,
 		"reasoningEffort": r.ReasoningEffort,
 		"cacheGroups":     cacheGroupsForProviderInput(r.Input),
+		"inputContent":    promptCacheInputHash(r.Input),
 	})
 }
 
@@ -60,6 +61,65 @@ func cacheGroupsForProviderInput(items []promptinput.ModelInputItem) []string {
 		}
 	}
 	return out
+}
+
+func promptCacheInputHash(items []promptinput.ModelInputItem) string {
+	type cacheToolCall struct {
+		Name      string          `json:"name,omitempty"`
+		Arguments json.RawMessage `json:"arguments,omitempty"`
+	}
+	type cacheToolResult struct {
+		Content string `json:"content,omitempty"`
+	}
+	type cacheSource struct {
+		Layer     string `json:"layer,omitempty"`
+		SectionID string `json:"sectionId,omitempty"`
+		Origin    string `json:"origin,omitempty"`
+	}
+	type cacheInputItem struct {
+		ProviderRole promptinput.ProviderRole            `json:"providerRole"`
+		SemanticRole string                              `json:"semanticRole,omitempty"`
+		Content      string                              `json:"content,omitempty"`
+		ContentParts []promptinput.ModelInputContentPart `json:"contentParts,omitempty"`
+		Name         string                              `json:"name,omitempty"`
+		ToolCalls    []cacheToolCall                     `json:"toolCalls,omitempty"`
+		ToolResult   *cacheToolResult                    `json:"toolResult,omitempty"`
+		Source       cacheSource                         `json:"source,omitempty"`
+		Phase        string                              `json:"phase,omitempty"`
+		CacheGroup   string                              `json:"cacheGroup,omitempty"`
+	}
+
+	cacheItems := make([]cacheInputItem, 0, len(items))
+	for _, item := range items {
+		cacheCalls := make([]cacheToolCall, 0, len(item.ToolCalls))
+		for _, call := range item.ToolCalls {
+			cacheCalls = append(cacheCalls, cacheToolCall{
+				Name:      call.Name,
+				Arguments: append(json.RawMessage(nil), call.Arguments...),
+			})
+		}
+		var toolResult *cacheToolResult
+		if item.ToolResult != nil {
+			toolResult = &cacheToolResult{Content: item.ToolResult.Content}
+		}
+		cacheItems = append(cacheItems, cacheInputItem{
+			ProviderRole: item.ProviderRole,
+			SemanticRole: item.SemanticRole,
+			Content:      item.Content,
+			ContentParts: append([]promptinput.ModelInputContentPart(nil), item.ContentParts...),
+			Name:         item.Name,
+			ToolCalls:    cacheCalls,
+			ToolResult:   toolResult,
+			Source: cacheSource{
+				Layer:     item.Source.Layer,
+				SectionID: item.Source.SectionID,
+				Origin:    item.Source.Origin,
+			},
+			Phase:      item.Phase,
+			CacheGroup: item.CacheGroup,
+		})
+	}
+	return stableHash(cacheItems)
 }
 
 func stableHash(value any) string {

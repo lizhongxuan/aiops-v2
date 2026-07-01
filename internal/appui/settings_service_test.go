@@ -10,8 +10,10 @@ import (
 )
 
 type settingsRepoStub struct {
-	web *store.WebSettings
-	llm *store.LLMConfig
+	web            *store.WebSettings
+	llm            *store.LLMConfig
+	runtime        *store.RuntimeSettings
+	saveRuntimeErr error
 }
 
 func (s *settingsRepoStub) GetWebSettings() (*store.WebSettings, error) {
@@ -41,6 +43,23 @@ func (s *settingsRepoStub) GetLLMConfig() (*store.LLMConfig, error) {
 func (s *settingsRepoStub) SaveLLMConfig(config *store.LLMConfig) error {
 	cp := *config
 	s.llm = &cp
+	return nil
+}
+
+func (s *settingsRepoStub) GetRuntimeSettings() (*store.RuntimeSettings, error) {
+	if s.runtime == nil {
+		return nil, fmt.Errorf("runtime settings not found")
+	}
+	cp := store.NormalizeRuntimeSettings(*s.runtime)
+	return &cp, nil
+}
+
+func (s *settingsRepoStub) SaveRuntimeSettings(settings *store.RuntimeSettings) error {
+	if s.saveRuntimeErr != nil {
+		return s.saveRuntimeErr
+	}
+	cp := store.NormalizeRuntimeSettings(*settings)
+	s.runtime = &cp
 	return nil
 }
 
@@ -112,6 +131,118 @@ func TestSettingsServiceLoadsAndUpdatesSettingsAndLLMConfig(t *testing.T) {
 	}
 	if repo.llm.ReasoningEffort != "medium" || repo.web.ReasoningEffort != "medium" {
 		t.Fatalf("repo.llm = %+v repo.web = %+v, want invalid reasoning effort normalized to medium", repo.llm, repo.web)
+	}
+}
+
+func TestSettingsServiceRuntimeSettingsDefaultsAndPartialUpdate(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+
+	initial, err := svc.GetRuntimeSettings(context.Background())
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings() error = %v", err)
+	}
+	if initial.Settings.AgentRuntime.IntentFrameRouting != "trace_only" || !initial.Settings.Debug.ModelInputTrace {
+		t.Fatalf("initial settings = %+v, want defaults", initial.Settings)
+	}
+
+	enabled := true
+	provider := "docker"
+	image := "python:3.12-bookworm"
+	updated, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
+		Tooling: &RuntimeToolingSettingsUpdate{
+			ReadOnlyRetryEnabled: &enabled,
+		},
+		Workflow: &RuntimeWorkflowSettingsUpdate{
+			ValidationProvider: &provider,
+			ValidationImage:    &image,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRuntimeSettings() error = %v", err)
+	}
+	if !updated.Settings.Tooling.ReadOnlyRetryEnabled || updated.Settings.Tooling.ReadOnlyRetryMaxPerTurn != 3 {
+		t.Fatalf("updated tooling = %+v, want partial update preserving defaults", updated.Settings.Tooling)
+	}
+	if updated.Settings.Workflow.ValidationProvider != "docker" || updated.Settings.Workflow.ValidationImage != "python:3.12-bookworm" {
+		t.Fatalf("updated workflow = %+v, want docker/bookworm", updated.Settings.Workflow)
+	}
+	if repo.runtime == nil || repo.runtime.Workflow.ValidationProvider != "docker" {
+		t.Fatalf("repo.runtime = %+v, want saved runtime settings", repo.runtime)
+	}
+	if snapshotter, ok := svc.(RuntimeSettingsProvider); !ok {
+		t.Fatalf("settings service does not implement RuntimeSettingsProvider")
+	} else if snapshotter.Snapshot(context.Background()).Workflow.ValidationProvider != "docker" {
+		t.Fatalf("provider snapshot = %+v, want saved settings", snapshotter.Snapshot(context.Background()))
+	}
+}
+
+func TestSettingsServiceRuntimeSettingsNormalizesInvalidPartialUpdate(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+
+	route := "bad"
+	retries := 99
+	maxBackoff := -2
+	updated, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
+		AgentRuntime: &RuntimeAgentSettingsUpdate{
+			IntentFrameRouting: &route,
+		},
+		Tooling: &RuntimeToolingSettingsUpdate{
+			ReadOnlyRetryMaxPerTurn:   &retries,
+			ReadOnlyRetryBackoffMaxMs: &maxBackoff,
+		},
+	})
+	if err != nil {
+		t.Fatalf("UpdateRuntimeSettings() error = %v", err)
+	}
+	if updated.Settings.AgentRuntime.IntentFrameRouting != "trace_only" {
+		t.Fatalf("IntentFrameRouting = %q, want trace_only", updated.Settings.AgentRuntime.IntentFrameRouting)
+	}
+	if updated.Settings.Tooling.ReadOnlyRetryMaxPerTurn != 10 || updated.Settings.Tooling.ReadOnlyRetryBackoffMaxMs != 2000 {
+		t.Fatalf("tooling = %+v, want normalized retry values", updated.Settings.Tooling)
+	}
+}
+
+func TestSettingsServiceRuntimeSettingsSaveFailureDoesNotUpdateSnapshot(t *testing.T) {
+	initial := store.DefaultRuntimeSettings()
+	repo := &settingsRepoStub{runtime: &initial, saveRuntimeErr: fmt.Errorf("write failed")}
+	svc := NewSettingsService(repo)
+	before := svc.(RuntimeSettingsProvider).Snapshot(context.Background())
+
+	route := "active"
+	_, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
+		AgentRuntime: &RuntimeAgentSettingsUpdate{IntentFrameRouting: &route},
+	})
+	if err == nil {
+		t.Fatal("UpdateRuntimeSettings() error = nil, want save failure")
+	}
+	after := svc.(RuntimeSettingsProvider).Snapshot(context.Background())
+	if before.AgentRuntime.IntentFrameRouting != after.AgentRuntime.IntentFrameRouting {
+		t.Fatalf("snapshot changed after save failure: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestSettingsServiceRuntimeSettingsNotifiesListenersAfterSave(t *testing.T) {
+	repo := &settingsRepoStub{}
+	svc := NewSettingsService(repo)
+	registrar, ok := svc.(RuntimeSettingsListenerRegistrar)
+	if !ok {
+		t.Fatal("settings service does not implement RuntimeSettingsListenerRegistrar")
+	}
+	var observed []store.RuntimeSettings
+	registrar.AddRuntimeSettingsListener(func(settings store.RuntimeSettings) {
+		observed = append(observed, settings)
+	})
+
+	mode := "warning"
+	if _, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
+		Workflow: &RuntimeWorkflowSettingsUpdate{ReferenceGuardMode: &mode},
+	}); err != nil {
+		t.Fatalf("UpdateRuntimeSettings() error = %v", err)
+	}
+	if len(observed) != 1 || observed[0].Workflow.ReferenceGuardMode != "warning" {
+		t.Fatalf("observed = %+v, want one warning snapshot", observed)
 	}
 }
 

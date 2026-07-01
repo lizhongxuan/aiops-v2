@@ -22,6 +22,7 @@ const routedPaths = [
   "/terminal/host-1",
   "/settings",
   "/settings/llm",
+  "/settings/runtime",
   "/settings/hosts",
   "/settings/ops-manuals",
   "/settings/experience-packs",
@@ -43,6 +44,7 @@ describe("AppRouter", () => {
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    HTMLElement.prototype.scrollTo = vi.fn();
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
       unobserve() {}

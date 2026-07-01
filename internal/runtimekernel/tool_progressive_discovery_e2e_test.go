@@ -37,7 +37,7 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
 		TurnID:      "turn-progressive-search-select",
-		Input:       "synthetic_complex_tool_discovery_request",
+		Input:       "use tool_search to discover a deferred synthetic metrics tool",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -67,8 +67,7 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 
 func TestProgressiveDiscoverySelectablePackRecordsLoadedPacksDeltaInToolSurfaceSnapshot(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{toolSearchCall("call-search", `{"mode":"search","query":"coroot postgres rca"}`)}),
@@ -92,7 +91,7 @@ func TestProgressiveDiscoverySelectablePackRecordsLoadedPacksDeltaInToolSurfaceS
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
 		TurnID:      "turn-progressive-pack-select",
-		Input:       "use tool_search to find the needed evidence tool",
+		Input:       "use tool_search to discover the needed deferred evidence pack",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -146,7 +145,7 @@ func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
 		TurnID:      "turn-progressive-unloaded",
-		Input:       "call a deferred synthetic metrics tool directly, then recover",
+		Input:       "use tool_search to discover a deferred synthetic metrics tool after direct unloaded call recovery",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
@@ -164,16 +163,38 @@ func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 	if !containsString(session.ToolDiscovery.EnabledTools(), "synthetic.metrics.read") {
 		t.Fatalf("enabled tools = %v, want synthetic.metrics.read after select", session.ToolDiscovery.EnabledTools())
 	}
-	for _, want := range []string{"证据", "受限"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want verifier-constrained evidence boundary containing %q", result.Output, want)
-		}
+	if !strings.Contains(result.Output, "证据") && !strings.Contains(strings.ToLower(result.Output), "evidence") {
+		t.Fatalf("final output = %q, want verifier-constrained evidence boundary", result.Output)
+	}
+	if !strings.Contains(result.Output, "受限") && !strings.Contains(strings.ToLower(result.Output), "limited") {
+		t.Fatalf("final output = %q, want limited evidence boundary", result.Output)
 	}
 	if strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
 		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
 	}
 	if len(model.inputs) != 5 {
 		t.Fatalf("model calls = %d, want no verifier-triggered recovery iteration", len(model.inputs))
+	}
+}
+
+func TestDeferredToolDirectoryRequiresExplicitToolSearch(t *testing.T) {
+	registry := progressiveDiscoveryRegistry(t, false)
+	kernel := &RuntimeKernel{tools: &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}}
+
+	defaultCtx := kernel.compileContext(SessionTypeHost, ModeInspect, map[string]string{})
+	if len(defaultCtx.DeferredToolCatalog) != 0 {
+		t.Fatalf("default deferred catalog len = %d, want 0 without explicit tool_search", len(defaultCtx.DeferredToolCatalog))
+	}
+
+	enabledCtx := kernel.compileContext(SessionTypeHost, ModeInspect, map[string]string{
+		"aiops.toolSearch.enabled": "true",
+		"enableTool":               "tool_search",
+	})
+	if len(enabledCtx.DeferredToolCatalog) == 0 {
+		t.Fatal("deferred catalog should be rendered when tool_search discovery is explicitly enabled")
+	}
+	if !containsString(toolNames(enabledCtx.AssembledTools), "tool_search") {
+		t.Fatalf("enabled tools = %v, want tool_search visible", toolNames(enabledCtx.AssembledTools))
 	}
 }
 

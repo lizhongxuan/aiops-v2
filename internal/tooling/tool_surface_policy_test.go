@@ -12,8 +12,8 @@ func TestDecideToolSurfaceKeepsUnknownIntentConservative(t *testing.T) {
 		Kind: runtimecontract.IntentKindUnknown,
 	}, ApprovalSnapshot{}, nil)
 
-	if !decision.AllowToolSearch {
-		t.Fatalf("AllowToolSearch = false, want true for capability discovery")
+	if decision.AllowToolSearch {
+		t.Fatalf("AllowToolSearch = true, want false without explicit deferred discovery")
 	}
 	if decision.AllowPublicWeb {
 		t.Fatalf("AllowPublicWeb = true, want false for unknown intent")

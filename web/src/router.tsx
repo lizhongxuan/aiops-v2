@@ -25,6 +25,7 @@ import { ProtocolWorkspacePage } from "@/pages/ProtocolWorkspacePage";
 import { RunbookCatalogPage } from "@/pages/RunbookCatalogPage";
 import { RunbookDetailPage } from "@/pages/RunbookDetailPage";
 import { RunnerStudioPage } from "@/pages/RunnerStudioPage";
+import { RuntimeSettingsPage } from "@/pages/RuntimeSettingsPage";
 import { ScriptConfigPage } from "@/pages/ScriptConfigPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TerminalPage } from "@/pages/TerminalPage";
@@ -50,6 +51,7 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/postmortems/:postmortemId": <PostmortemPage />,
   "/settings": <SettingsPage />,
   "/settings/llm": <LLMConfigPage />,
+  "/settings/runtime": <RuntimeSettingsPage />,
   "/settings/hosts": <HostsPage />,
   "/settings/ops-manuals": <OpsManualsPage />,
   "/settings/experience-packs": <OpsManualsPage />,

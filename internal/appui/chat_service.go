@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/workflowgen"
 )
@@ -20,6 +22,7 @@ type defaultChatService struct {
 	hosts              HostRepository
 	hostOps            HostOpsService
 	agentEvents        AgentEventService
+	runtimeSettings    RuntimeSettingsProvider
 	turnRunner         AsyncTurnRunner
 	baseContext        context.Context
 	workflowGeneration *WorkflowGenerationChatService
@@ -52,6 +55,10 @@ func NewChatServiceWithContextAndHosts(baseContext context.Context, runtime Runt
 }
 
 func NewChatServiceWithContextHostsAndHostOps(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, hosts HostRepository, hostOps HostOpsService, agentEvents ...AgentEventService) ChatService {
+	return NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(baseContext, runtime, sessions, hosts, hostOps, nil, agentEvents...)
+}
+
+func NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(baseContext context.Context, runtime RuntimeGateway, sessions SessionSource, hosts HostRepository, hostOps HostOpsService, runtimeSettings RuntimeSettingsProvider, agentEvents ...AgentEventService) ChatService {
 	var eventService AgentEventService
 	if len(agentEvents) > 0 {
 		eventService = agentEvents[0]
@@ -62,7 +69,7 @@ func NewChatServiceWithContextHostsAndHostOps(baseContext context.Context, runti
 	baseContext = normalizeBaseContext(baseContext)
 	var workflowGeneration *WorkflowGenerationChatService
 	if sessionStore, ok := sessions.(SessionStore); ok {
-		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService)
+		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService, runtimeSettings)
 	}
 	return &defaultChatService{
 		runtime:            runtime,
@@ -70,6 +77,7 @@ func NewChatServiceWithContextHostsAndHostOps(baseContext context.Context, runti
 		hosts:              hosts,
 		hostOps:            hostOps,
 		agentEvents:        eventService,
+		runtimeSettings:    runtimeSettings,
 		baseContext:        baseContext,
 		workflowGeneration: workflowGeneration,
 		turnRunner: defaultAsyncTurnRunner{
@@ -78,6 +86,13 @@ func NewChatServiceWithContextHostsAndHostOps(baseContext context.Context, runti
 			baseContext: baseContext,
 		},
 	}
+}
+
+func (s *defaultChatService) intentFrameRoutingMode(ctx context.Context) string {
+	if s != nil && s.runtimeSettings != nil {
+		return s.runtimeSettings.Snapshot(ctx).AgentRuntime.IntentFrameRouting
+	}
+	return intentFrameRoutingTraceOnly
 }
 
 func normalizeBaseContext(ctx context.Context) context.Context {
@@ -110,6 +125,13 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 			cmd.Mode = string(session.Mode)
 		}
 	}
+	selectedHostID := s.resolveSelectedHostContextID(ctx, firstNonEmptyString(cmd.HostID, sessionHostID(commandSession)))
+	if selectedHostID != "" && commandSession != nil && strings.TrimSpace(commandSession.HostID) != selectedHostID {
+		commandSession.HostID = selectedHostID
+		if writer, ok := s.sessions.(SessionStore); ok {
+			writer.Update(commandSession)
+		}
+	}
 	req := runtimekernel.TurnRequest{
 		SessionType:     mapSessionType(cmd.SessionType),
 		Mode:            mapMode(cmd.Mode),
@@ -124,21 +146,30 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	requestedSessionType := req.SessionType
 	requestedMode := req.Mode
 	evidence := ExtractUserEvidence(content)
-	mentions := s.hostOpsMentionsForCommand(ctx, cmd, content)
+	structuredMentions := parseInputMentions(content, cmd.Metadata)
+	mentions := s.hostOpsMentionsForCommand(ctx, cmd, content, &structuredMentions)
+	mentionSource, mentionValidation := mentionSourceForCommand(cmd, content, structuredMentions, mentions)
 	route := BuildChatRuntimeRoute(content, mentions, evidence)
 	envelope := BuildEvidenceEnvelope(content, nil, nil)
 	intentFrame := BuildIntentFrame(content, envelope, nil)
 	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, route)
-	activeRoute, routingMode := selectActiveChatRuntimeRoute(route, intentRoute, intentFrame)
+	activeRoute, routingMode := selectActiveChatRuntimeRoute(route, intentRoute, intentFrame, s.intentFrameRoutingMode(ctx))
+	applyStructuredMentionRouteHints(&activeRoute, structuredMentions)
+	if selectedHostContextShouldUseHostBoundRoute(activeRoute, intentFrame, selectedHostID) {
+		activeRoute = promoteSelectedHostContextRoute(activeRoute, selectedHostID)
+		mentions = appendSelectedHostContextMention(mentions, selectedHostID)
+	}
 	applyChatRuntimeRouteMetadata(&req, activeRoute)
-	applyIntentFrameRouteMetadata(&req, route, intentRoute, intentFrame)
+	applyIntentFrameRouteMetadata(&req, route, intentRoute, activeRoute, intentFrame, routingMode)
 	req.Metadata["aiops.route.activeSource"] = routingMode
 	applyChatRuntimeToolSurfaceMetadata(&req, activeRoute)
+	applyStructuredCapabilityMetadata(req.Metadata, structuredMentions)
+	applyInputMentionDiagnosticValues(&req, mentionSource, mentionValidation)
 	applyUserEvidenceMetadata(&req, evidence)
 	applyFollowupPromptProfileMetadata(&req, commandSession, content, evidence)
 	applyChatRuntimeRouteHostBinding(&req, activeRoute, mentions)
-	applyExplicitSelectedHostContext(&req, activeRoute, cmd.HostID, requestedSessionType, requestedMode)
-	s.applyHostOpsTurnMetadata(ctx, cmd, &req)
+	applyExplicitSelectedHostContext(&req, activeRoute, selectedHostID, requestedSessionType, requestedMode)
+	s.applyHostOpsTurnMetadata(ctx, cmd, &req, &structuredMentions)
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}
@@ -183,14 +214,14 @@ func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool 
 		session.CurrentTurn.ResumeState == runtimekernel.TurnResumeStateNone
 }
 
-func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest) {
+func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest, structured *parsedInputMentions) {
 	if s == nil || req == nil {
 		return
 	}
 	if routeMode := strings.TrimSpace(req.Metadata["aiops.route.mode"]); routeMode != "" && routeMode != string(ChatRouteMultiHostOps) {
 		return
 	}
-	mentions := s.hostOpsMentionsForCommand(ctx, cmd, req.Input)
+	mentions := s.hostOpsMentionsForCommand(ctx, cmd, req.Input, structured)
 	decision := hostops.DetectRoute(req.Input, mentions)
 	if decision.Kind != hostops.RouteKindHostOps {
 		return
@@ -210,9 +241,36 @@ func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd C
 	}
 }
 
-func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd ChatCommand, content string) []hostops.HostMention {
+func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd ChatCommand, content string, structured *parsedInputMentions) []hostops.HostMention {
+	if structured != nil && structured.Present {
+		if structured.Invalid {
+			return nil
+		}
+		mentions := inputMentionHostHintsToHostMentions(structured.Hosts)
+		if len(mentions) == 0 {
+			return nil
+		}
+		if s == nil || s.hosts == nil {
+			markInputMentionsInvalid(structured)
+			return nil
+		}
+		resolved, errs := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, mentions)
+		if len(errs) > 0 {
+			markInputMentionsInvalid(structured)
+			return nil
+		}
+		filtered := filterHostOpsRouteMentions(resolved)
+		if len(filtered) == 0 {
+			markInputMentionsInvalid(structured)
+			return nil
+		}
+		return filtered
+	}
 	mentions := hostOpsMentionsFromMetadata(cmd.Metadata["aiops.hostops.mentions"])
 	if len(mentions) == 0 {
+		if inputMentionStrictMode() {
+			return nil
+		}
 		mentions = hostops.ParseHostMentions(content)
 	}
 	if len(mentions) == 0 {
@@ -223,6 +281,184 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 	}
 	resolved, _ := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, mentions)
 	return filterHostOpsRouteMentions(resolved)
+}
+
+func (s *defaultChatService) resolveSelectedHostContextID(ctx context.Context, candidate string) string {
+	candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "@"))
+	if candidate == "" {
+		return ""
+	}
+	if candidate == serverLocalHostID || strings.EqualFold(candidate, "local") {
+		return serverLocalHostID
+	}
+	if s == nil || s.hosts == nil {
+		return candidate
+	}
+	mention := hostops.HostMention{
+		Raw:         "@" + candidate,
+		HostID:      candidate,
+		Address:     candidate,
+		DisplayName: candidate,
+		Source:      hostops.HostMentionSourceHostnameLiteral,
+		Resolved:    true,
+		Confidence:  0.75,
+		CreatedAt:   time.Now(),
+	}
+	resolved, errs := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, []hostops.HostMention{mention})
+	if len(errs) > 0 || len(resolved) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(resolved[0].HostID)
+}
+
+func selectedHostContextShouldUseHostBoundRoute(route ChatRuntimeRoute, frame runtimecontract.IntentFrame, selectedHostID string) bool {
+	if strings.TrimSpace(selectedHostID) == "" || route.UserProhibitedHostExec || route.EnvironmentReadOnlyReason != "" {
+		return false
+	}
+	if route.Mode != ChatRouteAdvisory {
+		return false
+	}
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	return runtimecontract.ContainsDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec)
+}
+
+func promoteSelectedHostContextRoute(route ChatRuntimeRoute, selectedHostID string) ChatRuntimeRoute {
+	route.Mode = ChatRouteHostBoundOps
+	route.RequiresHostBinding = true
+	route.AllowsExecCommand = true
+	route.Reasons = appendUniqueEvidenceString(route.Reasons, "selected host context: "+strings.TrimSpace(selectedHostID))
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
+	return route
+}
+
+func appendSelectedHostContextMention(mentions []hostops.HostMention, selectedHostID string) []hostops.HostMention {
+	selectedHostID = strings.TrimSpace(selectedHostID)
+	if selectedHostID == "" {
+		return mentions
+	}
+	for _, mention := range mentions {
+		if strings.EqualFold(strings.TrimSpace(mention.HostID), selectedHostID) {
+			return mentions
+		}
+	}
+	return append(mentions, hostops.HostMention{
+		Raw:         "@" + selectedHostID,
+		HostID:      selectedHostID,
+		DisplayName: selectedHostID,
+		Source:      hostops.HostMentionSourceInventory,
+		Resolved:    true,
+		Confidence:  1,
+		CreatedAt:   time.Now(),
+	})
+}
+
+func sessionHostID(session *runtimekernel.SessionState) string {
+	if session == nil {
+		return ""
+	}
+	return strings.TrimSpace(session.HostID)
+}
+
+func applyInputMentionDiagnostics(req *runtimekernel.TurnRequest, mentions parsedInputMentions) {
+	applyInputMentionDiagnosticValues(req, mentions.Source, mentions.Validation)
+}
+
+func applyInputMentionDiagnosticValues(req *runtimekernel.TurnRequest, source, validation string) {
+	if req == nil {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if source != "" {
+		req.Metadata["aiops.input.mentionSource"] = source
+	}
+	if validation != "" {
+		req.Metadata["aiops.input.mentionValidation"] = validation
+	}
+}
+
+func markInputMentionsInvalid(mentions *parsedInputMentions) {
+	if mentions == nil {
+		return
+	}
+	mentions.Invalid = true
+	mentions.Validation = "invalid"
+}
+
+func applyStructuredMentionRouteHints(route *ChatRuntimeRoute, mentions parsedInputMentions) {
+	if route == nil || !mentions.Present || mentions.Invalid {
+		return
+	}
+	if mentions.HasCapability("coroot") {
+		route.AllowsCorootRCA = true
+		route.Reasons = appendUniqueEvidenceString(route.Reasons, "structured capability: coroot")
+	}
+}
+
+func applyStructuredCapabilityMetadata(metadata map[string]string, mentions parsedInputMentions) {
+	if metadata == nil || !mentions.Present || mentions.Invalid {
+		return
+	}
+	if mentions.HasCapability("ops_graph") {
+		metadata["aiops.opsGraph.explicitMention"] = "true"
+		metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], "opsgraph")
+	}
+	if mentions.HasCapability("ops_manuals") {
+		metadata["aiops.opsManuals.explicitMention"] = "true"
+		metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], "ops_manual_flow")
+		metadata["enableTool"] = appendMetadataListValue(metadata["enableTool"], "search_ops_manuals")
+	}
+	for _, resource := range mentions.Resources {
+		switch strings.TrimSpace(resource.Kind) {
+		case "ops_graph":
+			if id := strings.TrimSpace(resource.ID); id != "" {
+				metadata["aiops.opsGraph.graphId"] = id
+			}
+			if title := strings.TrimSpace(resource.Title); title != "" {
+				metadata["aiops.opsGraph.graphName"] = title
+			}
+		case "ops_manual":
+			if id := strings.TrimSpace(resource.ID); id != "" {
+				metadata["opsManualManualId"] = id
+				metadata["manualId"] = id
+			}
+			if title := strings.TrimSpace(resource.Title); title != "" {
+				metadata["opsManualManualTitle"] = title
+			}
+		}
+	}
+}
+
+func mentionSourceForCommand(cmd ChatCommand, content string, structured parsedInputMentions, mentions []hostops.HostMention) (string, string) {
+	if structured.Present {
+		return structured.Source, structured.Validation
+	}
+	if strings.TrimSpace(cmd.Metadata["aiops.hostops.mentions"]) != "" {
+		if len(mentions) > 0 {
+			return "legacy_hostops_metadata", "confirmed"
+		}
+		return "legacy_hostops_metadata", "invalid"
+	}
+	rawMentions := hostops.ParseHostMentions(content)
+	if len(rawMentions) > 0 {
+		if inputMentionStrictMode() {
+			return "raw_text_fallback", "weak"
+		}
+		if len(mentions) > 0 {
+			return "raw_text_fallback", "confirmed"
+		}
+		return "raw_text_fallback", "invalid"
+	}
+	return "absent", "absent"
+}
+
+func inputMentionStrictMode() bool {
+	value := strings.TrimSpace(os.Getenv("AIOPS_INPUT_MENTION_STRICT"))
+	return strings.EqualFold(value, "1") || strings.EqualFold(value, "true")
 }
 
 func filterHostOpsRouteMentions(mentions []hostops.HostMention) []hostops.HostMention {

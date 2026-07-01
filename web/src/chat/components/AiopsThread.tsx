@@ -1,12 +1,13 @@
 import { MessagePrimitive, ThreadPrimitive, useAssistantTransportState, useMessage } from "@assistant-ui/react";
-import { ArrowDown, Bot, LoaderCircle } from "lucide-react";
-import { useLayoutEffect, useMemo, useRef } from "react";
+import { Activity, ArrowDown, BookOpen, Bot, Copy, GitBranch, LoaderCircle, Server, Wrench } from "lucide-react";
+import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
 import type { AgentRunView, AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
+import { parseHostMentionCandidates, parseSpecialAiMentionCandidates, type HostMentionCandidate, type SpecialAiMentionCandidate } from "../hostMentions";
 import { AnswerDocumentRenderer } from "./AnswerDocumentRenderer";
 import { ContextStatusNotice } from "./ContextStatusNotice";
 import { McpSurfacePart } from "./McpSurfacePart";
@@ -28,6 +29,7 @@ type AssistantMessageMeta = {
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
   finalDurationMs?: number;
+  finalText?: string;
 };
 
 export function AiopsThread() {
@@ -160,11 +162,139 @@ function UserMessage() {
 }
 
 export function UserMessageBubble({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function copyMessage() {
+    await copyUserMessageText(text);
+    setCopied(true);
+  }
+
   return (
-    <div className="max-w-[82%] whitespace-pre-wrap break-words rounded-[1.2rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-7 text-slate-950">
-      {text}
+    <div className="group/user-message relative max-w-[82%] whitespace-pre-wrap break-words rounded-[1.2rem] bg-[#f4f4f4] px-4 py-2.5 text-[15px] leading-7 text-slate-950">
+      <button
+        type="button"
+        data-testid="user-message-copy-button"
+        data-copied={copied ? "true" : "false"}
+        aria-label={copied ? "已复制消息" : "复制消息"}
+        title={copied ? "已复制" : "复制"}
+        className="absolute -left-9 top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-500 opacity-0 shadow-sm transition hover:bg-slate-50 hover:text-slate-900 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-sky-200 group-hover/user-message:opacity-100"
+        onClick={() => {
+          void copyMessage();
+        }}
+      >
+        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+      </button>
+      {renderUserMessageText(text)}
     </div>
   );
+}
+
+type UserMessageMention = HostMentionCandidate | SpecialAiMentionCandidate;
+
+type UserMessageSegment =
+  | { type: "text"; text: string; key: string }
+  | { type: "mention"; text: string; key: string; mention: UserMessageMention };
+
+function renderUserMessageText(text: string) {
+  const segments = buildUserMessageSegments(text);
+  return segments.map((segment) =>
+    segment.type === "mention" ? (
+      <span
+        key={segment.key}
+        data-testid={segment.mention.source === "ai_tool" ? "user-message-special-mention" : "user-message-host-mention"}
+        className={
+          segment.mention.source === "ai_tool"
+            ? "inline-flex items-center gap-1 rounded-md bg-blue-50 px-1.5 py-0.5 text-[0.92em] font-medium leading-5 text-blue-700"
+            : "inline-flex items-center gap-1 rounded-md border border-sky-100 bg-sky-50 px-1.5 py-0.5 text-[0.92em] font-medium leading-5 text-sky-700"
+        }
+      >
+        <UserMessageMentionIcon mention={segment.mention} />
+        <span>{userMessageMentionLabel(segment.text, segment.mention)}</span>
+      </span>
+    ) : (
+      <span key={segment.key}>{segment.text}</span>
+    ),
+  );
+}
+
+function buildUserMessageSegments(text: string): UserMessageSegment[] {
+  const segments: UserMessageSegment[] = [];
+  const mentions: UserMessageMention[] = [
+    ...parseHostMentionCandidates(text),
+    ...parseSpecialAiMentionCandidates(text),
+  ].sort((a, b) => a.start - b.start || a.end - b.end);
+  let cursor = 0;
+  for (const mention of mentions) {
+    if (mention.start < cursor || mention.end > text.length) {
+      continue;
+    }
+    if (mention.start > cursor) {
+      segments.push({
+        type: "text",
+        text: text.slice(cursor, mention.start),
+        key: `text-${cursor}-${mention.start}`,
+      });
+    }
+    segments.push({
+      type: "mention",
+      text: text.slice(mention.start, mention.end),
+      key: `mention-${mention.start}-${mention.end}-${mention.raw}`,
+      mention,
+    });
+    cursor = mention.end;
+  }
+  if (cursor < text.length) {
+    segments.push({
+      type: "text",
+      text: text.slice(cursor),
+      key: `text-${cursor}-${text.length}`,
+    });
+  }
+  return segments.length ? segments : [{ type: "text", text, key: "text-0" }];
+}
+
+function UserMessageMentionIcon({ mention }: { mention: UserMessageMention }) {
+  const className = "h-3.5 w-3.5 shrink-0";
+  if (mention.source !== "ai_tool") {
+    return <Server className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "coroot") {
+    return <Activity className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "ops_graph") {
+    return <GitBranch className={className} aria-hidden="true" />;
+  }
+  if (mention.value === "ops_manuals" || mention.value === "ops_manus") {
+    return <BookOpen className={className} aria-hidden="true" />;
+  }
+  return <Wrench className={className} aria-hidden="true" />;
+}
+
+function userMessageMentionLabel(text: string, mention: UserMessageMention) {
+  if (mention.source !== "ai_tool") {
+    const value = mention.value === "server-local" ? "local" : mention.value;
+    return value || text.replace(/^@/, "");
+  }
+  if (mention.value === "coroot") return "Coroot";
+  if (mention.value === "ops_graph") return "OpsGraph";
+  if (mention.value === "ops_manuals" || mention.value === "ops_manus") return "运维手册";
+  return text.replace(/^@/, "");
+}
+
+async function copyUserMessageText(text: string) {
+  if (globalThis.navigator?.clipboard?.writeText) {
+    await globalThis.navigator.clipboard.writeText(text);
+    return;
+  }
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  document.body.appendChild(textarea);
+  textarea.select();
+  document.execCommand?.("copy");
+  textarea.remove();
 }
 
 function AssistantMessage() {
@@ -178,7 +308,7 @@ function AssistantMessage() {
   const corootArtifacts = artifacts.filter(isCorootChartArtifact);
   const otherArtifacts = artifacts.filter((artifact) => !isCorootChartArtifact(artifact));
   const deferredArtifacts = (meta.deferredAgentUiArtifacts || []) as AiopsTransportAgentUiArtifact[];
-  const finalText = messageText(message.content);
+  const finalText = assistantMessageRenderedFinalText(message.content, meta);
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
@@ -266,4 +396,14 @@ function messageText(content: readonly { type: string; text?: string }[]) {
     .filter((part) => part.type === "text")
     .map((part) => part.text || "")
     .join("");
+}
+
+export function assistantMessageRenderedFinalText(
+  content: readonly { type: string; text?: string }[],
+  meta: Pick<AssistantMessageMeta, "finalText">,
+) {
+  if (typeof meta.finalText === "string") {
+    return meta.finalText;
+  }
+  return messageText(content);
 }

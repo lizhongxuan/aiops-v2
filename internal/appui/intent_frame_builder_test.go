@@ -85,6 +85,33 @@ func TestBuildIntentFrameHostExecIsRiskBudgetNotApproval(t *testing.T) {
 	}
 }
 
+func TestBuildIntentFrameHostResourceReadRequestsHostRuntime(t *testing.T) {
+	envelope := BuildEvidenceEnvelope("查看 CPU 情况", nil, nil)
+	frame := BuildIntentFrame("查看 CPU 情况", envelope, nil)
+
+	if frame.Kind != runtimecontract.IntentKindVerify {
+		t.Fatalf("Kind = %q, want verify for host resource read", frame.Kind)
+	}
+	if !runtimecontract.ContainsDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime) {
+		t.Fatalf("DataScopes = %#v, want local_runtime", frame.DataScopes)
+	}
+	if !runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec) {
+		t.Fatalf("RiskBudget = %#v, want host_exec request risk", frame.RiskBudget)
+	}
+}
+
+func TestBuildIntentFrameHostResourceExplanationDoesNotRequestHostRuntime(t *testing.T) {
+	envelope := BuildEvidenceEnvelope("解释 Linux load average 是什么", nil, nil)
+	frame := BuildIntentFrame("解释 Linux load average 是什么", envelope, nil)
+
+	if runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec) {
+		t.Fatalf("RiskBudget = %#v, should not request host_exec for pure explanation", frame.RiskBudget)
+	}
+	if runtimecontract.ContainsDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime) {
+		t.Fatalf("DataScopes = %#v, should not include local_runtime for pure explanation", frame.DataScopes)
+	}
+}
+
 func containsEvidenceKind(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

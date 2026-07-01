@@ -62,6 +62,54 @@ func TestFinalEvidenceAllowsLowConfidenceUnknownAfterFailedTool(t *testing.T) {
 	}
 }
 
+func TestBuildFinalEvidenceStateSkipsToolDiscoveryPayloads(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{
+				{ID: "call-discovery", Name: "tool_search"},
+				{ID: "call-read", Name: "exec_command"},
+			},
+			ToolResults: []ToolResult{
+				{
+					ToolCallID: "call-discovery",
+					Summary:    `{"mode":"select","selection":{"loadedTools":["web_search"],"reason":"Need public web evidence"}}`,
+				},
+				{
+					ToolCallID: "call-read",
+					Summary:    "uptime returned load average evidence",
+				},
+			},
+		}},
+	}, nil)
+
+	if len(state.Checked) != 1 {
+		t.Fatalf("checked = %#v, want only user-visible execution evidence", state.Checked)
+	}
+	if state.Checked[0].ToolName != "exec_command" || strings.Contains(state.Checked[0].Summary, `"mode"`) {
+		t.Fatalf("checked = %#v, want tool discovery payload filtered", state.Checked)
+	}
+}
+
+func TestBuildFinalEvidenceStateSummarizesPublicWebEnvelope(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{{ID: "call-web", Name: "web_search"}},
+			ToolResults: []ToolResult{{
+				ToolCallID: "call-web",
+				Content:    `{"operation":"search","query":"PostgreSQL recovery_target_timeline","source":"custom_public_web:search","content":"docs","results":[{"title":"PostgreSQL docs","url":"https://www.postgresql.org/docs/current/runtime-config-wal.html"}],"meta":{"backend":"lightweight_search"}}`,
+			}},
+		}},
+	}, nil)
+
+	if len(state.Checked) != 1 {
+		t.Fatalf("checked = %#v, want public web evidence summary", state.Checked)
+	}
+	summary := state.Checked[0].Summary
+	if !strings.Contains(summary, "公开网页搜索已返回 1 个来源") || strings.Contains(summary, `"operation"`) {
+		t.Fatalf("summary = %q, want readable public web summary without raw envelope", summary)
+	}
+}
+
 func TestFinalEvidenceDowngradesHighConfidenceMissingEvidenceClaim(t *testing.T) {
 	state := FinalEvidenceState{
 		Checked: []CheckedEvidence{{
@@ -446,8 +494,7 @@ func TestFinalEvidenceAllowsCompletePostgresTimelineAnswerThroughGenericGate(t *
 
 func TestRunTurnFinalEvidenceVerifierDowngradesAfterFailedTool(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{

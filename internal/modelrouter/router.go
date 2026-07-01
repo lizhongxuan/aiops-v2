@@ -61,6 +61,9 @@ type ProviderConfig struct {
 	// operator exposes a custom limit. Empty config defaults to 200K.
 	MaxContextTokens int
 
+	// RequestTimeoutMs controls model request timeout in milliseconds.
+	RequestTimeoutMs int
+
 	// ReasoningEffort controls provider-native reasoning effort where supported.
 	ReasoningEffort string
 
@@ -252,6 +255,13 @@ func (r *Router) ResolveModelCapabilities(agentKind AgentKind, config ProviderCo
 	return capabilitiesForProviderModel(provider, model, config)
 }
 
+func (r *Router) ResolveEffectiveProviderConfig(agentKind AgentKind, config ProviderConfig) ProviderConfig {
+	if r == nil {
+		return config
+	}
+	return r.resolveEffectiveProviderConfig(agentKind, config)
+}
+
 func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config ProviderConfig) ProviderConfig {
 	if r.configResolver == nil {
 		return config
@@ -280,6 +290,9 @@ func (r *Router) resolveEffectiveProviderConfig(agentKind AgentKind, config Prov
 	}
 	if config.MaxContextTokens > 0 {
 		resolved.MaxContextTokens = config.MaxContextTokens
+	}
+	if config.RequestTimeoutMs > 0 {
+		resolved.RequestTimeoutMs = config.RequestTimeoutMs
 	}
 	if strings.TrimSpace(config.ReasoningEffort) != "" {
 		resolved.ReasoningEffort = config.ReasoningEffort
@@ -486,7 +499,7 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 		caps.ExactTokenCount = true
 		caps.CacheEdit = true
 		caps.SupportsReasoning = strings.HasPrefix(normalizedModel, "gpt-5") || strings.Contains(normalizedModel, "o") || isGLM47Model(normalizedModel)
-		caps.SupportsNativeWebTool = true
+		caps.SupportsNativeWebTool = providerSupportsNativeWebSearchForConfig(provider, config.BaseURL)
 		switch {
 		case isGLM47Model(normalizedModel):
 			caps.MaxContextTokens = 200000
@@ -522,7 +535,7 @@ func capabilitiesForProviderModel(provider, model string, config ProviderConfig)
 		}
 		caps.ExactTokenCount = false
 		caps.CacheEdit = false
-		caps.SupportsNativeWebTool = provider == "zhipu"
+		caps.SupportsNativeWebTool = false
 	case "anthropic":
 		caps.MaxContextTokens = 200000
 		caps.MaxOutputTokens = 8192

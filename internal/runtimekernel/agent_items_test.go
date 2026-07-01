@@ -230,6 +230,7 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 	want := []agentstate.TurnItemType{
 		agentstate.TurnItemTypeUserMessage,
 		agentstate.TurnItemTypeModelCall,
+		agentstate.TurnItemTypeAssistantMessage,
 		agentstate.TurnItemTypeToolCall,
 		agentstate.TurnItemTypeToolResult,
 		agentstate.TurnItemTypeModelCall,
@@ -237,6 +238,10 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 	}
 	if got := agentItemTypes(session.CurrentTurn.AgentItems); !sameTurnItemTypes(got, want) {
 		t.Fatalf("agent item types = %v, want %v", got, want)
+	}
+	commentary := session.CurrentTurn.AgentItems[2]
+	if phase := assistantMessagePhaseForAgentItemsTest(commentary); phase != "commentary" {
+		t.Fatalf("tool prelude phase = %q, want commentary", phase)
 	}
 }
 
@@ -439,10 +444,24 @@ func TestRunTurn_LongAssistantTextBeforeToolCallIsNotProgress(t *testing.T) {
 	}
 	items := session.CurrentTurn.AgentItems
 	if messageIndex := findAgentItemBySummary(items, agentstate.TurnItemTypeAssistantMessage, longDraft); messageIndex >= 0 {
-		t.Fatalf("agent items = %#v, long draft before tool call must not be stored as assistant_message", items)
+		t.Fatalf("long draft became visible process commentary at index %d", messageIndex)
 	}
-	if toolIndex := indexAgentItemByID(items, "turn-long-tool-prelude-tool-call-call-status"); toolIndex < 0 {
-		t.Fatalf("agent items = %#v, want tool call recorded", items)
+	commentaryIndex := findAgentItemBySummaryContains(items, agentstate.TurnItemTypeAssistantMessage, "执行只读命令")
+	toolIndex := indexAgentItemByID(items, "turn-long-tool-prelude-tool-call-call-status")
+	if commentaryIndex < 0 || toolIndex < 0 {
+		t.Fatalf("agent items = %#v, want deterministic commentary before tool", items)
+	}
+	if !(commentaryIndex < toolIndex) {
+		t.Fatalf("agent items = %#v, want deterministic commentary before tool", items)
+	}
+	payload := agentItemPayloadMap(items[commentaryIndex])
+	if payload["commentarySource"] != "runtime_tool_intent" {
+		t.Fatalf("payload = %#v, want runtime_tool_intent", payload)
+	}
+	for _, forbidden := range []string{"根因", "结论", "机制链路"} {
+		if strings.Contains(items[commentaryIndex].Payload.Summary, forbidden) {
+			t.Fatalf("commentary = %q contains final-like marker %q", items[commentaryIndex].Payload.Summary, forbidden)
+		}
 	}
 }
 
@@ -492,12 +511,12 @@ func TestToolResultAgentItemDataExtractsEvidenceRefsFromStructuredOutput(t *test
 	if got := data["outputSummary"]; got != "curl data:,ok" {
 		t.Fatalf("outputSummary = %#v, want terminal command", got)
 	}
-	if got := strings.TrimSpace(string(data["outputPreview"].(json.RawMessage))); got != `"ok"` {
-		t.Fatalf("outputPreview = %s, want stdout preview", got)
+	if _, exists := data["outputPreview"]; exists {
+		t.Fatalf("outputPreview should be derived by UI projection, not persisted in runtime item payload: %#v", data["outputPreview"])
 	}
 }
 
-func TestToolResultAgentItemDataKeepsCorootDisplayDataOutOfOutputPreview(t *testing.T) {
+func TestToolResultAgentItemDataKeepsCorootDisplayDataOutOfRuntimePreview(t *testing.T) {
 	tc := ToolCall{
 		ID:   "call-coroot",
 		Name: "coroot.service_metrics",
@@ -513,12 +532,8 @@ func TestToolResultAgentItemDataKeepsCorootDisplayDataOutOfOutputPreview(t *test
 
 	data := toolResultAgentItemData("turn-1", tc, result)
 
-	preview := strings.TrimSpace(string(data["outputPreview"].(json.RawMessage)))
-	if strings.Contains(preview, "chartReports") || strings.Contains(preview, `"data"`) {
-		t.Fatalf("outputPreview leaked raw Coroot display data: %s", preview)
-	}
-	if !strings.Contains(preview, "chartSummary") {
-		t.Fatalf("outputPreview = %s, want compact model-facing summary", preview)
+	if _, exists := data["outputPreview"]; exists {
+		t.Fatalf("outputPreview should not be persisted in runtime item payload: %#v", data["outputPreview"])
 	}
 	displayData := strings.TrimSpace(string(data["displayData"].(json.RawMessage)))
 	if !strings.Contains(displayData, "chartReports") {
@@ -564,6 +579,28 @@ func TestAssistantMessageAgentItemDataContract(t *testing.T) {
 	}
 	if got["durationMs"] != float64(1500) {
 		t.Fatalf("durationMs = %#v, want 1500", got["durationMs"])
+	}
+}
+
+func TestAssistantMessageAgentItemDataIncludesCommentaryMetadata(t *testing.T) {
+	payload := assistantMessageAgentItemData(assistantMessageData{
+		MessageID:        "msg-commentary",
+		Iteration:        3,
+		Phase:            AssistantMessagePhaseCommentary,
+		StreamState:      AssistantMessageStreamStateComplete,
+		CommentarySource: "runtime_tool_intent",
+		ToolCallIDs:      []string{"call-1", "", "call-2", "call-1"},
+	})
+
+	if payload["commentarySource"] != "runtime_tool_intent" {
+		t.Fatalf("commentarySource = %#v, want runtime_tool_intent in %#v", payload["commentarySource"], payload)
+	}
+	ids, ok := payload["toolCallIds"].([]string)
+	if !ok {
+		t.Fatalf("toolCallIds = %#v, want []string", payload["toolCallIds"])
+	}
+	if len(ids) != 2 || ids[0] != "call-1" || ids[1] != "call-2" {
+		t.Fatalf("toolCallIds = %#v, want compact non-empty ids preserving first-seen order", ids)
 	}
 }
 
@@ -1055,6 +1092,15 @@ func findAgentItem(items []agentstate.TurnItem, typ agentstate.TurnItemType) age
 func findAgentItemBySummary(items []agentstate.TurnItem, typ agentstate.TurnItemType, summary string) int {
 	for idx, item := range items {
 		if item.Type == typ && item.Payload.Summary == summary {
+			return idx
+		}
+	}
+	return -1
+}
+
+func findAgentItemBySummaryContains(items []agentstate.TurnItem, typ agentstate.TurnItemType, text string) int {
+	for idx, item := range items {
+		if item.Type == typ && strings.Contains(item.Payload.Summary, text) {
 			return idx
 		}
 	}

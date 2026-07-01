@@ -31,7 +31,7 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 			Source:    "base",
 		}}},
 	}
-	step, promptBuild, modelInput, err := kernel.buildRuntimeStepContext(
+	step, promptBuild, err := kernel.buildRuntimeStepContext(
 		TurnRequest{
 			SessionType: SessionTypeHost,
 			Mode:        ModeChat,
@@ -55,8 +55,8 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildRuntimeStepContext() error = %v", err)
 	}
-	if len(promptBuild.Items) == 0 || len(modelInput) == 0 {
-		t.Fatalf("missing prompt/model input: items=%d messages=%d", len(promptBuild.Items), len(modelInput))
+	if len(promptBuild.Items) == 0 {
+		t.Fatalf("missing prompt/model input: items=%d", len(promptBuild.Items))
 	}
 	if step.ProviderRequest.ModelInputHash == "" || step.ProviderRequest.PromptCacheKey == "" {
 		t.Fatalf("provider request missing hashes: %#v", step.ProviderRequest)

@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"log"
-	"os"
 	"strings"
 	"unicode/utf8"
 
@@ -45,16 +44,7 @@ func debugTransportProjectionLog(event string, turn *runtimekernel.TurnSnapshot,
 }
 
 func debugTransportProjectionEnabled() bool {
-	return truthyTransportDebugEnv("AIOPS_DEBUG_TRANSPORT_PROJECTION") || truthyTransportDebugEnv("AIOPS_DEBUG_TRANSCRIPT_PROJECTION")
-}
-
-func truthyTransportDebugEnv(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "on", "debug":
-		return true
-	default:
-		return false
-	}
+	return false
 }
 
 func debugTransportItemTypeCounts(items []agentstate.TurnItem) map[string]int {

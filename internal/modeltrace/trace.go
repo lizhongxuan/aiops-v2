@@ -10,17 +10,30 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
 
-const (
-	EnabledEnv = "AIOPS_DEBUG_MODEL_INPUT_TRACE"
-	DirEnv     = "AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR"
-)
+type Config struct {
+	Enabled bool
+	RootDir string
+}
+
+func DefaultRootDir(dataDir string) string {
+	root := strings.TrimSpace(dataDir)
+	if root == "" {
+		root = ".data"
+	}
+	return filepath.Join(root, "model-input-traces")
+}
+
+func DefaultConfig() Config {
+	return Config{
+		Enabled: true,
+		RootDir: DefaultRootDir(""),
+	}
+}
 
 type Prompt struct {
 	StableHash string `json:"stableHash,omitempty"`
@@ -43,7 +56,7 @@ type Request struct {
 	VisibleTools                  []string
 	PromptFingerprint             map[string]string
 	Prompt                        Prompt
-	ModelInput                    []*schema.Message
+	ModelInput                    []promptinput.ModelInputItem
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
 	DiagnosticTrace               diagnostics.DiagnosticTrace
@@ -210,15 +223,21 @@ type RejectedToolReasonTrace struct {
 }
 
 type traceMessage struct {
-	Index        int               `json:"index"`
-	ProviderRole string            `json:"providerRole"`
-	SemanticRole string            `json:"semanticRole,omitempty"`
-	PromptLayer  string            `json:"promptLayer,omitempty"`
-	Name         string            `json:"name,omitempty"`
-	Content      string            `json:"content,omitempty"`
-	ToolCallID   string            `json:"toolCallId,omitempty"`
-	ToolName     string            `json:"toolName,omitempty"`
-	ToolCalls    []schema.ToolCall `json:"toolCalls,omitempty"`
+	Index        int             `json:"index"`
+	ProviderRole string          `json:"providerRole"`
+	SemanticRole string          `json:"semanticRole,omitempty"`
+	PromptLayer  string          `json:"promptLayer,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	ToolCallID   string          `json:"toolCallId,omitempty"`
+	ToolName     string          `json:"toolName,omitempty"`
+	ToolCalls    []traceToolCall `json:"toolCalls,omitempty"`
+}
+
+type traceToolCall struct {
+	ID        string `json:"id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
 }
 
 type modelInputStats struct {
@@ -227,10 +246,15 @@ type modelInputStats struct {
 }
 
 func Write(req Request) (string, error) {
-	if !Enabled() {
+	return WriteWithConfig(DefaultConfig(), req)
+}
+
+func WriteWithConfig(cfg Config, req Request) (string, error) {
+	cfg = normalizeConfig(cfg)
+	if !cfg.Enabled {
 		return "", nil
 	}
-	traceDir, err := traceDirectory(req)
+	traceDir, err := traceDirectory(cfg.RootDir, req)
 	if err != nil {
 		return "", err
 	}
@@ -264,13 +288,12 @@ func Write(req Request) (string, error) {
 	return jsonPath, nil
 }
 
-func Enabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(EnabledEnv))) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
+func normalizeConfig(cfg Config) Config {
+	cfg.RootDir = strings.TrimSpace(cfg.RootDir)
+	if cfg.RootDir == "" {
+		cfg.RootDir = DefaultRootDir("")
 	}
+	return cfg
 }
 
 func buildPayload(req Request) payload {
@@ -791,32 +814,43 @@ func diagnosticTraceEmpty(trace diagnostics.DiagnosticTrace) bool {
 		!trace.RequiresApproval
 }
 
-func traceMessages(messages []*schema.Message) []traceMessage {
-	out := make([]traceMessage, 0, len(messages))
-	for i, msg := range messages {
-		if msg == nil {
-			continue
+func traceMessages(items []promptinput.ModelInputItem) []traceMessage {
+	out := make([]traceMessage, 0, len(items))
+	for i, item := range items {
+		content := item.Content
+		if item.ProviderRole == promptinput.ProviderRoleTool && item.ToolResult != nil && strings.TrimSpace(item.ToolResult.Content) != "" {
+			content = item.ToolResult.Content
 		}
-		item := traceMessage{
+		toolCallID := strings.TrimSpace(firstNonEmpty(item.ToolCallID, item.ToolResultToolCallID()))
+		traceMsg := traceMessage{
 			Index:        i,
-			ProviderRole: string(msg.Role),
-			Name:         msg.Name,
-			Content:      diagnostics.RedactSensitiveText(msg.Content),
-			ToolCallID:   msg.ToolCallID,
-			ToolName:     msg.ToolName,
-			ToolCalls:    redactToolCalls(msg.ToolCalls),
+			ProviderRole: string(item.ProviderRole),
+			SemanticRole: strings.TrimSpace(item.SemanticRole),
+			PromptLayer:  modelInputItemPromptLayer(item),
+			Name:         item.Name,
+			Content:      diagnostics.RedactSensitiveText(content),
+			ToolCallID:   toolCallID,
+			ToolName:     item.Name,
+			ToolCalls:    redactToolCalls(item.ToolCalls),
 		}
-		if msg.Extra != nil {
-			if role, ok := msg.Extra["semantic_role"].(string); ok {
-				item.SemanticRole = role
-			}
-			if layer, ok := msg.Extra["prompt_layer"].(string); ok {
-				item.PromptLayer = layer
-			}
-		}
-		out = append(out, item)
+		out = append(out, traceMsg)
 	}
 	return out
+}
+
+func modelInputItemPromptLayer(item promptinput.ModelInputItem) string {
+	if layer := strings.TrimSpace(item.Source.Layer); layer != "" {
+		return layer
+	}
+	if item.Metadata != nil {
+		if layer := strings.TrimSpace(item.Metadata["prompt_layer"]); layer != "" {
+			return layer
+		}
+		if layer := strings.TrimSpace(item.Metadata["source_layer"]); layer != "" {
+			return layer
+		}
+	}
+	return ""
 }
 
 func redactPrompt(prompt Prompt) Prompt {
@@ -831,15 +865,17 @@ func redactPrompt(prompt Prompt) Prompt {
 	}
 }
 
-func redactToolCalls(calls []schema.ToolCall) []schema.ToolCall {
+func redactToolCalls(calls []promptinput.ModelInputToolCall) []traceToolCall {
 	if len(calls) == 0 {
 		return nil
 	}
-	out := make([]schema.ToolCall, 0, len(calls))
+	out := make([]traceToolCall, 0, len(calls))
 	for _, call := range calls {
-		call.Function.Name = diagnostics.RedactSensitiveText(call.Function.Name)
-		call.Function.Arguments = diagnostics.RedactSensitiveText(call.Function.Arguments)
-		out = append(out, call)
+		out = append(out, traceToolCall{
+			ID:        diagnostics.RedactSensitiveText(call.ID),
+			Name:      diagnostics.RedactSensitiveText(call.Name),
+			Arguments: diagnostics.RedactSensitiveText(string(call.Arguments)),
+		})
 	}
 	return out
 }
@@ -865,6 +901,9 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		ToolSurfacePolicySnapshotHash: diagnostics.RedactSensitiveText(trace.ToolSurfacePolicySnapshotHash),
 		ToolSurfaceSnapshot:           redactToolSurfaceSnapshot(trace.ToolSurfaceSnapshot),
 		PublicWebBudget:               clonePublicWebBudgetTrace(trace.PublicWebBudget),
+		WebSearchPolicy:               redactWebSearchPolicyTrace(trace.WebSearchPolicy),
+		WebSearch:                     redactWebSearchTrace(trace.WebSearch),
+		Final:                         redactFinalTrace(trace.Final),
 		DeferredToolDirectory:         redactDeferredToolDirectory(trace.DeferredToolDirectory),
 		LoadedToolsDelta:              redactStringSlice(trace.LoadedToolsDelta),
 		LoadedPacksDelta:              redactStringSlice(trace.LoadedPacksDelta),
@@ -917,6 +956,48 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		out.Items = append(out.Items, item)
 	}
 	return out
+}
+
+func redactWebSearchPolicyTrace(trace *promptinput.WebSearchPolicyTrace) *promptinput.WebSearchPolicyTrace {
+	if trace == nil {
+		return nil
+	}
+	out := &promptinput.WebSearchPolicyTrace{
+		Level:            diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Level)),
+		Reason:           diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Reason)),
+		ReasonCodes:      redactStringSlice(trace.ReasonCodes),
+		QuerySeeds:       redactStringSlice(trace.QuerySeeds),
+		DisabledBy:       diagnostics.RedactSensitiveText(strings.TrimSpace(trace.DisabledBy)),
+		RequireCitations: trace.RequireCitations,
+	}
+	if out.Level == "" && out.Reason == "" && len(out.ReasonCodes) == 0 && len(out.QuerySeeds) == 0 && out.DisabledBy == "" && !out.RequireCitations {
+		return nil
+	}
+	return out
+}
+
+func redactWebSearchTrace(trace *promptinput.WebSearchTrace) *promptinput.WebSearchTrace {
+	if trace == nil {
+		return nil
+	}
+	out := &promptinput.WebSearchTrace{
+		Attempted:     trace.Attempted,
+		RetryCount:    trace.RetryCount,
+		Adapter:       diagnostics.RedactSensitiveText(strings.TrimSpace(trace.Adapter)),
+		SourceCount:   trace.SourceCount,
+		FailureReason: diagnostics.RedactSensitiveText(strings.TrimSpace(trace.FailureReason)),
+	}
+	if !out.Attempted && out.RetryCount == 0 && out.Adapter == "" && out.SourceCount == 0 && out.FailureReason == "" {
+		return nil
+	}
+	return out
+}
+
+func redactFinalTrace(trace *promptinput.FinalTrace) *promptinput.FinalTrace {
+	if trace == nil || !trace.PublicWebLimitation {
+		return nil
+	}
+	return &promptinput.FinalTrace{PublicWebLimitation: true}
 }
 
 func redactToolSurfaceSnapshot(snapshot *promptinput.ToolSurfaceSnapshot) *promptinput.ToolSurfaceSnapshot {
@@ -1661,10 +1742,10 @@ func redactStringMap(in map[string]string) map[string]string {
 	return out
 }
 
-func traceDirectory(req Request) (string, error) {
-	root := strings.TrimSpace(os.Getenv(DirEnv))
+func traceDirectory(root string, req Request) (string, error) {
+	root = strings.TrimSpace(root)
 	if root == "" {
-		root = filepath.Join(".data", "model-input-traces")
+		root = DefaultRootDir("")
 	}
 	kind := sanitizePath(firstNonEmpty(req.Kind, "model-call"))
 	if strings.TrimSpace(req.SessionID) != "" || strings.TrimSpace(req.TurnID) != "" {
@@ -1831,6 +1912,9 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		strings.TrimSpace(trace.ToolSurfacePolicySnapshotHash) == "" &&
 		toolSurfaceSnapshotTraceEmpty(trace.ToolSurfaceSnapshot) &&
 		trace.PublicWebBudget == nil &&
+		trace.WebSearchPolicy == nil &&
+		trace.WebSearch == nil &&
+		trace.Final == nil &&
 		len(trace.DeferredToolDirectory) == 0 &&
 		len(trace.LoadedToolsDelta) == 0 &&
 		len(trace.LoadedPacksDelta) == 0 &&

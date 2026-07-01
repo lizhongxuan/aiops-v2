@@ -32,12 +32,11 @@ func runCLI(args []string, stdout, stderr io.Writer, getenv func(string) string)
 	}
 	fs := flag.NewFlagSet("aiops-active-turn-migrate", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	var dataDir, storeDriver, postgresDSN, mysqlDSN, output string
+	var dataDir, storeDriver, postgresDSN, output string
 	var dryRun, apply bool
 	fs.StringVar(&dataDir, "data-dir", firstNonEmpty(getenv("AIOPS_DATA_DIR"), ".data"), "AIOps data directory")
-	fs.StringVar(&storeDriver, "store-driver", getenv("AIOPS_STORE_DRIVER"), "store driver: json, postgres, mysql")
+	fs.StringVar(&storeDriver, "store-driver", getenv("AIOPS_STORE_DRIVER"), "store driver: json or postgres")
 	fs.StringVar(&postgresDSN, "postgres-dsn", firstNonEmpty(getenv("AIOPS_POSTGRES_DSN"), getenv("DATABASE_URL")), "Postgres DSN")
-	fs.StringVar(&mysqlDSN, "mysql-dsn", getenv("AIOPS_MYSQL_DSN"), "MySQL DSN")
 	fs.BoolVar(&dryRun, "dry-run", false, "only report active turn migration decisions")
 	fs.BoolVar(&apply, "apply", false, "apply unrecoverable/manual-close migration marks")
 	fs.StringVar(&output, "output", "text", "output format: text or json")
@@ -62,7 +61,6 @@ func runCLI(args []string, stdout, stderr io.Writer, getenv func(string) string)
 		DataDir:     dataDir,
 		Driver:      storeDriver,
 		PostgresDSN: postgresDSN,
-		MySQLDSN:    mysqlDSN,
 		FlushEvery:  time.Second,
 	})
 	if err != nil {

@@ -650,6 +650,71 @@ func TestAssistantTransportAPILocalMentionBindsServerLocal(t *testing.T) {
 	}
 }
 
+func TestAssistantTransportAPIStructuredHostMentionBindsAfterServerResolution(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	hosts := newAssistantTransportHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-primary",
+		Address:    "120.77.239.90",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	})
+	server := NewHTTPServer(appui.NewServices(runtime, sessions, appui.WithHostRepository(hosts)))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayloadWithMetadata(t, "", "thread-structured-host", "@120.77.239.90 检查状态", map[string]string{
+		"aiops.input.mentions.v1": `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-host-a","sigil":"@","display":"@120.77.239.90","rawText":"@120.77.239.90","kind":"host","path":"host://host-a","source":"selection","range":{"start":0,"end":14},"payload":{"hostId":"host-a","address":"120.77.239.90","displayName":"pg-primary"}}]}`,
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionSource"]; got != "structured" {
+		t.Fatalf("mentionSource = %q, want structured; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestAssistantTransportAPIStructuredStaleMentionFailsClosed(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	hosts := newAssistantTransportHostRepoStub(store.HostRecord{ID: "host-a", Name: "pg-primary", Address: "120.77.239.90", Status: "online", Executable: true, AgentURL: "http://host-a:7072"})
+	server := NewHTTPServer(appui.NewServices(runtime, sessions, appui.WithHostRepository(hosts)))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayloadWithMetadata(t, "", "thread-structured-stale", "@host-b 检查状态", map[string]string{
+		"aiops.input.mentions.v1": `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-host-a","sigil":"@","display":"@120.77.239.90","rawText":"@120.77.239.90","kind":"host","path":"host://host-a","source":"selection","range":{"start":0,"end":14},"payload":{"hostId":"host-a","address":"120.77.239.90","displayName":"pg-primary"}}]}`,
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty fail-closed host; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
 func TestAssistantTransportDoesNotAutoSearchOpsManualForDiagnosisWhenFallbackEnabled(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	repo := opsmanual.NewMemoryStore()
@@ -1891,6 +1956,11 @@ func TestAssistantTransportStreamWaitsForAcceptedTurnBeforeProjectingPreviousTer
 				},
 			},
 		}
+		updated.ActiveTurn = runtimekernel.ActiveTurnState{
+			TurnID: "turn-new",
+			Kind:   "regular",
+			Status: string(runtimekernel.TurnLifecycleRunning),
+		}
 		sessions.Update(updated)
 
 		time.Sleep(20 * time.Millisecond)
@@ -1906,6 +1976,11 @@ func TestAssistantTransportStreamWaitsForAcceptedTurnBeforeProjectingPreviousTer
 		updated.CurrentTurn.AgentItems = append(updated.CurrentTurn.AgentItems,
 			assistantMessageFinalItemForServerTest("turn-new-final", agentstate.ItemStatusCompleted, "第二次请求已完成", completedAt),
 		)
+		updated.ActiveTurn = runtimekernel.ActiveTurnState{
+			TurnID: "turn-new",
+			Kind:   "regular",
+			Status: string(runtimekernel.TurnLifecycleCompleted),
+		}
 		sessions.Update(updated)
 	}()
 

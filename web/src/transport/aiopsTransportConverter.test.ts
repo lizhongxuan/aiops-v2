@@ -147,6 +147,51 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
+  it("marks commentary-only running turns with empty final text metadata", () => {
+    const state = createState();
+    state.status = "working";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      completedAt: undefined,
+      final: undefined,
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "让我查看一下这台主机的基本信息。",
+        },
+        {
+          id: "command-hostname",
+          kind: "command",
+          status: "completed",
+          text: "hostname",
+          command: "hostname",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([]);
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      finalText: "",
+    });
+    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "commentary",
+          text: "让我查看一下这台主机的基本信息。",
+        }),
+      ]),
+    );
+  });
+
   it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
     const state = createState();
     const preservedAnswer = [

@@ -3,6 +3,7 @@ package localtools
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,12 @@ import (
 	"aiops-v2/internal/tooling"
 	"pgregory.net/rapid"
 )
+
+type localToolsRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn localToolsRoundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
 
 type fakeLLMRepo struct {
 	cfg *store.LLMConfig
@@ -39,6 +46,14 @@ func (h fakeHostLookup) GetHost(id string) (*store.HostRecord, error) {
 		return nil, nil
 	}
 	return &host, nil
+}
+
+func (h fakeHostLookup) ListHosts() ([]store.HostRecord, error) {
+	hosts := make([]store.HostRecord, 0, len(h.hosts))
+	for _, host := range h.hosts {
+		hosts = append(hosts, host)
+	}
+	return hosts, nil
 }
 
 type fakeHostAgentCommandRunner struct {
@@ -129,6 +144,12 @@ func TestRegisterBuiltinsExposesChatToolsWithoutInternalPlanTool(t *testing.T) {
 	browseDiscovery := browseURL.Metadata().EffectiveDiscovery()
 	if browseDiscovery.DiscoveryGroup != "public_web" || browseDiscovery.LoadingPolicy != tooling.ToolLoadingPolicyDeferred || !browseDiscovery.RequiresSelect {
 		t.Fatalf("browse_url discovery = %+v, want deferred public_web select-only discovery", browseDiscovery)
+	}
+	if !browseDiscovery.HiddenFromPrompt {
+		t.Fatalf("browse_url discovery = %+v, want hidden compatibility alias", browseDiscovery)
+	}
+	if !strings.Contains(browseURL.Metadata().Description, "Compatibility alias") {
+		t.Fatalf("browse_url description should explain alias behavior: %s", browseURL.Metadata().Description)
 	}
 	if !containsString(browseURL.Metadata().Aliases, "web_browser") {
 		t.Fatalf("browse_url aliases = %#v, want web_browser alias", browseURL.Metadata().Aliases)
@@ -582,6 +603,30 @@ func TestExecCommandToolAllowsRemoteReadOnlyServiceStatusWithoutEvidenceGate(t *
 		if decision.Action != tooling.PermissionActionAllow {
 			t.Fatalf("CheckPermissions(%s) = %#v, want allow", input, decision)
 		}
+	}
+}
+
+func TestExecCommandToolResolvesRemoteHostByAddressForLegacySessionHostID(t *testing.T) {
+	runner := &fakeHostAgentCommandRunner{result: HostAgentCommandResult{Stdout: "8\n", Source: "host.agent"}}
+	tool := NewExecCommandTool(Options{
+		WorkingDir: t.TempDir(),
+		HostRepository: fakeHostLookup{hosts: map[string]store.HostRecord{
+			"host-a": {ID: "host-a", Address: "120.77.239.90", Executable: true, ControlMode: "managed"},
+		}},
+		HostAgentCommandRunner: runner,
+	})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "120.77.239.90"})
+	input := json.RawMessage(`{"command":"nproc"}`)
+
+	decision := tool.CheckPermissions(ctx, input)
+	if decision.Action != tooling.PermissionActionAllow {
+		t.Fatalf("CheckPermissions() = %#v, want allow for address-resolved host", decision)
+	}
+	if _, err := tool.Execute(ctx, input); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if len(runner.requests) != 1 || runner.requests[0].HostID != "host-a" {
+		t.Fatalf("host-agent requests = %#v, want canonical host-a", runner.requests)
 	}
 }
 
@@ -1388,6 +1433,54 @@ func TestWebSearchToolUsesProviderNativeResponsesAPI(t *testing.T) {
 	}
 }
 
+func TestProviderNativeWebSearchRequestShapeUnchangedAfterCustomToolMerge(t *testing.T) {
+	var gotToolType string
+	var gotInclude []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("request path = %q, want /responses", r.URL.Path)
+		}
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+			Include []string `json:"include"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(payload.Tools) > 0 {
+			gotToolType = payload.Tools[0].Type
+		}
+		gotInclude = append([]string(nil), payload.Include...)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output_text":"provider native search result"}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		BaseURL:  server.URL,
+		APIKey:   "sk-test",
+	}}, Options{HTTPClient: server.Client()})
+
+	if _, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"operation":"search",
+		"query":"OpenAI web_search docs",
+		"url":"https://docs.example.com/not-opened",
+		"fetch_content":true
+	}`)); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if gotToolType != "web_search" {
+		t.Fatalf("provider tool type = %q, want web_search", gotToolType)
+	}
+	if len(gotInclude) != 1 || gotInclude[0] != "web_search_call.action.sources" {
+		t.Fatalf("include = %#v, want web_search sources include", gotInclude)
+	}
+}
+
 func TestWebSearchToolPromptGuidesPreciseCurrentSearchesAndSources(t *testing.T) {
 	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
 		Provider: "openai",
@@ -1409,6 +1502,179 @@ func TestWebSearchToolPromptGuidesPreciseCurrentSearchesAndSources(t *testing.T)
 		if !strings.Contains(strings.ToLower(prompt), want) {
 			t.Fatalf("web_search prompt missing %q guidance:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestWebSearchToolAcceptsOpenOperationAndReturnsBrowserSearchPayload(t *testing.T) {
+	client := &http.Client{Transport: localToolsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Hostname() != "docs.example.com" {
+			t.Fatalf("unexpected host %q", req.URL.Host)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><title>Docs</title></head><body><main><h1>Docs</h1><p>Readable page text.</p></main></body></html>`)),
+			Request:    req,
+		}, nil
+	})}
+	tool := NewWebSearchTool(nil, Options{HTTPClient: client, MaxOutputBytes: 4000})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"operation":"open",
+		"url":"https://docs.example.com/page",
+		"max_bytes":4000
+	}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		`"operation":"open"`,
+		`"source":"custom_public_web:open"`,
+		`"results"`,
+		`"fetched":true`,
+		"Readable page text",
+	} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("result content = %q, missing %q", result.Content, want)
+		}
+	}
+	if result.Display == nil || result.Display.Type != "web_search" {
+		t.Fatalf("display = %#v, want web_search display", result.Display)
+	}
+}
+
+func TestBrowseURLToolAliasesWebSearchOpenImplementation(t *testing.T) {
+	client := &http.Client{Transport: localToolsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body:       io.NopCloser(strings.NewReader(`<!doctype html><html><head><title>Alias</title></head><body><p>Alias readable text.</p></body></html>`)),
+			Request:    req,
+		}, nil
+	})}
+	tool := NewBrowseURLTool(Options{HTTPClient: client, MaxOutputBytes: 4000})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"url":"https://docs.example.com/alias"}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		`"operation":"open"`,
+		`"source":"custom_public_web:open"`,
+		`"results"`,
+		"Alias readable text",
+	} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("result content = %q, missing %q", result.Content, want)
+		}
+	}
+}
+
+func TestWebSearchToolRejectsUnsafeOpenURL(t *testing.T) {
+	tool := NewWebSearchTool(nil, Options{})
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"operation":"open",
+		"url":"http://127.0.0.1/latest/meta-data"
+	}`))
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unsafe") {
+		t.Fatalf("Execute() error = %v, want unsafe URL rejection", err)
+	}
+}
+
+func TestWebSearchToolSearchResultIncludesStructuredResultsAndMeta(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/search" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<html><body><ol id="b_results">
+			<li class="b_algo">
+				<h2><a href="https://www.postgresql.org/docs/current/continuous-archiving.html">PostgreSQL continuous archiving timeline docs</a></h2>
+				<div class="b_caption"><p>PostgreSQL docs explain WAL archiving and recovery timeline behavior.</p></div>
+			</li>
+		</ol></body></html>`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider: "zhipu",
+		Model:    "glm-5.1",
+		BaseURL:  "https://api.z.ai/api/paas/v4",
+		APIKey:   "test-key",
+	}}, Options{HTTPClient: server.Client(), PublicSearchBaseURL: server.URL, MaxOutputBytes: 4000})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"query":"PostgreSQL timeline official docs",
+		"allowed_domains":["postgresql.org"]
+	}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	for _, want := range []string{
+		`"operation":"search"`,
+		`"source":"custom_public_web:search"`,
+		`"results"`,
+		`"meta"`,
+		`"backend":"lightweight_search"`,
+		"postgresql.org",
+	} {
+		if !strings.Contains(result.Content, want) {
+			t.Fatalf("result content = %q, missing %q", result.Content, want)
+		}
+	}
+	if strings.Contains(result.Content, "Firecrawl") {
+		t.Fatalf("web_search result must not expose Firecrawl: %s", result.Content)
+	}
+}
+
+func TestWebSearchProviderNativePathIgnoresCustomOpenFields(t *testing.T) {
+	var gotToolType string
+	var gotURL string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		var payload struct {
+			Tools []struct {
+				Type string `json:"type"`
+			} `json:"tools"`
+			Input string `json:"input"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if len(payload.Tools) > 0 {
+			gotToolType = payload.Tools[0].Type
+		}
+		gotURL = payload.Input
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"output_text":"provider native search result"}`))
+	}))
+	defer server.Close()
+
+	tool := NewWebSearchTool(&fakeLLMRepo{cfg: &store.LLMConfig{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		BaseURL:  server.URL,
+		APIKey:   "sk-test",
+	}}, Options{HTTPClient: server.Client(), PublicSearchBaseURL: server.URL})
+
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{
+		"operation":"search",
+		"query":"OpenAI web_search docs",
+		"url":"https://docs.example.com/should-not-open"
+	}`))
+	if err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if gotToolType != "web_search" {
+		t.Fatalf("provider tool type = %q, want web_search", gotToolType)
+	}
+	if strings.Contains(gotURL, "should-not-open") {
+		t.Fatalf("provider native input = %q, should ignore open URL field", gotURL)
+	}
+	if !strings.Contains(result.Content, "provider native search result") {
+		t.Fatalf("result content = %q, want provider native result", result.Content)
 	}
 }
 
@@ -1495,20 +1761,26 @@ func TestWebSearchToolRejectsConflictingDomainFilters(t *testing.T) {
 }
 
 func TestBrowseURLToolFetchesReadableText(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(`<!doctype html>
+	client := &http.Client{Transport: localToolsRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/html; charset=utf-8"}},
+			Body: io.NopCloser(strings.NewReader(`<!doctype html>
 			<html>
 				<head><title>Market Snapshot</title><script>ignore()</script></head>
 				<body><h1>Market Snapshot</h1><p>Index moved higher today.</p><style>.x{}</style></body>
-			</html>`))
-	}))
-	defer server.Close()
+			</html>`)),
+			Request: req,
+		}, nil
+	})}
 
-	tool := NewBrowseURLTool(Options{HTTPClient: server.Client(), MaxOutputBytes: 1000})
-	result, err := tool.Execute(context.Background(), json.RawMessage(`{"url":"`+server.URL+`"}`))
+	tool := NewBrowseURLTool(Options{HTTPClient: client, MaxOutputBytes: 1000})
+	result, err := tool.Execute(context.Background(), json.RawMessage(`{"url":"https://docs.example.com/market"}`))
 	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
+	}
+	if !strings.Contains(result.Content, `"operation":"open"`) || !strings.Contains(result.Content, `"results"`) {
+		t.Fatalf("result content = %q, want structured open envelope", result.Content)
 	}
 	if !strings.Contains(result.Content, "Market Snapshot") || !strings.Contains(result.Content, "Index moved higher today.") {
 		t.Fatalf("result content = %q, want readable page text", result.Content)
@@ -1633,7 +1905,7 @@ func TestWebSearchToolFallsBackToPublicSearchWhenNativeSearchHasNoText(t *testin
 	if !strings.Contains(result.Content, "Market report") || !strings.Contains(result.Content, "https://example.com/market") {
 		t.Fatalf("result content = %q, want parsed public search result", result.Content)
 	}
-	if !strings.Contains(result.Content, "provider_native:responses:web_search+public_web_search:bing_fallback") {
+	if !strings.Contains(result.Content, "provider_native:responses:web_search+custom_public_web:search") {
 		t.Fatalf("result content = %q, want combined provider-native and public search source", result.Content)
 	}
 	if strings.Contains(result.Content, "provider returned no textual summary") {
@@ -1680,7 +1952,7 @@ func TestWebSearchToolFallsBackToPublicSearchForZhipuProvider(t *testing.T) {
 	if !strings.Contains(gotSearchQuery, "site:postgresql.org") {
 		t.Fatalf("search query = %q, want allowed domain refinement", gotSearchQuery)
 	}
-	if !strings.Contains(result.Content, `"source":"public_web_search"`) {
+	if !strings.Contains(result.Content, `"source":"custom_public_web:search"`) {
 		t.Fatalf("result content = %q, want public fallback source", result.Content)
 	}
 	if strings.Contains(result.Content, "no known native web_search support") {
@@ -1717,13 +1989,13 @@ func TestWebSearchToolFallsBackToOfficialDomainsForPostgresOperations(t *testing
 		t.Fatalf("request path = %q, want public search path", gotPath)
 	}
 	for _, want := range []string{
-		`"source":"public_web_search:official_domain_fallback"`,
+		`"source":"custom_public_web:official_domain_fallback"`,
 		"https://www.postgresql.org/docs/current/continuous-archiving.html",
 		"https://www.postgresql.org/docs/current/runtime-config-wal.html#GUC-RECOVERY-TARGET-TIMELINE",
 		"https://pgbackrest.org/user-guide.html#restore",
 		"https://pg-auto-failover.readthedocs.io/en/main/operations.html",
 		"temporary recovery settings",
-		"Use browse_url",
+		`operation=\"open\"`,
 	} {
 		if !strings.Contains(result.Content, want) {
 			t.Fatalf("result content = %q, missing %q", result.Content, want)
@@ -1801,55 +2073,6 @@ func TestWebSearchToolRejectsVagueGenericQueries(t *testing.T) {
 	}
 }
 
-func TestPublicSearchRelevanceTermsSplitCompactChineseQuery(t *testing.T) {
-	results := []publicSearchResult{
-		{
-			Title:   "两会新华社权威速览丨一图速览 2026 年政府工作报告",
-			URL:     "https://example.com/government-report",
-			Snippet: "政府工作报告摘要。",
-		},
-		{
-			Title:   "上海证券交易所 2026 年部分节假日休市安排",
-			URL:     "https://www.sse.com.cn/disclosure/announcement/general/",
-			Snippet: "官方发布节假日休市安排。",
-		},
-	}
-
-	filtered := filterPublicSearchResultsByRelevance(results, "2026年部分节假日休市安排 上海证券交易所 官方")
-	if len(filtered) != 1 {
-		t.Fatalf("filtered len = %d, want 1: %#v", len(filtered), filtered)
-	}
-	if strings.Contains(filtered[0].Title, "政府工作报告") {
-		t.Fatalf("filtered = %#v, should drop low-relevance generic 2026 result", filtered)
-	}
-	if !strings.Contains(filtered[0].Title, "上海证券交易所") {
-		t.Fatalf("filtered = %#v, want exchange result", filtered)
-	}
-}
-
-func TestPublicSearchRelevanceDropsDateOnlyMatches(t *testing.T) {
-	results := []publicSearchResult{
-		{
-			Title:   "2026 年_百度百科",
-			URL:     "https://baike.baidu.com/item/2026%E5%B9%B4/9536516",
-			Snippet: "2026 年日期信息。",
-		},
-		{
-			Title:   "中国 A股 交易日 上交所 深交所 周日休市说明",
-			URL:     "https://example.com/ashare-trading-day",
-			Snippet: "中国 A股 今天 是否交易日，交易日安排以上交所深交所公告为准。",
-		},
-	}
-
-	filtered := filterPublicSearchResultsByRelevance(results, "2026-04-26 中国 A股 今天 是否 交易日 上交所 深交所 周日")
-	if len(filtered) != 1 {
-		t.Fatalf("filtered len = %d, want 1: %#v", len(filtered), filtered)
-	}
-	if strings.Contains(filtered[0].Title, "百度百科") {
-		t.Fatalf("filtered = %#v, should drop date-only result", filtered)
-	}
-}
-
 func TestWebSearchToolParsesPublicSearchResultAfterLargeSearchChrome(t *testing.T) {
 	var sawSearch bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1908,28 +2131,6 @@ func TestWebSearchToolParsesPublicSearchResultAfterLargeSearchChrome(t *testing.
 	}
 	if strings.Contains(result.Content, "provider returned no textual summary") {
 		t.Fatalf("result content = %q, should not return provider no-summary placeholder when late public result is available", result.Content)
-	}
-}
-
-func TestParseBingSearchResultsHandlesHTMLAttributeVariants(t *testing.T) {
-	results := parseBingSearchResults(`<html><body><ol id='b_results'>
-		<li data-id='1' class='result b_algo extra'>
-			<h2><a data-track='x' href='https://example.com/market'><span>Market</span> <strong>report</strong></a></h2>
-			<div class='b_caption'><p>Index <em>moved</em> higher.</p></div>
-		</li>
-	</ol></body></html>`, 5)
-
-	if len(results) != 1 {
-		t.Fatalf("results len = %d, want 1: %#v", len(results), results)
-	}
-	if results[0].Title != "Market report" {
-		t.Fatalf("Title = %q, want nested anchor text", results[0].Title)
-	}
-	if results[0].URL != "https://example.com/market" {
-		t.Fatalf("URL = %q, want href", results[0].URL)
-	}
-	if results[0].Snippet != "Index moved higher." {
-		t.Fatalf("Snippet = %q, want caption text", results[0].Snippet)
 	}
 }
 

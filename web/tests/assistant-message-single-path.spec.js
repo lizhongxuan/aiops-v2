@@ -4,9 +4,9 @@ import { expect, test } from "@playwright/test";
 import { createChatFixtureSessions, openFixturePage } from "./helpers/uiFixtureHarness.js";
 
 function singleAssistantMessageFixture() {
-  const now = "2026-06-26T11:00:00.000Z";
+  const now = "2026-06-27T11:00:00.000Z";
   const turnId = "turn-assistant-message-single-path";
-  const finalText = "结论：当前证据只能确认 PostgreSQL timeline 存在分叉；还需要核对 .history、restore_command 和 WAL receiver 状态后再决定修复动作。";
+  const finalText = "CPU 当前负载正常，未发现持续高负载。";
   const state = {
     schemaVersion: "aiops.transport.v2",
     sessionId: "assistant-message-single-path",
@@ -18,11 +18,11 @@ function singleAssistantMessageFixture() {
         id: turnId,
         status: "completed",
         startedAt: now,
-        completedAt: "2026-06-26T11:00:06.000Z",
-        updatedAt: "2026-06-26T11:00:06.000Z",
+        completedAt: "2026-06-27T11:00:06.000Z",
+        updatedAt: "2026-06-27T11:00:06.000Z",
         user: {
           id: "user-assistant-message-single-path",
-          text: "分析 PostgreSQL timeline 分叉原因。",
+          text: "@server-local 查看cpu情况",
           createdAt: now,
         },
         process: [
@@ -33,19 +33,21 @@ function singleAssistantMessageFixture() {
             phase: "commentary",
             streamState: "complete",
             status: "completed",
-            text: "我先核对公开文档和当前证据边界。",
-            updatedAt: "2026-06-26T11:00:01.000Z",
+            text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-search-tools"],
+            updatedAt: "2026-06-27T11:00:01.000Z",
           },
           {
-            id: "web-search-1",
+            id: "tool-search-1",
             kind: "tool",
-            displayKind: "web_search",
+            displayKind: "tool_search",
             foldGroupKind: "web_lookup",
             status: "completed",
-            text: "web_search",
-            inputSummary: "PostgreSQL timeline history recovery_target_timeline",
-            queries: ["PostgreSQL timeline history recovery_target_timeline"],
-            updatedAt: "2026-06-26T11:00:02.000Z",
+            text: "tool_search",
+            inputSummary: "host CPU monitoring status check server local",
+            queries: ["host CPU monitoring status check server local"],
+            updatedAt: "2026-06-27T11:00:02.000Z",
           },
           {
             id: "assistant-commentary-2",
@@ -54,8 +56,20 @@ function singleAssistantMessageFixture() {
             phase: "commentary",
             streamState: "complete",
             status: "completed",
-            text: "我会把完整 RCA 放到最终回答，过程区只保留短进展。",
-            updatedAt: "2026-06-26T11:00:03.000Z",
+            text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-cpu"],
+            updatedAt: "2026-06-27T11:00:03.000Z",
+          },
+          {
+            id: "cmd-cpu",
+            kind: "command",
+            foldGroupKind: "command",
+            status: "completed",
+            text: "top -l 1 | head",
+            command: "top -l 1 | head",
+            outputPreview: "CPU usage: 10% user, 15% sys, 75% idle",
+            updatedAt: "2026-06-27T11:00:04.000Z",
           },
         ],
         final: {
@@ -91,8 +105,8 @@ function singleAssistantMessageFixture() {
         title: "Assistant message single path",
         status: "completed",
         messageCount: 1,
-        preview: "分析 PostgreSQL timeline 分叉原因",
-        lastActivityAt: "2026-06-26T11:00:06.000Z",
+        preview: "@server-local 查看cpu情况",
+        lastActivityAt: "2026-06-27T11:00:06.000Z",
       }],
     }),
     finalText,
@@ -103,14 +117,14 @@ test("renders commentary in process and final answer only in final area", async 
   const fixture = singleAssistantMessageFixture();
   await openFixturePage(page, "/", fixture);
 
-  await expect(page.getByTestId("aiops-final-text")).toContainText("当前证据只能确认 PostgreSQL timeline 存在分叉");
+  await expect(page.getByTestId("aiops-final-text")).toContainText(fixture.finalText);
   await expect(page.getByText("旧候选答案")).toHaveCount(0);
   await expect(page.getByText("置信度：low")).toHaveCount(0);
 
   await page.getByTestId("aiops-process-header").click();
   const transcript = page.getByTestId("aiops-process-transcript-body");
-  await expect(transcript).toContainText("我先核对公开文档和当前证据边界");
-  await expect(transcript).toContainText("网页检索 1 次");
-  await expect(transcript).toContainText("过程区只保留短进展");
+  await expect(transcript).toContainText("检索可用工具");
+  await expect(transcript).toContainText("执行只读命令");
+  await expect(transcript).toContainText("已运行 top -l 1 | head");
   await expect(transcript).not.toContainText(fixture.finalText);
 });

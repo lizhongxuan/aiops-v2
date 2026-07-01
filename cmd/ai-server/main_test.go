@@ -24,7 +24,6 @@ import (
 	opsmanualtools "aiops-v2/internal/integrations/opsmanuals"
 	"aiops-v2/internal/lsp"
 	"aiops-v2/internal/mcp"
-	"aiops-v2/internal/observability"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/outputstyle"
 	"aiops-v2/internal/permissions"
@@ -90,8 +89,8 @@ type registryAdapterMockTool struct {
 	modes    []string
 }
 
-func TestBuildRuntimeObserverDisabledReturnsNoop(t *testing.T) {
-	observer, provider := buildRuntimeObserver(context.Background(), func(string) string { return "" })
+func TestBuildRuntimeObserverReturnsNoop(t *testing.T) {
+	observer, provider := buildRuntimeObserver(context.Background())
 	defer provider.Shutdown(context.Background())
 	if !isNoopRuntimeObserver(observer) {
 		t.Fatalf("observer type = %T, want runtimekernel.NoopObserver", observer)
@@ -101,21 +100,14 @@ func TestBuildRuntimeObserverDisabledReturnsNoop(t *testing.T) {
 	}
 }
 
-func TestBuildRuntimeObserverEnabledReturnsOTelObserver(t *testing.T) {
-	env := map[string]string{
-		"AIOPS_OTEL_ENABLED":      "1",
-		"AIOPS_OTEL_ENDPOINT":     "http://127.0.0.1:9/v1/traces",
-		"AIOPS_OTEL_SERVICE_NAME": "aiops-v2-agent-test",
+func TestBuildRuntimeObserverIgnoresOTelEnv(t *testing.T) {
+	observer, provider := buildRuntimeObserver(context.Background())
+	defer provider.Shutdown(context.Background())
+	if !isNoopRuntimeObserver(observer) {
+		t.Fatalf("observer type = %T, want runtimekernel.NoopObserver", observer)
 	}
-	observer, provider := buildRuntimeObserver(context.Background(), func(key string) string { return env[key] })
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	defer provider.Shutdown(shutdownCtx)
-	if _, ok := observer.(observability.RuntimeObserver); !ok {
-		t.Fatalf("observer type = %T, want observability.RuntimeObserver", observer)
-	}
-	if !provider.Enabled() {
-		t.Fatal("provider should be enabled")
+	if provider.Enabled() {
+		t.Fatal("provider should ignore OTEL env and stay disabled")
 	}
 }
 
@@ -406,35 +398,20 @@ func mapHostAgentRunnerResult(taskID, status, stdout, stderr string) scheduler.R
 	}
 }
 
-func TestRunnerStudioUpstreamFromEnv(t *testing.T) {
-	t.Run("prefers runner studio specific env", func(t *testing.T) {
-		env := map[string]string{
-			"AIOPS_RUNNER_STUDIO_UPSTREAM_URL": " http://runner-studio.internal ",
-			"RUNNER_STUDIO_UPSTREAM_URL":       "http://runner-fallback.internal",
-			"AIOPS_RUNNER_API_BASE_URL":        "http://runner-api.internal",
+func TestRunnerStudioEmbeddedRuntimeDoesNotUseDisableEnvFlag(t *testing.T) {
+	legacyFlag := "AIOPS_RUNNER_" + "DISABLED"
+	for _, path := range []string{
+		"main.go",
+		filepath.Join("..", "..", "scripts", "start-ai-chat-trace-dev.sh"),
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile(%s) error = %v", path, err)
 		}
-		got := runnerStudioUpstreamFromEnv(func(key string) string { return env[key] })
-		if got != "http://runner-studio.internal" {
-			t.Fatalf("upstream = %q, want runner studio specific env", got)
+		if strings.Contains(string(data), legacyFlag) {
+			t.Fatalf("%s still references deprecated runner disable flag; embedded Runner should start by default", path)
 		}
-	})
-
-	t.Run("falls back to runner api base url", func(t *testing.T) {
-		env := map[string]string{
-			"AIOPS_RUNNER_API_BASE_URL": "http://runner-api.internal",
-		}
-		got := runnerStudioUpstreamFromEnv(func(key string) string { return env[key] })
-		if got != "http://runner-api.internal" {
-			t.Fatalf("upstream = %q, want runner API base URL", got)
-		}
-	})
-
-	t.Run("returns empty when unset", func(t *testing.T) {
-		got := runnerStudioUpstreamFromEnv(func(string) string { return "" })
-		if got != "" {
-			t.Fatalf("upstream = %q, want empty", got)
-		}
-	})
+	}
 }
 
 func TestOpsManualRunRecordSinkPersistsRunnerTerminalRecord(t *testing.T) {
@@ -567,6 +544,24 @@ func TestStoreLLMResolverDefaultsManualContextWindow(t *testing.T) {
 	}
 	if cfg.MaxContextTokens != 200000 {
 		t.Fatalf("MaxContextTokens = %d, want default 200000", cfg.MaxContextTokens)
+	}
+}
+
+func TestStoreLLMResolverPassesRequestTimeout(t *testing.T) {
+	resolver := &storeLLMResolver{
+		repo: fakeLLMConfigRepo{cfg: &store.LLMConfig{
+			Provider:         "openai",
+			Model:            "gpt-5.4",
+			RequestTimeoutMs: 25000,
+		}},
+	}
+
+	cfg, ok := resolver.ResolveProviderConfig("")
+	if !ok {
+		t.Fatal("ResolveProviderConfig() ok = false, want true")
+	}
+	if cfg.RequestTimeoutMs != 25000 {
+		t.Fatalf("RequestTimeoutMs = %d, want 25000", cfg.RequestTimeoutMs)
 	}
 }
 

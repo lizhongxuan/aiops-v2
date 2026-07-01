@@ -404,7 +404,7 @@ func TestRunTurn_EnablesMCPResourcePackAfterToolSearchSelect(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		TurnID:      "turn-tool-search-resource",
-		Input:       "查一下 synthetic 相关资源",
+		Input:       "use tool_search to discover deferred synthetic resource tools",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
@@ -577,7 +577,7 @@ func TestRunTurn_ToolSearchSearchDoesNotAutoEnableTopPack(t *testing.T) {
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		TurnID:      "turn-tool-search-no-auto-pack",
-		Input:       "查一下 synthetic log 能力",
+		Input:       "use tool_search to discover deferred synthetic log tools",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)

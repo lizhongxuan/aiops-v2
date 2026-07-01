@@ -4,9 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/promptinput"
 )
 
 func TestContextUsageAnalyzerCategorizesModelInput(t *testing.T) {
@@ -75,9 +74,14 @@ func TestContextUsageAnalyzerCategorizesModelInput(t *testing.T) {
 
 func TestAnalyzeContextUsageDoesNotRequireRawSensitiveContributors(t *testing.T) {
 	usage := AnalyzeContextUsage(ContextUsageInput{
-		Messages: []*schema.Message{
-			{Role: schema.User, Content: "user-secret-content"},
-			{Role: schema.Tool, Content: strings.Repeat("tool-secret-content ", 20), ToolCallID: "call-1"},
+		Items: []promptinput.ModelInputItem{
+			{ProviderRole: promptinput.ProviderRoleUser, Content: "user-secret-content"},
+			{
+				ProviderRole: promptinput.ProviderRoleTool,
+				Content:      strings.Repeat("tool-secret-content ", 20),
+				ToolCallID:   "call-1",
+				ToolResult:   &promptinput.ModelInputToolResult{ToolCallID: "call-1", Content: strings.Repeat("tool-secret-content ", 20)},
+			},
 		},
 	})
 	for _, contributor := range usage.TopContributors {

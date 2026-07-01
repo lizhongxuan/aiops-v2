@@ -31,6 +31,10 @@ type VerificationCompletionDecision struct {
 
 func EvaluateVerificationCompletionGate(profile taskdepth.Profile, snapshot *TurnSnapshot) VerificationCompletionDecision {
 	requirement := verificationRequirementFromTaskDepth(profile)
+	runtimeApprovalGateMissing := verificationCompletionRuntimeApprovalGateMissing(snapshot)
+	if runtimeApprovalGateMissing && requirement != verification.VerificationExecutionRequired {
+		requirement = verification.VerificationExecutionRequired
+	}
 	report, reportRef, ok := latestVerificationReportFromSnapshot(snapshot)
 	decision := VerificationCompletionDecision{
 		Action:      VerificationCompletionActionAllow,
@@ -42,7 +46,7 @@ func EvaluateVerificationCompletionGate(profile taskdepth.Profile, snapshot *Tur
 			decision.Action = VerificationCompletionActionBlockSuccessFinal
 			decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "execution_required")
 			decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "missing_verification_report")
-			if verificationCompletionRuntimeApprovalGateMissing(snapshot) {
+			if runtimeApprovalGateMissing {
 				decision.Reasons = appendVerificationCompletionReason(decision.Reasons, "missing_runtime_approval_gate")
 			}
 		}
@@ -165,9 +169,6 @@ func verificationCompletionRuntimeApprovalGateRequired(snapshot *TurnSnapshot) b
 		return false
 	}
 	metadata := snapshot.Metadata
-	if !strings.EqualFold(strings.TrimSpace(metadata["aiops.intent.kind"]), "change") {
-		return false
-	}
 	if metadataBool(metadata["aiops.route.userProhibitedHostExec"]) || metadataBool(metadata["aiops.execution.prohibited"]) {
 		return false
 	}
@@ -177,7 +178,44 @@ func verificationCompletionRuntimeApprovalGateRequired(snapshot *TurnSnapshot) b
 	if !metadataBool(metadata["aiops.tool.hostMutationAllowed"]) {
 		return false
 	}
-	return verificationCompletionHasTargetBinding(snapshot)
+	if !verificationCompletionHasTargetBinding(snapshot) {
+		return false
+	}
+	return verificationCompletionHasMutationSignal(snapshot)
+}
+
+func verificationCompletionHasMutationSignal(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	metadata := snapshot.Metadata
+	if strings.EqualFold(strings.TrimSpace(metadata["aiops.intent.kind"]), "change") {
+		return true
+	}
+	for _, key := range []string{"aiops.intent.riskBudget", "intent.riskBudget"} {
+		if metadataListContains(metadata[key], "write") ||
+			metadataListContains(metadata[key], "host_exec") ||
+			metadataListContains(metadata[key], "destruct") {
+			return true
+		}
+	}
+	return verificationCompletionLatestUserMutationIntent(snapshot)
+}
+
+func verificationCompletionLatestUserMutationIntent(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for i := len(snapshot.Iterations) - 1; i >= 0; i-- {
+		messages := snapshot.Iterations[i].MessagesForModel
+		for j := len(messages) - 1; j >= 0; j-- {
+			msg := messages[j]
+			if strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
+				return containsOperationalMutationIntent(msg.Content)
+			}
+		}
+	}
+	return false
 }
 
 func verificationCompletionHasTargetBinding(snapshot *TurnSnapshot) bool {

@@ -233,6 +233,97 @@ function runningPreludeBeforeToolsState() {
   };
 }
 
+function codexLikeProcessTranscriptState() {
+  const now = "2026-06-27T10:00:00.000Z";
+  const turnId = "turn-codex-like-process";
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "browser-flow-session",
+    threadId: "browser-flow-session",
+    status: "idle",
+    currentTurnId: turnId,
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: "completed",
+        startedAt: now,
+        completedAt: "2026-06-27T10:00:08.000Z",
+        updatedAt: "2026-06-27T10:00:08.000Z",
+        user: {
+          id: "user-codex-like-process",
+          text: "@server-local 查看cpu情况",
+          createdAt: now,
+        },
+        process: [
+          {
+            id: "assistant-tool-search",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-search-tools"],
+            updatedAt: "2026-06-27T10:00:01.000Z",
+          },
+          {
+            id: "tool-search-tools",
+            kind: "tool",
+            displayKind: "tool_search",
+            foldGroupKind: "web_lookup",
+            status: "completed",
+            text: "tool_search",
+            inputSummary: "host CPU monitoring status check server local",
+            queries: ["host CPU monitoring status check server local"],
+            updatedAt: "2026-06-27T10:00:02.000Z",
+          },
+          {
+            id: "assistant-exec-command",
+            kind: "assistant",
+            displayKind: "assistant.message",
+            phase: "commentary",
+            streamState: "complete",
+            status: "completed",
+            text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+            commentarySource: "runtime_tool_intent",
+            toolCallIds: ["call-cpu"],
+            updatedAt: "2026-06-27T10:00:03.000Z",
+          },
+          {
+            id: "cmd-cpu",
+            kind: "command",
+            foldGroupKind: "command",
+            status: "completed",
+            text: "top -l 1 | head",
+            command: "top -l 1 | head",
+            outputPreview: "CPU usage: 10.99% user, 15.54% sys, 73.45% idle",
+            updatedAt: "2026-06-27T10:00:04.000Z",
+          },
+        ],
+        final: {
+          id: "final-codex-like-process",
+          text: "CPU 当前空闲约 73%，没有看到持续高负载；建议继续观察 load average 和异常进程。",
+          status: "completed",
+        },
+      },
+    },
+    turnOrder: [turnId],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 10,
+    updatedAt: "2026-06-27T10:00:08.000Z",
+  };
+}
+
 function longTerminalOutputState() {
   const outputPreview = [
     "RSS   PID COMM",
@@ -759,6 +850,17 @@ test("process transcript keeps narration and expanded search details aligned", a
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
 
+test("codex-like process transcript interleaves commentary and tools", async ({ page }) => {
+  await routeShellApis(page, codexLikeProcessTranscriptState());
+  await page.goto("/");
+  await page.getByTestId("aiops-process-header").click();
+  const transcript = page.getByTestId("aiops-process-transcript-body");
+  await expect(transcript).toContainText("检索可用工具");
+  await expect(transcript).toContainText("执行只读命令");
+  await expect(page.getByTestId("aiops-final-text")).toContainText("CPU 当前空闲约 73%");
+  await expect(transcript).toHaveScreenshot("codex-like-process-transcript.png");
+});
+
 test("assistant final markdown keeps the same layout while running and after completion", async ({ page }) => {
   let resumeState = finalMarkdownState("working");
   await routeShellApis(page, () => resumeState);
@@ -820,6 +922,7 @@ test("chat renders rca report artifact", async ({ page }) => {
 
 test("chat shows context compaction and externalized evidence states", async ({ page }) => {
   const state = contextCompactionTransportState();
+  await page.clock.setFixedTime("2026-05-22T08:00:05.000Z");
   await routeShellApis(page, state);
   await page.route("**/api/external-references/spill-1", async (route) => {
     await route.fulfill({

@@ -36,6 +36,7 @@ describe("SessionContextBar auto-create", () => {
 
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
@@ -67,6 +68,7 @@ describe("SessionContextBar auto-create", () => {
       root.unmount();
     });
     container.remove();
+    window.localStorage.clear();
     vi.useRealTimers();
     vi.clearAllMocks();
   });
@@ -127,6 +129,57 @@ describe("SessionContextBar auto-create", () => {
     expect(container.textContent).toContain("active=fixture-session");
     expect(container.textContent).toContain("reason=");
     expect(container.textContent).not.toContain("请先创建会话");
+  });
+
+  it("uses cached LLM config immediately while still refreshing config from the API", async () => {
+    window.localStorage.setItem(
+      "aiops.chat.llmConfig",
+      JSON.stringify({ provider: "zhipu", model: "glm-5.1", apiKeySet: true }),
+    );
+    let resolveLlmConfig: ((value: { provider: string; model: string; apiKeySet: boolean }) => void) | undefined;
+    vi.mocked(fetchLlmConfig).mockReturnValue(
+      new Promise((resolve) => {
+        resolveLlmConfig = resolve;
+      }),
+    );
+    vi.mocked(fetchSessions).mockResolvedValue({
+      activeSessionId: "session-existing",
+      sessions: [
+        {
+          id: "session-existing",
+          kind: "single_host",
+          title: "Existing chat",
+          selectedHostId: "",
+          status: "empty",
+          messageCount: 0,
+        },
+      ],
+    });
+
+    await act(async () => {
+      root.render(
+        <SessionContextBar
+          activeThreadId="session-existing"
+          description="AI Chat"
+          kind="single_host"
+          newSessionLabel="新建会话"
+          onThreadChange={onThreadChange}
+          title="单机会话"
+        >
+          <ContextProbe />
+        </SessionContextBar>,
+      );
+    });
+
+    expect(container.textContent).toContain("llm=glm-5.1");
+    expect(fetchLlmConfig).toHaveBeenCalled();
+
+    await act(async () => {
+      resolveLlmConfig?.({ provider: "openai", model: "gpt-5.4", apiKeySet: true });
+      await flushMicrotasks();
+    });
+
+    expect(container.textContent).toContain("llm=gpt-5.4");
   });
 
   it("does not remount the same active session with an empty state after loading session context", async () => {

@@ -12,6 +12,11 @@ const mockState = vi.hoisted(() => ({
   transportRunning: false,
   transportState: undefined as AiopsTransportState | undefined,
 }));
+const mockWorkspace = vi.hoisted(() => ({
+  composerFocusNonce: 0,
+  composerDisabledReason: "",
+  llmLabel: "GPT-5.4",
+}));
 
 let activeRoot: Root | undefined;
 
@@ -45,7 +50,7 @@ vi.mock("./SessionTargetContext", () => ({
   }),
 }));
 vi.mock("./SessionWorkspaceContext", () => ({
-  useSessionWorkspaceContext: () => ({ composerFocusNonce: 0, composerDisabledReason: "", llmLabel: "GPT-5.4" }),
+  useSessionWorkspaceContext: () => mockWorkspace,
 }));
 
 describe("AiopsComposer host mention fuzzy search", () => {
@@ -58,10 +63,20 @@ describe("AiopsComposer host mention fuzzy search", () => {
     mockState.composerText = "";
     mockState.transportRunning = false;
     mockState.transportState = undefined;
+    mockWorkspace.composerFocusNonce = 0;
+    mockWorkspace.composerDisabledReason = "";
+    mockWorkspace.llmLabel = "GPT-5.4";
     mockState.sendCommand.mockReset();
     fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      if (String(input).endsWith("/api/v1/hosts")) {
+      const url = String(input);
+      if (url.endsWith("/api/v1/hosts")) {
         return new Response(JSON.stringify({ items: sampleHosts() }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.includes("/api/v1/ops-manuals") && !url.includes("/candidates") && !url.includes("/run-records")) {
+        return new Response(JSON.stringify({ items: sampleOpsManuals() }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.endsWith("/api/v1/opsgraph/graphs")) {
+        return new Response(JSON.stringify({ graphs: sampleOpsGraphs() }), { status: 200, headers: { "Content-Type": "application/json" } });
       }
       return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } });
     });
@@ -82,17 +97,30 @@ describe("AiopsComposer host mention fuzzy search", () => {
     vi.unstubAllGlobals();
   });
 
-  it("opens suggestions for @, filters by name/ip, and inserts selected host", async () => {
+  it("opens a category menu for @ before showing host suggestions", async () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
 
     await typeInComposer(input, "@");
     expect(container.querySelector('[data-testid="host-mention-suggestion-popover"]')).not.toBeNull();
-    expect(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]')).toHaveLength(4);
-    expect(container.querySelector('[data-testid="host-mention-suggestion-item"]')?.textContent).toContain("@local");
+    const rootItems = Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'));
+    expect(rootItems.map((item) => item.textContent)).toEqual([
+      expect.stringContaining("主机"),
+      expect.stringContaining("监控"),
+      expect.stringContaining("关系图谱"),
+      expect.stringContaining("运维手册"),
+    ]);
+    expect(container.textContent).not.toContain("@server-local");
+    expect(container.textContent).not.toContain("@host-a");
 
-    await typeInComposer(input, "@pg");
-    expect(container.textContent).toContain("@pg-primary");
+    await act(async () => {
+      rootItems[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(input.value).toBe("@host-");
+    expect(container.querySelector('[data-testid="host-mention-suggestion-item"]')?.textContent).toContain("local");
+
+    await typeInComposer(input, "@host-pg");
+    expect(container.textContent).toContain("pg-primary");
     expect(container.textContent).not.toContain("@redis");
 
     await act(async () => {
@@ -100,6 +128,8 @@ describe("AiopsComposer host mention fuzzy search", () => {
     });
 
     expect(input.value).toBe("@120.77.239.90 ");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toContain("120.77.239.90");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).not.toContain("@");
   });
 
   it("uses attached chat composer styling without extra top gutter", async () => {
@@ -120,17 +150,22 @@ describe("AiopsComposer host mention fuzzy search", () => {
     expect(composerRoot?.className).toContain("rounded-[1.5rem]");
   });
 
+  it("does not render the LLM setup prompt below the composer", async () => {
+    mockWorkspace.composerDisabledReason = "请先在设置中配置 LLM";
+    mockWorkspace.llmLabel = "LLM 未配置";
+
+    await renderComposer(root);
+
+    expect(container.textContent).toContain("LLM 未配置");
+    expect(container.textContent).not.toContain("请先在设置中配置 LLM");
+    expect((container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
   it("uses keyboard navigation and keeps send behavior after insertion", async () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
 
-    await typeInComposer(input, "@");
-    await act(async () => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
-    await act(async () => {
-      input.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
-    });
+    await typeInComposer(input, "@host-redis");
     await act(async () => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
@@ -202,7 +237,7 @@ describe("AiopsComposer host mention fuzzy search", () => {
     const specialMentions = Array.from(
       container.querySelectorAll('[data-testid="composer-inline-special-mention"]'),
     ).map((element) => element.textContent);
-    expect(specialMentions).toEqual(["@coroot", "@ops_graph", "@ops_manus"]);
+    expect(specialMentions).toEqual(["Coroot", "OpsGraph", "运维手册"]);
 
     await act(async () => {
       container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -239,7 +274,7 @@ describe("AiopsComposer host mention fuzzy search", () => {
     const highlightedMentions = Array.from(
       container.querySelectorAll('[data-testid="composer-inline-host-mention"]'),
     ).map((element) => element.textContent);
-    expect(highlightedMentions).toEqual(["@120.77.239.90", "@10.0.0.8"]);
+    expect(highlightedMentions).toEqual(["120.77.239.90", "10.0.0.8"]);
     expect(input.className).toContain("text-transparent");
     expect(input.value).toBe("这是@120.77.239.90主机,查看@10.0.0.8内存情况");
   });
@@ -250,7 +285,7 @@ describe("AiopsComposer host mention fuzzy search", () => {
     const submittedText = "@120.77.239.90 查看主机CPU情况";
 
     await typeInComposer(input, submittedText);
-    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@120.77.239.90");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("120.77.239.90");
 
     await act(async () => {
       container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -274,7 +309,7 @@ describe("AiopsComposer host mention fuzzy search", () => {
     const submittedText = "@120.77.239.90 查看主机CPU情况";
 
     await typeInComposer(input, submittedText);
-    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@120.77.239.90");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("120.77.239.90");
 
     mockState.composerText = submittedText;
     mockState.transportRunning = true;
@@ -333,8 +368,227 @@ describe("AiopsComposer host mention fuzzy search", () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
 
-    await typeInComposer(input, "@ignored");
+    await typeInComposer(input, "@host-ignored");
     expect(container.querySelector('[data-testid="host-mention-suggestion-empty"]')).not.toBeNull();
+  });
+
+  it("sends structured mention metadata when selecting a host suggestion", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@host-pg");
+    await act(async () => {
+      container.querySelector('[data-testid="host-mention-suggestion-item"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await typeInComposer(input, `${input.value}检查状态`);
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    const structured = JSON.parse(command.message.metadata["aiops.input.mentions.v1"]);
+    expect(structured).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "host",
+          path: "host://host-a",
+          source: "selection",
+          rawText: "@120.77.239.90",
+          payload: expect.objectContaining({
+            hostId: "host-a",
+            address: "120.77.239.90",
+            displayName: "pg-primary",
+          }),
+        }),
+      ],
+    });
+    expect(JSON.parse(command.message.metadata["aiops.hostops.mentions"])).toEqual([
+      expect.objectContaining({
+        raw: "@120.77.239.90",
+        hostId: "host-a",
+        source: "inventory",
+        resolved: true,
+      }),
+    ]);
+    expect(command.message.hostId).toBe("host-a");
+  });
+
+  it("does not send stale structured mention metadata after the selected token is deleted", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@host-pg");
+    await act(async () => {
+      container.querySelector('[data-testid="host-mention-suggestion-item"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await typeInComposer(input, "检查状态");
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(command.message.metadata).not.toHaveProperty("aiops.input.mentions.v1");
+    expect(command.message.metadata).not.toHaveProperty("aiops.hostops.mentions");
+    expect(command.message).not.toHaveProperty("hostId");
+  });
+
+  it("sends structured capability metadata when selecting Coroot through the monitor category", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@");
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("监控"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(input.value).toBe("@monitor-");
+    expect(container.textContent).toContain("Coroot");
+    await act(async () => {
+      container.querySelector('[data-testid="host-mention-suggestion-item"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    await typeInComposer(input, `${input.value}分析 checkout`);
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(JSON.parse(command.message.metadata["aiops.input.mentions.v1"])).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "capability",
+          path: "capability://coroot",
+          rawText: "@Coroot",
+          source: "selection",
+        }),
+      ],
+    });
+    expect(command.message.metadata).toMatchObject({
+      "aiops.coroot.explicitRCA": "true",
+      "aiops.coroot.rcaDisplayAllowed": "true",
+    });
+    expect(command.message).not.toHaveProperty("hostId");
+  });
+
+  it("opens a concrete ops manual list instead of inserting the ops manuals capability directly", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@");
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("运维手册"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(input.value).toBe("@manual-");
+    expect(container.querySelector('[data-testid="host-mention-suggestion-level"]')?.textContent).toContain("选择运维手册");
+    expect(container.textContent).toContain("Redis 内存压力排障");
+    expect(container.textContent).not.toContain("ops_manuals");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("Redis 内存压力排障"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(input.value).toBe("@manual-manual-redis-memory ");
+    expect(container.querySelector('[data-testid="composer-inline-resource-mention"]')?.textContent).toBe("Redis 内存压力排障");
+
+    await typeInComposer(input, `${input.value}按手册分析`);
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(JSON.parse(command.message.metadata["aiops.input.mentions.v1"])).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "ops_manual",
+          path: "ops-manual://manual-redis-memory",
+          rawText: "@manual-manual-redis-memory",
+          source: "selection",
+          payload: expect.objectContaining({
+            manualId: "manual-redis-memory",
+            workflowId: "workflow-redis-memory",
+            title: "Redis 内存压力排障",
+          }),
+        }),
+      ],
+    });
+    expect(command.message.metadata).toMatchObject({
+      "aiops.opsManuals.explicitMention": "true",
+      opsManualManualId: "manual-redis-memory",
+      opsManualWorkflowId: "workflow-redis-memory",
+      opsManualManualTitle: "Redis 内存压力排障",
+      enableTool: "search_ops_manuals",
+      enableToolPack: "ops_manual_flow",
+    });
+    expect(command.message).not.toHaveProperty("hostId");
+  });
+
+  it("opens a concrete ops graph list instead of inserting the ops graph capability directly", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@");
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("关系图谱"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(input.value).toBe("@opsgraph-");
+    expect(container.querySelector('[data-testid="host-mention-suggestion-level"]')?.textContent).toContain("选择关系图谱");
+    expect(container.textContent).toContain("生产服务图谱");
+    expect(container.textContent).not.toContain("ops_graph");
+
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("生产服务图谱"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushMicrotasks();
+
+    expect(input.value).toBe("@opsgraph-graph.prod ");
+    expect(container.querySelector('[data-testid="composer-inline-resource-mention"]')?.textContent).toBe("生产服务图谱");
+
+    await typeInComposer(input, `${input.value}分析依赖`);
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(JSON.parse(command.message.metadata["aiops.input.mentions.v1"])).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "ops_graph",
+          path: "ops-graph://graph.prod",
+          rawText: "@opsgraph-graph.prod",
+          source: "selection",
+          payload: expect.objectContaining({
+            graphId: "graph.prod",
+            name: "生产服务图谱",
+          }),
+        }),
+      ],
+    });
+    expect(command.message.metadata).toMatchObject({
+      "aiops.opsGraph.explicitMention": "true",
+      "aiops.opsGraph.graphId": "graph.prod",
+      enableToolPack: "opsgraph",
+    });
+    expect(command.message).not.toHaveProperty("hostId");
   });
 });
 
@@ -368,14 +622,64 @@ async function flushMicrotasks() {
   await act(async () => {
     await Promise.resolve();
     await Promise.resolve();
+    if (typeof window.requestAnimationFrame === "function") {
+      await new Promise((resolve) => window.requestAnimationFrame(() => resolve(undefined)));
+    }
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
 function sampleHosts() {
   return [
+    { id: "server-local", name: "server-local", address: "server-local", status: "online" },
     { id: "host-a", name: "pg-primary", ip: "120.77.239.90", status: "online", hostname: "ignored-hostname", sshUser: "ignored-user", labels: { role: "ignored" } },
     { id: "host-b", name: "redis", ip: "10.0.0.8", status: "online" },
     { id: "host-c", name: "api", address: "10.0.0.9", status: "offline" },
+  ];
+}
+
+function sampleOpsManuals() {
+  return [
+    {
+      id: "manual-redis-memory",
+      title: "Redis 内存压力排障",
+      status: "verified",
+      workflow_ref: { workflow_id: "workflow-redis-memory" },
+      operation: { target_type: "redis", action: "diagnose" },
+      applicability: { middleware: "redis", os: ["linux"], platform: ["ecs"], execution_surface: ["ssh"] },
+      run_record_summary: {},
+    },
+    {
+      id: "manual-pg-backup",
+      title: "PostgreSQL 备份恢复",
+      status: "verified",
+      workflow_ref: { workflow_id: "workflow-pg-backup" },
+      operation: { target_type: "postgresql", action: "restore" },
+      applicability: { middleware: "postgresql" },
+      run_record_summary: {},
+    },
+  ];
+}
+
+function sampleOpsGraphs() {
+  return [
+    {
+      id: "graph.prod",
+      name: "生产服务图谱",
+      environment: "prod",
+      isDefault: true,
+      nodeCount: 12,
+      relationshipCount: 18,
+      issueCount: 0,
+    },
+    {
+      id: "graph.eval",
+      name: "演练图谱",
+      environment: "eval",
+      isDefault: false,
+      nodeCount: 3,
+      relationshipCount: 2,
+      issueCount: 1,
+    },
   ];
 }

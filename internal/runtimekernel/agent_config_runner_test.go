@@ -148,7 +148,7 @@ func TestAgentConfigRunnerBindsOnlyConfiguredChildTools(t *testing.T) {
 
 func TestFixedAgentCompilerProducesSectionEnvelope(t *testing.T) {
 	compiler := fixedAgentCompiler{
-		instructions: []*schema.Message{{Role: schema.System, Content: "host child instructions"}},
+		instructionsText: modelrouter.EinoInstructionMessagesText([]*schema.Message{{Role: schema.System, Content: "host child instructions"}}),
 	}
 	compiled, err := compiler.Compile(promptcompiler.CompileContext{
 		Mode:          "execute",

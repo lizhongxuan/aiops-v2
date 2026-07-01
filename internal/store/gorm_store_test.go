@@ -151,6 +151,43 @@ func TestGormStoreCoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGormStorePersistsRuntimeSettings(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "runtime-settings.db")
+	first := newSQLiteGormStore(t, dbPath)
+	defaults, err := first.GetRuntimeSettings()
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings() missing error = %v", err)
+	}
+	if defaults.AgentRuntime.IntentFrameRouting != "trace_only" || !defaults.Debug.ModelInputTrace {
+		t.Fatalf("missing RuntimeSettings = %+v, want defaults", defaults)
+	}
+	settings := DefaultRuntimeSettings()
+	settings.AgentRuntime.IntentFrameRouting = "shadow"
+	settings.Tooling.ReadOnlyRetryEnabled = true
+	settings.Workflow.ReferenceGuardMode = "warning"
+	settings.OpsManual.AutoRetrieval = true
+	settings.PublicWeb.Enabled = false
+	if err := first.SaveRuntimeSettings(&settings); err != nil {
+		t.Fatalf("SaveRuntimeSettings() error = %v", err)
+	}
+
+	second := newSQLiteGormStore(t, dbPath)
+	defer second.Close()
+	restored, err := second.GetRuntimeSettings()
+	if err != nil {
+		t.Fatalf("GetRuntimeSettings() after reopen error = %v", err)
+	}
+	if restored.AgentRuntime.IntentFrameRouting != "shadow" || !restored.Tooling.ReadOnlyRetryEnabled || restored.Workflow.ReferenceGuardMode != "warning" {
+		t.Fatalf("restored RuntimeSettings = %+v, want saved settings", restored)
+	}
+	if !restored.OpsManual.AutoRetrieval || restored.PublicWeb.Enabled {
+		t.Fatalf("restored optional settings = %+v, want ops manual enabled and public web disabled", restored)
+	}
+	if restored.UpdatedAt.IsZero() {
+		t.Fatalf("restored UpdatedAt is zero")
+	}
+}
+
 func TestGormStoreUICardsNestedPolicyRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "ui-cards.db")
 	first := newSQLiteGormStore(t, dbPath)

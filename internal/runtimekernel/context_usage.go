@@ -4,8 +4,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
@@ -15,7 +13,7 @@ type ContextUsageCategory = promptinput.ContextUsageCategory
 type ContextContributor = promptinput.ContextContributor
 
 type ContextUsageInput struct {
-	Messages   []*schema.Message
+	Items      []promptinput.ModelInputItem
 	Compiled   promptcompiler.CompiledPrompt
 	Governance []ContextGovernanceEvent
 }
@@ -56,20 +54,21 @@ func AnalyzeContextUsage(input ContextUsageInput) ContextUsage {
 			acc.addText("buffers", "context budget thresholds", event.Kind)
 		}
 	}
-	for _, msg := range input.Messages {
-		if msg == nil {
-			continue
-		}
+	for _, item := range input.Items {
 		category := "messages"
-		id := string(msg.Role)
-		if msg.Role == schema.Tool {
+		id := string(item.ProviderRole)
+		content := item.Content
+		if item.ProviderRole == promptinput.ProviderRoleTool || item.ToolResult != nil {
 			category = "tool_results"
-			id = strings.TrimSpace(msg.ToolCallID)
+			id = strings.TrimSpace(firstNonBlankRuntimeString(item.ToolCallID, item.ToolResultToolCallID()))
 			if id == "" {
 				id = "tool_result"
 			}
+			if item.ToolResult != nil && strings.TrimSpace(item.ToolResult.Content) != "" {
+				content = item.ToolResult.Content
+			}
 		}
-		acc.addText(category, msg.Content, id)
+		acc.addText(category, content, id)
 	}
 	return acc.result()
 }

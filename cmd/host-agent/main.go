@@ -4,17 +4,20 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"math"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"aiops-v2/internal/agentrpc"
@@ -110,6 +113,67 @@ type agentOptions struct {
 	MaxOutputBytes int
 }
 
+type agentDiagnostics struct {
+	mu        sync.Mutex
+	startedAt time.Time
+	cfg       hostagent.Config
+	register  agentDiagnosticCheck
+	heartbeat agentDiagnosticCheck
+	grpc      agentDiagnosticCheck
+}
+
+type agentDiagnosticCheck struct {
+	LastAttemptAt      time.Time
+	LastSuccessAt      time.Time
+	LastErrorAt        time.Time
+	LastError          string
+	LastCategory       string
+	LastStatusCode     int
+	LastLatency        time.Duration
+	ConsecutiveFailure int
+}
+
+type agentDiagnosticsSnapshot struct {
+	Status          string                       `json:"status"`
+	HostID          string                       `json:"host_id"`
+	Version         string                       `json:"version"`
+	ConnectionMode  string                       `json:"connection_mode"`
+	ListenAddr      string                       `json:"listen_addr"`
+	ServerURL       string                       `json:"server_url,omitempty"`
+	GRPCURL         string                       `json:"grpc_url,omitempty"`
+	TokenConfigured bool                         `json:"token_configured"`
+	Capabilities    []string                     `json:"capabilities,omitempty"`
+	StartedAt       string                       `json:"started_at"`
+	UptimeMs        int64                        `json:"uptime_ms"`
+	ConfigWarnings  []string                     `json:"config_warnings,omitempty"`
+	Register        agentDiagnosticCheckSnapshot `json:"register"`
+	Heartbeat       agentDiagnosticCheckSnapshot `json:"heartbeat"`
+	GRPC            agentDiagnosticCheckSnapshot `json:"grpc"`
+}
+
+type agentDiagnosticCheckSnapshot struct {
+	LastAttemptAt       string `json:"last_attempt_at,omitempty"`
+	LastSuccessAt       string `json:"last_success_at,omitempty"`
+	LastErrorAt         string `json:"last_error_at,omitempty"`
+	LastError           string `json:"last_error,omitempty"`
+	LastCategory        string `json:"last_category,omitempty"`
+	LastStatusCode      int    `json:"last_status_code,omitempty"`
+	LastLatencyMs       int64  `json:"last_latency_ms,omitempty"`
+	ConsecutiveFailures int    `json:"consecutive_failures,omitempty"`
+}
+
+type agentHTTPStatusError struct {
+	Path       string
+	StatusCode int
+}
+
+func (e *agentHTTPStatusError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s returned status %d", e.Path, e.StatusCode)
+}
+
 func newOutputBuffer(maxSize int) *outputBuffer {
 	return &outputBuffer{maxSize: maxSize}
 }
@@ -131,6 +195,238 @@ func (b *outputBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data)
+}
+
+func newAgentDiagnostics(cfg hostagent.Config) *agentDiagnostics {
+	return &agentDiagnostics{
+		startedAt: time.Now().UTC(),
+		cfg:       cfg,
+	}
+}
+
+func resolveAgentDiagnostics(cfg hostagent.Config, diagnostics []*agentDiagnostics) *agentDiagnostics {
+	if len(diagnostics) > 0 && diagnostics[0] != nil {
+		return diagnostics[0]
+	}
+	return newAgentDiagnostics(cfg)
+}
+
+func (d *agentDiagnostics) recordSuccess(name string, started time.Time, statusCode int) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	check := d.checkLocked(name)
+	if check == nil {
+		return
+	}
+	now := time.Now().UTC()
+	check.LastAttemptAt = started.UTC()
+	check.LastSuccessAt = now
+	check.LastError = ""
+	check.LastCategory = ""
+	check.LastStatusCode = statusCode
+	check.LastLatency = now.Sub(started)
+	check.ConsecutiveFailure = 0
+}
+
+func (d *agentDiagnostics) recordFailure(name string, started time.Time, err error) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	check := d.checkLocked(name)
+	if check == nil {
+		return
+	}
+	now := time.Now().UTC()
+	check.LastAttemptAt = started.UTC()
+	check.LastErrorAt = now
+	check.LastError = strings.TrimSpace(errString(err))
+	check.LastCategory = classifyAgentDiagnosticError(err)
+	check.LastStatusCode = agentDiagnosticStatusCode(err)
+	check.LastLatency = now.Sub(started)
+	check.ConsecutiveFailure++
+}
+
+func (d *agentDiagnostics) checkLocked(name string) *agentDiagnosticCheck {
+	switch name {
+	case "register":
+		return &d.register
+	case "heartbeat":
+		return &d.heartbeat
+	case "grpc":
+		return &d.grpc
+	default:
+		return nil
+	}
+}
+
+func (d *agentDiagnostics) snapshot() agentDiagnosticsSnapshot {
+	if d == nil {
+		return agentDiagnosticsSnapshot{Status: "ok", Version: agentVersion}
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	now := time.Now().UTC()
+	return agentDiagnosticsSnapshot{
+		Status:          "ok",
+		HostID:          d.cfg.HostID,
+		Version:         agentVersion,
+		ConnectionMode:  hostagent.NormalizeConnectionMode(d.cfg.ConnectionMode, d.cfg.ServerURL, d.cfg.GRPCURL),
+		ListenAddr:      d.cfg.ListenAddr,
+		ServerURL:       d.cfg.ServerURL,
+		GRPCURL:         d.cfg.GRPCURL,
+		TokenConfigured: strings.TrimSpace(d.cfg.Token) != "",
+		Capabilities:    append([]string(nil), d.cfg.Capabilities...),
+		StartedAt:       formatDiagnosticTime(d.startedAt),
+		UptimeMs:        now.Sub(d.startedAt).Milliseconds(),
+		ConfigWarnings:  agentDiagnosticConfigWarnings(d.cfg),
+		Register:        snapshotDiagnosticCheck(d.register),
+		Heartbeat:       snapshotDiagnosticCheck(d.heartbeat),
+		GRPC:            snapshotDiagnosticCheck(d.grpc),
+	}
+}
+
+func (d *agentDiagnostics) lastBeatTime() time.Time {
+	if d == nil {
+		return time.Now().UTC()
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.heartbeat.LastSuccessAt.IsZero() {
+		return d.heartbeat.LastSuccessAt
+	}
+	if !d.register.LastSuccessAt.IsZero() {
+		return d.register.LastSuccessAt
+	}
+	if !d.startedAt.IsZero() {
+		return d.startedAt
+	}
+	return time.Now().UTC()
+}
+
+func snapshotDiagnosticCheck(check agentDiagnosticCheck) agentDiagnosticCheckSnapshot {
+	return agentDiagnosticCheckSnapshot{
+		LastAttemptAt:       formatDiagnosticTime(check.LastAttemptAt),
+		LastSuccessAt:       formatDiagnosticTime(check.LastSuccessAt),
+		LastErrorAt:         formatDiagnosticTime(check.LastErrorAt),
+		LastError:           check.LastError,
+		LastCategory:        check.LastCategory,
+		LastStatusCode:      check.LastStatusCode,
+		LastLatencyMs:       check.LastLatency.Milliseconds(),
+		ConsecutiveFailures: check.ConsecutiveFailure,
+	}
+}
+
+func formatDiagnosticTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339)
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
+func agentDiagnosticStatusCode(err error) int {
+	var statusErr *agentHTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil {
+		return statusErr.StatusCode
+	}
+	return 0
+}
+
+func classifyAgentDiagnosticError(err error) string {
+	if err == nil {
+		return ""
+	}
+	statusCode := agentDiagnosticStatusCode(err)
+	switch {
+	case statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden:
+		return "unauthorized"
+	case statusCode == http.StatusNotFound:
+		return "not_found"
+	case statusCode >= 500:
+		return "server_error"
+	case statusCode > 0:
+		return "http_error"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "timeout"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"):
+		return "tcp_refused"
+	case strings.Contains(message, "no such host"):
+		return "dns_failed"
+	case strings.Contains(message, "network is unreachable"):
+		return "network_unreachable"
+	case strings.Contains(message, "i/o timeout"), strings.Contains(message, "deadline exceeded"):
+		return "timeout"
+	default:
+		return "network_error"
+	}
+}
+
+func agentDiagnosticConfigWarnings(cfg hostagent.Config) []string {
+	var warnings []string
+	if hostagent.NormalizeConnectionMode(cfg.ConnectionMode, cfg.ServerURL, cfg.GRPCURL) != hostagent.ConnectionModeNodePushGRPC {
+		return warnings
+	}
+	if host := parsedURLHost(cfg.ServerURL); isLoopbackHost(host) {
+		warnings = append(warnings, "server_url_loopback")
+	}
+	if serverURLLooksLikeNodeEndpoint(cfg.ServerURL) {
+		warnings = append(warnings, "server_url_looks_like_node_endpoint")
+	}
+	return warnings
+}
+
+func serverURLLooksLikeNodeEndpoint(raw string) bool {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return false
+	}
+	if u.Port() == "7072" {
+		return true
+	}
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	return path == "/exec" || path == "/run" || path == "/health" || path == "/diagnostics" || strings.HasPrefix(path, "/terminal")
+}
+
+func parsedURLHost(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u == nil {
+		return ""
+	}
+	return u.Hostname()
+}
+
+func isLoopbackHost(host string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func main() {
@@ -161,24 +457,43 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	client := &http.Client{Timeout: 10 * time.Second}
-	if err := register(ctx, client, cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "register host-agent: %v\n", err)
-		os.Exit(1)
-	}
-	go heartbeatLoop(ctx, client, cfg)
-	if strings.TrimSpace(cfg.GRPCURL) != "" {
-		go grpcControlLoop(ctx, cfg, opts)
-	}
-
-	fmt.Fprintf(os.Stderr, "host-agent listening on %s\n", cfg.ListenAddr)
-	if err := http.ListenAndServe(cfg.ListenAddr, newAgentHandler(cfg, opts)); err != nil {
+	if err := runHostAgent(ctx, cfg, opts, &http.Client{Timeout: 10 * time.Second}, os.Stderr, nil); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
 
-func grpcControlLoop(ctx context.Context, cfg hostagent.Config, opts agentOptions) {
+type hostAgentServeFunc func(http.Handler) error
+
+func runHostAgent(ctx context.Context, cfg hostagent.Config, opts agentOptions, client *http.Client, stderr io.Writer, serve hostAgentServeFunc) error {
+	cfg.ConnectionMode = hostagent.NormalizeConnectionMode(cfg.ConnectionMode, cfg.ServerURL, cfg.GRPCURL)
+	if client == nil {
+		client = &http.Client{Timeout: 10 * time.Second}
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
+	if serve == nil {
+		serve = func(handler http.Handler) error {
+			return http.ListenAndServe(cfg.ListenAddr, handler)
+		}
+	}
+	diagnostics := newAgentDiagnostics(cfg)
+	if cfg.ConnectionMode == hostagent.ConnectionModeNodePushGRPC {
+		if err := register(ctx, client, cfg, diagnostics); err != nil {
+			fmt.Fprintf(stderr, "register host-agent: %v\n", err)
+		}
+		go heartbeatLoop(ctx, client, cfg, diagnostics)
+		if strings.TrimSpace(cfg.GRPCURL) != "" {
+			go grpcControlLoop(ctx, cfg, opts, diagnostics)
+		}
+	}
+
+	fmt.Fprintf(stderr, "host-agent listening on %s\n", cfg.ListenAddr)
+	return serve(newAgentHandler(cfg, opts, diagnostics))
+}
+
+func grpcControlLoop(ctx context.Context, cfg hostagent.Config, opts agentOptions, diagnostics *agentDiagnostics) {
 	backoff := time.Second
 	for {
 		select {
@@ -186,8 +501,12 @@ func grpcControlLoop(ctx context.Context, cfg hostagent.Config, opts agentOption
 			return
 		default:
 		}
+		started := time.Now().UTC()
 		if err := runGRPCControlSession(ctx, cfg, opts); err != nil && ctx.Err() == nil {
+			diagnostics.recordFailure("grpc", started, err)
 			fmt.Fprintf(os.Stderr, "host-agent grpc control: %v\n", err)
+		} else if ctx.Err() == nil {
+			diagnostics.recordSuccess("grpc", started, 0)
 		}
 		select {
 		case <-ctx.Done():
@@ -400,7 +719,8 @@ func stringControlField(fields map[string]any, key string) string {
 	return value
 }
 
-func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
+func newAgentHandler(cfg hostagent.Config, opts agentOptions, diagnostics ...*agentDiagnostics) http.Handler {
+	diag := resolveAgentDiagnostics(cfg, diagnostics)
 	registry := modules.NewRegistry()
 	registry.Register("script.shell", script.New("shell"))
 	registry.Register("script.python", script.New("python"))
@@ -417,9 +737,6 @@ func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 	var taskMu sync.Mutex
 	tasks := map[string]*taskEntry{}
 	waitingTokenToTaskID := map[string]string{}
-
-	var lastBeat atomic.Int64
-	lastBeat.Store(time.Now().UTC().Unix())
 
 	getTask := func(taskID string) (taskEntry, bool) {
 		taskMu.Lock()
@@ -756,7 +1073,7 @@ func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		now := time.Now().UTC()
-		last := time.Unix(lastBeat.Load(), 0)
+		last := diag.lastBeatTime()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":       "ok",
 			"host_id":      cfg.HostID,
@@ -767,10 +1084,22 @@ func newAgentHandler(cfg hostagent.Config, opts agentOptions) http.Handler {
 		})
 	})
 
+	mux.HandleFunc("/diagnostics", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			return
+		}
+		if !checkAuth(w, r) {
+			return
+		}
+		writeJSON(w, http.StatusOK, diag.snapshot())
+	})
+
 	return mux
 }
 
-func register(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
+func register(ctx context.Context, client *http.Client, cfg hostagent.Config, diagnostics *agentDiagnostics) error {
+	started := time.Now().UTC()
 	hostname, _ := os.Hostname()
 	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
 		HostID:        cfg.HostID,
@@ -781,10 +1110,16 @@ func register(ctx context.Context, client *http.Client, cfg hostagent.Config) er
 		System:        collectHostSystemInfo(),
 		Registration:  true,
 	})
-	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/register", payload)
+	err := postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/register", payload)
+	if err != nil {
+		diagnostics.recordFailure("register", started, err)
+		return err
+	}
+	diagnostics.recordSuccess("register", started, http.StatusOK)
+	return nil
 }
 
-func heartbeatLoop(ctx context.Context, client *http.Client, cfg hostagent.Config) {
+func heartbeatLoop(ctx context.Context, client *http.Client, cfg hostagent.Config, diagnostics *agentDiagnostics) {
 	ticker := time.NewTicker(cfg.HeartbeatInterval)
 	defer ticker.Stop()
 	for {
@@ -792,21 +1127,28 @@ func heartbeatLoop(ctx context.Context, client *http.Client, cfg hostagent.Confi
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := heartbeat(ctx, client, cfg); err != nil {
+			if err := heartbeat(ctx, client, cfg, diagnostics); err != nil {
 				fmt.Fprintf(os.Stderr, "host-agent heartbeat: %v\n", err)
 			}
 		}
 	}
 }
 
-func heartbeat(ctx context.Context, client *http.Client, cfg hostagent.Config) error {
+func heartbeat(ctx context.Context, client *http.Client, cfg hostagent.Config, diagnostics *agentDiagnostics) error {
+	started := time.Now().UTC()
 	payload := buildHostAgentEventPayload(hostAgentEventPayloadInput{
 		HostID:       cfg.HostID,
 		Capabilities: cfg.Capabilities,
 		System:       collectHostSystemInfo(),
 		Timestamp:    time.Now().UTC().Format(time.RFC3339),
 	})
-	return postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/heartbeat", payload)
+	err := postAgentEvent(ctx, client, cfg, "/api/v1/host-agents/heartbeat", payload)
+	if err != nil {
+		diagnostics.recordFailure("heartbeat", started, err)
+		return err
+	}
+	diagnostics.recordSuccess("heartbeat", started, http.StatusOK)
+	return nil
 }
 
 func buildHostAgentEventPayload(input hostAgentEventPayloadInput) map[string]any {
@@ -965,7 +1307,7 @@ func postAgentEvent(ctx context.Context, client *http.Client, cfg hostagent.Conf
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("%s returned status %d", path, resp.StatusCode)
+		return &agentHTTPStatusError{Path: path, StatusCode: resp.StatusCode}
 	}
 	return nil
 }

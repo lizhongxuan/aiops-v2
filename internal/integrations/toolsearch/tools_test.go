@@ -332,6 +332,35 @@ func TestToolSearchDefaultSearchOnlyReturnsDeferredMCPOrDynamicTools(t *testing.
 	}
 }
 
+func TestToolSearchNeverDiscoversPublicWebOrToolSearch(t *testing.T) {
+	registry := tooling.NewRegistry()
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "tool_search", Description: "Search deferred tools", Layer: tooling.ToolLayerCore, AlwaysLoad: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "web_search", Description: "Search public web", Layer: tooling.ToolLayerCore, Pack: "public_web", AlwaysLoad: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "browse_url", Description: "Open public URL", Layer: tooling.ToolLayerDeferred, Pack: "public_web", DeferByDefault: true},
+	})
+	mustRegister(t, registry, &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "synthetic.deferred", Description: "Read deferred evidence", Layer: tooling.ToolLayerDeferred, Pack: "synthetic_pack", DeferByDefault: true},
+	})
+
+	content := runToolSearchWithInput(t, registry, map[string]any{
+		"query":         "web search browse deferred",
+		"includeLoaded": true,
+	})
+	for _, forbidden := range []string{`"name":"tool_search"`, `"name":"web_search"`, `"name":"browse_url"`, `"name":"public_web"`} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("tool_search result must not expose public-web/tool-search entry %s: %s", forbidden, content)
+		}
+	}
+	if !strings.Contains(content, `"name":"synthetic_pack"`) {
+		t.Fatalf("tool_search result = %s, want ordinary deferred pack still discoverable", content)
+	}
+}
+
 func TestToolSearchReturnsGovernanceMetadata(t *testing.T) {
 	registry := tooling.NewRegistry()
 	mustRegister(t, registry, &tooling.StaticTool{

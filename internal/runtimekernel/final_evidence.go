@@ -1,6 +1,8 @@
 package runtimekernel
 
 import (
+	"encoding/json"
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -415,16 +417,14 @@ func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 			if strings.TrimSpace(result.Error) != "" {
 				continue
 			}
-			summary := strings.TrimSpace(result.Summary)
-			if summary == "" {
-				summary = firstNonEmptyLine(result.Content)
-			}
+			toolName := strings.TrimSpace(toolNames[result.ToolCallID])
+			summary := checkedEvidenceSummaryForToolResult(toolName, result)
 			if summary == "" {
 				continue
 			}
 			item := CheckedEvidence{
 				ToolCallID: strings.TrimSpace(result.ToolCallID),
-				ToolName:   strings.TrimSpace(toolNames[result.ToolCallID]),
+				ToolName:   toolName,
 				Summary:    truncateRunes(summary, 180),
 			}
 			key := item.ToolCallID + "\x00" + item.ToolName + "\x00" + item.Summary
@@ -436,6 +436,111 @@ func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 		}
 	}
 	return out
+}
+
+func checkedEvidenceSummaryForToolResult(toolName string, result ToolResult) string {
+	normalizedTool := strings.ToLower(strings.TrimSpace(toolName))
+	if normalizedTool == "tool_search" {
+		return ""
+	}
+	if summary, ok := publicWebCheckedEvidenceSummary(normalizedTool, result); ok {
+		return summary
+	}
+	summary := strings.TrimSpace(result.Summary)
+	if summary == "" {
+		summary = firstNonEmptyLine(result.Content)
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	if looksLikeToolDiscoveryPayload(summary) || looksLikeToolDiscoveryPayload(result.Content) {
+		return ""
+	}
+	if containsInternalFinalFallbackText(summary) {
+		return ""
+	}
+	summary = sanitizeIncompleteFinalUserLine(summary)
+	if summary == "" || containsInternalFinalFallbackText(summary) {
+		return ""
+	}
+	return summary
+}
+
+func publicWebCheckedEvidenceSummary(toolName string, result ToolResult) (string, bool) {
+	if toolName != "web_search" && toolName != "browse_url" {
+		return "", false
+	}
+	raw := strings.TrimSpace(result.Content)
+	if raw == "" {
+		raw = strings.TrimSpace(result.Summary)
+	}
+	type publicWebEnvelope struct {
+		Operation string `json:"operation"`
+		Query     string `json:"query"`
+		URL       string `json:"url"`
+		Source    string `json:"source"`
+		Results   []struct {
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		} `json:"results"`
+		Meta struct {
+			Backend  string `json:"backend"`
+			FinalURL string `json:"finalUrl"`
+		} `json:"meta"`
+	}
+	var env publicWebEnvelope
+	if raw != "" && json.Unmarshal([]byte(raw), &env) == nil && (env.Operation != "" || env.Source != "" || len(env.Results) > 0) {
+		sourceCount := len(env.Results)
+		switch strings.ToLower(strings.TrimSpace(env.Operation)) {
+		case "open":
+			url := firstNonEmpty(env.URL, env.Meta.FinalURL)
+			if url != "" {
+				return "公开网页读取已返回来源：" + url, true
+			}
+			return "公开网页读取已完成。", true
+		default:
+			query := strings.TrimSpace(env.Query)
+			if query != "" {
+				return fmt.Sprintf("公开网页搜索已返回 %d 个来源：%s", sourceCount, truncateRunes(query, 80)), true
+			}
+			return fmt.Sprintf("公开网页搜索已返回 %d 个来源。", sourceCount), true
+		}
+	}
+	summary := strings.TrimSpace(result.Summary)
+	if summary == "" {
+		summary = firstNonEmptyLine(result.Content)
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" || looksLikeToolDiscoveryPayload(summary) || containsInternalFinalFallbackText(summary) {
+		return "", true
+	}
+	return sanitizeIncompleteFinalUserLine(summary), true
+}
+
+func looksLikeToolDiscoveryPayload(text string) bool {
+	text = strings.TrimSpace(text)
+	if text == "" || !strings.HasPrefix(text, "{") {
+		return false
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(text), &payload) != nil {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(anyString(payload["mode"])))
+	if mode == "search" || mode == "select" || mode == "describe" {
+		return true
+	}
+	errorType := strings.ToLower(strings.TrimSpace(anyString(payload["errorType"])))
+	if strings.HasPrefix(errorType, "tool_") || errorType == "mcp_unavailable" || errorType == "dedicated_tool_preferred" {
+		return true
+	}
+	for _, key := range []string{"selection", "descriptions", "loadedTools", "loadedPacks", "suggestedSearchQuery", "requiredAction"} {
+		if _, ok := payload[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func snapshotHasUserProvidedEvidence(snapshot *TurnSnapshot) bool {

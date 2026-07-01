@@ -88,17 +88,16 @@ func chatRequestContent(req ChatMessageRequest) string {
 
 // HTTPServer provides the first-party HTTP REST API and WebSocket entrypoints.
 type HTTPServer struct {
-	ui                      appui.HTTPServices
-	mux                     *http.ServeMux
-	web                     http.Handler
-	runnerStudioHandler     http.Handler
-	runnerStudioUpstreamURL string
-	terminalManager         *terminal.Manager
-	appWSHeartbeatTick      time.Duration
-	appSnapshots            *AppSnapshotBroadcaster
-	agentEvents             appui.AgentEventService
-	promptTraces            appui.PromptTraceService
-	opsManualAutoRetrieval  bool
+	ui                             appui.HTTPServices
+	mux                            *http.ServeMux
+	web                            http.Handler
+	runnerStudioHandler            http.Handler
+	terminalManager                *terminal.Manager
+	appWSHeartbeatTick             time.Duration
+	appSnapshots                   *AppSnapshotBroadcaster
+	agentEvents                    appui.AgentEventService
+	promptTraces                   appui.PromptTraceService
+	opsManualAutoRetrievalOverride *bool
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -136,15 +135,7 @@ func WithPromptTraceService(service appui.PromptTraceService) HTTPServerOption {
 
 func WithOpsManualAutoRetrieval(enabled bool) HTTPServerOption {
 	return func(s *HTTPServer) {
-		s.opsManualAutoRetrieval = enabled
-	}
-}
-
-// WithRunnerStudioUpstreamURL configures the server-side runner API upstream
-// used by same-origin /api/runner-studio/* aggregation routes.
-func WithRunnerStudioUpstreamURL(rawURL string) HTTPServerOption {
-	return func(s *HTTPServer) {
-		s.runnerStudioUpstreamURL = strings.TrimSpace(rawURL)
+		s.opsManualAutoRetrievalOverride = &enabled
 	}
 }
 
@@ -167,14 +158,13 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		}
 	}
 	s := &HTTPServer{
-		ui:                     ui,
-		mux:                    http.NewServeMux(),
-		terminalManager:        terminal.NewManager(),
-		appWSHeartbeatTick:     15 * time.Second,
-		agentEvents:            agentEvents,
-		promptTraces:           appui.NewPromptTraceService(""),
-		appSnapshots:           NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
-		opsManualAutoRetrieval: false,
+		ui:                 ui,
+		mux:                http.NewServeMux(),
+		terminalManager:    terminal.NewManager(),
+		appWSHeartbeatTick: 15 * time.Second,
+		agentEvents:        agentEvents,
+		promptTraces:       appui.NewPromptTraceService(""),
+		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -212,6 +202,7 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/sessions/", s.handleSessions)
 	s.mux.HandleFunc("/api/v1/settings", s.handleSettings)
 	s.mux.HandleFunc("/api/v1/llm-config", s.handleLLMConfig)
+	s.mux.HandleFunc("/api/v1/runtime-settings", s.handleRuntimeSettings)
 	s.mux.HandleFunc("/api/v1/terminal-policies", s.handleTerminalPolicies)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces", s.handlePromptTraces)
 	s.mux.HandleFunc("/api/v1/debug/model-input-traces/file", s.handlePromptTraceFile)

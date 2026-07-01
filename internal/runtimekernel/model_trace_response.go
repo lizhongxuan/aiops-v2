@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/diagnostics"
+	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptinput"
 )
 
 type modelTraceResponseUsage struct {
@@ -26,7 +26,7 @@ type ModelStreamStats struct {
 	OutputChars  int   `json:"output_chars,omitempty"`
 }
 
-func appendModelTraceResponse(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error, stats ...ModelStreamStats) {
+func appendModelTraceResponse(tracePath, requestID string, response modelrouter.ProviderResponse, duration time.Duration, callErr error, stats ...ModelStreamStats) {
 	if strings.TrimSpace(tracePath) == "" {
 		return
 	}
@@ -36,7 +36,7 @@ func appendModelTraceResponse(tracePath, requestID string, response *schema.Mess
 	}
 }
 
-func appendModelTraceResponseFile(tracePath, requestID string, response *schema.Message, duration time.Duration, callErr error, stats ...ModelStreamStats) error {
+func appendModelTraceResponseFile(tracePath, requestID string, response modelrouter.ProviderResponse, duration time.Duration, callErr error, stats ...ModelStreamStats) error {
 	if filepath.Ext(tracePath) != ".json" {
 		return nil
 	}
@@ -82,31 +82,32 @@ func appendModelTraceResponseFile(tracePath, requestID string, response *schema.
 	return os.WriteFile(tracePath, append(next, '\n'), 0o644)
 }
 
-func modelTraceResponseEntry(requestID string, response *schema.Message, duration time.Duration, callErr error, stats ModelStreamStats) map[string]any {
+func modelTraceResponseEntry(requestID string, response modelrouter.ProviderResponse, duration time.Duration, callErr error, stats ModelStreamStats) map[string]any {
+	providerRequestID := strings.TrimSpace(response.RequestID)
+	itemID := strings.TrimSpace(requestID)
 	entry := map[string]any{
-		"id": strings.TrimSpace(requestID),
+		"id": firstNonBlankRuntimeString(providerRequestID, itemID),
 	}
 	if entry["id"] == "" {
 		entry["id"] = "llm-request"
 	}
+	if itemID != "" && itemID != entry["id"] {
+		entry["itemId"] = itemID
+	}
 	if duration > 0 {
 		entry["duration_ms"] = durationMilliseconds(duration)
 	}
-	if response != nil {
-		if output := strings.TrimSpace(diagnostics.RedactSensitiveText(response.Content)); output != "" {
-			entry["output"] = output
-		}
-		if response.ResponseMeta != nil {
-			if response.ResponseMeta.FinishReason != "" {
-				entry["finishReason"] = response.ResponseMeta.FinishReason
-			}
-			if usage := modelTraceUsageFromResponse(response.ResponseMeta.Usage); usage != nil {
-				entry["usage"] = usage
-			}
-		}
-		if len(response.ToolCalls) > 0 {
-			entry["toolCalls"] = modelTraceRedactedToolCalls(response.ToolCalls)
-		}
+	if output := strings.TrimSpace(diagnostics.RedactSensitiveText(response.Output)); output != "" {
+		entry["output"] = output
+	}
+	if finishReason := strings.TrimSpace(response.FinishReason); finishReason != "" {
+		entry["finishReason"] = finishReason
+	}
+	if usage := modelTraceUsageFromProviderUsage(response.Usage); usage != nil {
+		entry["usage"] = usage
+	}
+	if len(response.ToolCalls) > 0 {
+		entry["toolCalls"] = modelTraceRedactedToolCalls(response.ToolCalls)
 	}
 	if callErr != nil {
 		entry["error"] = diagnostics.RedactSensitiveText(callErr.Error())
@@ -148,10 +149,7 @@ func durationMilliseconds(duration time.Duration) int64 {
 	return durationMs
 }
 
-func modelTraceUsageFromResponse(usage *schema.TokenUsage) *modelTraceResponseUsage {
-	if usage == nil {
-		return nil
-	}
+func modelTraceUsageFromProviderUsage(usage modelrouter.ProviderUsage) *modelTraceResponseUsage {
 	out := &modelTraceResponseUsage{
 		PromptTokens:     usage.PromptTokens,
 		CompletionTokens: usage.CompletionTokens,
@@ -166,7 +164,7 @@ func modelTraceUsageFromResponse(usage *schema.TokenUsage) *modelTraceResponseUs
 	return out
 }
 
-func modelTraceRedactedToolCalls(calls []schema.ToolCall) []map[string]any {
+func modelTraceRedactedToolCalls(calls []promptinput.ModelInputToolCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
 	for index, call := range calls {
 		id := strings.TrimSpace(call.ID)
@@ -175,8 +173,8 @@ func modelTraceRedactedToolCalls(calls []schema.ToolCall) []map[string]any {
 		}
 		out = append(out, map[string]any{
 			"id":        id,
-			"name":      diagnostics.RedactSensitiveText(call.Function.Name),
-			"arguments": diagnostics.RedactSensitiveText(call.Function.Arguments),
+			"name":      diagnostics.RedactSensitiveText(call.Name),
+			"arguments": diagnostics.RedactSensitiveText(string(call.Arguments)),
 		})
 	}
 	return out

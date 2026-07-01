@@ -6,6 +6,22 @@ import (
 	"time"
 )
 
+type runtimeSettingsStub struct {
+	diagnosticProtocol bool
+	retryEnabled       bool
+	maxPerCall         int
+	maxPerTurn         int
+	backoffBaseMs      int
+	backoffMaxMs       int
+}
+
+func (s runtimeSettingsStub) RuntimeDiagnosticProtocol() bool        { return s.diagnosticProtocol }
+func (s runtimeSettingsStub) RuntimeReadOnlyRetryEnabled() bool      { return s.retryEnabled }
+func (s runtimeSettingsStub) RuntimeReadOnlyRetryMaxPerCall() int    { return s.maxPerCall }
+func (s runtimeSettingsStub) RuntimeReadOnlyRetryMaxPerTurn() int    { return s.maxPerTurn }
+func (s runtimeSettingsStub) RuntimeReadOnlyRetryBackoffBaseMs() int { return s.backoffBaseMs }
+func (s runtimeSettingsStub) RuntimeReadOnlyRetryBackoffMaxMs() int  { return s.backoffMaxMs }
+
 func TestDefaultAndClone(t *testing.T) {
 	f := Default()
 	if !f.DiagnosticProtocol {
@@ -21,44 +37,29 @@ func TestDefaultAndClone(t *testing.T) {
 	}
 }
 
-func TestFromEnvDiagnosticProtocolCanBeDisabled(t *testing.T) {
-	f := FromEnv(func(key string) string {
-		if key == envDiagnosticProtocol {
-			return "0"
-		}
-		return ""
-	})
+func TestFromRuntimeSettingsDiagnosticProtocolCanBeDisabled(t *testing.T) {
+	f := FromRuntimeSettings(runtimeSettingsStub{diagnosticProtocol: false})
 	if f.DiagnosticProtocol {
 		t.Fatalf("diagnostic protocol should parse explicit 0 as disabled: %#v", f)
 	}
 }
 
-func TestFromEnvDiagnosticProtocolDefaultsOn(t *testing.T) {
-	f := FromEnv(func(string) string { return "" })
+func TestFromRuntimeSettingsDiagnosticProtocolDefaultsOn(t *testing.T) {
+	f := FromRuntimeSettings(nil)
 	if !f.DiagnosticProtocol {
-		t.Fatalf("diagnostic protocol should default on when env is unset: %#v", f)
+		t.Fatalf("diagnostic protocol should default on when settings are nil: %#v", f)
 	}
 }
 
 func TestReadOnlyToolRetryFlags(t *testing.T) {
-	lookup := func(key string) string {
-		switch key {
-		case envReadOnlyToolRetry:
-			return "1"
-		case envReadOnlyToolRetryMaxPerCall:
-			return "2"
-		case envReadOnlyToolRetryMaxPerTurn:
-			return "5"
-		case envReadOnlyToolRetryBackoffBaseMS:
-			return "100"
-		case envReadOnlyToolRetryBackoffMaxMS:
-			return "1000"
-		default:
-			return ""
-		}
-	}
-
-	f := FromEnv(lookup)
+	f := FromRuntimeSettings(runtimeSettingsStub{
+		diagnosticProtocol: true,
+		retryEnabled:       true,
+		maxPerCall:         2,
+		maxPerTurn:         5,
+		backoffBaseMs:      100,
+		backoffMaxMs:       1000,
+	})
 	if !f.ReadOnlyToolRetryEnabled {
 		t.Fatalf("ReadOnlyToolRetryEnabled = false, want true")
 	}

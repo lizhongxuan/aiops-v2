@@ -4,12 +4,17 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
+	"time"
 
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
+
+const hostAgentHeartbeatStaleAfter = time.Minute
 
 type defaultHostService struct {
 	writer           SessionStore
@@ -17,9 +22,22 @@ type defaultHostService struct {
 	builder          *SnapshotBuilder
 	bootstrap        *HostBootstrapService
 	sshPasswordStore HostSSHPasswordStore
+	agentTokenStore  HostAgentTokenStore
+	nodeHealthChecker HostNodeHealthChecker
 }
 
 type HostServiceOption func(*defaultHostService)
+
+type HostNodeHealth struct {
+	Status        string
+	LastHeartbeat string
+	AgentVersion  string
+	Capabilities  []string
+}
+
+type HostNodeHealthChecker interface {
+	CheckHostNodeHealth(ctx context.Context, host store.HostRecord) (HostNodeHealth, error)
+}
 
 func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotBuilder, bootstrap ...*HostBootstrapService) HostService {
 	var bootstrapSvc *HostBootstrapService
@@ -31,10 +49,11 @@ func NewHostService(writer SessionStore, repo HostRepository, builder *SnapshotB
 
 func NewHostServiceWithOptions(writer SessionStore, repo HostRepository, builder *SnapshotBuilder, bootstrap *HostBootstrapService, opts ...HostServiceOption) HostService {
 	service := &defaultHostService{
-		writer:    writer,
-		repo:      repo,
-		builder:   builder,
-		bootstrap: bootstrap,
+		writer:            writer,
+		repo:              repo,
+		builder:           builder,
+		bootstrap:         bootstrap,
+		nodeHealthChecker: newHTTPHostNodeHealthChecker(),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -50,10 +69,23 @@ func WithHostServiceSSHPasswordStore(store HostSSHPasswordStore) HostServiceOpti
 	}
 }
 
-func (s *defaultHostService) ListHosts(context.Context) ([]HostSummary, error) {
+func WithHostServiceHostAgentTokenStore(store HostAgentTokenStore) HostServiceOption {
+	return func(service *defaultHostService) {
+		service.agentTokenStore = store
+	}
+}
+
+func WithHostServiceNodeHealthChecker(checker HostNodeHealthChecker) HostServiceOption {
+	return func(service *defaultHostService) {
+		service.nodeHealthChecker = checker
+	}
+}
+
+func (s *defaultHostService) ListHosts(ctx context.Context) ([]HostSummary, error) {
 	if s.builder == nil {
 		return defaultStateSnapshot().Hosts, nil
 	}
+	s.refreshAIOPSPullHostHealth(ctx)
 	return s.builder.buildHostSummaries(serverLocalHostID), nil
 }
 
@@ -110,6 +142,15 @@ func (s *defaultHostService) UpdateHost(ctx context.Context, hostID string, payl
 	updated.Name = strings.TrimSpace(payload.Name)
 	updated.Address = strings.TrimSpace(payload.Address)
 	updated.SSHUser = strings.TrimSpace(payload.SSHUser)
+	if agentURL := strings.TrimRight(strings.TrimSpace(payload.AgentURL), "/"); agentURL != "" {
+		updated.AgentURL = agentURL
+	}
+	updated.AgentServerURL = strings.TrimSpace(payload.AgentServerURL)
+	if mode := strings.TrimSpace(payload.ConnectionMode); mode != "" {
+		updated.ConnectionMode = NormalizeHostConnectionMode(mode)
+	} else {
+		updated.ConnectionMode = NormalizeHostConnectionMode(updated.ConnectionMode)
+	}
 	if ref := strings.TrimSpace(payload.SSHCredentialRef); ref != "" {
 		updated.SSHCredentialRef = ref
 	}
@@ -160,6 +201,14 @@ func (s *defaultHostService) InstallHost(ctx context.Context, hostID string, pay
 	if version := strings.TrimSpace(payload.AgentVersion); version != "" {
 		updated.AgentVersion = version
 	}
+	updated.ConnectionMode = NormalizeHostConnectionMode(firstNonEmpty(payload.ConnectionMode, updated.ConnectionMode))
+	installAgentServerURL := ""
+	if hostConnectionModeRequiresCallback(updated.ConnectionMode) {
+		if serverURL := strings.TrimSpace(payload.AgentServerURL); serverURL != "" {
+			updated.AgentServerURL = serverURL
+		}
+		installAgentServerURL = updated.AgentServerURL
+	}
 	if updated.AgentVersion == "" {
 		updated.AgentVersion = "v0.1.0"
 	}
@@ -176,7 +225,9 @@ func (s *defaultHostService) InstallHost(ctx context.Context, hostID string, pay
 	if s.bootstrap != nil {
 		run, err := s.bootstrap.Install(ctx, updated.ID, HostInstallRequest{
 			AgentVersion:     updated.AgentVersion,
+			ConnectionMode:   updated.ConnectionMode,
 			SSHCredentialRef: updated.SSHCredentialRef,
+			AgentServerURL:   installAgentServerURL,
 			Force:            payload.Force,
 		})
 		if err != nil {
@@ -234,6 +285,60 @@ func (s *defaultHostService) TestHostSSH(ctx context.Context, hostID string, pay
 	}
 	s.saveHostSSHTestState(host, nextReq.SSHCredentialRef, firstNonEmpty(resp.Status, "ok"), "")
 	return resp, nil
+}
+
+func (s *defaultHostService) DiagnoseHostNode(ctx context.Context, hostID string) (HostNodeDiagnosticsResponse, error) {
+	if s.repo == nil {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("host repository is not configured")
+	}
+	targetID := strings.TrimSpace(hostID)
+	if targetID == "" {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("host id is required")
+	}
+	host, err := s.repo.GetHost(targetID)
+	if err != nil {
+		return HostNodeDiagnosticsResponse{}, err
+	}
+	agentURL := strings.TrimRight(strings.TrimSpace(host.AgentURL), "/")
+	if agentURL == "" {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("host %s has no Node agent URL", targetID)
+	}
+	if s.agentTokenStore == nil {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("host-agent token store is not configured")
+	}
+	ref := strings.TrimSpace(host.AgentTokenSecretRef)
+	if ref == "" {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("host %s has no Node token secret", targetID)
+	}
+	token, err := s.agentTokenStore.ResolveHostAgentToken(ctx, ref)
+	if err != nil {
+		return HostNodeDiagnosticsResponse{}, err
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, agentURL+"/diagnostics", nil)
+	if err != nil {
+		return HostNodeDiagnosticsResponse{}, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(token))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("request Node diagnostics: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("Node diagnostics returned status %d", resp.StatusCode)
+	}
+	var diagnostics map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&diagnostics); err != nil {
+		return HostNodeDiagnosticsResponse{}, fmt.Errorf("decode Node diagnostics: %w", err)
+	}
+	return HostNodeDiagnosticsResponse{
+		Status:      "ok",
+		HostID:      host.ID,
+		AgentURL:    agentURL,
+		Diagnostics: diagnostics,
+	}, nil
 }
 
 func (s *defaultHostService) DeleteHost(_ context.Context, hostID string) error {
@@ -381,6 +486,9 @@ func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {
 		SSHPort:          payload.SSHPort,
 		SSHCredentialRef: strings.TrimSpace(payload.SSHCredentialRef),
 		AgentVersion:     strings.TrimSpace(payload.AgentVersion),
+		ConnectionMode:   NormalizeHostConnectionMode(payload.ConnectionMode),
+		AgentURL:         strings.TrimRight(strings.TrimSpace(payload.AgentURL), "/"),
+		AgentServerURL:   strings.TrimSpace(payload.AgentServerURL),
 		InstallState:     "inventory",
 		ControlMode:      "inventory",
 		LastHeartbeat:    "offline",
@@ -396,16 +504,21 @@ func mapHostRecord(record store.HostRecord) HostSummary {
 	agentStatus := hostAgentStatus(record)
 	sshStatus := hostSSHStatus(record)
 	runtimeReachability := hostRuntimeReachability(record)
+	status := firstNonEmpty(record.Status, agentStatus, "offline")
+	if agentStatus == "stale" && isOnlineHostStatus(status) {
+		status = "stale"
+	}
 	return HostSummary{
 		ID:                  record.ID,
 		Name:                firstNonEmpty(record.Name, record.ID),
-		Status:              firstNonEmpty(record.Status, agentStatus, "offline"),
+		Status:              status,
 		AgentStatus:         agentStatus,
 		SSHStatus:           sshStatus,
 		RuntimeReachability: runtimeReachability,
 		Kind:                record.Kind,
 		Address:             record.Address,
 		Transport:           record.Transport,
+		ConnectionMode:      NormalizeHostConnectionMode(record.ConnectionMode),
 		Executable:          record.Executable,
 		TerminalCapable:     record.TerminalCapable,
 		OS:                  record.OS,
@@ -422,6 +535,7 @@ func mapHostRecord(record store.HostRecord) HostSummary {
 		SSHPort:             record.SSHPort,
 		SSHCredentialRef:    record.SSHCredentialRef,
 		AgentURL:            record.AgentURL,
+		AgentServerURL:      record.AgentServerURL,
 		AgentTokenRef:       record.AgentTokenRef,
 		InstallState:        record.InstallState,
 		InstallRunID:        record.InstallRunID,
@@ -432,7 +546,11 @@ func mapHostRecord(record store.HostRecord) HostSummary {
 }
 
 func hostAgentStatus(record store.HostRecord) string {
-	return firstNonEmpty(record.AgentStatus, record.Status, "offline")
+	status := firstNonEmpty(record.AgentStatus, record.Status, "offline")
+	if hostAgentHeartbeatIsStale(record, status) {
+		return "stale"
+	}
+	return status
 }
 
 func hostSSHStatus(record store.HostRecord) string {
@@ -446,7 +564,12 @@ func hostSSHStatus(record store.HostRecord) string {
 }
 
 func hostRuntimeReachability(record store.HostRecord) string {
-	return firstNonEmpty(record.RuntimeReachability, deriveHostRuntimeReachability(hostAgentStatus(record), hostSSHStatus(record), record))
+	agentStatus := hostAgentStatus(record)
+	stored := strings.ToLower(strings.TrimSpace(record.RuntimeReachability))
+	if agentStatus == "stale" && (stored == "" || stored == "agent_online") {
+		return "agent_stale"
+	}
+	return firstNonEmpty(record.RuntimeReachability, deriveHostRuntimeReachability(agentStatus, hostSSHStatus(record), record))
 }
 
 func normalizeHostSSHStatus(status string) string {
@@ -470,6 +593,8 @@ func deriveHostRuntimeReachability(agentStatus, sshStatus string, record store.H
 	switch strings.ToLower(strings.TrimSpace(agentStatus)) {
 	case "online", "ready", "healthy":
 		return "agent_online"
+	case "stale", "timeout":
+		return "agent_stale"
 	case "installing", "pending_install":
 		return "installing"
 	}
@@ -485,6 +610,26 @@ func deriveHostRuntimeReachability(agentStatus, sshStatus string, record store.H
 		return "ssh_unverified"
 	}
 	return "inventory_only"
+}
+
+func hostAgentHeartbeatIsStale(record store.HostRecord, status string) bool {
+	if !isOnlineHostStatus(status) {
+		return false
+	}
+	timestamp, err := time.Parse(time.RFC3339, strings.TrimSpace(record.LastHeartbeat))
+	if err != nil || timestamp.IsZero() {
+		return false
+	}
+	return time.Since(timestamp.UTC()) > hostAgentHeartbeatStaleAfter
+}
+
+func isOnlineHostStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "online", "ready", "healthy":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

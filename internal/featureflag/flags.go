@@ -1,18 +1,7 @@
 package featureflag
 
 import (
-	"strconv"
-	"strings"
 	"time"
-)
-
-const (
-	envDiagnosticProtocol             = "AIOPS_DIAGNOSTIC_PROTOCOL"
-	envReadOnlyToolRetry              = "AIOPS_FLAG_READONLY_TOOL_RETRY"
-	envReadOnlyToolRetryMaxPerCall    = "AIOPS_READONLY_TOOL_RETRY_MAX_PER_CALL"
-	envReadOnlyToolRetryMaxPerTurn    = "AIOPS_READONLY_TOOL_RETRY_MAX_PER_TURN"
-	envReadOnlyToolRetryBackoffBaseMS = "AIOPS_READONLY_TOOL_RETRY_BACKOFF_BASE_MS"
-	envReadOnlyToolRetryBackoffMaxMS  = "AIOPS_READONLY_TOOL_RETRY_BACKOFF_MAX_MS"
 )
 
 // Flags controls runtime prompt and retry behavior. Migration-only feature
@@ -38,18 +27,27 @@ func Default() Flags {
 	}
 }
 
-func FromEnv(lookup func(string) string) Flags {
+type RuntimeSettings interface {
+	RuntimeDiagnosticProtocol() bool
+	RuntimeReadOnlyRetryEnabled() bool
+	RuntimeReadOnlyRetryMaxPerCall() int
+	RuntimeReadOnlyRetryMaxPerTurn() int
+	RuntimeReadOnlyRetryBackoffBaseMs() int
+	RuntimeReadOnlyRetryBackoffMaxMs() int
+}
+
+func FromRuntimeSettings(settings RuntimeSettings) Flags {
 	f := Default()
-	if lookup == nil {
+	if settings == nil {
 		return f
 	}
 
-	f.DiagnosticProtocol = parseBoolDefault(lookup(envDiagnosticProtocol), true)
-	f.ReadOnlyToolRetryEnabled = parseBool(lookup(envReadOnlyToolRetry))
-	f.ReadOnlyToolRetryMaxPerCall = parsePositiveInt(lookup(envReadOnlyToolRetryMaxPerCall), f.ReadOnlyToolRetryMaxPerCall)
-	f.ReadOnlyToolRetryMaxPerTurn = parsePositiveInt(lookup(envReadOnlyToolRetryMaxPerTurn), f.ReadOnlyToolRetryMaxPerTurn)
-	f.ReadOnlyToolRetryBackoffBase = parseMillisDuration(lookup(envReadOnlyToolRetryBackoffBaseMS), f.ReadOnlyToolRetryBackoffBase)
-	f.ReadOnlyToolRetryBackoffMax = parseMillisDuration(lookup(envReadOnlyToolRetryBackoffMaxMS), f.ReadOnlyToolRetryBackoffMax)
+	f.DiagnosticProtocol = settings.RuntimeDiagnosticProtocol()
+	f.ReadOnlyToolRetryEnabled = settings.RuntimeReadOnlyRetryEnabled()
+	f.ReadOnlyToolRetryMaxPerCall = positiveInt(settings.RuntimeReadOnlyRetryMaxPerCall(), f.ReadOnlyToolRetryMaxPerCall)
+	f.ReadOnlyToolRetryMaxPerTurn = positiveInt(settings.RuntimeReadOnlyRetryMaxPerTurn(), f.ReadOnlyToolRetryMaxPerTurn)
+	f.ReadOnlyToolRetryBackoffBase = millisDuration(settings.RuntimeReadOnlyRetryBackoffBaseMs(), f.ReadOnlyToolRetryBackoffBase)
+	f.ReadOnlyToolRetryBackoffMax = millisDuration(settings.RuntimeReadOnlyRetryBackoffMaxMs(), f.ReadOnlyToolRetryBackoffMax)
 	return f
 }
 
@@ -57,44 +55,14 @@ func (f Flags) Clone() Flags {
 	return f
 }
 
-func parseBool(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "on":
-		return true
-	default:
-		return false
+func positiveInt(value int, fallback int) int {
+	if value <= 0 {
+		return fallback
 	}
+	return value
 }
 
-func parseBoolDefault(value string, fallback bool) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	switch strings.ToLower(value) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
-	}
-}
-
-func parsePositiveInt(value string, fallback int) int {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
-}
-
-func parseMillisDuration(value string, fallback time.Duration) time.Duration {
-	millis := parsePositiveInt(value, -1)
+func millisDuration(millis int, fallback time.Duration) time.Duration {
 	if millis <= 0 {
 		return fallback
 	}

@@ -1,6 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { normalizeLlmContextTokens, normalizeLlmMaxOutputTokens, normalizeOptionalFloat, updateLlmConfig } from "@/pages/settingsApi";
+import {
+  normalizeLlmContextTokens,
+  normalizeLlmMaxOutputTokens,
+  normalizeLlmRequestTimeoutMs,
+  normalizeOptionalFloat,
+  updateLlmConfig,
+  updateRuntimeSettings,
+} from "@/pages/settingsApi";
 
 describe("settingsApi", () => {
   afterEach(() => {
@@ -40,9 +47,25 @@ describe("settingsApi", () => {
       "/api/v1/llm-config",
       expect.objectContaining({
         method: "PUT",
-        body: JSON.stringify({ provider: "openai", model: "gpt-5.4", maxContextTokens: 200000, maxOutputTokens: 20000 }),
+        body: JSON.stringify({ provider: "openai", model: "gpt-5.4", maxContextTokens: 200000, maxOutputTokens: 20000, requestTimeoutMs: 300000 }),
       }),
     );
+  });
+
+  it("defaults empty or invalid LLM request timeout to 300000 ms before saving", async () => {
+    expect(normalizeLlmRequestTimeoutMs(undefined)).toBe(300000);
+    expect(normalizeLlmRequestTimeoutMs("")).toBe(300000);
+    expect(normalizeLlmRequestTimeoutMs("bad")).toBe(300000);
+    expect(normalizeLlmRequestTimeoutMs("-1")).toBe(300000);
+    expect(normalizeLlmRequestTimeoutMs("25000.9")).toBe(25000);
+
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+
+    await updateLlmConfig({ provider: "openai", model: "gpt-5.4", requestTimeoutMs: "" });
+
+    expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).toMatchObject({
+      requestTimeoutMs: 300000,
+    });
   });
 
   it("passes reasoning effort through when saving LLM config", async () => {
@@ -56,6 +79,7 @@ describe("settingsApi", () => {
       reasoningEffort: "high",
       maxContextTokens: 200000,
       maxOutputTokens: 20000,
+      requestTimeoutMs: 300000,
     });
   });
 
@@ -101,6 +125,7 @@ describe("settingsApi", () => {
       model: "glm-5.2",
       maxContextTokens: 200000,
       maxOutputTokens: 200000,
+      requestTimeoutMs: 300000,
       temperature: 1,
       topP: 0.95,
       thinkingType: "enabled",
@@ -108,5 +133,30 @@ describe("settingsApi", () => {
       toolStream: true,
     });
     expect(JSON.parse(String((fetchSpy.mock.calls[0][1] as RequestInit).body))).not.toHaveProperty("apiKey");
+  });
+
+  it("PATCHes runtime settings with a partial nested payload", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ settings: { workflow: { validationProvider: "docker" } } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await updateRuntimeSettings({
+      workflow: { validationProvider: "docker" },
+      debug: { modelInputTrace: false },
+    });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/runtime-settings",
+      expect.objectContaining({
+        method: "PATCH",
+        body: JSON.stringify({
+          workflow: { validationProvider: "docker" },
+          debug: { modelInputTrace: false },
+        }),
+      }),
+    );
   });
 });

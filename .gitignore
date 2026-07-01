@@ -25,6 +25,7 @@ docs/superpowers/specs/*
 !/docs/superpowers/specs/2026-06-24-aiops-v2-codex-agent-runtime-migration-design.zh.md
 !/docs/superpowers/specs/2026-06-26-aiops-v2-codex-context-capability-migration-design.zh.md
 !/docs/superpowers/specs/2026-06-26-aiops-v2-agent-runtime-layering-design.zh.md
+!/docs/superpowers/specs/2026-06-28-aiops-v2-web-search-firecrawl-optimization-design.zh.md
 !/docs/superpowers/plans/
 docs/superpowers/plans/*
 !/docs/superpowers/plans/2026-05-18-aiops-v2-diagnosis-accuracy-implementation-todo.zh.md
@@ -34,3 +35,5 @@ docs/superpowers/plans/*
 !/docs/superpowers/plans/2026-06-24-aiops-v2-codex-agent-runtime-migration-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-06-26-aiops-v2-codex-context-capability-migration-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-06-26-aiops-v2-agent-runtime-layering-implementation-todo.zh.md
+!/docs/superpowers/plans/2026-06-27-aiops-v2-host-mention-hidden-metadata-runtime-binding-implementation-todo.zh.md
+!/docs/superpowers/plans/2026-06-29-aiops-v2-web-search-firecrawl-optimization-implementation-todo.zh.md

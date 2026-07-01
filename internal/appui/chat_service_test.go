@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 )
@@ -413,18 +414,20 @@ func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t 
 }
 
 func TestWorkflowGenerationValidationImagesUsesConfiguredImage(t *testing.T) {
-	t.Setenv("AIOPS_WORKFLOW_VALIDATION_IMAGE", "python:3.12-bookworm")
+	settings := store.DefaultRuntimeSettings()
+	settings.Workflow.ValidationImage = "python:3.12-bookworm"
 
-	images := workflowGenerationValidationImages()
+	images := workflowGenerationValidationImages(settings)
 	if len(images) != 1 || images[0] != "python:3.12-bookworm" {
 		t.Fatalf("workflowGenerationValidationImages() = %#v, want configured image", images)
 	}
 }
 
 func TestWorkflowGenerationValidationImagesUsesMetadataImage(t *testing.T) {
-	t.Setenv("AIOPS_WORKFLOW_VALIDATION_IMAGE", "python:3.12-bookworm")
+	settings := store.DefaultRuntimeSettings()
+	settings.Workflow.ValidationImage = "python:3.12-bookworm"
 
-	images := workflowGenerationValidationImages(map[string]string{
+	images := workflowGenerationValidationImages(settings, map[string]string{
 		"workflowValidationImage": "python:3.11-slim",
 	})
 	if len(images) != 1 || images[0] != "python:3.11-slim" {
@@ -1148,6 +1151,220 @@ func TestChatServiceLocalMentionBindsServerLocal(t *testing.T) {
 	}
 }
 
+func TestChatServiceRawMentionFallbackMarksMentionSource(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-raw-fallback",
+		Content:   "@local 检查状态",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.input.mentionSource"]; got != "raw_text_fallback" {
+		t.Fatalf("mentionSource = %q, want raw_text_fallback; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "confirmed" {
+		t.Fatalf("mentionValidation = %q, want confirmed; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceLegacyHostMetadataMarksMentionSource(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-legacy-hostops-metadata",
+		Content:   "@local 检查状态",
+		Metadata: map[string]string{
+			"aiops.hostops.mentions": `[{"raw":"@local","value":"server-local","hostId":"server-local","address":"server-local","displayName":"local","source":"local_alias","resolved":true,"confidence":1}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.input.mentionSource"]; got != "legacy_hostops_metadata" {
+		t.Fatalf("mentionSource = %q, want legacy_hostops_metadata; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStrictMentionModeDoesNotBindRawTextFallback(t *testing.T) {
+	t.Setenv("AIOPS_INPUT_MENTION_STRICT", "1")
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-strict-raw",
+		Content:   "@local 检查状态",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty in strict raw mode; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionSource"]; got != "raw_text_fallback" {
+		t.Fatalf("mentionSource = %q, want raw_text_fallback; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "weak" {
+		t.Fatalf("mentionValidation = %q, want weak; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStructuredHostMentionBindsAfterServerResolution(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-primary",
+		Address:    "120.77.239.90",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-structured-host",
+		Content:   "@120.77.239.90 检查状态",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-host-a","sigil":"@","display":"@120.77.239.90","rawText":"@120.77.239.90","kind":"host","path":"host://host-a","source":"selection","range":{"start":0,"end":14},"payload":{"hostId":"host-a","address":"120.77.239.90","displayName":"pg-primary"}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionSource"]; got != "structured" {
+		t.Fatalf("mentionSource = %q, want structured; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "confirmed" {
+		t.Fatalf("mentionValidation = %q, want confirmed; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStructuredHostMentionFailsClosedWhenStale(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{ID: "host-a", Name: "pg-primary", Address: "120.77.239.90", Status: "online", Executable: true, AgentURL: "http://host-a:7072"})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-structured-stale",
+		Content:   "@host-b 检查状态",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-host-a","sigil":"@","display":"@120.77.239.90","rawText":"@120.77.239.90","kind":"host","path":"host://host-a","source":"selection","range":{"start":0,"end":14},"payload":{"hostId":"host-a","address":"120.77.239.90","displayName":"pg-primary"}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want fail-closed empty host; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "invalid" {
+		t.Fatalf("mentionValidation = %q, want invalid; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStructuredHostMentionFailsClosedWhenHostMissing(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub())
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-structured-missing",
+		Content:   "@missing 检查状态",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-missing","sigil":"@","display":"@missing","rawText":"@missing","kind":"host","path":"host://missing","source":"selection","range":{"start":0,"end":8},"payload":{"hostId":"missing","address":"10.255.255.255","displayName":"missing"}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty for missing host; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "invalid" {
+		t.Fatalf("mentionValidation = %q, want invalid; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStructuredCorootCapabilityDoesNotBindHost(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-structured-coroot",
+		Content:   "@Coroot 分析 checkout",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-coroot","sigil":"@","display":"@Coroot","rawText":"@Coroot","kind":"capability","path":"capability://coroot","source":"selection","range":{"start":0,"end":7}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want no host binding; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "true" {
+		t.Fatalf("coroot explicit = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceStructuredOpsManualsCapabilityEnablesToolSurface(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-structured-manuals",
+		Content:   "@manuals 搜索 Redis 巡检流程",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-manuals","sigil":"@","display":"@manuals","rawText":"@manuals","kind":"capability","path":"capability://ops_manuals","source":"selection","range":{"start":0,"end":8}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want no host binding; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.opsManuals.explicitMention"]; got != "true" {
+		t.Fatalf("ops manuals explicit = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if !strings.Contains(runReq.Metadata["enableToolPack"], "ops_manual_flow") {
+		t.Fatalf("enableToolPack = %q, want ops_manual_flow; metadata=%#v", runReq.Metadata["enableToolPack"], runReq.Metadata)
+	}
+	if !strings.Contains(runReq.Metadata["enableTool"], "search_ops_manuals") {
+		t.Fatalf("enableTool = %q, want search_ops_manuals; metadata=%#v", runReq.Metadata["enableTool"], runReq.Metadata)
+	}
+}
+
 func TestChatServiceBareInventoryHostDoesNotBindOrAllowExec(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
@@ -1237,6 +1454,44 @@ func TestChatServiceRouteProfileCanSwitchPerTurnInSameSession(t *testing.T) {
 	}
 	if first.OpsRun == nil || second.OpsRun == nil || first.OpsRun.ID == "" || second.OpsRun.ID == "" {
 		t.Fatalf("ops run metadata missing: first=%+v second=%+v", first.OpsRun, second.OpsRun)
+	}
+}
+
+func TestChatServiceSelectedRemoteHostDiagnosticFollowupKeepsExecToolSurface(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-selected-remote-followup", runtimekernel.SessionTypeHost, runtimekernel.ModeExecute)
+	session.HostID = "host-a"
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "host-a",
+		Address:    "120.77.239.90",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-selected-remote-followup",
+		Content:   "为什么120.77.239.90没注册? 明明注册了,在主机列表中,你再看看",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "true" {
+		t.Fatalf("exec allowed = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["toolProfile"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("toolProfile = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
 	}
 }
 
@@ -1529,6 +1784,12 @@ func TestChatService_SendMessageHostOpsRouteDoesNotPersistTerminalTurn(t *testin
 	}
 	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
 		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata[runtimecontract.MetadataIntentKind]; got != string(runtimecontract.IntentKindVerify) {
+		t.Fatalf("intent kind = %q, want verify; metadata=%#v", got, runReq.Metadata)
+	}
+	if !strings.Contains(runReq.Metadata[runtimecontract.MetadataIntentRiskBudget], string(runtimecontract.ActionRiskHostExec)) {
+		t.Fatalf("intent riskBudget = %q, want host_exec; metadata=%#v", runReq.Metadata[runtimecontract.MetadataIntentRiskBudget], runReq.Metadata)
 	}
 	if runReq.Input != "这是@120.77.239.90主机,查看其内存情况" {
 		t.Fatalf("RunTurn input = %q, want original hostops request", runReq.Input)

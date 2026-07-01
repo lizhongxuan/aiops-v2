@@ -96,7 +96,12 @@ func BuildIntentFrame(input string, envelope runtimecontract.EvidenceEnvelope, m
 			Reasons:    []string{"operational knowledge requested"},
 		})
 	}
-	if intentRequestsHostRuntime(lower, metadata) && !noHostExec {
+	hostRuntimeRequested := intentRequestsHostRuntime(lower, metadata)
+	if frame.Kind == runtimecontract.IntentKindUnknown && hostRuntimeRequested {
+		frame.Kind = runtimecontract.IntentKindVerify
+		frame.Confidence = runtimecontract.ConfidenceMedium
+	}
+	if hostRuntimeRequested && !noHostExec {
 		frame.DataScopes = runtimecontract.AppendDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime)
 		frame.RiskBudget = runtimecontract.AppendActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec)
 		frame.Capabilities = appendCapabilityCandidate(frame.Capabilities, runtimecontract.CapabilityCandidate{
@@ -300,7 +305,21 @@ func intentRequestsHostRuntime(lower string, metadata map[string]any) bool {
 	if metadataBoolAny(metadata, "aiops.intent.hostRuntime") {
 		return true
 	}
-	return containsAnyIntentMarker(lower, "本机", "主机", "读取状态", "执行命令", "运行命令", "host", "runtime", "shell")
+	if containsAnyIntentMarker(lower, "本机", "主机", "执行命令", "运行命令", "host", "runtime", "shell") {
+		return true
+	}
+	hasReadOperation := containsAnyIntentMarker(lower,
+		"查看", "检查", "读取", "获取", "看一下", "看下", "观测", "检测", "巡检",
+		"check", "inspect", "read", "show", "get",
+	)
+	if !hasReadOperation {
+		return false
+	}
+	return containsAnyIntentMarker(lower,
+		"cpu", "处理器", "内存", "memory", "磁盘", "disk", "负载", "load",
+		"进程", "process", "端口", "port", "网络", "network", "系统状态",
+		"资源", "resource", "uptime", "top", "df", "free", "vm_stat", "lscpu",
+	)
 }
 
 func intentMentionsMutation(lower string) bool {

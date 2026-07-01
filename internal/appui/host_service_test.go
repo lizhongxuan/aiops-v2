@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
@@ -73,15 +74,28 @@ func (f *fakeHostSSHPasswordStore) StoreHostSSHPassword(_ context.Context, hostI
 
 type fakeHostSSHInstaller struct {
 	credentialRef string
+	installReq    HostInstallRequest
 }
 
 func (f *fakeHostSSHInstaller) Install(_ context.Context, hostID string, req HostInstallRequest) (HostInstallRun, error) {
+	f.installReq = req
 	return HostInstallRun{HostID: hostID, Status: "ok", AgentVersion: req.AgentVersion}, nil
 }
 
 func (f *fakeHostSSHInstaller) TestSSH(_ context.Context, _ string, credentialRef string) (HostSSHTestResponse, error) {
 	f.credentialRef = credentialRef
 	return HostSSHTestResponse{Status: "ok", Message: "tested"}, nil
+}
+
+type fakeHostNodeHealthChecker struct {
+	calledWith string
+	result     HostNodeHealth
+	err        error
+}
+
+func (f *fakeHostNodeHealthChecker) CheckHostNodeHealth(_ context.Context, host store.HostRecord) (HostNodeHealth, error) {
+	f.calledWith = host.ID
+	return f.result, f.err
 }
 
 func TestHostServiceCrudAndSelect(t *testing.T) {
@@ -131,6 +145,83 @@ func TestHostServiceCrudAndSelect(t *testing.T) {
 	}
 	if latest := sessions.GetLatest(); latest == nil || latest.HostID != "host-b" {
 		t.Fatalf("latest session = %+v, want host-b selected", latest)
+	}
+}
+
+func TestMapHostRecordMarksStaleAgentHeartbeat(t *testing.T) {
+	summary := mapHostRecord(store.HostRecord{
+		ID:                  "host-stale",
+		Name:                "host-stale",
+		Status:              "online",
+		AgentStatus:         "online",
+		RuntimeReachability: "agent_online",
+		Address:             "10.0.0.11",
+		SSHUser:             "root",
+		LastHeartbeat:       time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339),
+	})
+
+	if summary.Status != "stale" || summary.AgentStatus != "stale" || summary.RuntimeReachability != "agent_stale" {
+		t.Fatalf("summary = %+v, want stale agent heartbeat", summary)
+	}
+}
+
+func TestHostServiceListHostsRefreshesAIOPSPullHealthFromReachableNode(t *testing.T) {
+	oldHeartbeat := time.Now().UTC().Add(-2 * time.Minute).Format(time.RFC3339)
+	nodeHeartbeat := time.Now().UTC().Format(time.RFC3339)
+	hostRepo := newHostRepoStub(store.HostRecord{
+		ID:                  "remote-a",
+		Name:                "remote-a",
+		Status:              "online",
+		AgentStatus:         "online",
+		RuntimeReachability: "agent_online",
+		Address:             "10.0.0.11",
+		SSHUser:             "root",
+		AgentURL:            "http://10.0.0.11:7072",
+		ConnectionMode:      HostConnectionModeAIOPSPull,
+		Transport:           "agent_http",
+		InstallState:        "installed",
+		LastHeartbeat:       oldHeartbeat,
+		Executable:          true,
+		TerminalCapable:     true,
+	})
+	checker := &fakeHostNodeHealthChecker{
+		result: HostNodeHealth{
+			Status:        "ok",
+			LastHeartbeat: nodeHeartbeat,
+			AgentVersion:  "v0.1.0",
+		},
+	}
+	service := NewHostServiceWithOptions(nil, hostRepo, NewSnapshotBuilder(hostRepo), nil, WithHostServiceNodeHealthChecker(checker))
+
+	items, err := service.ListHosts(context.Background())
+	if err != nil {
+		t.Fatalf("ListHosts() error = %v", err)
+	}
+	if checker.calledWith != "remote-a" {
+		t.Fatalf("health checker called with %q, want remote-a", checker.calledWith)
+	}
+	var got *HostSummary
+	for i := range items {
+		if items[i].ID == "remote-a" {
+			got = &items[i]
+			break
+		}
+	}
+	if got == nil {
+		t.Fatalf("ListHosts() = %+v, want remote-a", items)
+	}
+	if got.Status != "online" || got.AgentStatus != "online" || got.RuntimeReachability != "agent_online" {
+		t.Fatalf("summary = %+v, want aiops_pull node health to keep host online", got)
+	}
+	if got.LastHeartbeat != nodeHeartbeat {
+		t.Fatalf("LastHeartbeat = %q, want node health heartbeat %q", got.LastHeartbeat, nodeHeartbeat)
+	}
+	stored, err := hostRepo.GetHost("remote-a")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	if stored.LastHeartbeat != nodeHeartbeat || stored.AgentStatus != "online" || stored.RuntimeReachability != "agent_online" {
+		t.Fatalf("stored host = %+v, want refreshed online node health persisted", stored)
 	}
 }
 
@@ -278,6 +369,72 @@ func TestHostServiceUpdateHostKeepsExistingSSHCredentialRefWhenPasswordIsBlank(t
 	}
 }
 
+func TestHostServiceStoresAgentServerURLSeparatelyFromAgentURL(t *testing.T) {
+	hostRepo := newHostRepoStub()
+	service := NewHostService(nil, hostRepo, NewSnapshotBuilder(hostRepo))
+
+	created, err := service.CreateHost(context.Background(), HostUpsert{
+		ID:             "prod-web-01",
+		Name:           "prod-web-01",
+		Address:        "10.0.0.11",
+		SSHUser:        "ubuntu",
+		SSHPort:        22,
+		AgentVersion:   "v0.1.0",
+		AgentServerURL: "http://aiops.example.test:18080",
+	})
+	if err != nil {
+		t.Fatalf("CreateHost() error = %v", err)
+	}
+	if created.Host.AgentServerURL != "http://aiops.example.test:18080" {
+		t.Fatalf("AgentServerURL = %q", created.Host.AgentServerURL)
+	}
+
+	current, err := hostRepo.GetHost("prod-web-01")
+	if err != nil {
+		t.Fatalf("GetHost() error = %v", err)
+	}
+	current.AgentURL = "http://10.0.0.11:7072"
+	if err := hostRepo.SaveHost(current); err != nil {
+		t.Fatalf("SaveHost() error = %v", err)
+	}
+
+	preserved, err := service.UpdateHost(context.Background(), "prod-web-01", HostUpsert{
+		ID:             "prod-web-01",
+		Name:           "prod-web-01",
+		Address:        "10.0.0.12",
+		SSHUser:        "ubuntu",
+		SSHPort:        22,
+		AgentVersion:   "v0.1.0",
+		AgentServerURL: "http://aiops.internal:18080",
+	})
+	if err != nil {
+		t.Fatalf("UpdateHost() preserving AgentURL error = %v", err)
+	}
+	if preserved.Host.AgentURL != "http://10.0.0.11:7072" {
+		t.Fatalf("preserved AgentURL = %q, want existing host-agent endpoint", preserved.Host.AgentURL)
+	}
+
+	updated, err := service.UpdateHost(context.Background(), "prod-web-01", HostUpsert{
+		ID:             "prod-web-01",
+		Name:           "prod-web-01",
+		Address:        "10.0.0.12",
+		SSHUser:        "ubuntu",
+		SSHPort:        22,
+		AgentVersion:   "v0.1.0",
+		AgentURL:       "http://10.0.0.12:7072",
+		AgentServerURL: "http://aiops.internal:18080",
+	})
+	if err != nil {
+		t.Fatalf("UpdateHost() error = %v", err)
+	}
+	if updated.Host.AgentURL != "http://10.0.0.12:7072" {
+		t.Fatalf("AgentURL = %q, want updated host-agent endpoint", updated.Host.AgentURL)
+	}
+	if updated.Host.AgentServerURL != "http://aiops.internal:18080" {
+		t.Fatalf("AgentServerURL = %q", updated.Host.AgentServerURL)
+	}
+}
+
 func TestHostServiceCreateHostOnlyStoresInventoryConfig(t *testing.T) {
 	hostRepo := newHostRepoStub()
 	service := NewHostService(nil, hostRepo, NewSnapshotBuilder(hostRepo))
@@ -303,6 +460,9 @@ func TestHostServiceCreateHostOnlyStoresInventoryConfig(t *testing.T) {
 	}
 	if created.Host.Transport != "manual" || created.Host.Status != "offline" || created.Host.InstallState != "inventory" {
 		t.Fatalf("created host state = %+v, want saved inventory config only", created.Host)
+	}
+	if created.Host.ConnectionMode != HostConnectionModeAIOPSPull {
+		t.Fatalf("ConnectionMode = %q, want aiops_pull default", created.Host.ConnectionMode)
 	}
 }
 
@@ -356,6 +516,63 @@ func TestHostServiceInstallHostAllowsMissingSSHCredentialRef(t *testing.T) {
 	}
 	if resp.Host.Transport != "ssh_bootstrap" || resp.Host.Status != "installing" || resp.Host.InstallState != "pending_install" {
 		t.Fatalf("install response host = %+v", resp.Host)
+	}
+}
+
+func TestHostServiceInstallHostDefaultsToAIOPSPullAndDoesNotPassSavedAgentServerURLToInstaller(t *testing.T) {
+	hostRepo := newHostRepoStub(store.HostRecord{
+		ID:               "prod-web-01",
+		Name:             "prod-web-01",
+		Address:          "10.0.0.11",
+		SSHUser:          "ubuntu",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://hosts/prod-web-01/ssh-password",
+		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
+		Status:           "offline",
+		InstallState:     "failed",
+	})
+	installer := &fakeHostSSHInstaller{}
+	bootstrap := NewHostBootstrapService(hostRepo, nil, WithHostAgentInstaller(installer))
+	service := NewHostServiceWithOptions(nil, hostRepo, NewSnapshotBuilder(hostRepo), bootstrap)
+
+	if _, err := service.InstallHost(context.Background(), "prod-web-01", HostInstallRequest{AgentVersion: "v0.1.0"}); err != nil {
+		t.Fatalf("InstallHost() error = %v", err)
+	}
+	if installer.installReq.ConnectionMode != HostConnectionModeAIOPSPull {
+		t.Fatalf("installer ConnectionMode = %q, want aiops_pull", installer.installReq.ConnectionMode)
+	}
+	if installer.installReq.AgentServerURL != "" {
+		t.Fatalf("installer AgentServerURL = %q, want no callback URL for aiops_pull", installer.installReq.AgentServerURL)
+	}
+}
+
+func TestHostServiceInstallHostPassesSavedAgentServerURLToNodePushGRPCInstaller(t *testing.T) {
+	hostRepo := newHostRepoStub(store.HostRecord{
+		ID:               "prod-web-01",
+		Name:             "prod-web-01",
+		Address:          "10.0.0.11",
+		SSHUser:          "ubuntu",
+		SSHPort:          22,
+		SSHCredentialRef: "secret://hosts/prod-web-01/ssh-password",
+		AgentVersion:     "v0.1.0",
+		AgentServerURL:   "http://aiops.example.test:18080",
+		ConnectionMode:   HostConnectionModeNodePushGRPC,
+		Status:           "offline",
+		InstallState:     "failed",
+	})
+	installer := &fakeHostSSHInstaller{}
+	bootstrap := NewHostBootstrapService(hostRepo, nil, WithHostAgentInstaller(installer))
+	service := NewHostServiceWithOptions(nil, hostRepo, NewSnapshotBuilder(hostRepo), bootstrap)
+
+	if _, err := service.InstallHost(context.Background(), "prod-web-01", HostInstallRequest{AgentVersion: "v0.1.0"}); err != nil {
+		t.Fatalf("InstallHost() error = %v", err)
+	}
+	if installer.installReq.ConnectionMode != HostConnectionModeNodePushGRPC {
+		t.Fatalf("installer ConnectionMode = %q, want node_push_grpc", installer.installReq.ConnectionMode)
+	}
+	if installer.installReq.AgentServerURL != "http://aiops.example.test:18080" {
+		t.Fatalf("installer AgentServerURL = %q, want saved callback URL", installer.installReq.AgentServerURL)
 	}
 }
 

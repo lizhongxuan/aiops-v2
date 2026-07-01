@@ -49,3 +49,34 @@ func TestAppendProviderNativeWebSearchTurnItemsCreatesSearchLifecycle(t *testing
 		t.Fatalf("payload kinds = %q/%q, want browser.search", snapshot.AgentItems[0].Payload.Kind, snapshot.AgentItems[1].Payload.Kind)
 	}
 }
+
+func TestProviderNativeWebSearchStillProjectsBrowserSearchItems(t *testing.T) {
+	now := time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC)
+	snapshot := &TurnSnapshot{
+		ID:        "turn-provider-native",
+		SessionID: "session-1",
+		StartedAt: now,
+		UpdatedAt: now,
+	}
+	iteration := &IterationState{Iteration: 1}
+
+	appendProviderNativeWebSearchTurnItems(snapshot, iteration, "turn-provider-native", []modelrouter.ProviderNativeWebSearchEvent{{
+		ID:       "ws_regression",
+		Provider: "openai",
+		Query:    "OpenAI web_search docs",
+		Sources: []modelrouter.ProviderNativeWebSearchSource{{
+			Title: "Web search guide",
+			URL:   "https://platform.openai.com/docs/guides/tools-web-search",
+		}},
+	}})
+
+	if len(snapshot.AgentItems) == 0 {
+		t.Fatal("agent items empty, want browser.search lifecycle")
+	}
+	if snapshot.AgentItems[0].Payload.Kind != "browser.search" {
+		t.Fatalf("payload kind = %q, want browser.search", snapshot.AgentItems[0].Payload.Kind)
+	}
+	if len(iteration.ToolCalls) != 1 || iteration.ToolCalls[0].Name != "web_search" {
+		t.Fatalf("tool calls = %#v, want synthetic web_search call", iteration.ToolCalls)
+	}
+}

@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -22,9 +20,10 @@ type ProviderAdapter interface {
 }
 
 type EinoProviderAdapter struct {
-	model        ChatModel
-	tools        []einotool.BaseTool
-	extraOptions []einomodel.Option
+	model          ChatModel
+	tools          []einotool.BaseTool
+	extraOptions   []einomodel.Option
+	requestTimeout time.Duration
 }
 
 type EinoProviderAdapterOption func(*EinoProviderAdapter)
@@ -41,8 +40,14 @@ func WithEinoModelOptions(options ...einomodel.Option) EinoProviderAdapterOption
 	}
 }
 
+func WithEinoRequestTimeoutMs(timeoutMs int) EinoProviderAdapterOption {
+	return func(adapter *EinoProviderAdapter) {
+		adapter.requestTimeout = modelResponseTimeout(timeoutMs)
+	}
+}
+
 func NewEinoProviderAdapter(model ChatModel, options ...EinoProviderAdapterOption) *EinoProviderAdapter {
-	adapter := &EinoProviderAdapter{model: model}
+	adapter := &EinoProviderAdapter{model: model, requestTimeout: defaultModelResponseTimeout}
 	for _, option := range options {
 		if option != nil {
 			option(adapter)
@@ -63,19 +68,19 @@ func (a *EinoProviderAdapter) Call(ctx context.Context, req ProviderRequestSnaps
 	req.MessageAudit = &audit
 	req.ComputeHashes()
 	started := time.Now()
-	response, err := generateEinoModelResponse(ctx, a.model, messages, a.tools, onFinalDelta, onReasoning, a.extraOptions...)
+	response, err := generateEinoModelResponseWithTimeout(ctx, a.model, messages, a.tools, a.requestTimeout, onFinalDelta, onReasoning, a.extraOptions...)
 	finished := time.Now()
 	providerResp := ProviderResponse{
 		RequestID:    req.ModelInputHash,
 		StartedAt:    started,
 		FinishedAt:   finished,
-		Message:      response,
 		FinishReason: einoModelResponseFinishReason(response),
 		Usage:        providerUsageFromEino(response),
 	}
 	if response != nil {
 		providerResp.Output = response.Content
 		providerResp.ToolCalls = providerToolCallsFromEino(response.ToolCalls)
+		providerResp.NativeWebSearchEvents = ProviderNativeWebSearchEventsFromExtra(response.Extra)
 	}
 	if err != nil {
 		return providerResp, err
@@ -92,10 +97,26 @@ func generateEinoModelResponse(
 	onReasoning func(ReasoningStreamEvent),
 	extraOptions ...einomodel.Option,
 ) (*schema.Message, error) {
+	return generateEinoModelResponseWithTimeout(ctx, chatModel, input, toolPool, defaultModelResponseTimeout, onFinalDelta, onReasoning, extraOptions...)
+}
+
+func generateEinoModelResponseWithTimeout(
+	ctx context.Context,
+	chatModel ChatModel,
+	input []*schema.Message,
+	toolPool []einotool.BaseTool,
+	timeout time.Duration,
+	onFinalDelta func(string),
+	onReasoning func(ReasoningStreamEvent),
+	extraOptions ...einomodel.Option,
+) (*schema.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	timeout := modelResponseTimeout()
+	if timeout <= 0 {
+		timeout = defaultModelResponseTimeout
+	}
+	requestStarted := time.Now()
 	modelCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ctx = modelCtx
@@ -117,7 +138,7 @@ func generateEinoModelResponse(
 					break
 				}
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-					return nil, readableModelResponseTimeoutError(err, timeout)
+					return nil, readableModelResponseTimeoutError(err, timeout, time.Since(requestStarted))
 				}
 				return nil, err
 			}
@@ -152,9 +173,9 @@ func generateEinoModelResponse(
 	response, err := chatModel.Generate(ctx, input, opts...)
 	if err != nil {
 		if streamErr != nil {
-			return nil, readableModelResponseTimeoutError(streamErr, timeout)
+			return nil, readableModelResponseTimeoutError(streamErr, timeout, time.Since(requestStarted))
 		}
-		return nil, readableModelResponseTimeoutError(err, timeout)
+		return nil, readableModelResponseTimeoutError(err, timeout, time.Since(requestStarted))
 	}
 	if isEmptyAssistantResponse(response) {
 		if fallback := fallbackResponseFromToolEvidence(input); fallback != nil {
@@ -173,31 +194,68 @@ func generateEinoModelResponse(
 
 const defaultModelResponseTimeout = 5 * time.Minute
 
-func modelResponseTimeout() time.Duration {
-	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT_MS")); raw != "" {
-		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
-			return time.Duration(ms) * time.Millisecond
-		}
-	}
-	if raw := strings.TrimSpace(os.Getenv("AIOPS_LLM_REQUEST_TIMEOUT")); raw != "" {
-		if duration, err := time.ParseDuration(raw); err == nil && duration > 0 {
-			return duration
-		}
+func modelResponseTimeout(timeoutMs int) time.Duration {
+	if timeoutMs > 0 {
+		return time.Duration(timeoutMs) * time.Millisecond
 	}
 	return defaultModelResponseTimeout
 }
 
-func readableModelResponseTimeoutError(err error, timeout time.Duration) error {
+func readableModelResponseTimeoutError(err error, timeout time.Duration, elapsed time.Duration) error {
 	if err == nil {
 		return nil
 	}
 	if errors.Is(err, context.Canceled) {
 		return err
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if !errors.Is(err, context.DeadlineExceeded) && !isTimeoutLikeError(err) {
+		return err
+	}
+	if !usedConfiguredTimeoutBudget(timeout, elapsed) {
+		return fmt.Errorf("模型请求超时：约 %s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: %w", formatObservedModelTimeout(elapsed), err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) || isTimeoutLikeError(err) {
 		return fmt.Errorf("模型响应超时：%s 内未收到模型完整响应或下一个流式片段: %w", timeout, err)
 	}
 	return err
+}
+
+func isTimeoutLikeError(err error) bool {
+	var timeoutErr interface {
+		Timeout() bool
+	}
+	return errors.As(err, &timeoutErr) && timeoutErr.Timeout()
+}
+
+func usedConfiguredTimeoutBudget(timeout time.Duration, elapsed time.Duration) bool {
+	if timeout <= 0 || elapsed <= 0 {
+		return false
+	}
+	if timeout <= 100*time.Millisecond {
+		return elapsed >= timeout/2
+	}
+	margin := timeout / 20
+	if margin < time.Second {
+		margin = time.Second
+	}
+	if margin > 10*time.Second {
+		margin = 10 * time.Second
+	}
+	return elapsed >= timeout-margin
+}
+
+func formatObservedModelTimeout(elapsed time.Duration) time.Duration {
+	if elapsed <= 0 {
+		return 0
+	}
+	if elapsed < time.Second {
+		rounded := elapsed.Round(time.Millisecond)
+		if rounded <= 0 {
+			return time.Millisecond
+		}
+		return rounded
+	}
+	return elapsed.Round(time.Second)
 }
 
 func attachConcatenatedResponseMeta(response *schema.Message, chunks []*schema.Message) {

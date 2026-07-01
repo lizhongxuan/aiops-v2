@@ -451,7 +451,7 @@ describe("ProcessTranscript", () => {
     await expandProcessTranscript();
 
     expect(container.textContent).toContain("skill_search mode=search query=synthetic diagnosis");
-    expect(container.textContent).not.toContain("网页检索");
+    expect(container.textContent).not.toContain("网页搜索");
   });
 
   it("shows the active web search query in the running search summary", async () => {
@@ -471,8 +471,35 @@ describe("ProcessTranscript", () => {
       root.render(<ProcessTranscript process={process} turnStatus="working" />);
     });
 
-    expect(container.textContent).toContain("正在搜索网页（BTC 行情）");
+    expect(container.textContent).toContain("正在搜索网页：BTC 行情");
     expect(container.textContent).toContain("BTC 行情");
+  });
+
+  it("keeps the running web search row stable while showing the active query in details", async () => {
+    const process = [
+      makeBlock({
+        id: "search-stable-running",
+        kind: "tool",
+        status: "running",
+        displayKind: "web_search",
+        text: "正在搜索网页",
+        inputSummary: "pg_autoctl standby timeline higher than primary",
+        queries: ["pg_autoctl standby timeline higher than primary"],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    const toggle = container.querySelector('[data-testid="aiops-search-toggle"]');
+    expect(toggle?.textContent).toContain("网页搜索 1 次");
+    expect(toggle?.textContent).not.toContain("正在搜索网页");
+    expect(container.querySelector('[data-testid="aiops-search-details"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-search-running-status"]')?.textContent).toContain(
+      "正在搜索网页：pg_autoctl standby timeline higher than primary",
+    );
+    expect(container.querySelector('[data-testid="aiops-inline-status-indicator"]')).toBeNull();
   });
 
   it("does not render spinning indicators while a turn is processing", async () => {
@@ -554,9 +581,9 @@ describe("ProcessTranscript", () => {
       root.render(<ProcessTranscript process={process} turnStatus="completed" />);
     });
     await expandProcessTranscript();
-    expect(container.textContent).toContain("网页检索 5 次 · 找到 2 个来源");
+    expect(container.textContent).toContain("网页搜索 5 次 · 找到 2 个来源");
     const searchButton = Array.from(container.querySelectorAll("button")).find((button) =>
-      button.textContent?.includes("网页检索"),
+      button.textContent?.includes("网页搜索"),
     );
     expect(searchButton).toBeTruthy();
 
@@ -574,12 +601,10 @@ describe("ProcessTranscript", () => {
     expect(text).not.toContain('"bitcoin"');
 
     const rows = Array.from(container.querySelectorAll('[data-testid="aiops-search-detail-row-toggle"]'));
-    await act(async () => {
-      rows[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    const expandedText = container.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent || "";
-    expect(expandedText).toContain("检索内容：Bitcoin Price: BTC/USD Live Price Chart");
-    expect(expandedText).toContain("检索词：BTC price today USD");
+    expect(rows[1]?.querySelector('[data-testid="aiops-search-detail-chevron"]')).toBeNull();
+    expect(text).not.toContain("检索内容：");
+    expect(text).not.toContain("检索词：");
+    expect(text).not.toContain("摘要：");
   });
 
   it("lists every web search source as an expandable row without omitted summaries", async () => {
@@ -618,9 +643,9 @@ describe("ProcessTranscript", () => {
     });
 
     const label = container.querySelector('[data-testid="aiops-search-toggle"]')?.textContent || "";
-    expect(label).toContain("网页检索 2 次");
+    expect(label).toContain("网页搜索 2 次");
     expect(label).toContain("找到 7 个来源");
-    expect(label).not.toContain("网页检索 17 项");
+    expect(label).not.toContain("网页搜索 17 项");
 
     expect(container.querySelector('[data-testid="aiops-search-details"]')).toBeNull();
     await act(async () => {
@@ -642,13 +667,108 @@ describe("ProcessTranscript", () => {
     expect(details?.querySelectorAll('[data-testid="aiops-search-detail-line"]').length).toBe(7);
 
     const firstSource = details?.querySelector('[data-testid="aiops-search-detail-row-toggle"]');
+    const firstChevron = firstSource?.querySelector('[data-testid="aiops-search-detail-chevron"]');
+    expect(firstChevron?.getAttribute("class")).toContain("mt-[5px]");
     await act(async () => {
       firstSource?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     const expanded = details?.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent || "";
-    expect(expanded).toContain("检索内容：pg_auto_failover operations");
-    expect(expanded).toContain("检索词：pg_auto_failover standby timeline higher than primary");
-    expect(expanded).toContain("摘要：Monitor and failover operations.");
+    expect(expanded).toContain("Monitor and failover operations.");
+    expect(expanded).not.toContain("检索内容：");
+    expect(expanded).not.toContain("检索词：");
+    expect(expanded).not.toContain("摘要：");
+  });
+
+  it("renders web_search open operations inside the web lookup group", async () => {
+    const process = [
+      makeBlock({
+        id: "open-docs",
+        kind: "search",
+        status: "completed",
+        displayKind: "web_search",
+        text: "https://www.postgresql.org/docs/current/",
+        inputSummary: "https://www.postgresql.org/docs/current/",
+        queries: ["https://www.postgresql.org/docs/current/"],
+        results: [
+          {
+            title: "PostgreSQL docs",
+            url: "https://www.postgresql.org/docs/current/",
+            snippet: "Readable PostgreSQL documentation.",
+            fetched: true,
+            text: "Full bounded text is not rendered in the process transcript.",
+          },
+        ],
+        foldGroupKind: "web_lookup",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.textContent).toContain("网页搜索 1 次");
+    expect(container.querySelector('[data-testid="aiops-search-toggle"]')?.textContent).toContain("找到 1 个来源");
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-search-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const details = container.querySelector('[data-testid="aiops-search-details"]');
+    expect(details?.textContent).toContain("https://www.postgresql.org/docs/current/");
+    expect(details?.textContent).not.toContain("Full bounded text");
+  });
+
+  it("shows fetched and failed read states only in expanded web lookup details", async () => {
+    const process = [
+      makeBlock({
+        id: "search-fetch-status",
+        kind: "search",
+        status: "completed",
+        displayKind: "web_search",
+        text: "postgres docs",
+        queries: ["postgres docs"],
+        results: [
+          {
+            title: "PostgreSQL docs",
+            url: "https://www.postgresql.org/docs/current/",
+            snippet: "Readable PostgreSQL documentation.",
+            fetched: true,
+            text: "Full bounded text is hidden.",
+          },
+          {
+            title: "Example blog",
+            url: "https://example.com/post",
+            fetchError: "blocked by policy",
+          },
+        ],
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-search-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.textContent).not.toContain("已读取正文");
+    const rows = Array.from(container.querySelectorAll('[data-testid="aiops-search-detail-row-toggle"]'));
+    await act(async () => {
+      rows[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent).toContain("已读取正文");
+
+    await act(async () => {
+      rows[1]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    const expandedText = Array.from(container.querySelectorAll('[data-testid="aiops-search-detail-expanded"]'))
+      .map((node) => node.textContent || "")
+      .join("\n");
+    expect(expandedText).toContain("读取失败：blocked by policy");
+    expect(expandedText).not.toContain("Full bounded text is hidden.");
   });
 
   it("uses compact text and reduced indent for running search labels and details", async () => {
@@ -705,6 +825,7 @@ describe("ProcessTranscript", () => {
     expect(pill?.className).toContain("text-[12px]");
     expect(pill?.className).toContain("rounded-full");
     expect(container.querySelector('[data-testid="aiops-model-wait-icon"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-inline-status-indicator"]')).toBeNull();
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent).not.toContain(
       "正在等待模型返回正在等待模型返回",
     );
@@ -794,7 +915,10 @@ describe("ProcessTranscript", () => {
       );
     });
     const expanded = container.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent || "";
-    expect(expanded).toContain("检索内容：pg_auto_failover operations");
+    expect(expanded).toContain("pg_autoctl create postgres starts a local PostgreSQL instance");
+    expect(expanded).not.toContain("检索内容：");
+    expect(expanded).not.toContain("检索词：");
+    expect(expanded).not.toContain("摘要：");
   });
 
   it("starts completed web search details collapsed while the turn is still running", async () => {
@@ -837,7 +961,10 @@ describe("ProcessTranscript", () => {
       );
     });
     const expanded = container.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent || "";
-    expect(expanded).toContain("检索内容：pg_auto_failover failover state machine");
+    expect(expanded).toContain("The monitor tracks nodes and assigns states");
+    expect(expanded).not.toContain("检索内容：");
+    expect(expanded).not.toContain("检索词：");
+    expect(expanded).not.toContain("摘要：");
   });
 
   it("keeps streaming assistant prelude before the following search block", async () => {
@@ -869,10 +996,59 @@ describe("ProcessTranscript", () => {
 
     const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
     const preludeIndex = bodyText.indexOf(prelude);
-    const searchIndex = bodyText.indexOf("正在搜索网页（BTC current price USD 24h change）");
+    const searchIndex = bodyText.indexOf("正在搜索网页：BTC current price USD 24h change");
     expect(preludeIndex).toBeGreaterThanOrEqual(0);
     expect(searchIndex).toBeGreaterThan(preludeIndex);
     expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(1);
+  });
+
+  it("renders assistant commentary between folded tool groups without pulling final text into process", async () => {
+    const finalText = "结论：CPU 当前负载正常，未发现持续高负载。";
+    const process = [
+      makeBlock({
+        id: "assistant-search",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "我会先检索可用工具并确认适合的只读检查能力，再继续获取证据。",
+      }),
+      makeBlock({
+        id: "tool-search-1",
+        kind: "tool",
+        displayKind: "tool_search",
+        foldGroupKind: "web_lookup",
+        text: "tool_search",
+        inputSummary: "host CPU monitoring status check server local",
+      }),
+      makeBlock({
+        id: "assistant-command",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "我会先执行只读命令获取证据，再根据输出给出结论。",
+      }),
+      makeBlock({
+        id: "cmd-cpu",
+        kind: "command",
+        foldGroupKind: "command",
+        command: "top -l 1 | head",
+        outputPreview: "CPU usage: 10% user, 15% sys, 75% idle",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText={finalText} />);
+    });
+    await expandProcessTranscript();
+
+    const processText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    expect(processText).toContain("检索可用工具");
+    expect(processText).toContain("执行只读命令");
+    expect(processText).toContain("已运行 top -l 1 | head");
+    expect(processText).not.toContain(finalText);
+    expect(container.querySelector('[data-testid="aiops-final-text"]')?.textContent).toContain(finalText);
   });
 
   it("keeps stale substantial assistant drafts out of the running process timeline", async () => {
@@ -923,7 +1099,7 @@ describe("ProcessTranscript", () => {
 
     const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
     expect(bodyText).toContain("我会先核对 PostgreSQL timeline");
-    expect(bodyText).toContain("网页检索 1 次");
+    expect(bodyText).toContain("网页搜索 1 次");
     expect(bodyText).toContain("正在等待模型返回");
     expect(bodyText).not.toContain("根因（置信度：中）");
     expect(bodyText).not.toContain("主机B 的 timeline 比主机A 更高");
@@ -1727,10 +1903,67 @@ describe("ProcessTranscript", () => {
     expect(terminalCard?.className).toContain("max-h-72");
     expect(terminalCard?.className).toContain("overflow-hidden");
     expect(terminalOutput?.className).toContain("min-h-0");
-    expect(terminalOutput?.className).toContain("max-h-48");
+    expect(terminalOutput?.className).toContain("max-h-[12rem]");
     expect(terminalOutput?.className).toContain("flex-1");
     expect(terminalOutput?.className).toContain("overflow-y-auto");
     expect(container.textContent).toContain("40 12345 process-40");
+  });
+
+  it("shows only command stdout or failed stderr from structured output previews", async () => {
+    const process = [
+      makeBlock({
+        id: "cmd-json-stdout",
+        kind: "command",
+        status: "completed",
+        command: "hostname",
+        text: "hostname",
+        outputPreview: JSON.stringify({
+          command: "hostname",
+          status: "ok",
+          stdout: "host-a\n",
+          stderr: "",
+          exitCode: 0,
+          tool: "exec_command",
+        }),
+      }),
+      makeBlock({
+        id: "cmd-json-stderr",
+        kind: "command",
+        status: "failed",
+        command: "uptime",
+        text: "uptime",
+        outputPreview: JSON.stringify({
+          command: "uptime",
+          status: "error",
+          stdout: "partial output\n",
+          stderr: "uptime: command not found\n",
+          exitCode: 127,
+          tool: "exec_command",
+        }),
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+    await expandProcessTranscript();
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-command-row-cmd-json-stdout"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+      container.querySelector('[data-testid="aiops-command-row-cmd-json-stderr"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const stdout = container.querySelector('[data-testid="aiops-command-output-cmd-json-stdout"]');
+    const stderr = container.querySelector('[data-testid="aiops-command-output-cmd-json-stderr"]');
+    expect(stdout?.textContent).toBe("host-a");
+    expect(stderr?.textContent).toBe("uptime: command not found");
+    expect(container.textContent).not.toContain('"stdout"');
+    expect(container.textContent).not.toContain('"tool"');
+    expect(container.textContent).not.toContain("partial output");
   });
 
   it("does not render output summary as terminal output without an output preview", async () => {
@@ -1788,7 +2021,7 @@ describe("ProcessTranscript", () => {
     const first = text.indexOf("先确认目标");
     const command = text.indexOf("已运行 uptime");
     const second = text.indexOf("命令后概述");
-    const search = text.indexOf("正在搜索网页（BTC 行情）");
+    const search = text.indexOf("正在搜索网页：BTC 行情");
     expect(first).toBeGreaterThanOrEqual(0);
     expect(command).toBeGreaterThan(first);
     expect(second).toBeGreaterThan(command);
@@ -1908,7 +2141,7 @@ describe("ProcessTranscript", () => {
     const firstCommand = bodyText.indexOf("已运行 pwd");
     const secondCommand = bodyText.indexOf("已运行 git status --short");
     const afterCommands = bodyText.indexOf("命令结果已经拿到，我会继续核对相关页面信息。");
-    const searchSummary = bodyText.indexOf("网页检索 2 次 · 找到 1 个来源");
+    const searchSummary = bodyText.indexOf("网页搜索 2 次 · 找到 1 个来源");
     const afterSearch = bodyText.indexOf("页面也确认过了，最终回答会基于上面的命令和搜索结果。");
 
     expect(next).toBeGreaterThanOrEqual(0);
@@ -1927,7 +2160,7 @@ describe("ProcessTranscript", () => {
 
     const expandedBodyText =
       container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
-    const expandedSearchSummary = expandedBodyText.indexOf("网页检索 2 次 · 找到 1 个来源");
+    const expandedSearchSummary = expandedBodyText.indexOf("网页搜索 2 次 · 找到 1 个来源");
     const searchedPageRow = expandedBodyText.indexOf("https://example.com/aiops-v2-order");
     const expandedAfterSearch = expandedBodyText.indexOf("页面也确认过了，最终回答会基于上面的命令和搜索结果。");
     expect(container.querySelector('[data-testid="aiops-search-details"]')?.className).toContain("pl-3");
@@ -1939,8 +2172,7 @@ describe("ProcessTranscript", () => {
         new MouseEvent("click", { bubbles: true }),
       );
     });
-    const expandedSourceText = container.querySelector('[data-testid="aiops-search-detail-expanded"]')?.textContent || "";
-    expect(expandedSourceText).toContain("检索内容：已打开页面");
+    expect(container.querySelector('[data-testid="aiops-search-detail-expanded"]')).toBeNull();
   });
 
   it("keeps running command terminal output visible", async () => {
@@ -2105,6 +2337,26 @@ describe("groupConsecutiveBlocks", () => {
       expect(groups[2].mergedKind).toBe("command");
       expect(groups[2].blocks).toHaveLength(3);
     }
+  });
+
+  it("does not merge command groups across assistant commentary", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({ id: "cmd-1", kind: "command", foldGroupKind: "command", command: "uptime" }),
+      makeBlock({
+        id: "assistant-between-commands",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "第一条命令结果已拿到，我会继续执行下一条只读命令。",
+      }),
+      makeBlock({ id: "cmd-2", kind: "command", foldGroupKind: "command", command: "top -l 1" }),
+    ]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups[0]).toMatchObject({ kind: "single" });
+    expect(groups[1]).toMatchObject({ kind: "single" });
+    expect(groups[2]).toMatchObject({ kind: "single" });
   });
 
   it("merges only consecutive search blocks and keeps separated searches apart", () => {

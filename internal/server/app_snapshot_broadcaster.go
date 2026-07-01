@@ -130,6 +130,10 @@ func (b *AppSnapshotBroadcaster) OnSnapshot(snapshot projection.Snapshot) {
 func (b *AppSnapshotBroadcaster) OnRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) {
 	events, err := appui.NormalizeRuntimeLifecycleEvent(event)
 	b.appendAgentEvents(context.Background(), events, err)
+	switch event.Type {
+	case runtimekernel.EventTurnError, runtimekernel.EventTurnAborted:
+		_ = b.BroadcastLatest(context.Background())
+	}
 }
 
 func (b *AppSnapshotBroadcaster) appendAgentEvents(ctx context.Context, events []appui.AgentEvent, err error) {

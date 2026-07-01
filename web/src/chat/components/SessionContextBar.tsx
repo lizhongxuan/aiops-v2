@@ -53,6 +53,7 @@ type SessionContextBarProps = {
 };
 
 export const SESSION_CONTEXT_TIMEOUT_MS = 8000;
+const CHAT_LLM_CONFIG_CACHE_KEY = "aiops.chat.llmConfig";
 
 export function withSessionContextTimeout<T>(
   promise: Promise<T>,
@@ -75,6 +76,52 @@ export function formatLlmLabel(config: Pick<LlmConfigView, "model" | "provider">
   return model || "LLM 未配置";
 }
 
+export function readCachedLlmConfigForChat(): LlmConfigView | null {
+  try {
+    const raw = window.localStorage.getItem(CHAT_LLM_CONFIG_CACHE_KEY);
+    if (!raw) return null;
+    return normalizeCacheableLlmConfig(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedLlmConfigForChat(config: LlmConfigView | null) {
+  try {
+    const cacheable = normalizeCacheableLlmConfig(config);
+    if (!cacheable) {
+      window.localStorage.removeItem(CHAT_LLM_CONFIG_CACHE_KEY);
+      return;
+    }
+    window.localStorage.setItem(CHAT_LLM_CONFIG_CACHE_KEY, JSON.stringify(cacheable));
+  } catch {
+    // Cache is only a first-paint hint; failed storage must not break chat.
+  }
+}
+
+function normalizeCacheableLlmConfig(value: unknown): LlmConfigView | null {
+  if (!value || typeof value !== "object") return null;
+  const input = value as LlmConfigView;
+  const provider = firstText(input.provider);
+  const model = firstText(input.model);
+  if (!provider || !model) return null;
+  return {
+    provider,
+    model,
+    apiKeySet: Boolean(input.apiKeySet),
+    apiKeyMasked: firstText(input.apiKeyMasked) || undefined,
+    baseURL: firstText(input.baseURL) || undefined,
+    maxContextTokens: typeof input.maxContextTokens === "number" ? input.maxContextTokens : undefined,
+    maxOutputTokens: typeof input.maxOutputTokens === "number" ? input.maxOutputTokens : undefined,
+    temperature: typeof input.temperature === "number" ? input.temperature : undefined,
+    topP: typeof input.topP === "number" ? input.topP : undefined,
+    thinkingType: firstText(input.thinkingType) || undefined,
+    reasoningEffort: firstText(input.reasoningEffort) || undefined,
+    toolStream: typeof input.toolStream === "boolean" ? input.toolStream : undefined,
+    bifrostActive: typeof input.bifrostActive === "boolean" ? input.bifrostActive : undefined,
+  };
+}
+
 export function SessionContextBar({
   kind,
   title,
@@ -89,7 +136,7 @@ export function SessionContextBar({
   const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState(() => (skipInitialLoad ? activeThreadId : ""));
   const [hosts, setHosts] = useState<HostRecord[]>([]);
-  const [llm, setLlm] = useState<LlmConfigView | null>(null);
+  const [llm, setLlm] = useState<LlmConfigView | null>(() => (skipInitialLoad ? null : readCachedLlmConfigForChat()));
   const [target, setTarget] = useState(fallbackTargetValue(kind));
   const [busy, setBusy] = useState(false);
   const [activeAction, setActiveAction] = useState<"create" | "refresh" | null>(null);
@@ -167,7 +214,11 @@ export function SessionContextBar({
 
       setSessions(nextSessions);
       setHosts(nextHosts);
-      setLlm(llmResult.status === "fulfilled" ? llmResult.value : null);
+      if (llmResult.status === "fulfilled") {
+        const nextLlm = normalizeCacheableLlmConfig(llmResult.value);
+        setLlm(nextLlm);
+        writeCachedLlmConfigForChat(nextLlm);
+      }
       const nextActive =
         firstText(
           sessionResult.status === "fulfilled"

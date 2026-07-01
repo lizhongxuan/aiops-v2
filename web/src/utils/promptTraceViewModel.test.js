@@ -455,6 +455,43 @@ describe("parsePromptTrace", () => {
     });
   });
 
+  it("keeps tool calls returned directly by an LLM request", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      visibleTools: ["web_search"],
+      llmRequests: [
+        {
+          id: "llm-tool-call",
+          finishReason: "tool_calls",
+          usage: { prompt_tokens: 9, completion_tokens: 4, total_tokens: 13 },
+          toolCalls: [
+            {
+              id: "call-web-search",
+              name: "web_search",
+              arguments: "{\"query\":\"PostgreSQL timeline pgBackRest api_key=tool-secret\"}",
+            },
+          ],
+        },
+      ],
+    }));
+
+    const request = vm.agentUiSources.userRequests[0].llmRequests[0];
+
+    expect(request.detail).toMatchObject({
+      finishReason: "tool_calls",
+      output: "暂无输出",
+      hasOutput: false,
+      tokens: "prompt 9 / completion 4 / total 13",
+    });
+    expect(request.toolCalls).toHaveLength(1);
+    expect(request.toolCalls[0]).toMatchObject({
+      id: "call-web-search",
+      name: "web_search",
+      arguments: expect.stringContaining("PostgreSQL timeline pgBackRest"),
+      llmRequestId: "llm-tool-call",
+    });
+    expect(JSON.stringify(vm)).not.toContain("tool-secret");
+  });
+
   it("parses context governance events into budget, compaction, materialization, and external references", () => {
     const vm = parsePromptTrace(sampleTrace({
       contextGovernance: [

@@ -11,9 +11,19 @@ import (
 )
 
 func applyProgressiveToolPackMetadata(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {
+	metadata = applyExplicitToolSearchDiscoveryMetadata(metadata, input)
 	metadata = applyContinuationToolPacks(metadata, input, session, catalog)
 	metadata = applyIntentToolPacks(metadata, input, session, catalog)
 	return applyToolDiscoveryTurnMetadata(metadata, session)
+}
+
+func applyExplicitToolSearchDiscoveryMetadata(metadata map[string]string, input string) map[string]string {
+	if !tooling.ExplicitToolSearchDiscoveryRequested(input) {
+		return metadata
+	}
+	metadata = ensureTurnMetadata(metadata)
+	metadata["aiops.toolSearch.enabled"] = "true"
+	return enableSelectedTool(metadata, "tool_search")
 }
 
 func applyIntentToolPacks(metadata map[string]string, input string, session *SessionState, catalog []tooling.Tool) map[string]string {

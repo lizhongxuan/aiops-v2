@@ -578,40 +578,38 @@ function PromptTraceDetailDialog({
   const primaryFinishReason = llmRequests[0]?.detail?.finishReason || "";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent showCloseButton={false} className="max-h-[88vh] overflow-hidden sm:max-w-5xl">
-        <DialogHeader>
-          <div className="flex flex-wrap items-start justify-between gap-3 pr-2">
-            <div className="min-w-0">
+      <DialogContent
+        showCloseButton={false}
+        data-testid="prompt-trace-detail-dialog"
+        className="!flex max-h-[calc(100vh-3rem)] w-[min(1120px,calc(100vw-2rem))] flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+      >
+        <DialogHeader className="shrink-0 border-b border-slate-100 px-5 py-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0 flex-1">
               <DialogTitle>模型请求详情</DialogTitle>
               <DialogDescription className="mt-2 grid gap-2">
-                <span className="truncate" title={selectedTrace?.relativePath || activePath || ""}>{selectedTrace?.relativePath || activePath || "未选择 Prompt Trace"}</span>
-                <span className="flex flex-wrap gap-2">
-                  {selectedTrace?.promptFingerprint?.stableHash ? <ToneBadge>稳定哈希 {shortHash(selectedTrace.promptFingerprint.stableHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.developerHash ? <ToneBadge>开发者规则 {shortHash(selectedTrace.promptFingerprint.developerHash)}</ToneBadge> : null}
-                  {selectedTrace?.promptFingerprint?.toolRegistryHash ? <ToneBadge>工具表 {shortHash(selectedTrace.promptFingerprint.toolRegistryHash)}</ToneBadge> : null}
-                  {traceViewModel?.providerRequest?.modelInputHash ? <ToneBadge>输入 {shortHash(traceViewModel.providerRequest.modelInputHash)}</ToneBadge> : null}
-                  {traceViewModel?.providerRequest?.providerMessagesHash ? <ToneBadge>Provider {shortHash(traceViewModel.providerRequest.providerMessagesHash)}</ToneBadge> : null}
-                  {traceViewModel?.providerRequest?.promptCacheKey ? <ToneBadge>Cache {shortHash(traceViewModel.providerRequest.promptCacheKey)}</ToneBadge> : null}
-                </span>
+                <span className="block max-w-full truncate font-mono" title={selectedTrace?.relativePath || activePath || ""}>{selectedTrace?.relativePath || activePath || "未选择 Prompt Trace"}</span>
               </DialogDescription>
             </div>
             <DialogClose asChild>
-              <button type="button" className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
+              <button type="button" className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">
                 关闭
               </button>
             </DialogClose>
           </div>
         </DialogHeader>
-        <div className="max-h-[calc(88vh-120px)] overflow-auto pr-1">
+        <div className="shrink-0 border-b border-slate-100 px-5 py-3">
           <div className="flex flex-wrap gap-2">
             {views.map(([key, label]) => (
               <button key={key} type="button" className={`rounded-lg border px-3 py-2 text-sm ${activeView === key ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setActiveView(key)}>{label}</button>
             ))}
           </div>
+        </div>
 
-          <div className="mt-4 grid gap-4">
+        <div data-testid="prompt-trace-detail-scroll" className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+          <div className="grid gap-4">
             {activeView === "overview" ? (
-              <section className="grid gap-3 md:grid-cols-6">
+              <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
                 <CompactMetricCard label="消息数" value={traceViewModel?.summary.messageCount ?? selectedTraceMessageCount ?? 0} />
                 <CompactMetricCard label="工具数" value={traceViewModel?.summary.visibleToolCount ?? selectedTraceVisibleTools?.length ?? 0} />
                 <CompactMetricCard label="输入字符" value={formatNumber(traceViewModel?.summary.promptCharCount ?? 0)} />
@@ -624,23 +622,37 @@ function PromptTraceDetailDialog({
                 <CompactMetricCard label="输出字符" value={primaryMetrics.outputChars ? formatNumber(primaryMetrics.outputChars) : "-"} />
                 <CompactMetricCard label="结束原因" value={finishReasonLabel(primaryFinishReason)} />
                 {llmRequests.length ? (
-                  <section className="md:col-span-6 rounded-lg border border-slate-200 bg-white p-4">
+                  <section className="rounded-lg border border-slate-200 bg-white p-4 sm:col-span-2 lg:col-span-6">
                     <h3 className="font-medium text-slate-950">模型返回内容</h3>
                     <div className="mt-3 grid gap-3">
                       {llmRequests.map((request) => (
-                        <div key={request.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3">
-                          <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
-                            <ToneBadge>{request.id}</ToneBadge>
-                            <ToneBadge>{usageLabel(request.detail?.tokens)}</ToneBadge>
-                            <ToneBadge>{request.detail?.duration || "暂无耗时"}</ToneBadge>
-                            {request.detail?.finishReason ? <ToneBadge>{finishReasonLabel(request.detail.finishReason)}</ToneBadge> : null}
-                            {request.detail?.metrics?.firstDeltaMs ? <ToneBadge>首词元 {formatTraceMs(request.detail.metrics.firstDeltaMs)}</ToneBadge> : null}
-                            {request.detail?.metrics?.streamMs ? <ToneBadge>流式耗时 {formatTraceMs(request.detail.metrics.streamMs)}</ToneBadge> : null}
-                            {request.detail?.metrics?.deltaCount ? <ToneBadge>流式片段 {formatNumber(request.detail.metrics.deltaCount)}</ToneBadge> : null}
-                            {request.detail?.metrics?.outputChars ? <ToneBadge>输出字符 {formatNumber(request.detail.metrics.outputChars)}</ToneBadge> : null}
-                            {(request.detail?.slowCauses || []).map((cause) => <ToneBadge key={cause.id}>{cause.label}</ToneBadge>)}
+                        <div key={request.id} data-testid="prompt-trace-llm-response-card" className="rounded-lg border border-slate-100 bg-slate-50 p-3">
+                          {request.detail?.slowCauses?.length ? (
+                            <div className="flex min-w-0 flex-wrap gap-2 text-xs text-slate-500">
+                              {request.detail.slowCauses.map((cause) => <ToneBadge key={cause.id}>{cause.label}</ToneBadge>)}
+                            </div>
+                          ) : null}
+                          <div className="mt-3 grid gap-3">
+                            <div>
+                              <pre
+                                data-testid="prompt-trace-llm-output"
+                                className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-3 text-xs text-white"
+                              >
+                                {llmTextOutput(request)}
+                              </pre>
+                            </div>
+                            {request.toolCalls?.length ? (
+                              <div>
+                                <div className="text-xs font-medium text-slate-600">模型工具调用</div>
+                                <pre
+                                  data-testid="prompt-trace-llm-tool-calls"
+                                  className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-950 p-3 text-xs text-white"
+                                >
+                                  {formatToolCallsForDisplay(request.toolCalls)}
+                                </pre>
+                              </div>
+                            ) : null}
                           </div>
-                          <pre className="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-3 text-xs text-white">{request.detail?.output || "暂无输出"}</pre>
                           {request.detail?.error && request.detail.error !== "暂无错误" ? <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap rounded-lg bg-red-950 p-3 text-xs text-white">{request.detail.error}</pre> : null}
                         </div>
                       ))}
@@ -703,13 +715,6 @@ function CompactMetricCard({ label, value }: { label: string; value: ReactNode }
   );
 }
 
-function usageLabel(value?: string) {
-  const text = value === "暂无 token 信息" || !value ? "暂无词元信息" : value;
-  const match = text.match(/^prompt\s+(.+?)\s*\/\s*completion\s+(.+?)\s*\/\s*total\s+(.+)$/i);
-  if (!match) return text;
-  return `输入 ${match[1]} / 输出 ${match[2]} / 总计 ${match[3]}`;
-}
-
 function finishReasonLabel(value?: string) {
   const text = (value || "").trim();
   if (!text) return "-";
@@ -720,6 +725,27 @@ function finishReasonLabel(value?: string) {
     content_filter: "内容过滤",
   };
   return labels[text] || text;
+}
+
+function llmTextOutput(request: { detail?: { output?: string; hasOutput?: boolean }; toolCalls?: unknown[] }) {
+  const output = request.detail?.output || "暂无输出";
+  if (request.detail?.hasOutput === false && request.toolCalls?.length) {
+    return "本轮没有自然语言文本，模型返回工具调用。";
+  }
+  return output;
+}
+
+function formatToolCallsForDisplay(toolCalls: Array<{ id?: string; type?: string; name?: string; arguments?: string }>) {
+  return JSON.stringify(
+    toolCalls.map((call) => ({
+      id: call.id || "",
+      type: call.type || "function",
+      name: call.name || "",
+      arguments: call.arguments || "",
+    })),
+    null,
+    2,
+  );
 }
 
 function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel }) {

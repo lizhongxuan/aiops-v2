@@ -17,7 +17,10 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 	if opts.Profile == "" {
 		opts.Profile = firstMetadataString(metadata, "profile", "toolProfile", "mcpProfile")
 	}
-	opts.EnabledPacks = appendUniqueStrings(opts.EnabledPacks, metadataListValue(metadata, "enableToolPack")...)
+	if webSearchPolicyDisabledForTurn(metadata) {
+		opts.EnabledPacks = removeMetadataListValue(opts.EnabledPacks, "public_web")
+	}
+	opts.EnabledPacks = appendUniqueStrings(opts.EnabledPacks, enabledPacksForTurnMetadata(metadata)...)
 	if publicWebAllowedForTurn(metadata) {
 		opts.EnabledPacks = appendUniqueStrings(opts.EnabledPacks, "public_web")
 	}
@@ -160,9 +163,6 @@ func firstMetadataString(metadata map[string]string, keys ...string) string {
 }
 
 func turnMetadataToolFilter(metadata map[string]string) func(Tool, ToolContext, ToolMetadata) bool {
-	if len(metadata) == 0 {
-		return nil
-	}
 	return func(_ Tool, _ ToolContext, meta ToolMetadata) bool {
 		return ToolVisibilityDecisionForTurnMetadata(meta, metadata).Visible
 	}
@@ -204,6 +204,18 @@ func IntentToolPackCanAutoEnable(metadata map[string]string, pack string) bool {
 }
 
 func ToolVisibilityDecisionForTurnMetadata(meta ToolMetadata, metadata map[string]string) TurnMetadataToolVisibilityDecision {
+	if matchesName(meta, "tool_search") {
+		if toolSearchEnabledForTurn(metadata) {
+			return turnMetadataVisible()
+		}
+		return turnMetadataHidden("tool_search_not_enabled")
+	}
+	if webSearchPolicyDisabledForTurn(metadata) && toolBelongsToPack(meta, "public_web") {
+		return turnMetadataHidden("web_search_policy_disabled")
+	}
+	if defaultHiddenPublicWebAlias(meta, metadata) {
+		return turnMetadataHidden("public_web_alias_deferred")
+	}
 	if decision, ok := toolVisibilityDecisionFromIntentMetadata(meta, metadata); ok {
 		return decision
 	}
@@ -271,11 +283,6 @@ func toolVisibilityDecisionFromIntentMetadata(meta ToolMetadata, metadata map[st
 	}
 	decision := DecideToolSurface(frame, approvalSnapshotFromTurnMetadata(metadata), nil)
 	switch {
-	case matchesName(meta, "tool_search"):
-		if directPublicWebSurfaceShouldHideToolSearch(decision) {
-			return turnMetadataHidden("public_web_direct_surface"), true
-		}
-		return turnMetadataVisible(), true
 	case meta.Name == "exec_command":
 		if decision.AllowHostExec {
 			return turnMetadataVisible(), true
@@ -374,7 +381,7 @@ func hostBoundOpsShouldHideAmbientTool(meta ToolMetadata, metadata map[string]st
 	if !metadataBool(metadata, "aiops.route.requiresHostBinding") && !metadataBool(metadata, "aiops.tool.execCommandAllowed") {
 		return false
 	}
-	if matchesName(meta, "exec_command") || matchesName(meta, "tool_search") {
+	if matchesName(meta, "exec_command") {
 		return false
 	}
 	if turnMetadataExplicitlyEnablesTool(meta, metadata) {
@@ -389,9 +396,6 @@ func hostBoundOpsShouldHideAmbientTool(meta ToolMetadata, metadata map[string]st
 func noHostAnalysisShouldHideAmbientTool(meta ToolMetadata, metadata map[string]string) bool {
 	if !isNoHostAdvisorTurn(metadata) && !isNoHostUserEvidenceRCATurn(metadata) {
 		return false
-	}
-	if matchesName(meta, "tool_search") {
-		return publicWebAllowedForTurn(metadata)
 	}
 	if isOpsManualToolName(meta.Name) && opsManualsExplicitlyRequested(metadata) {
 		return false
@@ -440,9 +444,70 @@ func turnMetadataExplicitlyEnablesTool(meta ToolMetadata, metadata map[string]st
 }
 
 func publicWebAllowedForTurn(metadata map[string]string) bool {
+	if webSearchPolicyDisabledForTurn(metadata) {
+		return false
+	}
+	if webSearchPolicyEnabledForTurn(metadata) {
+		return true
+	}
 	return metadataBool(metadata, "aiops.route.allowsWebLearn") ||
 		metadataBool(metadata, "aiops.weblearn.enabled") ||
 		metadataListContains(metadata, "enableToolPack", "public_web")
+}
+
+func enabledPacksForTurnMetadata(metadata map[string]string) []string {
+	packs := metadataListValue(metadata, "enableToolPack")
+	if !webSearchPolicyDisabledForTurn(metadata) {
+		return packs
+	}
+	out := make([]string, 0, len(packs))
+	for _, pack := range packs {
+		if strings.EqualFold(strings.TrimSpace(pack), "public_web") {
+			continue
+		}
+		out = append(out, pack)
+	}
+	return out
+}
+
+func webSearchPolicyDisabledForTurn(metadata map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(metadata["aiops.webSearch.policy"]), "disabled")
+}
+
+func webSearchPolicyEnabledForTurn(metadata map[string]string) bool {
+	switch strings.ToLower(strings.TrimSpace(metadata["aiops.webSearch.policy"])) {
+	case "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolSearchEnabledForTurn(metadata map[string]string) bool {
+	return metadataBool(metadata, "aiops.toolSearch.enabled") ||
+		metadataListContains(metadata, "enableTool", "tool_search")
+}
+
+func defaultHiddenPublicWebAlias(meta ToolMetadata, metadata map[string]string) bool {
+	if !matchesName(meta, "browse_url") {
+		return false
+	}
+	return !metadataListContains(metadata, "enableTool", "browse_url")
+}
+
+func removeMetadataListValue(values []string, unwanted string) []string {
+	unwanted = strings.ToLower(strings.TrimSpace(unwanted))
+	if unwanted == "" || len(values) == 0 {
+		return values
+	}
+	out := values[:0]
+	for _, value := range values {
+		if strings.ToLower(strings.TrimSpace(value)) == unwanted {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func directPublicWebSurfaceShouldHideToolSearch(decision SurfaceDecision) bool {

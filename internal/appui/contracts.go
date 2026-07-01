@@ -50,6 +50,8 @@ type SettingsRepository interface {
 	SaveWebSettings(settings *store.WebSettings) error
 	GetLLMConfig() (*store.LLMConfig, error)
 	SaveLLMConfig(config *store.LLMConfig) error
+	GetRuntimeSettings() (*store.RuntimeSettings, error)
+	SaveRuntimeSettings(settings *store.RuntimeSettings) error
 }
 
 // CorootConfigRepository is the persisted backing store for the Coroot
@@ -202,6 +204,7 @@ type HostOpsService interface {
 
 type servicesConfig struct {
 	settings            SettingsRepository
+	settingsService     SettingsService
 	coroot              CorootConfigRepository
 	hosts               HostRepository
 	mcps                MCPRepository
@@ -279,6 +282,12 @@ func WithStore(dataStore store.Store) ServicesOption {
 func WithSettingsRepository(repo SettingsRepository) ServicesOption {
 	return func(cfg *servicesConfig) {
 		cfg.settings = repo
+	}
+}
+
+func WithSettingsService(service SettingsService) ServicesOption {
+	return func(cfg *servicesConfig) {
+		cfg.settingsService = service
 	}
 }
 
@@ -436,35 +445,36 @@ type HTTPServices interface {
 
 // Services is the default first-party Web application service set.
 type Services struct {
-	chat           ChatService
-	state          StateService
-	sessions       SessionService
-	sessionSource  SessionSource
-	approvals      ApprovalService
-	choices        ChoiceService
-	settings       SettingsService
-	hosts          HostService
-	hostAgents     HostAgentService
-	mcps           MCPService
-	profiles       AgentProfileService
-	auth           AuthService
-	terminal       TerminalService
-	uiCards        UICardService
-	coroot         CorootConfigRepository
-	agentEvents    AgentEventService
-	incidents      IncidentService
-	chatArchive    ChatArchiveService
-	postmortems    PostmortemService
-	corootWebhooks CorootWebhookService
-	runbooks       RunbookService
-	opsgraph       OpsGraphService
-	erp            ERPContextService
-	changes        ChangeContextService
-	opsManuals     OpsManualService
-	toolSpills     ToolResultSpillRepository
-	hostOps        HostOpsService
-	terminalPolicy TerminalPolicyService
-	capabilities   CapabilityService
+	chat            ChatService
+	state           StateService
+	sessions        SessionService
+	sessionSource   SessionSource
+	approvals       ApprovalService
+	choices         ChoiceService
+	settings        SettingsService
+	runtimeSettings RuntimeSettingsProvider
+	hosts           HostService
+	hostAgents      HostAgentService
+	mcps            MCPService
+	profiles        AgentProfileService
+	auth            AuthService
+	terminal        TerminalService
+	uiCards         UICardService
+	coroot          CorootConfigRepository
+	agentEvents     AgentEventService
+	incidents       IncidentService
+	chatArchive     ChatArchiveService
+	postmortems     PostmortemService
+	corootWebhooks  CorootWebhookService
+	runbooks        RunbookService
+	opsgraph        OpsGraphService
+	erp             ERPContextService
+	changes         ChangeContextService
+	opsManuals      OpsManualService
+	toolSpills      ToolResultSpillRepository
+	hostOps         HostOpsService
+	terminalPolicy  TerminalPolicyService
+	capabilities    CapabilityService
 }
 
 // NewServices wires the default appui services over the runtime and session
@@ -485,7 +495,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	if registry == nil {
 		registry = mcp.DefaultRegistry()
 	}
-	settingsService := NewSettingsService(cfg.settings, cfg.auth)
+	settingsService := cfg.settingsService
+	if settingsService == nil {
+		settingsService = NewSettingsService(cfg.settings, cfg.auth)
+	}
+	runtimeSettingsProvider, _ := settingsService.(RuntimeSettingsProvider)
 	authService := NewAuthService(cfg.auth)
 	agentEvents := NewAgentEventService(cfg.agentEvents)
 	incidentService := NewIncidentService(incidents.NewService(cfg.incidents, nil))
@@ -504,11 +518,11 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	var hostBootstrap *HostBootstrapService
 	hostAgentInstaller := cfg.hostAgentInstaller
+	tokenStore := cfg.hostAgentTokenStore
+	if tokenStore == nil {
+		tokenStore = NewLocalHostAgentTokenStore(defaultHostInstallSecretDir())
+	}
 	if hostAgentInstaller == nil && cfg.hosts != nil && cfg.credentialResolver != nil {
-		tokenStore := cfg.hostAgentTokenStore
-		if tokenStore == nil {
-			tokenStore = NewLocalHostAgentTokenStore(defaultHostInstallSecretDir())
-		}
 		hostAgentInstaller = NewDirectHostAgentInstaller(cfg.hosts, cfg.credentialResolver, WithDirectHostAgentTokenStore(tokenStore))
 	}
 	if cfg.hostBootstrapRunner != nil || hostAgentInstaller != nil {
@@ -523,37 +537,38 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards = NewUICardService(cfg.uiCards, WithUICardPluginSpecs(cfg.pluginSpecs))
 	}
 	hostOpsService := cfg.hostOps
-	chatService := NewChatServiceWithContextHostsAndHostOps(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, agentEvents)
+	chatService := NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, runtimeSettingsProvider, agentEvents)
 	return &Services{
-		chat:           chatService,
-		state:          NewStateService(sessions, builder),
-		sessions:       NewSessionService(sessions, sessionStore, builder),
-		sessionSource:  sessions,
-		approvals:      NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
-		choices:        NewChoiceService(runtime, sessions),
-		settings:       settingsService,
-		hosts:          NewHostServiceWithOptions(sessionStore, cfg.hosts, builder, hostBootstrap, WithHostServiceSSHPasswordStore(sshPasswordStore)),
-		hostAgents:     NewHostAgentService(cfg.hosts),
-		mcps:           NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
-		profiles:       NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
-		auth:           authService,
-		terminal:       NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
-		uiCards:        uiCards,
-		coroot:         cfg.coroot,
-		agentEvents:    agentEvents,
-		incidents:      incidentService,
-		chatArchive:    chatArchiveService,
-		postmortems:    NewPostmortemService(incidentService),
-		corootWebhooks: NewCorootWebhookService(incidentService, chatService),
-		runbooks:       NewRunbookService("", nil),
-		opsgraph:       firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
-		erp:            NewERPContextService(),
-		changes:        NewChangeContextService(),
-		opsManuals:     opsManualService,
-		toolSpills:     cfg.toolResultSpills,
-		hostOps:        hostOpsService,
-		terminalPolicy: cfg.terminalPolicy,
-		capabilities:   NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
+		chat:            chatService,
+		state:           NewStateService(sessions, builder),
+		sessions:        NewSessionService(sessions, sessionStore, builder),
+		sessionSource:   sessions,
+		approvals:       NewApprovalServiceWithContext(cfg.lifecycleContext, runtime, sessions, builder),
+		choices:         NewChoiceService(runtime, sessions),
+		settings:        settingsService,
+		runtimeSettings: runtimeSettingsProvider,
+		hosts:           NewHostServiceWithOptions(sessionStore, cfg.hosts, builder, hostBootstrap, WithHostServiceSSHPasswordStore(sshPasswordStore), WithHostServiceHostAgentTokenStore(tokenStore)),
+		hostAgents:      NewHostAgentService(cfg.hosts),
+		mcps:            NewMCPServiceWithRuntime(cfg.mcps, registry, cfg.mcpRuntime),
+		profiles:        NewAgentProfileService(newAgentProfileRepositories(cfg.skills, cfg.agentMCP, cfg.profiles), WithAgentProfilePluginSpecs(cfg.pluginSpecs)),
+		auth:            authService,
+		terminal:        NewTerminalServiceWithCredentialResolver(cfg.terminal, cfg.credentialResolver, cfg.hosts),
+		uiCards:         uiCards,
+		coroot:          cfg.coroot,
+		agentEvents:     agentEvents,
+		incidents:       incidentService,
+		chatArchive:     chatArchiveService,
+		postmortems:     NewPostmortemService(incidentService),
+		corootWebhooks:  NewCorootWebhookService(incidentService, chatService),
+		runbooks:        NewRunbookService("", nil),
+		opsgraph:        firstNonNilOpsGraphService(cfg.opsgraph, NewOpsGraphService("")),
+		erp:             NewERPContextService(),
+		changes:         NewChangeContextService(),
+		opsManuals:      opsManualService,
+		toolSpills:      cfg.toolResultSpills,
+		hostOps:         hostOpsService,
+		terminalPolicy:  cfg.terminalPolicy,
+		capabilities:    NewCapabilityService(cfg.skills, cfg.agentMCP, cfg.pluginSpecs),
 	}
 }
 
@@ -564,7 +579,16 @@ func (s *Services) SessionSource() SessionSource     { return s.sessionSource }
 func (s *Services) ApprovalService() ApprovalService { return s.approvals }
 func (s *Services) ChoiceService() ChoiceService     { return s.choices }
 func (s *Services) SettingsService() SettingsService { return s.settings }
-func (s *Services) HostService() HostService         { return s.hosts }
+func (s *Services) RuntimeSettingsProvider() RuntimeSettingsProvider {
+	if s.runtimeSettings != nil {
+		return s.runtimeSettings
+	}
+	if provider, ok := s.settings.(RuntimeSettingsProvider); ok {
+		return provider
+	}
+	return nil
+}
+func (s *Services) HostService() HostService { return s.hosts }
 func (s *Services) HostAgentService() HostAgentService {
 	return s.hostAgents
 }
@@ -732,6 +756,7 @@ type HostSummary struct {
 	Kind                string            `json:"kind,omitempty"`
 	Address             string            `json:"address,omitempty"`
 	Transport           string            `json:"transport,omitempty"`
+	ConnectionMode      string            `json:"connectionMode,omitempty"`
 	Executable          bool              `json:"executable,omitempty"`
 	TerminalCapable     bool              `json:"terminalCapable,omitempty"`
 	OS                  string            `json:"os,omitempty"`
@@ -748,6 +773,7 @@ type HostSummary struct {
 	SSHPort             int               `json:"sshPort,omitempty"`
 	SSHCredentialRef    string            `json:"sshCredentialRef,omitempty"`
 	AgentURL            string            `json:"agentUrl,omitempty"`
+	AgentServerURL      string            `json:"agentServerUrl,omitempty"`
 	AgentTokenRef       string            `json:"agentTokenRef,omitempty"`
 	InstallState        string            `json:"installState,omitempty"`
 	InstallRunID        string            `json:"installRunId,omitempty"`
@@ -930,12 +956,63 @@ type WebSettingsPayload struct {
 	Models          []store.SettingModelOption `json:"models,omitempty"`
 }
 
+type RuntimeSettingsPayload struct {
+	Settings            store.RuntimeSettings `json:"settings"`
+	Defaults            store.RuntimeSettings `json:"defaults"`
+	RestartRequiredKeys []string              `json:"restartRequiredKeys"`
+	UpdatedAt           string                `json:"updatedAt,omitempty"`
+}
+
+type RuntimeSettingsUpdate struct {
+	AgentRuntime *RuntimeAgentSettingsUpdate     `json:"agentRuntime,omitempty"`
+	Tooling      *RuntimeToolingSettingsUpdate   `json:"tooling,omitempty"`
+	Workflow     *RuntimeWorkflowSettingsUpdate  `json:"workflow,omitempty"`
+	OpsManual    *RuntimeOpsManualSettingsUpdate `json:"opsManual,omitempty"`
+	Debug        *RuntimeDebugSettingsUpdate     `json:"debug,omitempty"`
+	PublicWeb    *RuntimePublicWebSettingsUpdate `json:"publicWeb,omitempty"`
+}
+
+type RuntimeAgentSettingsUpdate struct {
+	IntentFrameRouting *string `json:"intentFrameRouting,omitempty"`
+	DiagnosticProtocol *bool   `json:"diagnosticProtocol,omitempty"`
+}
+
+type RuntimeToolingSettingsUpdate struct {
+	ReadOnlyRetryEnabled       *bool `json:"readOnlyRetryEnabled,omitempty"`
+	ReadOnlyRetryMaxPerCall    *int  `json:"readOnlyRetryMaxPerCall,omitempty"`
+	ReadOnlyRetryMaxPerTurn    *int  `json:"readOnlyRetryMaxPerTurn,omitempty"`
+	ReadOnlyRetryBackoffBaseMs *int  `json:"readOnlyRetryBackoffBaseMs,omitempty"`
+	ReadOnlyRetryBackoffMaxMs  *int  `json:"readOnlyRetryBackoffMaxMs,omitempty"`
+}
+
+type RuntimeWorkflowSettingsUpdate struct {
+	ReferenceGuardMode *string `json:"referenceGuardMode,omitempty"`
+	ValidationProvider *string `json:"validationProvider,omitempty"`
+	ValidationImage    *string `json:"validationImage,omitempty"`
+}
+
+type RuntimeOpsManualSettingsUpdate struct {
+	AutoRetrieval *bool `json:"autoRetrieval,omitempty"`
+}
+
+type RuntimeDebugSettingsUpdate struct {
+	ModelInputTrace      *bool `json:"modelInputTrace,omitempty"`
+	FinalState           *bool `json:"finalState,omitempty"`
+	TransportProjection  *bool `json:"transportProjection,omitempty"`
+	TranscriptProjection *bool `json:"transcriptProjection,omitempty"`
+}
+
+type RuntimePublicWebSettingsUpdate struct {
+	Enabled *bool `json:"enabled,omitempty"`
+}
+
 type LLMConfigView struct {
 	Provider         string   `json:"provider,omitempty"`
 	Model            string   `json:"model,omitempty"`
 	BaseURL          string   `json:"baseURL,omitempty"`
 	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	RequestTimeoutMs int      `json:"requestTimeoutMs,omitempty"`
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"topP,omitempty"`
 	ThinkingType     string   `json:"thinkingType,omitempty"`
@@ -956,6 +1033,7 @@ type LLMConfigUpdate struct {
 	BaseURL          string   `json:"baseURL,omitempty"`
 	MaxContextTokens int      `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
+	RequestTimeoutMs int      `json:"requestTimeoutMs,omitempty"`
 	Temperature      *float64 `json:"temperature,omitempty"`
 	TopP             *float64 `json:"topP,omitempty"`
 	ThinkingType     string   `json:"thinkingType,omitempty"`
@@ -973,6 +1051,7 @@ type LLMConfigUpdateResult struct {
 	Error            string `json:"error,omitempty"`
 	MaxContextTokens int    `json:"maxContextTokens,omitempty"`
 	MaxOutputTokens  int    `json:"maxOutputTokens,omitempty"`
+	RequestTimeoutMs int    `json:"requestTimeoutMs,omitempty"`
 }
 
 type HostUpsert struct {
@@ -984,12 +1063,17 @@ type HostUpsert struct {
 	SSHCredentialRef string            `json:"sshCredentialRef"`
 	SSHPassword      string            `json:"sshPassword,omitempty"`
 	AgentVersion     string            `json:"agentVersion"`
+	ConnectionMode   string            `json:"connectionMode,omitempty"`
+	AgentURL         string            `json:"agentUrl,omitempty"`
+	AgentServerURL   string            `json:"agentServerUrl,omitempty"`
 	Labels           map[string]string `json:"labels"`
 	InstallViaSSH    bool              `json:"installViaSsh"`
 }
 
 type HostInstallRequest struct {
 	AgentVersion     string `json:"agentVersion"`
+	ConnectionMode   string `json:"connectionMode,omitempty"`
+	AgentServerURL   string `json:"agentServerUrl,omitempty"`
 	SSHCredentialRef string `json:"sshCredentialRef"`
 	SSHPassword      string `json:"sshPassword,omitempty"`
 	Force            bool   `json:"force"`
@@ -1007,6 +1091,14 @@ type HostSSHTestResponse struct {
 	Arch     string `json:"arch,omitempty"`
 	Sudo     string `json:"sudo,omitempty"`
 	Message  string `json:"message,omitempty"`
+}
+
+type HostNodeDiagnosticsResponse struct {
+	Status      string         `json:"status"`
+	HostID      string         `json:"hostId"`
+	AgentURL    string         `json:"agentUrl,omitempty"`
+	Diagnostics map[string]any `json:"diagnostics,omitempty"`
+	Error       string         `json:"error,omitempty"`
 }
 
 type HostAgentRegisterRequest struct {
@@ -1350,6 +1442,8 @@ type SettingsService interface {
 	UpdateSettings(ctx context.Context, payload WebSettingsPayload) (WebSettingsPayload, error)
 	GetLLMConfig(ctx context.Context) (LLMConfigView, error)
 	UpdateLLMConfig(ctx context.Context, payload LLMConfigUpdate) (LLMConfigUpdateResult, error)
+	GetRuntimeSettings(ctx context.Context) (RuntimeSettingsPayload, error)
+	UpdateRuntimeSettings(ctx context.Context, payload RuntimeSettingsUpdate) (RuntimeSettingsPayload, error)
 }
 
 type HostService interface {
@@ -1358,6 +1452,7 @@ type HostService interface {
 	UpdateHost(ctx context.Context, hostID string, payload HostUpsert) (HostMutationResponse, error)
 	InstallHost(ctx context.Context, hostID string, payload HostInstallRequest) (HostMutationResponse, error)
 	TestHostSSH(ctx context.Context, hostID string, payload HostSSHTestRequest) (HostSSHTestResponse, error)
+	DiagnoseHostNode(ctx context.Context, hostID string) (HostNodeDiagnosticsResponse, error)
 	DeleteHost(ctx context.Context, hostID string) error
 	SelectHost(ctx context.Context, hostID string) (StateSnapshot, error)
 }

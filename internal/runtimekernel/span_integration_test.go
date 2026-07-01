@@ -540,6 +540,9 @@ func newTestKernelWithSpanSource(spanSource SpanStreamSource) *RuntimeKernel {
 		Projector:   emitter,
 		ModelRouter: router,
 		SpanSource:  spanSource,
+		DebugConfig: func(context.Context) RuntimeDebugConfig {
+			return runtimeDebugConfigForLegacyTraceTest()
+		},
 	})
 }
 
@@ -563,6 +566,9 @@ func newTestKernelWithSpanSourceAndCompiler(spanSource SpanStreamSource, compile
 		Projector:   emitter,
 		ModelRouter: router,
 		SpanSource:  spanSource,
+		DebugConfig: func(context.Context) RuntimeDebugConfig {
+			return runtimeDebugConfigForLegacyTraceTest()
+		},
 	})
 }
 

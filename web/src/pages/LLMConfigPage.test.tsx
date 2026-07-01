@@ -38,6 +38,7 @@ describe("LLMConfigPage", () => {
             model: "gpt-5.4",
             maxContextTokens: 200000,
             maxOutputTokens: 20000,
+            requestTimeoutMs: 25000,
             reasoningEffort: "medium",
             bifrostActive: true,
             apiKeySet: true,
@@ -102,6 +103,7 @@ describe("LLMConfigPage", () => {
       baseURL: "https://api.deepseek.com",
       maxContextTokens: 1000000,
       maxOutputTokens: 20000,
+      requestTimeoutMs: 25000,
       thinkingType: "enabled",
       reasoningEffort: "high",
       temperature: 1,
@@ -111,9 +113,31 @@ describe("LLMConfigPage", () => {
     expect(body).not.toHaveProperty("toolStream");
   });
 
+  it("loads and saves request timeout with a 300000 ms fallback for invalid input", async () => {
+    await renderPage();
+
+    const timeoutInput = inputByTestId("llm-request-timeout-ms-input");
+    expect(timeoutInput.value).toBe("25000");
+    expect(timeoutInput.min).toBe("1");
+
+    await changeInput(timeoutInput, "invalid");
+    await click(container.querySelector('[data-testid="llm-save-button"]') as HTMLButtonElement);
+
+    const putCall = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.find((call) => (call[1] as RequestInit | undefined)?.method === "PUT");
+    expect(putCall).toBeTruthy();
+    const body = JSON.parse(String((putCall?.[1] as RequestInit).body));
+    expect(body.requestTimeoutMs).toBe(300000);
+  });
+
   function selectByTestId(testId: string) {
     const element = container.querySelector(`[data-testid="${testId}"]`) as HTMLSelectElement | null;
     if (!element) throw new Error(`missing select ${testId}`);
+    return element;
+  }
+
+  function inputByTestId(testId: string) {
+    const element = container.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement | null;
+    if (!element) throw new Error(`missing input ${testId}`);
     return element;
   }
 });
@@ -128,6 +152,14 @@ async function changeSelect(select: HTMLSelectElement, value: string) {
   await act(async () => {
     select.value = value;
     select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await flushReact();
+}
+
+async function changeInput(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    input.value = value;
+    input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await flushReact();
 }

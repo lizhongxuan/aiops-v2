@@ -20,7 +20,7 @@ type RawPayloadRef struct {
 func WriteRawPayloadRef(root, id, kind string, payload any) (RawPayloadRef, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		root = defaultTraceDocumentV2Root()
+		root = DefaultRootDir("")
 	}
 	id = safeTraceDocumentV2Name(firstNonEmptyTraceV2(id, kind, "raw-payload"))
 	kind = strings.TrimSpace(kind)

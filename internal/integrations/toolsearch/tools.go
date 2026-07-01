@@ -31,7 +31,7 @@ var inputSchema = json.RawMessage(`{
 		"forbidden_caps": {"type": "array", "items": {"type": "string"}, "description": "Capabilities that search results must not require"},
 		"risk_level": {"type": "string", "description": "Maximum acceptable risk level for this search, for example low, medium, high, or critical"},
 		"environment_facts": {"type": "array", "items": {"type": "string"}, "description": "Known environment facts used only for ranking and traceability"},
-		"query": {"type": "string", "description": "Natural language description of the deferred MCP or dynamic operational tool needed"},
+		"query": {"type": "string", "description": "Natural language description of the deferred MCP or dynamic operational tool needed. Not for public web, official documentation, middleware knowledge, or checking whether web_search exists."},
 		"limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "Maximum number of matches to return"},
 		"includeLoaded": {"type": "boolean", "description": "Whether already loaded/currently visible tools should be included in search output for diagnostics"},
 		"include_unavailable": {"type": "boolean", "description": "Include unavailable MCP candidates as non-selectable search results"},
@@ -244,7 +244,7 @@ func NewToolSearchTool(provider tooling.ToolCatalogProvider) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
 			Name:        "tool_search",
-			Description: "Search deferred MCP and dynamic operational tools with BM25 by name, description, domain, schema, and governance metadata",
+			Description: "Discover deferred MCP or dynamic operational tools that are not currently exposed in the tool surface. Do not use for public web search, official documentation, knowledge lookup, middleware semantics, checking whether web_search exists, or current host facts.",
 			Origin:      tooling.ToolOriginMeta,
 			Layer:       tooling.ToolLayerCore,
 			AlwaysLoad:  true,
@@ -572,7 +572,7 @@ func selectTools(catalog []tooling.Tool, req searchInput) searchOutput {
 			continue
 		}
 		meta := tool.Metadata()
-		if tooling.ToolHiddenFromDiscovery(meta) {
+		if tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolExcludedFromDeferredDiscovery(meta) {
 			continue
 		}
 		toolsByName[meta.Name] = tool
@@ -872,7 +872,7 @@ func buildToolSearchIndexEntries(catalog []tooling.Tool, req searchInput) []tool
 			continue
 		}
 		meta := candidate.Metadata()
-		if tooling.ToolHiddenFromDiscovery(meta) {
+		if tooling.ToolHiddenFromDiscovery(meta) || tooling.ToolExcludedFromDeferredDiscovery(meta) {
 			continue
 		}
 		if !req.IncludeLoaded && !toolSearchDeferredCandidate(meta) {

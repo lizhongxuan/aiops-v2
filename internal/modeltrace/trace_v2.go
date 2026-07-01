@@ -1,6 +1,8 @@
 package modeltrace
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,6 +28,7 @@ type TraceDocumentV2 struct {
 	ToolSurface        any                  `json:"toolSurface,omitempty"`
 	Prompt             Prompt               `json:"prompt,omitempty"`
 	ModelInput         any                  `json:"modelInput,omitempty"`
+	LLMRequests        []any                `json:"llmRequests,omitempty"`
 	PromptInputTrace   any                  `json:"promptInputTrace,omitempty"`
 	PromptInputDiff    any                  `json:"promptInputDiff,omitempty"`
 	DiagnosticTrace    any                  `json:"diagnosticTrace,omitempty"`
@@ -43,7 +46,7 @@ type ProviderRequestTrace struct {
 func WriteTraceDocumentV2(root string, doc TraceDocumentV2) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		root = defaultTraceDocumentV2Root()
+		root = DefaultRootDir("")
 	}
 	if doc.SchemaVersion == "" {
 		doc.SchemaVersion = TraceDocumentV2SchemaVersion
@@ -75,6 +78,58 @@ func WriteTraceDocumentV2(root string, doc TraceDocumentV2) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func WriteTraceDocumentV2FromRequest(req Request) (string, error) {
+	return WriteTraceDocumentV2FromRequestWithConfig(DefaultConfig(), req)
+}
+
+func WriteTraceDocumentV2FromRequestWithConfig(cfg Config, req Request) (string, error) {
+	cfg = normalizeConfig(cfg)
+	if !cfg.Enabled {
+		return "", nil
+	}
+	root, err := traceDirectory(cfg.RootDir, req)
+	if err != nil {
+		return "", err
+	}
+	metadata := redactStringMap(copyStringMap(req.Metadata))
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	if kind := strings.TrimSpace(req.Kind); kind != "" {
+		metadata["kind"] = kind
+	}
+	if traceID := strings.TrimSpace(req.TraceID); traceID != "" {
+		metadata["traceId"] = traceID
+	}
+	if caseID := firstNonEmptyTraceV2(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]); caseID != "" {
+		metadata["caseId"] = caseID
+	}
+	doc := TraceDocumentV2{
+		SchemaVersion:     TraceDocumentV2SchemaVersion,
+		SessionID:         firstNonEmptyTraceV2(req.SessionID, req.Kind, "session"),
+		TurnID:            firstNonEmptyTraceV2(req.TurnID, req.TraceID, req.Kind, "turn"),
+		Iteration:         req.Iteration,
+		Metadata:          metadata,
+		VisibleTools:      append([]string(nil), req.VisibleTools...),
+		PromptFingerprint: copyStringMap(req.PromptFingerprint),
+		Prompt:            redactPrompt(req.Prompt),
+		ModelInput:        req.ModelInput,
+		StepContext: map[string]any{
+			"modelInput": req.ModelInput,
+		},
+		PromptInputTrace:   req.PromptInputTrace,
+		PromptInputDiff:    req.PromptInputDiff,
+		FinalEvidenceState: req.FinalEvidenceState,
+	}
+	if len(req.ModelInput) > 0 {
+		doc.ProviderRequest.ModelInputHash = stableTraceV2Hash(req.ModelInput)
+	}
+	if !diagnosticTraceEmpty(req.DiagnosticTrace) {
+		doc.DiagnosticTrace = req.DiagnosticTrace
+	}
+	return WriteTraceDocumentV2(root, doc)
 }
 
 func traceDocumentV2FileName(doc TraceDocumentV2) string {
@@ -153,18 +208,16 @@ func writeTraceDocumentV2JSONBlock(b *strings.Builder, value any) {
 	b.WriteString("\n```\n\n")
 }
 
-func defaultTraceDocumentV2Root() string {
-	root := strings.TrimSpace(os.Getenv(DirEnv))
-	if root == "" {
-		root = filepath.Join(".data", "model-input-traces")
-	}
-	return root
+func stableTraceV2Hash(value any) string {
+	data, _ := json.Marshal(value)
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func TraceDocumentV2Directory(root, sessionID, turnID string) string {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		root = defaultTraceDocumentV2Root()
+		root = DefaultRootDir("")
 	}
 	sessionID = safeTraceDocumentV2Name(firstNonEmptyTraceV2(sessionID, "session"))
 	turnID = safeTraceDocumentV2Name(firstNonEmptyTraceV2(turnID, "turn"))

@@ -937,6 +937,7 @@ function buildLlmRequestDetail(source, metadata, requestBody, messages, layers, 
     payload.response,
     layerContent(layers, "assistant"),
   );
+  const hasOutput = Boolean(compactText(output));
   const error = firstText(source.error, source.errorMessage, source.error_message, metadata.error, payload.error, payload.errorMessage);
   const metrics = {
     durationMs: firstFiniteNumber(source.durationMs, source.duration_ms, source.latencyMs, source.latency_ms, source.elapsedMs, source.elapsed_ms, metadata.durationMs, metadata.duration_ms),
@@ -955,6 +956,7 @@ function buildLlmRequestDetail(source, metadata, requestBody, messages, layers, 
     toolMessages: redactOrEmpty(toolMessages, DETAIL_EMPTY_TEXT.toolMessages),
     retrievalContext: redactOrEmpty(retrievalContext, DETAIL_EMPTY_TEXT.retrievalContext),
     output: redactOrEmpty(output, DETAIL_EMPTY_TEXT.output),
+    hasOutput,
     error: redactOrEmpty(error, DETAIL_EMPTY_TEXT.error),
     tokens: formatUsage(source.usage || metadata.usage || payload.usage || requestBody?.usage),
     duration: formatDuration(firstText(source.durationMs, source.duration_ms, source.latencyMs, source.latency_ms, source.elapsedMs, source.elapsed_ms, metadata.durationMs, metadata.duration_ms)),
@@ -1014,6 +1016,27 @@ function collectToolCalls(payload = {}) {
     ...collectionToRecords(payload.toolCalls, "id"),
     ...collectionToRecords(payload.metadata?.toolCalls, "id"),
   ];
+
+  const llmRequests = [
+    ...collectionToRecords(payload.llmRequests, "id"),
+    ...collectionToRecords(payload.llm_requests, "id"),
+    ...collectionToRecords(payload.modelRequests, "id"),
+    ...collectionToRecords(payload.model_requests, "id"),
+    ...collectionToRecords(payload.metadata?.llmRequests, "id"),
+    ...collectionToRecords(payload.metadata?.llm_requests, "id"),
+  ];
+  for (const llmRequest of llmRequests) {
+    const llmRequestId = firstText(pickFromSource(llmRequest, LLM_REQUEST_ID_KEYS), llmRequest.id);
+    for (const toolCall of [
+      ...collectionToRecords(llmRequest.toolCalls, "id"),
+      ...collectionToRecords(llmRequest.tool_calls, "id"),
+    ]) {
+      records.push({
+        ...toolCall,
+        llmRequestId: pickFromSource(toolCall, LLM_REQUEST_ID_KEYS) || llmRequestId,
+      });
+    }
+  }
 
   for (const message of Array.isArray(payload.modelInput) ? payload.modelInput : []) {
     const messageLlmRequestId = pickFromSource(message, LLM_REQUEST_ID_KEYS);

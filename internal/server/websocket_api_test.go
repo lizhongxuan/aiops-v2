@@ -567,6 +567,66 @@ func TestAppWebSocket_PushesTerminalSnapshotAfterTerminalAgentEvent(t *testing.T
 	}
 }
 
+func TestAppSnapshotBroadcasterBroadcastsLatestOnRuntimeTurnError(t *testing.T) {
+	sessionMgr := runtimekernel.NewSessionManager()
+	session := sessionMgr.GetOrCreate("", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-runtime-error-broadcast",
+		SessionID:   session.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+	session.ActiveTurn = runtimekernel.ActiveTurnState{
+		TurnID: "turn-runtime-error-broadcast",
+		Kind:   "regular",
+		Status: string(runtimekernel.TurnLifecycleRunning),
+	}
+	sessionMgr.Update(session)
+	services := appui.NewServices(websocketAPITestRuntime{}, sessionMgr)
+	httpServer := NewHTTPServer(services, WithAppWebSocketHeartbeat(time.Hour))
+	ch, unsubscribe := httpServer.appSnapshots.Subscribe()
+	defer unsubscribe()
+
+	failedAt := now.Add(time.Second)
+	session.CurrentTurn.Lifecycle = runtimekernel.TurnLifecycleFailed
+	session.CurrentTurn.Error = "model provider timeout"
+	session.CurrentTurn.UpdatedAt = failedAt
+	session.CurrentTurn.CompletedAt = &failedAt
+	session.ActiveTurn = runtimekernel.ActiveTurnState{
+		TurnID: "turn-runtime-error-broadcast",
+		Kind:   "regular",
+		Status: string(runtimekernel.TurnLifecycleFailed),
+	}
+	sessionMgr.Update(session)
+
+	receiver, ok := httpServer.ProjectionSubscriber().(projection.TurnLifecycleSubscriber)
+	if !ok {
+		t.Fatal("projection subscriber does not handle runtime lifecycle events")
+	}
+	receiver.OnRuntimeLifecycleEvent(runtimekernel.LifecycleEvent{
+		Type:      runtimekernel.EventTurnError,
+		SessionID: session.ID,
+		TurnID:    "turn-runtime-error-broadcast",
+		Timestamp: failedAt,
+	})
+
+	select {
+	case snapshot := <-ch:
+		if snapshot.Runtime.Turn.Active || snapshot.Runtime.Turn.Phase != "failed" {
+			t.Fatalf("runtime.turn = %+v, want inactive failed", snapshot.Runtime.Turn)
+		}
+		if snapshot.AgentEventProjection == nil || snapshot.AgentEventProjection.Status != "failed" {
+			t.Fatalf("agent event projection = %+v, want failed", snapshot.AgentEventProjection)
+		}
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for runtime turn error snapshot broadcast")
+	}
+}
+
 func TestAppWebSocket_ResubscribesAgentEventsWhenSnapshotSessionChanges(t *testing.T) {
 	sessionMgr := runtimekernel.NewSessionManager()
 	services := appui.NewServices(websocketAPITestRuntime{}, sessionMgr)

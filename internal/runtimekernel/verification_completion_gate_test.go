@@ -142,8 +142,7 @@ func TestParseVerificationReportJSONIgnoresGenericStatusPayload(t *testing.T) {
 
 func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{
@@ -267,6 +266,113 @@ func TestRunTurnVerificationCompletionGateRetriesProseApprovalForScopedMutation(
 	}
 	if prompt := verificationCompletionGateRetryPrompt(decision); !strings.Contains(prompt, "Do not ask for approval in prose") {
 		t.Fatalf("retry prompt missing runtime approval instruction:\n%s", prompt)
+	}
+}
+
+func TestRunTurnVerificationCompletionGateConvertsInstallProseApprovalIntoRuntimeApproval(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-nginx-check",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"which","args":["nginx"]}`,
+			},
+		}}),
+		schema.AssistantMessage("当前 nginx 未安装。是否批准执行 yum install -y nginx？请确认后我立即执行。", nil),
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-nginx-install",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "exec_command",
+				Arguments: `{"command":"yum","args":["install","-y","nginx"]}`,
+			},
+		}}),
+	}}
+	executed := 0
+	tool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "exec_command", Description: "synthetic host command"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc: func(input json.RawMessage) bool {
+			return !strings.Contains(string(input), `"command":"yum"`)
+		},
+		ConcurrencySafeFunc: func(input json.RawMessage) bool {
+			return !strings.Contains(string(input), `"command":"yum"`)
+		},
+		CheckPermissionsFunc: func(_ context.Context, input json.RawMessage) tooling.PermissionDecision {
+			if strings.Contains(string(input), `"command":"yum"`) {
+				return tooling.PermissionDecision{
+					Action: tooling.PermissionActionNeedApproval,
+					Reason: "installing nginx on a bound host requires explicit approval",
+					Approval: &tooling.PermissionApprovalPayload{
+						Command:        "yum install -y nginx",
+						Reason:         "Install nginx on host-a",
+						Risk:           "medium",
+						Source:         "host_bound_ops",
+						ExpectedEffect: "nginx package is installed",
+						Validation:     "which nginx && rpm -qa nginx",
+					},
+				}
+			}
+			return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+		},
+		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
+			if strings.Contains(string(input), `"command":"yum"`) {
+				t.Fatal("mutating install command executed before approval")
+			}
+			executed++
+			return tooling.ToolResult{Content: `{"schemaVersion":"aiops.terminal/v1","status":"ok","command":"which nginx","stdout":"","exitCode":1}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-install-prose-approval",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		TurnID:      "turn-install-prose-approval",
+		Input:       "在 @host-a 上安装一个 nginx",
+		Metadata: map[string]string{
+			"taskDepth":                       string(taskdepth.LevelSimpleRead),
+			"aiops.route.mode":                "host_bound_ops",
+			"aiops.route.allowsExecCommand":   "true",
+			"aiops.route.requiresHostBinding": "true",
+			"aiops.tool.execCommandAllowed":   "true",
+			"aiops.tool.hostMutationAllowed":  "true",
+			"aiops.target.binding":            "host",
+			"aiops.target.hostId":             "host-a",
+			"aiops.target.refs":               "host:host-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	if result.Status != "blocked" {
+		t.Fatalf("result status = %q, want blocked runtime approval", result.Status)
+	}
+	session := kernel.sessions.Get("sess-install-prose-approval")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing session turn: %#v", session)
+	}
+	if executed != 1 {
+		t.Fatalf("read-only checks executed = %d, want exactly one pre-approval check", executed)
+	}
+	if len(model.inputs) != 3 {
+		t.Fatalf("model calls = %d, want prose approval retried into tool call", len(model.inputs))
+	}
+	if session.CurrentTurn.ResumeState != TurnResumeStatePendingApproval {
+		t.Fatalf("resume state = %q, want pending approval", session.CurrentTurn.ResumeState)
+	}
+	if len(session.PendingApprovals) != 1 {
+		t.Fatalf("pending approvals = %d, want 1", len(session.PendingApprovals))
+	}
+	if got := session.PendingApprovals[0].Command; got != "yum install -y nginx" {
+		t.Fatalf("pending approval command = %q, want yum install -y nginx", got)
+	}
+	if got := session.CurrentTurn.Metadata[verificationCompletionGateRetryMetadataKey]; got != "1" {
+		t.Fatalf("completion gate retry metadata = %q, want 1", got)
 	}
 }
 
@@ -440,8 +546,7 @@ func TestRunTurnVerificationCompletionGateCompletesEvidenceBackedStatusAnswer(t 
 
 func TestRunTurnVerificationCompletionGateAllowsPassReport(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{

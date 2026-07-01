@@ -14,8 +14,7 @@ import (
 
 func TestRunTurnPlanCompletionGateBlocksSuccessFinalWithPendingPlan(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{

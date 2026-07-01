@@ -3,6 +3,8 @@ package appui
 import (
 	"context"
 	"strings"
+	"sync"
+	"time"
 
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/modelrouter"
@@ -10,8 +12,11 @@ import (
 )
 
 type defaultSettingsService struct {
-	repo        SettingsRepository
-	authManager *auth.Manager
+	repo             SettingsRepository
+	authManager      *auth.Manager
+	runtimeMu        sync.RWMutex
+	runtimeSettings  store.RuntimeSettings
+	runtimeListeners []func(store.RuntimeSettings)
 }
 
 func NewSettingsService(repo SettingsRepository, managers ...*auth.Manager) SettingsService {
@@ -19,13 +24,61 @@ func NewSettingsService(repo SettingsRepository, managers ...*auth.Manager) Sett
 	if len(managers) > 0 {
 		manager = managers[0]
 	}
-	service := &defaultSettingsService{repo: repo, authManager: manager}
+	service := &defaultSettingsService{
+		repo:            repo,
+		authManager:     manager,
+		runtimeSettings: store.DefaultRuntimeSettings(),
+	}
+	if repo != nil {
+		if runtimeSettings, err := repo.GetRuntimeSettings(); err == nil && runtimeSettings != nil {
+			service.runtimeSettings = store.NormalizeRuntimeSettings(*runtimeSettings)
+		}
+	}
 	if repo != nil && manager != nil {
 		if cfg, err := repo.GetLLMConfig(); err == nil {
 			service.syncAuthFromLLMConfig(context.Background(), cfg)
 		}
 	}
 	return service
+}
+
+type RuntimeSettingsProvider interface {
+	Snapshot(ctx context.Context) store.RuntimeSettings
+}
+
+type RuntimeSettingsListenerRegistrar interface {
+	AddRuntimeSettingsListener(listener func(store.RuntimeSettings))
+}
+
+func (s *defaultSettingsService) Snapshot(context.Context) store.RuntimeSettings {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return store.NormalizeRuntimeSettings(s.runtimeSettings)
+}
+
+func (s *defaultSettingsService) setRuntimeSnapshot(settings store.RuntimeSettings) {
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.runtimeSettings = store.NormalizeRuntimeSettings(settings)
+}
+
+func (s *defaultSettingsService) AddRuntimeSettingsListener(listener func(store.RuntimeSettings)) {
+	if listener == nil {
+		return
+	}
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+	s.runtimeListeners = append(s.runtimeListeners, listener)
+}
+
+func (s *defaultSettingsService) notifyRuntimeSettingsListeners(settings store.RuntimeSettings) {
+	s.runtimeMu.RLock()
+	listeners := append([]func(store.RuntimeSettings){}, s.runtimeListeners...)
+	s.runtimeMu.RUnlock()
+	settings = store.NormalizeRuntimeSettings(settings)
+	for _, listener := range listeners {
+		listener(settings)
+	}
 }
 
 func (s *defaultSettingsService) GetSettings(context.Context) (WebSettingsPayload, error) {
@@ -87,12 +140,118 @@ func (s *defaultSettingsService) UpdateSettings(ctx context.Context, payload Web
 	return s.GetSettings(ctx)
 }
 
+func (s *defaultSettingsService) GetRuntimeSettings(ctx context.Context) (RuntimeSettingsPayload, error) {
+	settings := s.Snapshot(ctx)
+	if s.repo != nil {
+		if current, err := s.repo.GetRuntimeSettings(); err == nil && current != nil {
+			settings = store.NormalizeRuntimeSettings(*current)
+			s.setRuntimeSnapshot(settings)
+		}
+	}
+	return runtimeSettingsPayload(settings), nil
+}
+
+func (s *defaultSettingsService) UpdateRuntimeSettings(ctx context.Context, payload RuntimeSettingsUpdate) (RuntimeSettingsPayload, error) {
+	next := mergeRuntimeSettingsUpdate(s.Snapshot(ctx), payload)
+	next = store.NormalizeRuntimeSettings(next)
+	if s.repo != nil {
+		if err := s.repo.SaveRuntimeSettings(&next); err != nil {
+			return RuntimeSettingsPayload{}, err
+		}
+		if current, err := s.repo.GetRuntimeSettings(); err == nil && current != nil {
+			next = store.NormalizeRuntimeSettings(*current)
+		}
+	}
+	if next.UpdatedAt.IsZero() {
+		next.UpdatedAt = time.Now().UTC()
+	}
+	s.setRuntimeSnapshot(next)
+	s.notifyRuntimeSettingsListeners(next)
+	return runtimeSettingsPayload(next), nil
+}
+
+func runtimeSettingsPayload(settings store.RuntimeSettings) RuntimeSettingsPayload {
+	settings = store.NormalizeRuntimeSettings(settings)
+	updatedAt := ""
+	if !settings.UpdatedAt.IsZero() {
+		updatedAt = settings.UpdatedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return RuntimeSettingsPayload{
+		Settings:            settings,
+		Defaults:            store.DefaultRuntimeSettings(),
+		RestartRequiredKeys: []string{},
+		UpdatedAt:           updatedAt,
+	}
+}
+
+func mergeRuntimeSettingsUpdate(base store.RuntimeSettings, update RuntimeSettingsUpdate) store.RuntimeSettings {
+	next := store.NormalizeRuntimeSettings(base)
+	if update.AgentRuntime != nil {
+		if update.AgentRuntime.IntentFrameRouting != nil {
+			next.AgentRuntime.IntentFrameRouting = strings.TrimSpace(*update.AgentRuntime.IntentFrameRouting)
+		}
+		if update.AgentRuntime.DiagnosticProtocol != nil {
+			next.AgentRuntime.DiagnosticProtocol = *update.AgentRuntime.DiagnosticProtocol
+		}
+	}
+	if update.Tooling != nil {
+		if update.Tooling.ReadOnlyRetryEnabled != nil {
+			next.Tooling.ReadOnlyRetryEnabled = *update.Tooling.ReadOnlyRetryEnabled
+		}
+		if update.Tooling.ReadOnlyRetryMaxPerCall != nil {
+			next.Tooling.ReadOnlyRetryMaxPerCall = *update.Tooling.ReadOnlyRetryMaxPerCall
+		}
+		if update.Tooling.ReadOnlyRetryMaxPerTurn != nil {
+			next.Tooling.ReadOnlyRetryMaxPerTurn = *update.Tooling.ReadOnlyRetryMaxPerTurn
+		}
+		if update.Tooling.ReadOnlyRetryBackoffBaseMs != nil {
+			next.Tooling.ReadOnlyRetryBackoffBaseMs = *update.Tooling.ReadOnlyRetryBackoffBaseMs
+		}
+		if update.Tooling.ReadOnlyRetryBackoffMaxMs != nil {
+			next.Tooling.ReadOnlyRetryBackoffMaxMs = *update.Tooling.ReadOnlyRetryBackoffMaxMs
+		}
+	}
+	if update.Workflow != nil {
+		if update.Workflow.ReferenceGuardMode != nil {
+			next.Workflow.ReferenceGuardMode = strings.TrimSpace(*update.Workflow.ReferenceGuardMode)
+		}
+		if update.Workflow.ValidationProvider != nil {
+			next.Workflow.ValidationProvider = strings.TrimSpace(*update.Workflow.ValidationProvider)
+		}
+		if update.Workflow.ValidationImage != nil {
+			next.Workflow.ValidationImage = strings.TrimSpace(*update.Workflow.ValidationImage)
+		}
+	}
+	if update.OpsManual != nil && update.OpsManual.AutoRetrieval != nil {
+		next.OpsManual.AutoRetrieval = *update.OpsManual.AutoRetrieval
+	}
+	if update.Debug != nil {
+		if update.Debug.ModelInputTrace != nil {
+			next.Debug.ModelInputTrace = *update.Debug.ModelInputTrace
+		}
+		if update.Debug.FinalState != nil {
+			next.Debug.FinalState = *update.Debug.FinalState
+		}
+		if update.Debug.TransportProjection != nil {
+			next.Debug.TransportProjection = *update.Debug.TransportProjection
+		}
+		if update.Debug.TranscriptProjection != nil {
+			next.Debug.TranscriptProjection = *update.Debug.TranscriptProjection
+		}
+	}
+	if update.PublicWeb != nil && update.PublicWeb.Enabled != nil {
+		next.PublicWeb.Enabled = *update.PublicWeb.Enabled
+	}
+	return next
+}
+
 func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, error) {
 	view := LLMConfigView{
 		Provider:         "openai",
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  20000,
+		RequestTimeoutMs: 300000,
 		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 		BifrostActive:    false,
@@ -110,6 +269,7 @@ func (s *defaultSettingsService) GetLLMConfig(context.Context) (LLMConfigView, e
 	view.BaseURL = normalized.BaseURL
 	view.MaxContextTokens = normalized.MaxContextTokens
 	view.MaxOutputTokens = normalized.MaxOutputTokens
+	view.RequestTimeoutMs = normalized.RequestTimeoutMs
 	view.Temperature = cloneFloat64Ptr(normalized.Temperature)
 	view.TopP = cloneFloat64Ptr(normalized.TopP)
 	view.ThinkingType = normalized.ThinkingType
@@ -134,6 +294,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		Model:            "gpt-5.4",
 		MaxContextTokens: 200000,
 		MaxOutputTokens:  20000,
+		RequestTimeoutMs: 300000,
 		ReasoningEffort:  "medium",
 		CompactModel:     "gpt-5.4-mini",
 	}
@@ -181,6 +342,7 @@ func (s *defaultSettingsService) UpdateLLMConfig(ctx context.Context, payload LL
 		Message:          "配置已保存。",
 		MaxContextTokens: next.MaxContextTokens,
 		MaxOutputTokens:  next.MaxOutputTokens,
+		RequestTimeoutMs: next.RequestTimeoutMs,
 	}, nil
 }
 
@@ -201,6 +363,7 @@ func normalizeStoredLLMConfig(cfg *store.LLMConfig) store.LLMConfig {
 			Model:            "gpt-5.4",
 			MaxContextTokens: 200000,
 			MaxOutputTokens:  20000,
+			RequestTimeoutMs: 300000,
 			ReasoningEffort:  "medium",
 		}
 	}
@@ -213,6 +376,7 @@ func normalizeStoredLLMConfig(cfg *store.LLMConfig) store.LLMConfig {
 		BaseURL:          cp.BaseURL,
 		MaxContextTokens: cp.MaxContextTokens,
 		MaxOutputTokens:  cp.MaxOutputTokens,
+		RequestTimeoutMs: cp.RequestTimeoutMs,
 		Temperature:      cp.Temperature,
 		TopP:             cp.TopP,
 		ThinkingType:     cp.ThinkingType,
@@ -276,6 +440,7 @@ func normalizeLLMConfigUpdate(base *store.LLMConfig, payload LLMConfigUpdate) *s
 		outputValue = next.MaxOutputTokens
 	}
 	next.MaxOutputTokens = normalizeLLMMaxOutputTokens(provider, model, outputValue)
+	next.RequestTimeoutMs = normalizeLLMRequestTimeoutMs(firstPositiveLLMConfigInt(payload.RequestTimeoutMs, boolInt(!providerChanged, next.RequestTimeoutMs)))
 	next.ThinkingType = modelrouter.NormalizeThinkingType(provider, firstNonEmpty(payload.ThinkingType, boolString(!providerChanged, next.ThinkingType)))
 	next.ReasoningEffort = normalizeLLMReasoningEffort(provider, model, firstNonEmpty(payload.ReasoningEffort, boolString(!providerChanged, next.ReasoningEffort)))
 	next.ToolStream = normalizeLLMToolStream(provider, payload.ToolStream)
@@ -319,6 +484,16 @@ func normalizeLLMMaxOutputTokens(provider, model string, value int) int {
 	return value
 }
 
+func normalizeLLMRequestTimeoutMs(value int) int {
+	if value <= 0 {
+		return 300000
+	}
+	if value < 1000 {
+		return 1000
+	}
+	return value
+}
+
 func shouldClampLLMConfigToModelPreset(provider string) bool {
 	switch modelrouter.NormalizeProviderID(provider) {
 	case "deepseek", "zhipu":
@@ -355,6 +530,22 @@ func boolString(ok bool, value string) string {
 		return ""
 	}
 	return value
+}
+
+func boolInt(ok bool, value int) int {
+	if !ok {
+		return 0
+	}
+	return value
+}
+
+func firstPositiveLLMConfigInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func normalizeReasoningEffort(value string) string {

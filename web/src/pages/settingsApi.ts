@@ -6,6 +6,8 @@ export const DEFAULT_LLM_CONTEXT_TOKENS = 200000;
 export const MIN_LLM_CONTEXT_TOKENS = 10000;
 export const DEFAULT_LLM_MAX_OUTPUT_TOKENS = 20000;
 export const MIN_LLM_MAX_OUTPUT_TOKENS = 1;
+export const DEFAULT_LLM_REQUEST_TIMEOUT_MS = 300000;
+export const MIN_LLM_REQUEST_TIMEOUT_MS = 1;
 
 function parseResponseBody(text: string, contentType: string) {
   const trimmed = text.trim();
@@ -56,6 +58,7 @@ export type LlmConfigView = {
   baseURL?: string;
   maxContextTokens?: number;
   maxOutputTokens?: number;
+  requestTimeoutMs?: number;
   temperature?: number;
   topP?: number;
   thinkingType?: string;
@@ -70,6 +73,7 @@ export type LlmConfigUpdateResult = {
   error?: string;
   maxContextTokens?: number;
   maxOutputTokens?: number;
+  requestTimeoutMs?: number;
 };
 
 export type LlmConfigUpdate = {
@@ -79,6 +83,7 @@ export type LlmConfigUpdate = {
   baseURL?: string;
   maxContextTokens?: number | string | null;
   maxOutputTokens?: number | string | null;
+  requestTimeoutMs?: number | string | null;
   temperature?: number | string | null;
   topP?: number | string | null;
   thinkingType?: string;
@@ -100,6 +105,13 @@ export function normalizeLlmMaxOutputTokens(value: unknown, cap = Number.MAX_SAF
   const numeric = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(numeric) || numeric <= 0) return Math.min(DEFAULT_LLM_MAX_OUTPUT_TOKENS, normalizedCap);
   return Math.min(Math.max(MIN_LLM_MAX_OUTPUT_TOKENS, Math.trunc(numeric)), normalizedCap);
+}
+
+export function normalizeLlmRequestTimeoutMs(value: unknown) {
+  if (value === undefined || value === null || value === "") return DEFAULT_LLM_REQUEST_TIMEOUT_MS;
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return DEFAULT_LLM_REQUEST_TIMEOUT_MS;
+  return Math.max(MIN_LLM_REQUEST_TIMEOUT_MS, Math.trunc(numeric));
 }
 
 export function normalizeOptionalFloat(value: unknown) {
@@ -136,7 +148,9 @@ export type HostRecord = {
   sshPort?: number | string;
   sshCredentialRef?: string;
   transport?: string;
+  connectionMode?: string;
   agentUrl?: string;
+  agentServerUrl?: string;
   agentTokenRef?: string;
   status?: string;
   agentStatus?: string;
@@ -254,6 +268,7 @@ export function updateLlmConfig(payload: LlmConfigUpdate) {
     ...payload,
     maxContextTokens: normalizeLlmContextTokens(payload.maxContextTokens),
     maxOutputTokens: normalizeLlmMaxOutputTokens(payload.maxOutputTokens),
+    requestTimeoutMs: normalizeLlmRequestTimeoutMs(payload.requestTimeoutMs),
   };
   if (typeof body.apiKey === "string" && body.apiKey.trim() === "") delete body.apiKey;
   const temperature = normalizeOptionalFloat(payload.temperature);
@@ -265,6 +280,77 @@ export function updateLlmConfig(payload: LlmConfigUpdate) {
   return request<LlmConfigUpdateResult>("/api/v1/llm-config", {
     method: "PUT",
     body,
+  });
+}
+
+export type RuntimeAgentSettings = {
+  intentFrameRouting?: "trace_only" | "shadow" | "active" | string;
+  diagnosticProtocol?: boolean;
+};
+
+export type RuntimeToolingSettings = {
+  readOnlyRetryEnabled?: boolean;
+  readOnlyRetryMaxPerCall?: number;
+  readOnlyRetryMaxPerTurn?: number;
+  readOnlyRetryBackoffBaseMs?: number;
+  readOnlyRetryBackoffMaxMs?: number;
+};
+
+export type RuntimeWorkflowSettings = {
+  referenceGuardMode?: "enforce" | "warning" | string;
+  validationProvider?: "static" | "docker" | string;
+  validationImage?: string;
+};
+
+export type RuntimeOpsManualSettings = {
+  autoRetrieval?: boolean;
+};
+
+export type RuntimeDebugSettings = {
+  modelInputTrace?: boolean;
+  finalState?: boolean;
+  transportProjection?: boolean;
+  transcriptProjection?: boolean;
+};
+
+export type RuntimePublicWebSettings = {
+  enabled?: boolean;
+};
+
+export type RuntimeSettingsView = {
+  agentRuntime?: RuntimeAgentSettings;
+  tooling?: RuntimeToolingSettings;
+  workflow?: RuntimeWorkflowSettings;
+  opsManual?: RuntimeOpsManualSettings;
+  debug?: RuntimeDebugSettings;
+  publicWeb?: RuntimePublicWebSettings;
+  updatedAt?: string;
+};
+
+export type RuntimeSettingsPayload = {
+  settings?: RuntimeSettingsView;
+  defaults?: RuntimeSettingsView;
+  restartRequiredKeys?: string[];
+  updatedAt?: string;
+};
+
+export type RuntimeSettingsUpdate = {
+  agentRuntime?: RuntimeAgentSettings;
+  tooling?: RuntimeToolingSettings;
+  workflow?: RuntimeWorkflowSettings;
+  opsManual?: RuntimeOpsManualSettings;
+  debug?: RuntimeDebugSettings;
+  publicWeb?: RuntimePublicWebSettings;
+};
+
+export function fetchRuntimeSettings() {
+  return request<RuntimeSettingsPayload>("/api/v1/runtime-settings");
+}
+
+export function updateRuntimeSettings(payload: RuntimeSettingsUpdate) {
+  return request<RuntimeSettingsPayload>("/api/v1/runtime-settings", {
+    method: "PATCH",
+    body: payload,
   });
 }
 

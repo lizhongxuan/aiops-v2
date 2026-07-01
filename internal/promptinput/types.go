@@ -82,6 +82,9 @@ type PromptInputTrace struct {
 	ToolSurfacePolicySnapshotHash string                                      `json:"toolSurfacePolicySnapshotHash,omitempty"`
 	ToolSurfaceSnapshot           *ToolSurfaceSnapshot                        `json:"toolSurfaceSnapshot,omitempty"`
 	PublicWebBudget               *PublicWebBudgetTrace                       `json:"publicWebBudget,omitempty"`
+	WebSearchPolicy               *WebSearchPolicyTrace                       `json:"webSearchPolicy,omitempty"`
+	WebSearch                     *WebSearchTrace                             `json:"webSearch,omitempty"`
+	Final                         *FinalTrace                                 `json:"final,omitempty"`
 	DeferredToolDirectory         []promptcompiler.DeferredToolDirectoryEntry `json:"deferredToolDirectory,omitempty"`
 	LoadedToolsDelta              []string                                    `json:"loadedToolsDelta,omitempty"`
 	LoadedPacksDelta              []string                                    `json:"loadedPacksDelta,omitempty"`
@@ -143,6 +146,27 @@ type PublicWebBudgetTrace struct {
 	MaxQueriesPerCall     int  `json:"maxQueriesPerCall,omitempty"`
 	MaxResultsPerDomain   int  `json:"maxResultsPerDomain,omitempty"`
 	ExplicitUserRequested bool `json:"explicitUserRequested,omitempty"`
+}
+
+type WebSearchPolicyTrace struct {
+	Level            string   `json:"level,omitempty"`
+	Reason           string   `json:"reason,omitempty"`
+	ReasonCodes      []string `json:"reasonCodes,omitempty"`
+	QuerySeeds       []string `json:"querySeeds,omitempty"`
+	DisabledBy       string   `json:"disabledBy,omitempty"`
+	RequireCitations bool     `json:"requireCitations,omitempty"`
+}
+
+type WebSearchTrace struct {
+	Attempted     bool   `json:"attempted,omitempty"`
+	RetryCount    int    `json:"retryCount,omitempty"`
+	Adapter       string `json:"adapter,omitempty"`
+	SourceCount   int    `json:"sourceCount,omitempty"`
+	FailureReason string `json:"failureReason,omitempty"`
+}
+
+type FinalTrace struct {
+	PublicWebLimitation bool `json:"publicWebLimitation,omitempty"`
 }
 
 type DispatchDecisionTrace struct {

@@ -140,7 +140,7 @@ function statusMeta(status: unknown) {
 export function buildHostTerminalEntry(host: unknown): HostTerminalEntryView {
   const source = isRecord(host) ? host : {};
   const status = text(pick(source, "status", "state")).toLowerCase();
-  if (status !== "online") {
+  if (status !== "online" && status !== "stale") {
     return { canOpenTerminal: false, disabledReason: "主机离线" };
   }
   if (source.terminalCapable === true || source.executable === true) {

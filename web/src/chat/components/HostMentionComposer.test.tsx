@@ -44,7 +44,7 @@ describe("HostMentionComposer", () => {
     expect(container.querySelector('[data-testid="composer-host-list"]')).toBeNull();
     expect(container.querySelector('[data-testid="host-mention-chip-list"]')).toBeNull();
     expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@1.1.1.1");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("1.1.1.1");
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     expect(textarea.value).toBe("这是@1.1.1.1主机,检查pg");
     expect(textarea.className).toContain("text-transparent");
@@ -74,10 +74,68 @@ describe("HostMentionComposer", () => {
     });
 
     expect(container.querySelector('[data-testid="composer-inline-host-overlay"]')).not.toBeNull();
-    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("@pg-a");
+    expect(container.querySelector('[data-testid="composer-inline-host-mention"]')?.textContent).toBe("pg-a");
     const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
     const occurrences = (textarea.value.match(/@pg-a/g) || []).length;
     expect(occurrences).toBe(1);
+  });
+
+  it("uses the raw mention token as the layout anchor so trailing text stays aligned with the caret", async () => {
+    await act(async () => {
+      root.render(
+        <HostMentionComposer
+          value="@1.1.1.1 sdf"
+          mentions={[
+            {
+              tokenId: "hm-1",
+              raw: "@1.1.1.1",
+              value: "1.1.1.1",
+              start: 0,
+              end: 8,
+              source: "ip_literal",
+            },
+          ]}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const mention = container.querySelector('[data-testid="composer-inline-host-mention"]');
+    expect(mention?.getAttribute("data-layout-text")).toBe("@1.1.1.1");
+    expect(mention?.className).toContain("aiops-inline-mention-anchor");
+    const visual = mention?.querySelector('[data-testid="composer-inline-mention-visual"]');
+    expect(visual?.textContent).toBe("1.1.1.1");
+    expect(visual?.className).toContain("max-w-max");
+    expect(container.textContent).toContain(" sdf");
+  });
+
+  it("renders the local alias chip label without truncation in the composer overlay", async () => {
+    await act(async () => {
+      root.render(
+        <HostMentionComposer
+          value="@local"
+          mentions={[
+            {
+              tokenId: "hm-local",
+              raw: "@local",
+              value: "server-local",
+              start: 0,
+              end: 6,
+              source: "local_alias",
+              hostId: "server-local",
+              displayName: "local",
+              resolved: true,
+            },
+          ]}
+          onChange={() => {}}
+        />,
+      );
+    });
+
+    const visual = container.querySelector('[data-testid="composer-inline-mention-visual"]');
+    expect(visual?.textContent).toBe("local");
+    const label = visual?.lastElementChild;
+    expect(label?.className).not.toContain("truncate");
   });
 
   it("keeps every host mention occurrence in plain textarea text without a separate selected-host list", async () => {

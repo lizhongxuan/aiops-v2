@@ -11,6 +11,14 @@ function parseTime(value) {
   return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
+function formatUTCTimestamp(value) {
+  const timestamp = parseTime(value);
+  if (!timestamp) return "";
+  const date = new Date(timestamp);
+  const pad = (part) => String(part).padStart(2, "0");
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())} UTC`;
+}
+
 function resolveSourceLabel(host) {
   const transport = normalizedText(host?.transport);
   if (transport === "local") return "local";
@@ -21,6 +29,7 @@ function resolveSourceLabel(host) {
 
 function resolveHeartbeat(host, now) {
   const status = normalizedText(host?.status);
+  const agentStatus = normalizedText(host?.agentStatus);
   const installState = normalizedText(host?.installState);
   if (installState === "unsupported_platform") {
     return { heartbeat: "unsupported_platform", heartbeatLabel: "不支持的平台", heartbeatTone: "error" };
@@ -31,10 +40,16 @@ function resolveHeartbeat(host, now) {
   if (status === "installing" || status === "pending_install" || installState === "pending_install") {
     return { heartbeat: "installing", heartbeatLabel: "待安装", heartbeatTone: "warning" };
   }
-  if (status === "online") {
+  if (status === "online" || status === "stale" || agentStatus === "online" || agentStatus === "stale") {
     const timestamp = parseTime(host?.lastHeartbeat);
-    if (timestamp && now.getTime() - timestamp > 60_000) {
-      return { heartbeat: "stale", heartbeatLabel: "超时", heartbeatTone: "warning" };
+    if (agentStatus === "stale" || status === "stale" || (timestamp && now.getTime() - timestamp > 60_000)) {
+      const heartbeatAt = formatUTCTimestamp(host?.lastHeartbeat);
+      return {
+        heartbeat: "stale",
+        heartbeatLabel: "超时",
+        heartbeatTone: "warning",
+        heartbeatDetailLabel: heartbeatAt ? `最后心跳 ${heartbeatAt}` : "无心跳记录",
+      };
     }
     return { heartbeat: "online", heartbeatLabel: "在线", heartbeatTone: "success" };
   }
@@ -92,17 +107,8 @@ function matchesFilters(row, filters) {
   return true;
 }
 
-function buildSubtitle({ sourceLabel, version, ip, user }) {
-  const source = version ? `${sourceLabel} ${version}` : sourceLabel;
-  return `${source} · key ${ip}:${user}`;
-}
-
 function fieldText(source, camelKey, snakeKey) {
   return compactText(source?.[camelKey] || (snakeKey ? source?.[snakeKey] : ""));
-}
-
-function buildInstallDetailLabel({ installStep, installRunId }) {
-  return [installStep, installRunId].filter(Boolean).join(" · ");
 }
 
 function formatMemoryBytes(value) {
@@ -178,19 +184,13 @@ export function buildHostListViewModel({
       const installWorkflowId = fieldText(host, "installWorkflowId", "install_workflow_id");
       const installStep = fieldText(host, "installStep", "install_step");
       const lastError = fieldText(host, "lastError", "last_error");
-      const canOpenSsh = heartbeat.heartbeat === "online" && Boolean(host.terminalCapable || host.executable);
+      const canOpenSsh = ["online", "stale"].includes(heartbeat.heartbeat) && Boolean(host.terminalCapable || host.executable);
       return {
         raw: host,
         id,
         ip,
         user,
         title: `${ip} / ${user}`,
-        subtitle: buildSubtitle({
-          sourceLabel,
-          version: compactText(host.agentVersion),
-          ip,
-          user,
-        }),
         ...heartbeat,
         sessionCount: sessionCountByHost.get(id) || 0,
         sourceLabel,
@@ -202,7 +202,6 @@ export function buildHostListViewModel({
         installWorkflowId,
         installStep,
         lastError,
-        installDetailLabel: buildInstallDetailLabel({ installStep, installRunId }),
         canOpenInstallRun: Boolean(installRunId && installWorkflowId),
         canRetryInstall: heartbeat.heartbeat === "install_failed" || heartbeat.heartbeat === "unsupported_platform",
         labels,

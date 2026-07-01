@@ -29,9 +29,8 @@ func TestContextArtifactReaderReadsOffsetLimit(t *testing.T) {
 	}
 
 	reader := NewContextArtifactReader(ContextArtifactReaderOptions{
-		Repository:     store,
-		MaxReadBytes:   64,
-		DefaultPreview: 12,
+		Repository:   store,
+		MaxReadBytes: 64,
 	})
 	result, err := reader.Read(ContextArtifactReadRequest{
 		ID:     artifact.ID,
@@ -139,7 +138,7 @@ func TestContextArtifactReaderDoesNotEmitBinaryPayload(t *testing.T) {
 	if result.Ref != artifact.URI {
 		t.Fatalf("ref = %q, want %q", result.Ref, artifact.URI)
 	}
-	if result.Artifact.Extension == "" || result.Artifact.Digest == "" || result.Artifact.Preview == "" {
+	if result.Artifact.Extension == "" || result.Artifact.Digest == "" || result.Artifact.ContentSnippet == "" {
 		t.Fatalf("binary metadata incomplete: %#v", result.Artifact)
 	}
 }

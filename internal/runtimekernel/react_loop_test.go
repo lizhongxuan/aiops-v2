@@ -475,6 +475,9 @@ func newKernelForLoopTests(
 		Policy:      policy,
 		Projector:   projector,
 		ModelRouter: router,
+		DebugConfig: func(context.Context) RuntimeDebugConfig {
+			return runtimeDebugConfigForLegacyTraceTest()
+		},
 	}), projector
 }
 
@@ -520,6 +523,9 @@ func newLoopKernelWithDeps(
 		ModelRouter: router,
 		Compressor:  compressor,
 		SpillRepo:   spillRepo,
+		DebugConfig: func(context.Context) RuntimeDebugConfig {
+			return runtimeDebugConfigForLegacyTraceTest()
+		},
 	})
 }
 
@@ -1971,7 +1977,6 @@ func TestRunTurn_EmitsTurnEventLifecycleForReactLoop(t *testing.T) {
 		EventToolCompleted,
 		EventPhaseEnd,
 		EventProcessSummary,
-		EventAssistantFinalDelta,
 		EventTurnComplete,
 	}
 	cursor := 0
@@ -1985,83 +1990,76 @@ func TestRunTurn_EmitsTurnEventLifecycleForReactLoop(t *testing.T) {
 	}
 }
 
-func TestRunTurn_EmitsIntentPreludeBeforeFirstTool(t *testing.T) {
+func TestRunTurnWritesDeterministicCommentaryBeforeToolCallWithoutModelText(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{
 				{
-					ID:   "call-search",
+					ID:   "call-cpu",
 					Type: "function",
 					Function: schema.FunctionCall{
-						Name:      "web_search",
-						Arguments: `{"query":"recent market sectors"}`,
+						Name:      "shell_command",
+						Arguments: `{"cmd":"uptime"}`,
 					},
 				},
 			}),
-			schema.AssistantMessage("final answer", nil),
+			schema.AssistantMessage("CPU 检查完成。", nil),
 		},
 	}
 	toolDef := &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        "web_search",
-			Description: "Search public web pages",
+			Name:        "shell_command",
+			Description: "Run read-only command",
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
 			Modes:        []string{string(ModeInspect)},
 		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
 		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
-			return tooling.ToolResult{Content: "search result"}, nil
+			return tooling.ToolResult{Content: "CPU usage: 10% user"}, nil
 		},
 	}
 
 	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
 	emitter := kernel.projector.(*testMockEventEmitter)
 	_, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-intent-prelude",
+		SessionID:   "sess-deterministic-commentary",
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
-		TurnID:      "turn-intent-prelude",
-		Input:       "research recent market sectors",
+		TurnID:      "turn-deterministic-commentary",
+		Input:       "查看 cpu 情况",
 		HostID:      "server-local",
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
 	}
 
-	intentAt := -1
-	toolAt := -1
-	intentText := ""
-	for i, event := range emitter.events {
-		switch event.Type {
-		case EventAssistantIntent:
-			if intentAt == -1 {
-				intentAt = i
-				var payload struct {
-					Text string `json:"text"`
-				}
-				if err := json.Unmarshal(event.Payload, &payload); err != nil {
-					t.Fatalf("unmarshal intent payload: %v", err)
-				}
-				intentText = payload.Text
-			}
-		case EventToolStarted:
-			if toolAt == -1 {
-				toolAt = i
-			}
+	for _, event := range emitter.events {
+		if event.Type == EventAssistantIntent {
+			t.Fatalf("unexpected EventAssistantIntent in Chat main path: %#v", event)
 		}
 	}
-	if intentAt == -1 {
-		t.Fatalf("events = %v, want assistant intent before tool start", emitter.events)
+
+	session := kernel.sessions.Get("sess-deterministic-commentary")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
 	}
-	if toolAt == -1 {
-		t.Fatalf("events = %v, want tool start", emitter.events)
+	items := session.CurrentTurn.AgentItems
+	commentaryIndex := findAgentItemBySummaryContains(items, agentstate.TurnItemTypeAssistantMessage, "执行只读命令")
+	toolIndex := indexAgentItemByID(items, "turn-deterministic-commentary-tool-call-call-cpu")
+	if commentaryIndex < 0 || toolIndex < 0 {
+		t.Fatalf("agent items = %#v, want commentary and tool call", items)
 	}
-	if !(intentAt < toolAt) {
-		t.Fatalf("event order = %v, want assistant intent before first tool", emitter.events)
+	if !(commentaryIndex < toolIndex) {
+		t.Fatalf("agent items = %#v, want commentary before tool call", items)
 	}
-	if !strings.Contains(intentText, "recent market sectors") && !strings.Contains(intentText, "网页") {
-		t.Fatalf("intent text = %q, want user-readable tool plan", intentText)
+	if phase := assistantMessagePhaseForAgentItemsTest(items[commentaryIndex]); phase != "commentary" {
+		t.Fatalf("assistant phase = %q, want commentary", phase)
+	}
+	payload := agentItemPayloadMap(items[commentaryIndex])
+	if payload["commentarySource"] != "runtime_tool_intent" {
+		t.Fatalf("payload = %#v, want runtime_tool_intent", payload)
 	}
 }
 
@@ -2085,7 +2083,6 @@ func TestRunTurn_EmitsStartedBeforeFinalForNoToolReactLoop(t *testing.T) {
 	}
 
 	startedAt := -1
-	finalAt := -1
 	completeAt := -1
 	eventTypes := make([]EventType, 0, len(emitter.events))
 	for i, event := range emitter.events {
@@ -2095,25 +2092,28 @@ func TestRunTurn_EmitsStartedBeforeFinalForNoToolReactLoop(t *testing.T) {
 			if startedAt == -1 {
 				startedAt = i
 			}
-		case EventAssistantFinalDelta:
-			if finalAt == -1 {
-				finalAt = i
-			}
 		case EventTurnComplete:
 			if completeAt == -1 {
 				completeAt = i
 			}
 		}
 	}
-	if startedAt == -1 || finalAt == -1 || completeAt == -1 {
-		t.Fatalf("event order = %v, want turn.started -> assistant.final.delta -> turn.complete", eventTypes)
+	if startedAt == -1 || completeAt == -1 {
+		t.Fatalf("event order = %v, want turn.started and turn.complete", eventTypes)
 	}
-	if !(startedAt < finalAt && finalAt < completeAt) {
-		t.Fatalf("event order = %v, want turn.started before assistant.final.delta before turn.complete", eventTypes)
+	if !(startedAt < completeAt) {
+		t.Fatalf("event order = %v, want turn.started before turn.complete", eventTypes)
+	}
+	session := kernel.sessions.Get("sess-no-tool-events")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
+	}
+	if got := FinalTextFromAssistantMessage(session.CurrentTurn); got != "direct final answer" {
+		t.Fatalf("final text = %q, want direct final answer", got)
 	}
 }
 
-func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
+func TestRunTurn_CommitsStreamedFinalTextWithoutFinalDeltaEvents(t *testing.T) {
 	model := &streamingFinalLoopModel{
 		chunks: []*schema.Message{
 			schema.AssistantMessage("第一段", nil),
@@ -2136,28 +2136,11 @@ func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
 		t.Fatalf("RunTurn output = %q, want concatenated streaming output", result.Output)
 	}
 
-	var deltas []string
-	finalAt := -1
 	completeAt := -1
 	for i, event := range emitter.events {
 		switch event.Type {
 		case EventAssistantFinalDelta:
-			var payload struct {
-				Text        string `json:"text"`
-				Phase       string `json:"phase"`
-				StreamState string `json:"streamState"`
-				Iteration   int    `json:"iteration"`
-			}
-			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				t.Fatalf("unmarshal assistant final delta payload: %v", err)
-			}
-			if payload.Phase != "final_answer" || payload.StreamState != "streaming" || payload.Iteration != 0 {
-				t.Fatalf("assistant final delta payload = %+v, want streaming assistant_message metadata", payload)
-			}
-			deltas = append(deltas, payload.Text)
-			if finalAt == -1 {
-				finalAt = i
-			}
+			t.Fatalf("unexpected assistant final delta in single assistant_message path: %#v", event)
 		case EventTurnComplete:
 			if completeAt == -1 {
 				completeAt = i
@@ -2168,14 +2151,81 @@ func TestRunTurn_StreamsAssistantFinalDeltasBeforeCompletion(t *testing.T) {
 	if completeAt == -1 {
 		t.Fatalf("event order = %v, want turn.complete", emitter.events)
 	}
-	if len(deltas) != 2 {
-		t.Fatalf("assistant final deltas = %v, want two streamed chunks", deltas)
+	session := kernel.sessions.Get("sess-streaming-final")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("expected current turn")
 	}
-	if want := []string{"第一段", "第二段"}; strings.Join(deltas, "|") != strings.Join(want, "|") {
-		t.Fatalf("assistant final deltas = %v, want %v", deltas, want)
+	if got := FinalTextFromAssistantMessage(session.CurrentTurn); got != "第一段第二段" {
+		t.Fatalf("final text = %q, want concatenated streaming output", got)
 	}
-	if !(finalAt >= 0 && finalAt < completeAt) {
-		t.Fatalf("assistant final delta should arrive before turn.complete, events = %v", emitter.events)
+}
+
+func TestRunTurn_PersistsRunningFinalAssistantItemDuringStreaming(t *testing.T) {
+	model := &gatedStreamingFinalLoopModel{
+		firstSent: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(model.release) }) }
+	defer release()
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	type runResult struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		result, err := kernel.RunTurn(context.Background(), TurnRequest{
+			SessionID:   "sess-streaming-final-running",
+			SessionType: SessionTypeHost,
+			Mode:        ModeChat,
+			TurnID:      "turn-streaming-final-running",
+			Input:       "stream directly",
+		})
+		done <- runResult{result: result, err: err}
+	}()
+
+	select {
+	case <-model.firstSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first streaming chunk")
+	}
+
+	var finalItem agentstate.TurnItem
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session := kernel.sessions.Get("sess-streaming-final-running")
+		if session != nil && session.CurrentTurn != nil {
+			if item, ok := findAgentItemByID(session.CurrentTurn.AgentItems, assistantMessageItemID("turn-streaming-final-running", 0)); ok {
+				finalItem = item
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if finalItem.ID == "" {
+		session := kernel.sessions.Get("sess-streaming-final-running")
+		var items []agentstate.TurnItem
+		if session != nil && session.CurrentTurn != nil {
+			items = session.CurrentTurn.AgentItems
+		}
+		t.Fatalf("running final assistant item was not persisted before stream completion; items = %#v", items)
+	}
+	if finalItem.Status != agentstate.ItemStatusRunning || assistantMessagePhaseForTest(finalItem) != string(AssistantMessagePhaseFinalAnswer) {
+		t.Fatalf("running final item = %#v, want running final_answer", finalItem)
+	}
+	if got := finalItem.Payload.Summary; got != "第一段" {
+		t.Fatalf("running final item summary = %q, want first streamed chunk", got)
+	}
+
+	release()
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("RunTurn failed: %v", result.err)
+	}
+	if result.result.Output != "第一段第二段" {
+		t.Fatalf("RunTurn output = %q, want complete streamed output", result.result.Output)
 	}
 }
 
@@ -2342,7 +2392,7 @@ func TestRunTurn_FailsLengthStoppedFinalAfterRetry(t *testing.T) {
 	}
 }
 
-func TestRunTurn_StreamsAssistantTextAsAnswerBeforeFinalCommit(t *testing.T) {
+func TestRunTurn_AccumulatesAssistantTextBeforeFinalCommit(t *testing.T) {
 	model := &gatedStreamingFinalLoopModel{
 		firstSent: make(chan struct{}),
 		release:   make(chan struct{}),
@@ -2368,12 +2418,15 @@ func TestRunTurn_StreamsAssistantTextAsAnswerBeforeFinalCommit(t *testing.T) {
 	}
 
 	var session *SessionState
+	var answerItem agentstate.TurnItem
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		session = kernel.sessions.Get("sess-streaming-snapshot")
-		if session != nil && session.CurrentTurn != nil &&
-			hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage, agentstate.ItemStatusRunning) {
-			break
+		if session != nil && session.CurrentTurn != nil {
+			answerItem = findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+			if answerItem.ID != "" {
+				break
+			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -2384,24 +2437,17 @@ func TestRunTurn_StreamsAssistantTextAsAnswerBeforeFinalCommit(t *testing.T) {
 		close(model.release)
 		t.Fatalf("CurrentTurn.FinalOutput = %q, want empty until final commit", got)
 	}
-	answerItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
-	if answerItem.ID == "" || answerItem.Payload.Summary != "第一段" {
+	if answerItem.ID == "" {
 		close(model.release)
-		t.Fatalf("expected running assistant_message after first chunk, got %+v", session.CurrentTurn.AgentItems)
+		t.Fatalf("assistant_message running draft must be written before final commit, got %+v", session.CurrentTurn.AgentItems)
 	}
-	var answerData struct {
-		Phase       string `json:"phase"`
-		StreamState string `json:"streamState"`
-		DisplayKind string `json:"displayKind"`
-		Iteration   int    `json:"iteration"`
-	}
-	if err := json.Unmarshal(answerItem.Payload.Data, &answerData); err != nil {
+	if answerItem.Status != agentstate.ItemStatusRunning || assistantMessagePhaseForTest(answerItem) != string(AssistantMessagePhaseFinalAnswer) {
 		close(model.release)
-		t.Fatalf("decode answer data: %v; raw=%s", err, string(answerItem.Payload.Data))
+		t.Fatalf("assistant_message running draft = %+v, want running final_answer", answerItem)
 	}
-	if answerData.Phase != "final_answer" || answerData.StreamState != "streaming" || answerData.DisplayKind != "assistant.message" || answerData.Iteration != 0 {
+	if got := answerItem.Payload.Summary; got != "第一段" {
 		close(model.release)
-		t.Fatalf("answer data = %+v, want running assistant_message", answerData)
+		t.Fatalf("assistant_message running draft summary = %q, want first streamed chunk", got)
 	}
 	if invalid := firstInvalidTurnItem(session.CurrentTurn.AgentItems); invalid.ID != "" {
 		close(model.release)
@@ -2482,6 +2528,25 @@ func TestRunTurn_StreamingModelErrorPreservesIncompleteAssistantMessage(t *testi
 	errorItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeError)
 	if errorItem.ID == "" || errorItem.Status != agentstate.ItemStatusFailed {
 		t.Fatalf("agent items = %#v, want failed error item", session.CurrentTurn.AgentItems)
+	}
+}
+
+func TestRunTurn_ModelFailureEmitsTurnErrorEvent(t *testing.T) {
+	model := &sequentialLoopModel{generateErr: errors.New("provider unavailable")}
+	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: tooling.NewRegistry()}, &testMockCompiler{}, model)
+
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-model-failure-event",
+		SessionType: SessionTypeHost,
+		Mode:        ModeChat,
+		TurnID:      "turn-model-failure-event",
+		Input:       "你好",
+	})
+	if err == nil {
+		t.Fatal("RunTurn error = nil, want model failure")
+	}
+	if !hasEventType(emitter.events, EventTurnError) {
+		t.Fatalf("events = %v, want %s after model failure", eventTypes(emitter.events), EventTurnError)
 	}
 }
 
@@ -3573,8 +3638,7 @@ func TestRunTurn_MediumToolResultKeepsSummaryOnlyAndSpillsFullContent(t *testing
 
 func TestRunTurn_ReadOnlyConcurrencySafeToolsRunInParallel(t *testing.T) {
 	traceDir := t.TempDir()
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE", "1")
-	t.Setenv("AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR", traceDir)
+	setLegacyTraceRootForTest(t, traceDir)
 
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

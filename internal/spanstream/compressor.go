@@ -8,6 +8,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/modeltrace"
 )
 
@@ -114,11 +115,11 @@ func (cc *ContextCompressor) compress(ctx context.Context, span *Span, messages 
 
 	// Build the prompt for summarization
 	prompt := cc.buildSummaryPrompt(span, messages)
-	_, _ = modeltrace.Write(modeltrace.Request{
+	_, _ = modeltrace.WriteTraceDocumentV2FromRequest(modeltrace.Request{
 		Kind:       "spanstream_compressor",
 		TraceID:    compressorTraceID(span),
 		Prompt:     compressorPromptTrace(prompt),
-		ModelInput: prompt,
+		ModelInput: modelrouter.ModelInputItemsFromEinoMessages(prompt),
 	})
 
 	resp, err := cc.summaryModel.Generate(ctx, prompt)

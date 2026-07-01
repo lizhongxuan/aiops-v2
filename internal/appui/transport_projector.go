@@ -743,6 +743,9 @@ func projectTurnItem(
 		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
 			outputPreview = resultPreviews[tool.ToolCallID]
 		}
+		if blockKind == AiopsTransportProcessKindCommand {
+			outputPreview = commandTerminalOutputPreview(outputPreview, tool.ExitCode, mapItemStatusToTransportProcessStatus(item.Status))
+		}
 		if shouldSuppressOpsManualSearchProcessBlock(tool, outputPreview) {
 			return turn
 		}
@@ -774,7 +777,28 @@ func projectTurnItem(
 			if query != "" {
 				block.Queries = []string{query}
 			}
-			block.Results = decodeTransportSearchResults(tool.OutputPreview)
+			searchResultRaw := tool.OutputPreview
+			if len(searchResultRaw) == 0 {
+				searchResultRaw = resultPayloads[strings.TrimSpace(tool.ToolCallID)]
+			}
+			request := decodeTransportSearchRequest(tool.Arguments)
+			envelope, hasEnvelope := decodeTransportSearchEnvelope(searchResultRaw)
+			block.Operation = firstNonEmptyString(envelope.Operation, request.Operation)
+			block.URL = firstNonEmptyString(envelope.URL, request.URL)
+			block.Adapter = strings.TrimSpace(envelope.Source)
+			block.Backend = strings.TrimSpace(envelope.Backend)
+			block.Results = decodeTransportSearchResults(searchResultRaw)
+			if len(block.Results) > 0 {
+				block.SourceCount = len(block.Results)
+			} else if hasEnvelope && envelope.SourceCount >= 0 {
+				block.SourceCount = envelope.SourceCount
+			}
+			if block.Operation == "" && block.URL != "" {
+				block.Operation = "open"
+			}
+			if block.Operation == "" {
+				block.Operation = "search"
+			}
 		case AiopsTransportProcessKindCommand:
 			block.Command = firstNonEmptyString(tool.InputSummary, tool.ToolName)
 			if block.Text == "" || block.Text == tool.OutputSummary {
@@ -882,6 +906,8 @@ func projectTurnItem(
 				DisplayKind:      displayKind,
 				Phase:            firstNonEmptyString(message.Phase, "commentary"),
 				StreamState:      strings.TrimSpace(message.StreamState),
+				CommentarySource: strings.TrimSpace(message.CommentarySource),
+				ToolCallIDs:      append([]string(nil), message.ToolCallIDs...),
 				EvidenceBoundary: strings.TrimSpace(message.EvidenceBoundary),
 				Status:           mapItemStatusToTransportProcessStatus(item.Status),
 				Text:             text,
@@ -926,11 +952,13 @@ func projectTurnItem(
 }
 
 type assistantMessageProjectionPayload struct {
-	DisplayKind      string `json:"displayKind"`
-	Phase            string `json:"phase"`
-	StreamState      string `json:"streamState"`
-	EvidenceBoundary string `json:"evidenceBoundary"`
-	DurationMs       int64  `json:"durationMs"`
+	DisplayKind      string   `json:"displayKind"`
+	Phase            string   `json:"phase"`
+	StreamState      string   `json:"streamState"`
+	EvidenceBoundary string   `json:"evidenceBoundary"`
+	DurationMs       int64    `json:"durationMs"`
+	CommentarySource string   `json:"commentarySource"`
+	ToolCallIDs      []string `json:"toolCallIds"`
 }
 
 func assistantMessageProjectionData(item agentstate.TurnItem) assistantMessageProjectionPayload {
@@ -945,6 +973,8 @@ func assistantMessageProjectionData(item agentstate.TurnItem) assistantMessagePr
 	payload.Phase = strings.TrimSpace(payload.Phase)
 	payload.StreamState = strings.TrimSpace(payload.StreamState)
 	payload.EvidenceBoundary = strings.TrimSpace(payload.EvidenceBoundary)
+	payload.CommentarySource = strings.TrimSpace(payload.CommentarySource)
+	payload.ToolCallIDs = compactStrings(payload.ToolCallIDs)
 	return payload
 }
 
@@ -1362,7 +1392,25 @@ func normalizeTerminalProcessBlocks(blocks []AiopsProcessBlock, lifecycle runtim
 			blocks[i].Text = "模型调用已取消"
 		}
 	}
-	return blocks
+	return dedupeTerminalRuntimeErrorBlocks(blocks)
+}
+
+func dedupeTerminalRuntimeErrorBlocks(blocks []AiopsProcessBlock) []AiopsProcessBlock {
+	seen := map[string]bool{}
+	next := make([]AiopsProcessBlock, 0, len(blocks))
+	for _, block := range blocks {
+		if block.DisplayKind == "runtime.error" {
+			key := strings.TrimSpace(block.Text)
+			if key != "" {
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+			}
+		}
+		next = append(next, block)
+	}
+	return next
 }
 
 func isModelWaitingProcessText(text string) bool {
@@ -1401,7 +1449,46 @@ func mergeTransportProcessBlock(existing, next AiopsProcessBlock) AiopsProcessBl
 			next.Text = firstNonEmptyString(existing.Text, next.Command, next.Text)
 		}
 	}
+	if existing.Kind == AiopsTransportProcessKindSearch && next.Kind == AiopsTransportProcessKindSearch {
+		if len(next.Queries) == 0 || (len(next.Queries) == 1 && isSparseSearchCompletionSummary(next.Queries[0])) {
+			next.Queries = append([]string(nil), existing.Queries...)
+		}
+		if len(next.Results) == 0 {
+			next.Results = append([]AiopsSearchResult(nil), existing.Results...)
+		}
+		if strings.TrimSpace(next.Operation) == "" {
+			next.Operation = existing.Operation
+		}
+		if strings.TrimSpace(next.URL) == "" {
+			next.URL = existing.URL
+		}
+		if strings.TrimSpace(next.Adapter) == "" {
+			next.Adapter = existing.Adapter
+		}
+		if strings.TrimSpace(next.Backend) == "" {
+			next.Backend = existing.Backend
+		}
+		if next.SourceCount == 0 && existing.SourceCount > 0 {
+			next.SourceCount = existing.SourceCount
+		}
+		if strings.TrimSpace(next.InputSummary) == "" || isSparseSearchCompletionSummary(next.InputSummary) {
+			next.InputSummary = existing.InputSummary
+		}
+		if strings.TrimSpace(next.Text) == "" || strings.TrimSpace(next.Text) == strings.TrimSpace(next.OutputPreview) {
+			next.Text = firstNonEmptyString(existing.Text, next.InputSummary, next.Text)
+		}
+	}
 	return next
+}
+
+func isSparseSearchCompletionSummary(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", "web_search", "browse_url", "search_web", "web_search completed", "browser.search":
+		return true
+	default:
+		return false
+	}
 }
 
 func mapTurnLifecycleToTransportTurnStatus(lifecycle runtimekernel.TurnLifecycleState, resume runtimekernel.TurnResumeState, blocked bool) AiopsTransportTurnStatus {
@@ -2675,6 +2762,9 @@ func summarizeTransportToolText(blockKind AiopsTransportProcessKind, tool transp
 		if strings.EqualFold(strings.TrimSpace(tool.OutputSummary), query) {
 			return query
 		}
+		if query != "" && !transportToolSummaryLooksGeneric(tool.ToolName, query) {
+			return query
+		}
 		output := cleanProviderNativeSearchSummary(tool.OutputSummary)
 		return firstNonEmptyString(output, query, tool.ToolName)
 	}
@@ -2689,6 +2779,68 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 		return cleanProviderNativeSearchSummary(firstNonEmptyString(tool.OutputSummary, tool.Error))
 	}
 	return firstNonEmptyString(jsonStringValue(tool.OutputPreview), tool.Error)
+}
+
+type commandTerminalOutputEnvelope struct {
+	Status   string `json:"status"`
+	Stdout   string `json:"stdout"`
+	Stderr   string `json:"stderr"`
+	Output   string `json:"output"`
+	Error    string `json:"error"`
+	ExitCode *int   `json:"exitCode"`
+}
+
+func commandTerminalOutputPreview(outputPreview string, exitCode *int, status AiopsTransportProcessStatus) string {
+	outputPreview = strings.TrimSpace(outputPreview)
+	if outputPreview == "" {
+		return ""
+	}
+	envelope, ok := decodeCommandTerminalOutputEnvelope(outputPreview)
+	if !ok {
+		return outputPreview
+	}
+	failed := status == AiopsTransportProcessStatusFailed ||
+		status == AiopsTransportProcessStatusRejected ||
+		(exitCode != nil && *exitCode != 0) ||
+		(envelope.ExitCode != nil && *envelope.ExitCode != 0) ||
+		commandTerminalStatusFailed(envelope.Status)
+	if failed {
+		return firstNonEmptyString(envelope.Stderr, envelope.Error, envelope.Stdout, envelope.Output)
+	}
+	return firstNonEmptyString(envelope.Stdout, envelope.Output, envelope.Stderr, envelope.Error)
+}
+
+func decodeCommandTerminalOutputEnvelope(outputPreview string) (commandTerminalOutputEnvelope, bool) {
+	var envelope commandTerminalOutputEnvelope
+	if err := json.Unmarshal([]byte(outputPreview), &envelope); err == nil && commandTerminalOutputEnvelopeHasStreams(envelope) {
+		return envelope, true
+	}
+	var nested string
+	if err := json.Unmarshal([]byte(outputPreview), &nested); err == nil {
+		nested = strings.TrimSpace(nested)
+		if strings.HasPrefix(nested, "{") {
+			return decodeCommandTerminalOutputEnvelope(nested)
+		}
+	}
+	return commandTerminalOutputEnvelope{}, false
+}
+
+func commandTerminalOutputEnvelopeHasStreams(envelope commandTerminalOutputEnvelope) bool {
+	return strings.TrimSpace(envelope.Stdout) != "" ||
+		strings.TrimSpace(envelope.Stderr) != "" ||
+		strings.TrimSpace(envelope.Output) != "" ||
+		strings.TrimSpace(envelope.Error) != "" ||
+		envelope.ExitCode != nil ||
+		strings.TrimSpace(envelope.Status) != ""
+}
+
+func commandTerminalStatusFailed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "error", "failed", "failure":
+		return true
+	default:
+		return false
+	}
 }
 
 func shouldSuppressOpsManualSearchProcessBlock(tool transportToolPayload, outputPreview string) bool {
@@ -2796,10 +2948,17 @@ func cleanProviderNativeSearchSummary(value string) string {
 		return query
 	}
 	var payload struct {
-		Content string `json:"content"`
-		Query   string `json:"query"`
+		Operation string `json:"operation"`
+		Content   string `json:"content"`
+		Query     string `json:"query"`
+		URL       string `json:"url"`
 	}
 	if json.Unmarshal([]byte(text), &payload) == nil {
+		if strings.EqualFold(strings.TrimSpace(payload.Operation), "open") {
+			if url := strings.TrimSpace(payload.URL); url != "" {
+				return url
+			}
+		}
 		if query := strings.TrimSpace(payload.Query); query != "" {
 			return query
 		}
@@ -3048,21 +3207,84 @@ func stripHTMLTags(s string) string {
 }
 
 func decodeTransportSearchResults(raw json.RawMessage) []AiopsSearchResult {
-	raw = normalizeTransportSearchResultRaw(raw)
-	if len(raw) == 0 {
-		return nil
-	}
-	var payload struct {
-		Results []AiopsSearchResult `json:"results"`
-		Content string              `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	payload, ok := decodeTransportSearchEnvelope(raw)
+	if !ok {
 		return nil
 	}
 	if len(payload.Results) > 0 {
 		return cleanTransportSearchResults(payload.Results)
 	}
 	return parseTransportSearchResultsContent(payload.Content)
+}
+
+type transportSearchEnvelope struct {
+	Operation   string
+	Query       string
+	URL         string
+	Source      string
+	Content     string
+	Results     []AiopsSearchResult
+	Backend     string
+	SourceCount int
+}
+
+func decodeTransportSearchEnvelope(raw json.RawMessage) (transportSearchEnvelope, bool) {
+	raw = normalizeTransportSearchResultRaw(raw)
+	if len(raw) == 0 {
+		return transportSearchEnvelope{}, false
+	}
+	var payload struct {
+		Operation string              `json:"operation"`
+		Query     string              `json:"query"`
+		URL       string              `json:"url"`
+		Source    string              `json:"source"`
+		Results   []AiopsSearchResult `json:"results"`
+		Content   string              `json:"content"`
+		Meta      map[string]any      `json:"meta"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return transportSearchEnvelope{}, false
+	}
+	results := cleanTransportSearchResults(payload.Results)
+	backend := ""
+	if payload.Meta != nil {
+		backend = jsonStringValueFromMap(payload.Meta, "backend")
+	}
+	return transportSearchEnvelope{
+		Operation:   strings.TrimSpace(payload.Operation),
+		Query:       strings.TrimSpace(payload.Query),
+		URL:         strings.TrimSpace(payload.URL),
+		Source:      strings.TrimSpace(payload.Source),
+		Content:     strings.TrimSpace(payload.Content),
+		Results:     results,
+		Backend:     backend,
+		SourceCount: len(results),
+	}, true
+}
+
+type transportSearchRequest struct {
+	Operation string
+	Query     string
+	URL       string
+}
+
+func decodeTransportSearchRequest(raw json.RawMessage) transportSearchRequest {
+	if len(raw) == 0 {
+		return transportSearchRequest{}
+	}
+	var payload struct {
+		Operation string `json:"operation"`
+		Query     string `json:"query"`
+		URL       string `json:"url"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return transportSearchRequest{}
+	}
+	return transportSearchRequest{
+		Operation: strings.TrimSpace(payload.Operation),
+		Query:     strings.TrimSpace(payload.Query),
+		URL:       strings.TrimSpace(payload.URL),
+	}
 }
 
 func normalizeTransportSearchResultRaw(raw json.RawMessage) json.RawMessage {
@@ -3093,11 +3315,15 @@ func cleanTransportSearchResults(results []AiopsSearchResult) []AiopsSearchResul
 	countByDomain := map[string]int{}
 	for _, result := range results {
 		item := AiopsSearchResult{
-			Title:   strings.TrimSpace(result.Title),
-			URL:     strings.TrimSpace(result.URL),
-			Snippet: strings.TrimSpace(result.Snippet),
+			Title:       strings.TrimSpace(result.Title),
+			URL:         strings.TrimSpace(result.URL),
+			Snippet:     strings.TrimSpace(result.Snippet),
+			Text:        strings.TrimSpace(result.Text),
+			Fetched:     result.Fetched,
+			FetchError:  strings.TrimSpace(result.FetchError),
+			ContentType: strings.TrimSpace(result.ContentType),
 		}
-		if item.Title == "" && item.URL == "" && item.Snippet == "" {
+		if item.Title == "" && item.URL == "" && item.Snippet == "" && item.Text == "" {
 			continue
 		}
 		normalizedURL := normalizeSearchResultURL(item.URL)

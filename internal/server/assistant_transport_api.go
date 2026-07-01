@@ -382,11 +382,28 @@ func assistantTransportOpsManualParamResolutionActions(status string) []map[stri
 	}
 }
 
+func (s *HTTPServer) opsManualAutoRetrievalEnabled() bool {
+	if s == nil {
+		return false
+	}
+	if s.opsManualAutoRetrievalOverride != nil {
+		return *s.opsManualAutoRetrievalOverride
+	}
+	if s.ui == nil || s.ui.SettingsService() == nil {
+		return false
+	}
+	provider, ok := s.ui.SettingsService().(appui.RuntimeSettingsProvider)
+	if !ok {
+		return false
+	}
+	return provider.Snapshot(context.Background()).OpsManual.AutoRetrieval
+}
+
 func (s *HTTPServer) assistantTransportOpsManualMatchArtifact(turnID string, command *appui.TransportAddMessageCommand) (appui.AiopsTransportAgentUIArtifact, bool) {
 	if command == nil || strings.TrimSpace(command.Message.Text) == "" {
 		return appui.AiopsTransportAgentUIArtifact{}, false
 	}
-	if s == nil || !s.opsManualAutoRetrieval {
+	if s == nil || !s.opsManualAutoRetrievalEnabled() {
 		return appui.AiopsTransportAgentUIArtifact{}, false
 	}
 	service := s.opsManualService()
@@ -1174,7 +1191,7 @@ func assistantTransportSessionTurns(session *runtimekernel.SessionState) []runti
 }
 
 func (s *HTTPServer) decorateAssistantTransportOpsManualFallback(state appui.AiopsTransportState, turn *runtimekernel.TurnSnapshot) appui.AiopsTransportState {
-	if s == nil || turn == nil || !s.opsManualAutoRetrieval || !turn.Lifecycle.IsTerminal() {
+	if s == nil || turn == nil || !s.opsManualAutoRetrievalEnabled() || !turn.Lifecycle.IsTerminal() {
 		return state
 	}
 	turnID := strings.TrimSpace(turn.ID)

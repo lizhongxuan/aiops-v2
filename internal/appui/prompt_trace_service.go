@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"aiops-v2/internal/diagnostics"
-	"aiops-v2/internal/modeltrace"
 )
 
 const defaultPromptTraceLimit = 500
@@ -304,7 +303,7 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 }
 
 func promptTraceSetupHint(root string) string {
-	return fmt.Sprintf("No model input traces found under %s. Start aiops with AIOPS_DEBUG_MODEL_INPUT_TRACE=1 and AIOPS_DEBUG_MODEL_INPUT_TRACE_DIR=%s, or use ./scripts/start-ai-chat-trace-dev.sh for local AI Chat latency debugging.", root, root)
+	return fmt.Sprintf("No model input traces found under %s. Enable Debug / Model Input Trace in runtime settings, then send a new chat request.", root)
 }
 
 func (s promptTraceService) GetModelInputTraceFile(ctx context.Context, req PromptTraceFileRequest) (PromptTraceFileResponse, error) {
@@ -332,9 +331,6 @@ func (s promptTraceService) GetModelInputTraceFile(ctx context.Context, req Prom
 
 func promptTraceRootDir(configured string) (string, error) {
 	root := strings.TrimSpace(configured)
-	if root == "" {
-		root = strings.TrimSpace(os.Getenv(modeltrace.DirEnv))
-	}
 	if root == "" {
 		root = filepath.Join(".data", "model-input-traces")
 	}

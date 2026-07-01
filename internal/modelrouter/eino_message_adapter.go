@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"aiops-v2/internal/promptinput"
 	"github.com/cloudwego/eino/schema"
@@ -31,6 +32,119 @@ func ModelInputItemsToEinoMessages(items []promptinput.ModelInputItem) ([]*schem
 		ProviderMessagesHash: stableProviderHash(messages),
 		Items:                auditItems,
 	}, nil
+}
+
+func ProviderMessageAuditFromModelInputItems(items []promptinput.ModelInputItem) (ProviderMessageAudit, error) {
+	_, audit, err := ModelInputItemsToEinoMessages(items)
+	return audit, err
+}
+
+func EinoInstructionMessagesText(messages []*schema.Message) string {
+	var builder strings.Builder
+	for _, msg := range messages {
+		if msg == nil || strings.TrimSpace(msg.Content) == "" {
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		role := strings.TrimSpace(string(msg.Role))
+		if role != "" {
+			builder.WriteString("[")
+			builder.WriteString(role)
+			builder.WriteString("]\n")
+		}
+		builder.WriteString(msg.Content)
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func ModelInputItemsFromEinoMessages(messages []*schema.Message) []promptinput.ModelInputItem {
+	items := make([]promptinput.ModelInputItem, 0, len(messages))
+	for idx, msg := range messages {
+		if msg == nil {
+			continue
+		}
+		item := promptinput.ModelInputItem{
+			ID:           fmt.Sprintf("provider-message-%d", idx),
+			ProviderRole: providerRoleFromEino(msg.Role),
+			SemanticRole: semanticRoleFromEinoMessage(msg),
+			Content:      msg.Content,
+			Name:         firstNonEmptyString(msg.Name, msg.ToolName),
+			ToolCallID:   msg.ToolCallID,
+			Source:       promptinput.ModelInputSource{Layer: sourceLayerFromEinoMessage(msg), Origin: "provider_message"},
+			Phase:        "trace",
+			CacheGroup:   "dynamic",
+			Metadata:     map[string]string{},
+		}
+		for _, call := range msg.ToolCalls {
+			item.ToolCalls = append(item.ToolCalls, promptinput.ModelInputToolCall{
+				ID:        call.ID,
+				Name:      call.Function.Name,
+				Arguments: json.RawMessage(call.Function.Arguments),
+			})
+		}
+		if item.ProviderRole == promptinput.ProviderRoleTool {
+			item.ToolResult = &promptinput.ModelInputToolResult{
+				ToolCallID: msg.ToolCallID,
+				Content:    msg.Content,
+			}
+		}
+		for key, value := range msg.Extra {
+			if text, ok := value.(string); ok {
+				item.Metadata[key] = text
+			}
+		}
+		if len(item.Metadata) == 0 {
+			item.Metadata = nil
+		}
+		items = append(items, item)
+	}
+	return items
+}
+
+func providerRoleFromEino(role schema.RoleType) promptinput.ProviderRole {
+	switch role {
+	case schema.System:
+		return promptinput.ProviderRoleSystem
+	case schema.Assistant:
+		return promptinput.ProviderRoleAssistant
+	case schema.Tool:
+		return promptinput.ProviderRoleTool
+	case schema.User:
+		return promptinput.ProviderRoleUser
+	default:
+		return promptinput.ProviderRoleUser
+	}
+}
+
+func semanticRoleFromEinoMessage(msg *schema.Message) string {
+	if msg == nil {
+		return ""
+	}
+	if msg.Extra != nil {
+		if role, ok := msg.Extra["semantic_role"].(string); ok {
+			return strings.TrimSpace(role)
+		}
+	}
+	switch msg.Role {
+	case schema.Tool:
+		return "tool_result"
+	default:
+		return strings.TrimSpace(string(msg.Role))
+	}
+}
+
+func sourceLayerFromEinoMessage(msg *schema.Message) string {
+	if msg == nil || msg.Extra == nil {
+		return ""
+	}
+	for _, key := range []string{"source_layer", "prompt_layer"} {
+		if layer, ok := msg.Extra[key].(string); ok && strings.TrimSpace(layer) != "" {
+			return strings.TrimSpace(layer)
+		}
+	}
+	return ""
 }
 
 func einoMessageFromModelInputItem(item promptinput.ModelInputItem) *schema.Message {

@@ -4,9 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/promptinput"
 )
 
 func TestGeneralOpsModelInputIncludesOperationFrameV2Context(t *testing.T) {
@@ -150,7 +149,7 @@ func TestGeneralOpsObservabilityContextIgnoresConnectionStringUserInfo(t *testin
 	}
 }
 
-func joinedModelInputContent(input []*schema.Message) string {
+func joinedModelInputContent(input []promptinput.ModelInputItem) string {
 	var joined strings.Builder
 	for _, msg := range input {
 		joined.WriteString(msg.Content)

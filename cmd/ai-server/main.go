@@ -26,6 +26,7 @@ import (
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/commands"
 	"aiops-v2/internal/evidence"
+	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/hostops"
 	agenttools "aiops-v2/internal/integrations/agents"
@@ -40,6 +41,7 @@ import (
 	"aiops-v2/internal/mcp"
 	mcpruntime "aiops-v2/internal/mcp/runtime"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/observability"
 	opsgraphstore "aiops-v2/internal/opsgraph"
 	"aiops-v2/internal/opsmanual"
@@ -80,13 +82,7 @@ func run() error {
 	if secretDir == "" {
 		secretDir = filepath.Join(dataDir, "secrets")
 	}
-	defaultProvider := envOrDefault("AIOPS_LLM_PROVIDER", "openai")
-	oauthAuthorizeURL := envOrDefault("AIOPS_AUTH_OAUTH_AUTHORIZE_URL", "")
-	oauthEmail := envOrDefault("AIOPS_AUTH_OAUTH_EMAIL", "")
-	oauthPlanType := envOrDefault("AIOPS_AUTH_OAUTH_PLAN_TYPE", "plus")
-	runnerStudioUpstreamURL := runnerStudioUpstreamFromEnv(os.Getenv)
-	opsManualAutoRetrieval := envBoolDefault("AIOPS_OPS_MANUAL_AUTO_RETRIEVAL", false)
-	workflowReferenceGuardMode := workflowReferenceGuardModeFromEnv(os.Getenv)
+	defaultProvider := "openai"
 
 	// ---------------------------------------------------------------------------
 	// 1. Store (persistence layer)
@@ -180,7 +176,7 @@ func run() error {
 	contextArtifactRepo := runtimekernel.NewMemoryContextArtifactRepository()
 	evidenceService := evidence.NewService(evidence.NewInMemoryStore(), time.Now)
 	resourceLockGate := agentmgr.NewToolResourceLockGate(agentmgr.NewResourceLockManager())
-	runtimeObserver, otelProvider := buildRuntimeObserver(ctx, os.Getenv)
+	runtimeObserver, otelProvider := buildRuntimeObserver(ctx)
 	defer func() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -285,6 +281,28 @@ func run() error {
 		return fmt.Errorf("start mcp runtime: %w", err)
 	}
 
+	authManager := auth.NewManager(nil)
+	settingsService := appui.NewSettingsService(dataStore, authManager)
+	runtimeFeatureFlags := func(ctx context.Context) featureflag.Flags {
+		if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+			return featureflag.FromRuntimeSettings(provider.Snapshot(ctx))
+		}
+		return featureflag.Default()
+	}
+	runtimeDebugConfig := func(ctx context.Context) runtimekernel.RuntimeDebugConfig {
+		settings := store.DefaultRuntimeSettings()
+		if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+			settings = provider.Snapshot(ctx)
+		}
+		return runtimekernel.RuntimeDebugConfig{
+			ModelInputTrace:      settings.Debug.ModelInputTrace,
+			ModelInputTraceRoot:  modeltrace.DefaultRootDir(dataDir),
+			FinalState:           settings.Debug.FinalState,
+			TransportProjection:  settings.Debug.TransportProjection,
+			TranscriptProjection: settings.Debug.TranscriptProjection,
+		}
+	}
+
 	// ---------------------------------------------------------------------------
 	// 9. RuntimeKernel
 	// ---------------------------------------------------------------------------
@@ -305,23 +323,11 @@ func run() error {
 		EvidenceService:  evidenceService,
 		ResourceLockGate: resourceLockGate,
 		Observer:         runtimeObserver,
+		FeatureFlags:     runtimeFeatureFlags,
+		DebugConfig:      runtimeDebugConfig,
 	}
 	kernel := runtimekernel.NewRuntimeKernel(kernelCfg)
 
-	var oauthProvider auth.OAuthProvider
-	if strings.TrimSpace(oauthAuthorizeURL) != "" {
-		oauthProvider = &auth.DefaultOAuthProvider{
-			AuthorizeURL: oauthAuthorizeURL,
-			ExchangeFunc: func(context.Context, auth.OAuthCallbackRequest) (auth.CredentialTruth, error) {
-				return auth.CredentialTruth{
-					Mode:     auth.ModeChatGPT,
-					Email:    strings.TrimSpace(oauthEmail),
-					PlanType: strings.TrimSpace(oauthPlanType),
-				}, nil
-			},
-		}
-	}
-	authManager := auth.NewManager(oauthProvider)
 	llmResolver := &storeLLMResolver{repo: dataStore, fallback: authManager}
 	router.SetCredentialResolver(llmResolver)
 	router.SetProviderConfigResolver(llmResolver)
@@ -334,37 +340,30 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init web assets: %w", err)
 	}
-	var runnerRuntime *runnerembed.Runtime
-	if strings.TrimSpace(os.Getenv("AIOPS_RUNNER_DISABLED")) != "1" {
-		runnerRuntime, err = runnerembed.NewRuntime(ctx, runnerembed.Options{
-			DataDir:                    dataDir,
-			WorkflowReferenceGuardMode: workflowReferenceGuardMode,
+	runnerRuntime, err := runnerembed.NewRuntime(ctx, runnerembed.Options{
+		DataDir:                    dataDir,
+		WorkflowReferenceGuardMode: workflowReferenceGuardModeFromRuntimeSettings(runtimeDebugRuntimeSettings(settingsService, context.Background())),
+	})
+	if err != nil {
+		return fmt.Errorf("init runner runtime: %w", err)
+	}
+	if registrar, ok := settingsService.(appui.RuntimeSettingsListenerRegistrar); ok {
+		registrar.AddRuntimeSettingsListener(func(settings store.RuntimeSettings) {
+			runnerRuntime.SetWorkflowReferenceGuardMode(workflowReferenceGuardModeFromRuntimeSettings(settings))
 		})
-		if err != nil {
-			return fmt.Errorf("init runner runtime: %w", err)
-		}
-		runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
-		runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	}
-	if strings.TrimSpace(runnerStudioUpstreamURL) != "" {
-		if runnerRuntime != nil {
-			log.Printf("ai-server: Runner Studio upstream configuration is deprecated and ignored while embedded Runner is enabled")
-		} else {
-			log.Printf("ai-server: Runner Studio upstream configuration is deprecated; embedded Runner is disabled")
-		}
-	}
+	runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
+	runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	httpOptions := []server.HTTPServerOption{
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
-		server.WithRunnerStudioUpstreamURL(runnerStudioUpstreamURL),
-		server.WithOpsManualAutoRetrieval(opsManualAutoRetrieval),
+		server.WithPromptTraceService(appui.NewPromptTraceService(modeltrace.DefaultRootDir(dataDir))),
 	}
-	if runnerRuntime != nil {
-		httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
-	}
+	httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	hostAgentTokenStore := appui.NewLocalHostAgentTokenStore(secretDir)
 	serviceOptions := []appui.ServicesOption{
 		appui.WithStore(dataStore),
+		appui.WithSettingsService(settingsService),
 		appui.WithMCPRegistry(mcpRegistry),
 		appui.WithMCPRuntime(mcpRuntime),
 		appui.WithPluginSpecs(pluginSpecs),
@@ -377,9 +376,7 @@ func run() error {
 		appui.WithHostOpsService(appui.NewHostOpsService(hostOpsMissions, hostOpsTranscripts, hostOpsOrchestrator)),
 		appui.WithTerminalPolicyService(terminalPolicyService),
 	}
-	if runnerRuntime != nil {
-		serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
-	}
+	serviceOptions = append(serviceOptions, appui.WithHostBootstrapRunner(runnerembed.NewBootstrapClient(runnerRuntime)))
 	httpServer := server.NewHTTPServer(
 		appui.NewServices(
 			kernel,
@@ -441,10 +438,8 @@ func run() error {
 	}
 	grpcAPIServer.GracefulStop()
 
-	if runnerRuntime != nil {
-		if err := runnerRuntime.Close(shutdownCtx); err != nil {
-			log.Printf("runner runtime shutdown: %v", err)
-		}
+	if err := runnerRuntime.Close(shutdownCtx); err != nil {
+		log.Printf("runner runtime shutdown: %v", err)
 	}
 
 	if err := dataStore.Flush(); err != nil {
@@ -466,47 +461,24 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
-func envBoolDefault(key string, defaultVal bool) bool {
-	value := strings.ToLower(strings.TrimSpace(os.Getenv(key)))
-	switch value {
-	case "":
-		return defaultVal
-	case "1", "true", "yes", "on", "enabled":
-		return true
-	case "0", "false", "no", "off", "disabled":
-		return false
-	default:
-		return defaultVal
-	}
-}
-
-func workflowReferenceGuardModeFromEnv(getenv func(string) string) runnerservice.WorkflowReferenceGuardMode {
-	if getenv == nil {
-		getenv = func(string) string { return "" }
-	}
-	switch strings.ToLower(strings.TrimSpace(getenv("AIOPS_WORKFLOW_REFERENCE_GUARD_MODE"))) {
-	case "warn", "warning":
+func workflowReferenceGuardModeFromRuntimeSettings(settings store.RuntimeSettings) runnerservice.WorkflowReferenceGuardMode {
+	switch strings.ToLower(strings.TrimSpace(settings.Workflow.ReferenceGuardMode)) {
+	case store.RuntimeWorkflowReferenceGuardWarning, "warn":
 		return runnerservice.WorkflowReferenceGuardModeWarn
 	default:
 		return runnerservice.WorkflowReferenceGuardModeEnforce
 	}
 }
 
-func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
-	return store.OpenConfiguredStore(store.OpenConfigFromEnv(dataDir, getenv))
+func runtimeDebugRuntimeSettings(settingsService appui.SettingsService, ctx context.Context) store.RuntimeSettings {
+	if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
+		return provider.Snapshot(ctx)
+	}
+	return store.DefaultRuntimeSettings()
 }
 
-func runnerStudioUpstreamFromEnv(getenv func(string) string) string {
-	for _, key := range []string{
-		"AIOPS_RUNNER_STUDIO_UPSTREAM_URL",
-		"RUNNER_STUDIO_UPSTREAM_URL",
-		"AIOPS_RUNNER_API_BASE_URL",
-	} {
-		if value := strings.TrimSpace(getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
+func openConfiguredStore(dataDir string, getenv func(string) string) (store.Store, error) {
+	return store.OpenConfiguredStore(store.OpenConfigFromEnv(dataDir, getenv))
 }
 
 func newServerAgentRunner(
@@ -867,18 +839,14 @@ func (c opsManualWorkflowReferenceChecker) ReferencesForWorkflow(_ context.Conte
 	return refs, nil
 }
 
-func buildRuntimeObserver(ctx context.Context, getenv func(string) string) (runtimekernel.Observer, *observability.Provider) {
-	otelCfg := observability.ConfigFromEnv(getenv)
-	otelProvider, err := observability.Init(ctx, otelCfg)
+func buildRuntimeObserver(ctx context.Context) (runtimekernel.Observer, *observability.Provider) {
+	otelProvider, err := observability.Init(ctx, observability.Config{})
 	if err != nil {
 		log.Printf("ai-server: observability disabled: %v", err)
 		otelProvider, _ = observability.Init(ctx, observability.Config{})
 	}
 	if otelProvider == nil {
 		return runtimekernel.NoopObserver{}, &observability.Provider{}
-	}
-	if otelProvider.Enabled() {
-		return observability.NewRuntimeObserver(otelProvider.Tracer(), otelCfg), otelProvider
 	}
 	return runtimekernel.NoopObserver{}, otelProvider
 }
@@ -937,6 +905,7 @@ func (r *storeLLMResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelro
 		TopP:             derefFloat64(cfg.TopP),
 		MaxTokens:        cfg.MaxOutputTokens,
 		MaxContextTokens: normalizeLLMContextWindow(cfg.MaxContextTokens),
+		RequestTimeoutMs: normalizeLLMRequestTimeoutMs(cfg.RequestTimeoutMs),
 		ReasoningEffort:  strings.TrimSpace(cfg.ReasoningEffort),
 		ThinkingType:     strings.TrimSpace(cfg.ThinkingType),
 		ToolStream:       cfg.ToolStream,
@@ -960,6 +929,16 @@ func normalizeLLMContextWindow(value int) int {
 	}
 	if value < 10000 {
 		return 10000
+	}
+	return value
+}
+
+func normalizeLLMRequestTimeoutMs(value int) int {
+	if value <= 0 {
+		return 300000
+	}
+	if value < 1000 {
+		return 1000
 	}
 	return value
 }

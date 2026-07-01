@@ -7,10 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudwego/eino/schema"
-
 	"aiops-v2/internal/diagnostics"
-	"aiops-v2/internal/modelrouter"
 	mt "aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
@@ -24,7 +21,7 @@ type RuntimeTraceDebugRequest struct {
 	Iteration                     int
 	Metadata                      map[string]string
 	Compiled                      promptcompiler.CompiledPrompt
-	ModelInput                    []*schema.Message
+	ModelInput                    []promptinput.ModelInputItem
 	VisibleTools                  []string
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
@@ -41,6 +38,9 @@ type RuntimeTraceDebugRequest struct {
 	ToolSurfacePolicySnapshotHash string
 	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
 	PublicWebBudget               *promptinput.PublicWebBudgetTrace
+	WebSearchPolicy               *promptinput.WebSearchPolicyTrace
+	WebSearch                     *promptinput.WebSearchTrace
+	Final                         *promptinput.FinalTrace
 	LoadedToolsDelta              []string
 	LoadedPacksDelta              []string
 	SkillIndexHash                string
@@ -77,16 +77,12 @@ type RuntimeTraceDebugRequest struct {
 	FinalEvidenceState            *FinalEvidenceState
 }
 
-func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]*schema.Message, error) {
+func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]promptinput.ModelInputItem, error) {
 	result, err := buildPromptInput(history, compiled)
 	if err != nil {
 		return nil, err
 	}
-	messages, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
-	if err != nil {
-		return nil, fmt.Errorf("provider messages: %w", err)
-	}
-	return messages, nil
+	return append([]promptinput.ModelInputItem(nil), result.Items...), nil
 }
 
 func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt) (promptinput.BuildResult, error) {
@@ -106,13 +102,9 @@ func buildPromptInputWithContextGovernance(history []Message, compiled promptcom
 	if contextDedupe != nil {
 		result.Trace.ContextDedupe = contextDedupe
 	}
-	modelInput, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
-	if err != nil {
-		return promptinput.BuildResult{}, fmt.Errorf("provider messages: %w", err)
-	}
 	result.Trace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
 		Compiled:   compiled,
-		Messages:   modelInput,
+		Items:      result.Items,
 		Governance: governance,
 	})
 	return result, nil
@@ -182,12 +174,12 @@ func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
 			Digest:  ref.Digest,
 			Range:   ref.Range,
 		},
-		SourceRef:   firstNonBlankRuntimeString(ref.ID, uri),
-		Summary:     firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
-		Preview:     contextArtifactBoundedSnippet(msg.ToolResult.Content),
-		Content:     msg.ToolResult.Content,
-		ContentType: ref.ContentType,
-		Bytes:       ref.Bytes,
+		SourceRef:      firstNonBlankRuntimeString(ref.ID, uri),
+		Summary:        firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
+		ContentSnippet: contextArtifactBoundedSnippet(msg.ToolResult.Content),
+		Content:        msg.ToolResult.Content,
+		ContentType:    ref.ContentType,
+		Bytes:          ref.Bytes,
 	}, true
 }
 
@@ -1019,7 +1011,7 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	if promptInputContextUsageEmpty(promptTrace.ContextUsage) {
 		promptTrace.ContextUsage = AnalyzeContextUsage(ContextUsageInput{
 			Compiled: req.Compiled,
-			Messages: req.ModelInput,
+			Items:    req.ModelInput,
 		})
 	}
 	if len(promptTrace.VisibleOpsManualTools) == 0 {
@@ -1066,6 +1058,24 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	if promptTrace.PublicWebBudget == nil && req.PublicWebBudget != nil {
 		budget := *req.PublicWebBudget
 		promptTrace.PublicWebBudget = &budget
+	}
+	if promptTrace.WebSearchPolicy == nil {
+		if req.WebSearchPolicy != nil {
+			policy := *req.WebSearchPolicy
+			policy.ReasonCodes = append([]string(nil), req.WebSearchPolicy.ReasonCodes...)
+			policy.QuerySeeds = append([]string(nil), req.WebSearchPolicy.QuerySeeds...)
+			promptTrace.WebSearchPolicy = &policy
+		} else {
+			promptTrace.WebSearchPolicy = promptInputWebSearchPolicyTraceFromMetadata(req.Metadata)
+		}
+	}
+	if promptTrace.WebSearch == nil && req.WebSearch != nil {
+		search := *req.WebSearch
+		promptTrace.WebSearch = &search
+	}
+	if promptTrace.Final == nil && req.Final != nil {
+		final := *req.Final
+		promptTrace.Final = &final
 	}
 	if strings.TrimSpace(promptTrace.SkillIndexHash) == "" {
 		promptTrace.SkillIndexHash = strings.TrimSpace(req.SkillIndexHash)
@@ -1258,6 +1268,49 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 		PromptInputDiff:  req.PromptInputDiff,
 		DiagnosticTrace:  req.DiagnosticTrace,
 	}
+}
+
+func promptInputWebSearchPolicyTraceFromMetadata(metadata map[string]string) *promptinput.WebSearchPolicyTrace {
+	if len(metadata) == 0 {
+		return nil
+	}
+	level := strings.ToLower(strings.TrimSpace(metadata["aiops.webSearch.policy"]))
+	if level == "must_search" {
+		level = string(WebSearchEnabled)
+	}
+	reason := strings.TrimSpace(metadata["aiops.webSearch.reason"])
+	disabledBy := strings.TrimSpace(metadata["aiops.webSearch.disabledBy"])
+	reasonCodes := compactStringList(strings.FieldsFunc(metadata["aiops.webSearch.reasonCodes"], func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t'
+	}))
+	querySeeds := webSearchQuerySeedsTraceValues(metadata["aiops.webSearch.querySeeds"])
+	requireCitations := metadataBool(metadata["aiops.webSearch.requireCitations"])
+	if level == "" && reason == "" && disabledBy == "" && len(reasonCodes) == 0 && len(querySeeds) == 0 && !requireCitations {
+		return nil
+	}
+	return &promptinput.WebSearchPolicyTrace{
+		Level:            level,
+		Reason:           reason,
+		ReasonCodes:      reasonCodes,
+		QuerySeeds:       querySeeds,
+		DisabledBy:       disabledBy,
+		RequireCitations: requireCitations,
+	}
+}
+
+func webSearchQuerySeedsTraceValues(raw string) []string {
+	values := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	})
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = sanitizeWebSearchQuerySeed(value)
+		if value == "" {
+			continue
+		}
+		out = append(out, truncateWebSearchSeed(value))
+	}
+	return out
 }
 
 func cloneDeferredToolDirectoryForTrace(entries []promptcompiler.DeferredToolDirectoryEntry) []promptcompiler.DeferredToolDirectoryEntry {

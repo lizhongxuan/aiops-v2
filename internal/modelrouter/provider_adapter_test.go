@@ -60,8 +60,8 @@ func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
 	}
-	if resp.Output != "ok" || resp.RequestID == "" || resp.Message == nil {
-		t.Fatalf("provider response = %#v, want output, request id, and raw message", resp)
+	if resp.Output != "ok" || resp.RequestID == "" {
+		t.Fatalf("provider response = %#v, want output and request id", resp)
 	}
 	if len(model.input) != 1 || model.input[0].Role != schema.User || model.input[0].Content != "hello" {
 		t.Fatalf("model input = %#v, want converted user message", model.input)
@@ -507,6 +507,47 @@ func (m *cancelStreamModel) BindTools([]*schema.ToolInfo) error {
 	return nil
 }
 
+type wrappedObservedTimeoutError struct{}
+
+func (wrappedObservedTimeoutError) Error() string {
+	return `Post "https://api.z.ai/api/paas/v4/chat/completions": dial tcp 128.1.150.233:443: i/o timeout`
+}
+
+func (wrappedObservedTimeoutError) Timeout() bool {
+	return true
+}
+
+func (wrappedObservedTimeoutError) Temporary() bool {
+	return true
+}
+
+func (wrappedObservedTimeoutError) Unwrap() error {
+	return context.DeadlineExceeded
+}
+
+type observedNetworkTimeoutModel struct {
+	delay time.Duration
+}
+
+func (m *observedNetworkTimeoutModel) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate fallback should not replace stream network timeout")
+}
+
+func (m *observedNetworkTimeoutModel) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	timer := time.NewTimer(m.delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-timer.C:
+		return nil, wrappedObservedTimeoutError{}
+	}
+}
+
+func (m *observedNetworkTimeoutModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
 func TestGenerateModelResponseReturnsContextCanceledImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
@@ -524,7 +565,7 @@ func TestGenerateModelResponseTimesOutWhenProviderDoesNotReturn(t *testing.T) {
 	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
 
 	started := time.Now()
-	_, err := generateEinoModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponseWithTimeout(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, 25*time.Millisecond, nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -536,11 +577,11 @@ func TestGenerateModelResponseTimesOutWhenProviderDoesNotReturn(t *testing.T) {
 	}
 }
 
-func TestModelResponseTimeoutDefaultAllowsLongOperationalAnalysis(t *testing.T) {
-	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "")
-	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT", "")
+func TestModelResponseTimeoutIgnoresDeprecatedEnvAndDefaultsLong(t *testing.T) {
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
+	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT", "25ms")
 
-	if got := modelResponseTimeout(); got < 5*time.Minute {
+	if got := modelResponseTimeout(0); got < 5*time.Minute {
 		t.Fatalf("default model response timeout = %s, want at least 5m for long operational analysis", got)
 	}
 }
@@ -548,7 +589,7 @@ func TestModelResponseTimeoutDefaultAllowsLongOperationalAnalysis(t *testing.T) 
 func TestGenerateModelResponseWrapsProviderDeadlineWithReadableTimeout(t *testing.T) {
 	t.Setenv("AIOPS_LLM_REQUEST_TIMEOUT_MS", "25")
 
-	_, err := generateEinoModelResponse(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
+	_, err := generateEinoModelResponseWithTimeout(context.Background(), &cancelStreamModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, 25*time.Millisecond, nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -557,5 +598,53 @@ func TestGenerateModelResponseWrapsProviderDeadlineWithReadableTimeout(t *testin
 	}
 	if !strings.Contains(err.Error(), "模型响应超时") || !strings.Contains(err.Error(), "25ms") {
 		t.Fatalf("error = %q, want readable model timeout with duration", err.Error())
+	}
+}
+
+func TestGenerateModelResponseReportsObservedNetworkTimeoutDuration(t *testing.T) {
+	_, err := generateEinoModelResponseWithTimeout(
+		context.Background(),
+		&observedNetworkTimeoutModel{delay: 20 * time.Millisecond},
+		[]*schema.Message{schema.UserMessage("ping")},
+		nil,
+		5*time.Minute,
+		nil,
+		nil,
+	)
+	if err == nil {
+		t.Fatal("expected network timeout error")
+	}
+	got := err.Error()
+	if strings.Contains(got, "5m0s") {
+		t.Fatalf("error = %q, must not report configured 5m budget for observed network timeout", got)
+	}
+	for _, want := range []string{"模型请求超时", "约", "i/o timeout"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("error = %q, want %q", got, want)
+		}
+	}
+}
+
+func TestEinoProviderAdapterUsesConfiguredRequestTimeout(t *testing.T) {
+	adapter := NewEinoProviderAdapter(&cancelStreamModel{}, WithEinoRequestTimeoutMs(25))
+
+	started := time.Now()
+	_, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
+		Provider: "openai",
+		Model:    "gpt-5.4",
+		Input: []promptinput.ModelInputItem{{
+			ID:           "user-1",
+			ProviderRole: promptinput.ProviderRoleUser,
+			Content:      "ping",
+		}},
+	}, nil, nil)
+	if err == nil {
+		t.Fatal("expected timeout error")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "25ms") {
+		t.Fatalf("error = %v, want readable 25ms deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("timeout took %s, want configured request timeout", elapsed)
 	}
 }
