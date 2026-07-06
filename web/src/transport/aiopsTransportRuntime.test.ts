@@ -35,7 +35,46 @@ describe("aiopsTransportRuntime", () => {
     expect(state.hostMissions).toEqual({});
     expect(state.childAgents).toEqual({});
     expect(state.activeHostMissionId).toBeUndefined();
+    expect(state.specialInputContext).toBeUndefined();
     expect(new Date(state.updatedAt).toString()).not.toBe("Invalid Date");
+  });
+
+  it("normalizes special input context without requiring markdown inference", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-special-input"),
+      specialInputContext: {
+        schemaVersion: "aiops.special_input_memory.v1",
+        turnId: "turn-1",
+        activeGrant: {
+          id: "grant-host-a",
+          resourceKind: "host",
+          resourceId: "host-a",
+          canonicalKey: "host:host-a",
+          display: "host-a",
+          status: "active",
+          allowedActions: ["inspect", "read", "exec_low_risk"],
+        },
+        candidateFacts: [
+          {
+            id: "fact-raw",
+            kind: "host",
+            resourceKind: "host",
+            resourceId: "1.1.1.1",
+            canonicalKey: "host:1.1.1.1",
+            display: "1.1.1.1",
+            trustLevel: "raw_typed",
+            status: "active",
+          },
+        ],
+        pendingConfirmations: [
+          { id: "pending-target", kind: "target", reason: "active_grant_revalidate_failed" },
+        ],
+      },
+    } satisfies Partial<AiopsTransportState>);
+
+    expect(state.specialInputContext?.activeGrant?.resourceId).toBe("host-a");
+    expect(state.specialInputContext?.candidateFacts?.[0]?.trustLevel).toBe("raw_typed");
+    expect(state.specialInputContext?.pendingConfirmations?.[0]?.reason).toBe("active_grant_revalidate_failed");
   });
 
   it("normalizes nullable host mission arrays from runtime snapshots", () => {
@@ -275,6 +314,42 @@ describe("aiopsTransportRuntime", () => {
     expect(state.turns["turn-1"]?.final?.text).toContain("2. **pg_autoctl 将 B 初始化为独立主库");
   });
 
+  it("sanitizes model provider timeout details from failed final text and process blocks", () => {
+    const raw = `模型请求超时：约 20s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: Post "https://provider.invalid/v1/chat/completions": net/http: TLS handshake timeout`;
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-model-timeout"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "failed",
+          process: [
+            {
+              id: "runtime-error",
+              kind: "system",
+              status: "failed",
+              text: raw,
+            },
+          ],
+          final: {
+            id: "final-model-timeout",
+            text: raw,
+            status: "failed",
+          },
+        },
+      },
+    });
+
+    const finalText = state.turns["turn-1"]?.final?.text || "";
+    const processText = state.turns["turn-1"]?.process?.[0]?.text || "";
+    expect(finalText).toBe("模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。");
+    expect(processText).toBe(finalText);
+    for (const forbidden of ["provider.invalid", "chat/completions", "Post ", "TLS handshake timeout", "约 20s"]) {
+      expect(finalText).not.toContain(forbidden);
+      expect(processText).not.toContain(forbidden);
+    }
+  });
+
   it("builds custom AssistantTransport commands from the current state", () => {
     const send = vi.fn();
     const state = {
@@ -291,6 +366,8 @@ describe("aiopsTransportRuntime", () => {
     actions.mcpAction("filesystem", "open", { path: "/tmp" });
     actions.mcpRefresh("filesystem");
     actions.mcpPin("filesystem", true);
+    actions.specialInputClear({ resourceKind: "host", resourceId: "host-a", canonicalKey: "host:host-a" });
+    actions.specialInputConfirm({ resourceKind: "host", resourceId: "1.1.1.1", canonicalKey: "host:1.1.1.1" });
 
     expect(send.mock.calls.map(([command]) => command)).toEqual([
       {
@@ -320,6 +397,20 @@ describe("aiopsTransportRuntime", () => {
       },
       { type: "aiops.mcp-refresh", surfaceId: "filesystem" },
       { type: "aiops.mcp-pin", surfaceId: "filesystem", pinned: true },
+      {
+        type: "aiops.special-input-clear",
+        sessionId: "sess-1",
+        resourceKind: "host",
+        resourceId: "host-a",
+        canonicalKey: "host:host-a",
+      },
+      {
+        type: "aiops.special-input-confirm",
+        sessionId: "sess-1",
+        resourceKind: "host",
+        resourceId: "1.1.1.1",
+        canonicalKey: "host:1.1.1.1",
+      },
     ]);
   });
 
@@ -355,8 +446,24 @@ describe("aiopsTransportRuntime", () => {
 
     expect(failed).toMatchObject({
       status: "failed",
-      lastError: "backend unavailable",
-      turns: { "turn-1": { status: "failed" } },
+      lastError: "服务异常,请稍后重试",
+      turns: {
+        "turn-1": {
+          status: "failed",
+          process: [
+            {
+              id: "reasoning-1",
+              status: "failed",
+              text: "模型调用失败",
+            },
+            {
+              id: "tool-1",
+              status: "completed",
+              text: "已读取日志",
+            },
+          ],
+        },
+      },
     });
     expect(canceled).toMatchObject({
       status: "canceled",

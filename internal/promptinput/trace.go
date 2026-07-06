@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 func buildTrace(req BuildRequest, modelInputItems []ModelInputItem, memories []MemoryItem, history []Message) PromptInputTrace {
@@ -52,6 +54,14 @@ func buildTrace(req BuildRequest, modelInputItems []ModelInputItem, memories []M
 		SafetySignals:          cloneSafetySignalTraces(req.SafetySignals),
 		UnexpectedStateGate:    cloneUnexpectedStateGateTrace(req.UnexpectedStateGate),
 		ApprovalScope:          cloneApprovalScopeTrace(req.ApprovalScope),
+		ResourceBindings:       append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...),
+		ResourceRoleBindings:   append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...),
+		ResourceCapabilities:   append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...),
+		ResourceEvidenceRefs:   append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...),
+		SessionTargetSnapshot:  req.SessionTargetSnapshot,
+		RoleBindingConflicts:   append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...),
+		AgentAssemblySnapshot:  req.AgentAssemblySnapshot,
+		SpecialInputWorldState: specialinputmemory.CloneWorldStateSection(req.SpecialInputWorldState),
 		PlanModeState:          planModeTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.PlanMode),
 		TaskTodoState:          taskTodoTraceStateFromProtocol(req.Compiled.Dynamic.ProtocolState.TaskTodo),
 	}
@@ -130,7 +140,31 @@ func clonePromptSectionTrace(sections []promptcompiler.PromptSectionTrace) []pro
 	if len(sections) == 0 {
 		return nil
 	}
-	return append([]promptcompiler.PromptSectionTrace(nil), sections...)
+	out := append([]promptcompiler.PromptSectionTrace(nil), sections...)
+	for i := range out {
+		if out[i].TokenEstimate == 0 {
+			out[i].TokenEstimate = out[i].TokensEstimate
+		}
+		if out[i].Action == "" {
+			out[i].Action = promptSectionHarnessAction(out[i].CompactAction)
+		}
+	}
+	return out
+}
+
+func promptSectionHarnessAction(action string) string {
+	switch action {
+	case promptcompiler.CompactActionKeptOriginal, "":
+		return "kept"
+	case promptcompiler.CompactActionSummarized:
+		return "summarized"
+	case promptcompiler.CompactActionExternalized:
+		return "externalized"
+	case promptcompiler.CompactActionBlocked:
+		return "blocked"
+	default:
+		return action
+	}
 }
 
 func cloneChangedPromptSections(sections []promptcompiler.ChangedPromptSection) []promptcompiler.ChangedPromptSection {

@@ -264,6 +264,13 @@ func errorItemID(turnID string, iteration int) string {
 	return fmt.Sprintf("%s-error", strings.TrimSpace(turnID))
 }
 
+func finalResponseItemID(turnID string, iteration int) string {
+	if iteration >= 0 {
+		return fmt.Sprintf("%s-final-response-%d", strings.TrimSpace(turnID), iteration)
+	}
+	return fmt.Sprintf("%s-final-response", strings.TrimSpace(turnID))
+}
+
 func planItemFromToolCall(turnID string, tc ToolCall) (agentstate.TurnItem, bool) {
 	if !isUpdatePlanToolName(tc.Name) {
 		return agentstate.TurnItem{}, false

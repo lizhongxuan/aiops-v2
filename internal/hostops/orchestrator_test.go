@@ -3,10 +3,12 @@ package hostops
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"aiops-v2/internal/opssemantic"
+	"aiops-v2/internal/resourcebinding"
 )
 
 func TestOrchestratorSpawnsOneChildPerMentionedHost(t *testing.T) {
@@ -80,6 +82,130 @@ func TestOrchestratorSpawnsOneChildAgentPerMissionHost(t *testing.T) {
 	}
 	if children[0].HostID == children[1].HostID || children[0].ID == children[1].ID {
 		t.Fatalf("child agents must be unique per host: %#v", children)
+	}
+}
+
+func TestOrchestratorPropagatesRoleBindingToSpawnRequestAndChild(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryMissionStore()
+	transcripts := NewInMemoryTranscriptStore()
+	spawner := &fakeChildSpawner{}
+	orchestrator := NewOrchestrator(store, transcripts, spawner)
+	mission := HostOperationMission{
+		ID:           "mission-role",
+		ThreadID:     "thread-1",
+		UserTurnID:   "turn-1",
+		Status:       HostMissionStatusSpawningChildren,
+		PlanRequired: true,
+		PlanAccepted: true,
+		Mentions: []HostMention{
+			{HostID: "host-a", DisplayName: "主机A", Resolved: true},
+		},
+		Plan: HostOperationPlan{
+			ID:     "plan-role",
+			Status: PlanStatusAccepted,
+			Steps:  []PlanStep{{ID: "step-primary", HostIDs: []string{"host-a"}, ActionType: "read", RiskLevel: "low"}},
+		},
+	}
+	if err := store.SaveMission(ctx, mission); err != nil {
+		t.Fatal(err)
+	}
+	children, err := orchestrator.SpawnChildren(ctx, mission.ID, []ChildAgentAssignment{{
+		HostID:          "host-a",
+		Task:            "检查主节点状态",
+		PlanStepID:      "step-primary",
+		BoundRole:       "pg_primary",
+		RoleBindingHash: "role-hash-a",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(children) != 1 {
+		t.Fatalf("children = %d, want 1", len(children))
+	}
+	if spawner.lastReq.BoundRole != "pg_primary" || spawner.lastReq.RoleBindingHash != "role-hash-a" {
+		t.Fatalf("spawn request = %+v, want bound role/hash", spawner.lastReq)
+	}
+	if children[0].BoundRole != "pg_primary" || children[0].RoleBindingHash != "role-hash-a" {
+		t.Fatalf("child = %+v, want bound role/hash", children[0])
+	}
+}
+
+func TestOrchestratorResolvesAssignmentRoleToUniqueMissionHost(t *testing.T) {
+	store := NewInMemoryMissionStore()
+	transcripts := NewInMemoryTranscriptStore()
+	spawner := &fakeChildSpawner{}
+	orchestrator := NewOrchestrator(store, transcripts, spawner)
+	primary := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+		ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+		Role:        resourcebinding.RolePGPrimary,
+	})
+	standby := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+		ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"},
+		Role:        resourcebinding.RolePGStandby,
+	})
+	mission := HostOperationMission{
+		ID:                           "mission-role-resolve",
+		ThreadID:                     "thread-1",
+		UserTurnID:                   "turn-1",
+		PlanRequired:                 true,
+		PlanAccepted:                 true,
+		RoleBindings:                 []resourcebinding.ResourceRoleBinding{primary, standby},
+		RoleConflicts:                nil,
+		RoleBindingAssignmentEnabled: true,
+		ManagerAgentID:               "manager-a",
+		Mentions: []HostMention{
+			{HostID: "host-a", Address: "1.1.1.1", DisplayName: "hostA", Resolved: true},
+			{HostID: "host-b", Address: "1.1.1.2", DisplayName: "hostB", Resolved: true},
+		},
+	}
+	if err := store.SaveMission(context.Background(), mission); err != nil {
+		t.Fatalf("SaveMission() error = %v", err)
+	}
+
+	children, err := orchestrator.SpawnChildren(context.Background(), mission.ID, []ChildAgentAssignment{{
+		BoundRole: "主节点",
+		Task:      "检查主节点复制状态",
+	}})
+	if err != nil {
+		t.Fatalf("SpawnChildren() error = %v", err)
+	}
+	if len(children) != 1 || children[0].HostID != "host-a" || children[0].BoundRole != resourcebinding.RolePGPrimary {
+		t.Fatalf("children = %#v, want unique primary host-a", children)
+	}
+	if spawner.lastReq.HostID != "host-a" || spawner.lastReq.RoleBindingHash != primary.TraceHash {
+		t.Fatalf("spawn request = %#v, want resolved host-a role hash", spawner.lastReq)
+	}
+}
+
+func TestOrchestratorRoleBindingAssignmentFlagOffKeepsHostIDRequired(t *testing.T) {
+	store := NewInMemoryMissionStore()
+	transcripts := NewInMemoryTranscriptStore()
+	orchestrator := NewOrchestrator(store, transcripts, &fakeChildSpawner{})
+	mission := HostOperationMission{
+		ID:           "mission-role-flag-off",
+		ThreadID:     "thread-1",
+		UserTurnID:   "turn-1",
+		PlanRequired: true,
+		PlanAccepted: true,
+		RoleBindings: []resourcebinding.ResourceRoleBinding{
+			resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+				ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+				Role:        resourcebinding.RolePGPrimary,
+			}),
+		},
+		Mentions: []HostMention{{HostID: "host-a", Resolved: true}},
+	}
+	if err := store.SaveMission(context.Background(), mission); err != nil {
+		t.Fatalf("SaveMission() error = %v", err)
+	}
+
+	_, err := orchestrator.SpawnChildren(context.Background(), mission.ID, []ChildAgentAssignment{{
+		BoundRole: "主节点",
+		Task:      "检查主节点复制状态",
+	}})
+	if err == nil || !strings.Contains(err.Error(), "hostId is required") {
+		t.Fatalf("SpawnChildren() error = %v, want hostId required with flag off", err)
 	}
 }
 

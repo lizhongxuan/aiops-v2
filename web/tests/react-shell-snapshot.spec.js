@@ -191,6 +191,101 @@ function finalMarkdownState(status) {
   };
 }
 
+function finalContractSummaryState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "final-contract-summary-session",
+    threadId: "final-contract-summary-session",
+    status: "idle",
+    currentTurnId: "turn-final-contract-summary",
+    turns: {
+      "turn-final-contract-summary": {
+        id: "turn-final-contract-summary",
+        status: "completed",
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: "2026-05-08T02:00:12.000Z",
+        updatedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: "user-final-contract-summary",
+          text: "只读看一下主机进程和负载，不要修改任何东西",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [],
+        final: {
+          id: "final-contract-summary",
+          text: "以下是只读巡检结果：系统负载稳定，未执行任何修改。",
+          status: "verified",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "high",
+          checkedEvidenceRefs: ["call_secret_1", "call_secret_2"],
+        },
+      },
+    },
+    turnOrder: ["turn-final-contract-summary"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 2,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
+function finalContractInternalCalibrationState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "final-contract-internal-calibration-session",
+    threadId: "final-contract-internal-calibration-session",
+    status: "idle",
+    currentTurnId: "turn-final-contract-internal-calibration",
+    turns: {
+      "turn-final-contract-internal-calibration": {
+        id: "turn-final-contract-internal-calibration",
+        status: "completed",
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: "2026-05-08T02:00:12.000Z",
+        updatedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: "user-final-contract-internal-calibration",
+          text: "你好",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [],
+        final: {
+          id: "final-contract-internal-calibration",
+          text: "你好！有什么可以帮你的吗？",
+          status: "unknown",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+        },
+      },
+    },
+    turnOrder: ["turn-final-contract-internal-calibration"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 2,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
 function runningPreludeBeforeToolsState() {
   return {
     schemaVersion: "aiops.transport.v2",
@@ -793,7 +888,25 @@ function opsManualDynamicCandidatesState() {
 }
 
 function dataStreamForState(state) {
-  return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
+  return `aui-state:${JSON.stringify([{ type: "set", path: [], value: completeTransportFixtureState(state) }])}\n`;
+}
+
+function completeTransportFixtureState(state) {
+  return {
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    ...state,
+  };
 }
 
 async function routeShellApis(page, stateOrGetState) {
@@ -875,6 +988,31 @@ test("assistant final markdown keeps the same layout while running and after com
   const completedFinal = page.getByTestId("aiops-answer-document");
   await expect(completedFinal).toBeVisible();
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
+});
+
+test("final contract summary hides raw evidence refs", async ({ page }) => {
+  await routeShellApis(page, finalContractSummaryState());
+  await page.goto("/");
+
+  const summary = page.getByTestId("aiops-final-contract-summary");
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText("已验证");
+  await expect(summary).toContainText("置信度高");
+  await expect(summary).toContainText("已采集 2 条证据");
+  await expect(summary).not.toContainText("call_secret_1");
+  await expect(summary).not.toContainText("call_secret_2");
+  await expect(summary).toHaveScreenshot("final-contract-summary-redacted-evidence.png");
+});
+
+test("final contract summary hides internal low confidence calibration", async ({ page }) => {
+  await routeShellApis(page, finalContractInternalCalibrationState());
+  await page.goto("/");
+
+  await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+  const answer = page.getByTestId("aiops-answer-document");
+  await expect(answer).toContainText("你好！有什么可以帮你的吗？");
+  await expect(answer).not.toContainText("置信度低");
+  await expect(answer).toHaveScreenshot("final-contract-internal-calibration-hidden.png");
 });
 
 test("running assistant text keeps the process header before tool blocks arrive", async ({ page }) => {

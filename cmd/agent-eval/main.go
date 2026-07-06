@@ -25,6 +25,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	var baselinePath string
 	var saveBaselinePath string
 	var priority string
+	var suite string
 	var runPhase string
 	var serverURL string
 	var repetitions int
@@ -40,6 +41,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	flags.StringVar(&baselinePath, "baseline", "", "optional baseline report.json to compare against")
 	flags.StringVar(&saveBaselinePath, "save-baseline", "", "optional path to write the current report as a baseline")
 	flags.StringVar(&priority, "priority", "", "optional case priority filter: P0, P1, or P2")
+	flags.StringVar(&suite, "suite", "", "optional eval suite under -cases, for example multi_agent_assembly")
 	flags.StringVar(&runPhase, "run-phase", "", "optional run phase metadata: baseline, candidate, or unknown")
 	flags.IntVar(&repetitions, "repetitions", 1, "number of times to run each case")
 	flags.StringVar(&serverURL, "server-url", "http://localhost:8080", "base URL for -agent server")
@@ -54,6 +56,14 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 			now = time.Now
 		}
 		outputDir = filepath.Join(".data", "eval_runs", now().UTC().Format("20060102T150405Z"))
+	}
+	effectiveCasesDir := strings.TrimSpace(casesDir)
+	if strings.TrimSpace(suite) != "" {
+		cleanSuite := filepath.Clean(strings.TrimSpace(suite))
+		if filepath.IsAbs(cleanSuite) || cleanSuite == "." || cleanSuite == ".." || strings.HasPrefix(cleanSuite, ".."+string(os.PathSeparator)) {
+			return printError(stderr, fmt.Errorf("invalid suite %q", suite))
+		}
+		effectiveCasesDir = filepath.Join(effectiveCasesDir, cleanSuite)
 	}
 	agent, err := buildAgent(agentName, eval.ServerAgentConfig{
 		BaseURL:      serverURL,
@@ -74,8 +84,16 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		baseline = &report
 	}
 
+	metadata := map[string]string{"runtime_settings": "not_loaded_by_agent_eval"}
+	if strings.TrimSpace(suite) != "" {
+		cleanSuite := strings.TrimSpace(suite)
+		metadata["suite"] = cleanSuite
+		if strings.Contains(strings.ToLower(cleanSuite), "harness") {
+			metadata["harness_contract_schema"] = "aiops.harness.golden.v1"
+		}
+	}
 	report, err := eval.Runner{
-		CasesDir:       casesDir,
+		CasesDir:       effectiveCasesDir,
 		OutputDir:      outputDir,
 		Agent:          agent,
 		AgentName:      agentName,
@@ -83,7 +101,7 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 		RunPhase:       runPhase,
 		Priority:       priority,
 		Repetitions:    repetitions,
-		Metadata:       map[string]string{"runtime_settings": "not_loaded_by_agent_eval"},
+		Metadata:       metadata,
 		BaselineReport: baseline,
 	}.Run(ctx)
 	if err != nil {

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/specialinputmemory"
 )
 
 const AiopsTransportSchemaVersion = "aiops.transport.v2"
@@ -61,9 +63,17 @@ const (
 type AiopsTransportFinalStatus string
 
 const (
-	AiopsTransportFinalStatusRunning   AiopsTransportFinalStatus = "running"
-	AiopsTransportFinalStatusCompleted AiopsTransportFinalStatus = "completed"
-	AiopsTransportFinalStatusFailed    AiopsTransportFinalStatus = "failed"
+	AiopsTransportFinalStatusRunning         AiopsTransportFinalStatus = "running"
+	AiopsTransportFinalStatusCompleted       AiopsTransportFinalStatus = "completed"
+	AiopsTransportFinalStatusFailed          AiopsTransportFinalStatus = "failed"
+	AiopsTransportFinalStatusVerified        AiopsTransportFinalStatus = "verified"
+	AiopsTransportFinalStatusPartial         AiopsTransportFinalStatus = "partial"
+	AiopsTransportFinalStatusBlocked         AiopsTransportFinalStatus = "blocked"
+	AiopsTransportFinalStatusNeedsEvidence   AiopsTransportFinalStatus = "needs_evidence"
+	AiopsTransportFinalStatusApprovalDenied  AiopsTransportFinalStatus = "approval_denied"
+	AiopsTransportFinalStatusToolUnavailable AiopsTransportFinalStatus = "tool_unavailable"
+	AiopsTransportFinalStatusCancelled       AiopsTransportFinalStatus = "cancelled"
+	AiopsTransportFinalStatusUnknown         AiopsTransportFinalStatus = "unknown"
 )
 
 type AiopsTransportState struct {
@@ -81,6 +91,7 @@ type AiopsTransportState struct {
 	RuntimeLiveness     AiopsRuntimeLiveness                 `json:"runtimeLiveness"`
 	HostMissions        map[string]AiopsTransportHostMission `json:"hostMissions,omitempty"`
 	ChildAgents         map[string]AiopsTransportChildAgent  `json:"childAgents,omitempty"`
+	SpecialInputContext *specialinputmemory.TransportContext `json:"specialInputContext,omitempty"`
 	ActiveHostMissionID string                               `json:"activeHostMissionId,omitempty"`
 	LastError           string                               `json:"lastError,omitempty"`
 	Seq                 int64                                `json:"seq"`
@@ -143,10 +154,27 @@ type AiopsTransportIntent struct {
 }
 
 type AiopsTransportFinal struct {
-	ID         string                    `json:"id"`
-	Text       string                    `json:"text"`
-	Status     AiopsTransportFinalStatus `json:"status"`
-	DurationMs int64                     `json:"durationMs,omitempty"`
+	ID                    string                           `json:"id"`
+	Text                  string                           `json:"text"`
+	Status                AiopsTransportFinalStatus        `json:"status"`
+	SchemaVersion         string                           `json:"schemaVersion,omitempty"`
+	Confidence            string                           `json:"confidence,omitempty"`
+	AnswerText            string                           `json:"answerText,omitempty"`
+	CheckedEvidenceRefs   []string                         `json:"checkedEvidenceRefs,omitempty"`
+	UncheckedRequirements []string                         `json:"uncheckedRequirements,omitempty"`
+	FailedToolImpacts     []AiopsTransportFailedToolImpact `json:"failedToolImpacts,omitempty"`
+	ApprovedActions       []string                         `json:"approvedActions,omitempty"`
+	PerformedActions      []string                         `json:"performedActions,omitempty"`
+	PostChecks            []string                         `json:"postChecks,omitempty"`
+	Limitations           []string                         `json:"limitations,omitempty"`
+	DurationMs            int64                            `json:"durationMs,omitempty"`
+}
+
+type AiopsTransportFailedToolImpact struct {
+	ToolName     string `json:"toolName,omitempty"`
+	ToolCallID   string `json:"toolCallId,omitempty"`
+	FailureClass string `json:"failureClass,omitempty"`
+	Impact       string `json:"impact,omitempty"`
 }
 
 type AiopsProcessBlock struct {

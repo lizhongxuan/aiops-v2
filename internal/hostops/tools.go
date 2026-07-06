@@ -70,7 +70,7 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			},
 		},
 		Visibility:      managerToolVisibility(),
-		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId","assignments"],"properties":{"missionId":{"type":"string"},"assignments":{"type":"array","items":{"type":"object","required":["hostId","task"],"properties":{"hostId":{"type":"string"},"hostAddress":{"type":"string"},"hostDisplayName":{"type":"string"},"role":{"type":"string"},"task":{"type":"string"},"sessionId":{"type":"string"},"parentAgentId":{"type":"string"}}}}}}`),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId","assignments"],"properties":{"missionId":{"type":"string"},"assignments":{"type":"array","items":{"type":"object","required":["hostId","task"],"properties":{"hostId":{"type":"string"},"hostAddress":{"type":"string"},"hostDisplayName":{"type":"string"},"role":{"type":"string"},"boundRole":{"type":"string"},"roleBindingHash":{"type":"string"},"task":{"type":"string"},"sessionId":{"type":"string"},"parentAgentId":{"type":"string"}}}}}}`),
 		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
 		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			var req spawnHostAgentInput

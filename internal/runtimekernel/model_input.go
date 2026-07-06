@@ -7,11 +7,14 @@ import (
 	"sort"
 	"strings"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/diagnostics"
 	mt "aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/taskdepth"
 )
 
@@ -34,6 +37,10 @@ type RuntimeTraceDebugRequest struct {
 	PlanCompletionGate            *promptinput.PlanCompletionGateTrace
 	ReasoningEffort               string
 	AnswerStyle                   string
+	AssemblySource                string
+	PromptCompilerSource          string
+	ToolSurfaceSource             string
+	AdapterName                   string
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
 	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
@@ -63,6 +70,14 @@ type RuntimeTraceDebugRequest struct {
 	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding
+	ResourceCapabilities          []resourcebinding.ResourceCapability
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef
+	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot
+	RoleBindingConflicts          []resourcebinding.RoleBindingConflict
+	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot
+	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection
 	ResourceLocks                 []promptinput.ResourceLockTrace
 	OwnerWriteTraces              []OwnerWriteTrace
 	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
@@ -352,10 +367,11 @@ func promptInputMessagesFromRuntimeWithContextDedupe(history []Message) ([]promp
 			toolResult.Content = compactChartPayloadForModel(toolResult.Content)
 		}
 		out = append(out, promptinput.Message{
-			Role:       msg.Role,
-			Content:    content,
-			ToolCalls:  promptInputToolCallsFromRuntime(msg.ToolCalls),
-			ToolResult: toolResult,
+			Role:             msg.Role,
+			Content:          content,
+			ReasoningContent: msg.ReasoningContent,
+			ToolCalls:        promptInputToolCallsFromRuntime(msg.ToolCalls),
+			ToolResult:       toolResult,
 		})
 	}
 	return out, dedupe.Trace()
@@ -969,10 +985,11 @@ func runtimeMessagesFromPromptInput(messages []promptinput.Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
 		out = append(out, Message{
-			Role:       msg.Role,
-			Content:    msg.Content,
-			ToolCalls:  runtimeToolCallsFromPromptInput(msg.ToolCalls),
-			ToolResult: runtimeToolResultFromPromptInput(msg.ToolResult),
+			Role:             msg.Role,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ToolCalls:        runtimeToolCallsFromPromptInput(msg.ToolCalls),
+			ToolResult:       runtimeToolResultFromPromptInput(msg.ToolResult),
 		})
 	}
 	return out
@@ -1036,6 +1053,18 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	}
 	if promptTrace.ToolSurfacePolicySnapshotHash == "" {
 		promptTrace.ToolSurfacePolicySnapshotHash = req.ToolSurfacePolicySnapshotHash
+	}
+	if strings.TrimSpace(promptTrace.AssemblySource) == "" {
+		promptTrace.AssemblySource = firstNonBlankRuntimeString(req.AssemblySource, "runtimekernel.buildModelInputTraceRequest")
+	}
+	if strings.TrimSpace(promptTrace.PromptCompilerSource) == "" {
+		promptTrace.PromptCompilerSource = firstNonBlankRuntimeString(req.PromptCompilerSource, "promptcompiler.Compiler")
+	}
+	if strings.TrimSpace(promptTrace.ToolSurfaceSource) == "" {
+		promptTrace.ToolSurfaceSource = firstNonBlankRuntimeString(req.ToolSurfaceSource, "runtimekernel.applyToolSurfacePolicyToCompileContext")
+	}
+	if strings.TrimSpace(promptTrace.AdapterName) == "" {
+		promptTrace.AdapterName = firstNonBlankRuntimeString(req.AdapterName, "eino")
 	}
 	if len(promptTrace.DeferredToolDirectory) == 0 {
 		promptTrace.DeferredToolDirectory = cloneDeferredToolDirectoryForTrace(req.Compiled.Tools.DeferredDirectory)
@@ -1138,6 +1167,30 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	if len(promptTrace.AgentParallelTraceGroups) == 0 {
 		promptTrace.AgentParallelTraceGroups = append([]promptinput.AgentParallelTraceGroup(nil), req.AgentParallelTraceGroups...)
 	}
+	if len(promptTrace.ResourceBindings) == 0 {
+		promptTrace.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...)
+	}
+	if len(promptTrace.ResourceRoleBindings) == 0 {
+		promptTrace.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+	}
+	if len(promptTrace.ResourceCapabilities) == 0 {
+		promptTrace.ResourceCapabilities = append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...)
+	}
+	if len(promptTrace.ResourceEvidenceRefs) == 0 {
+		promptTrace.ResourceEvidenceRefs = append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...)
+	}
+	if promptTrace.SessionTargetSnapshot == nil && req.SessionTargetSnapshot != nil {
+		promptTrace.SessionTargetSnapshot = req.SessionTargetSnapshot
+	}
+	if len(promptTrace.RoleBindingConflicts) == 0 {
+		promptTrace.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	}
+	if promptTrace.AgentAssemblySnapshot == nil && req.AgentAssemblySnapshot != nil {
+		promptTrace.AgentAssemblySnapshot = req.AgentAssemblySnapshot
+	}
+	if promptTrace.SpecialInputWorldState == nil && req.SpecialInputWorldState != nil {
+		promptTrace.SpecialInputWorldState = specialinputmemory.CloneWorldStateSection(req.SpecialInputWorldState)
+	}
 	if len(promptTrace.ResourceLocks) == 0 {
 		promptTrace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
 	}
@@ -1230,6 +1283,10 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 		PromptFingerprint:             promptFingerprintMap(req.Compiled.Fingerprint),
 		ToolSurfaceFingerprint:        promptTrace.ToolSurfaceFingerprint,
 		ToolSurfacePolicySnapshotHash: promptTrace.ToolSurfacePolicySnapshotHash,
+		AssemblySource:                promptTrace.AssemblySource,
+		PromptCompilerSource:          promptTrace.PromptCompilerSource,
+		ToolSurfaceSource:             promptTrace.ToolSurfaceSource,
+		AdapterName:                   promptTrace.AdapterName,
 		LoadedToolsDelta:              promptTrace.LoadedToolsDelta,
 		LoadedPacksDelta:              promptTrace.LoadedPacksDelta,
 		SkillIndexHash:                promptTrace.SkillIndexHash,
@@ -1245,6 +1302,14 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 		ParallelDispatchGroups:        promptTrace.ParallelDispatchGroups,
 		TaskClaims:                    promptTrace.TaskClaims,
 		FailedToolSummaries:           promptTrace.FailedToolSummaries,
+		ResourceBindings:              promptTrace.ResourceBindings,
+		ResourceRoleBindings:          promptTrace.ResourceRoleBindings,
+		ResourceCapabilities:          promptTrace.ResourceCapabilities,
+		ResourceEvidenceRefs:          promptTrace.ResourceEvidenceRefs,
+		SessionTargetSnapshot:         promptTrace.SessionTargetSnapshot,
+		RoleBindingConflicts:          promptTrace.RoleBindingConflicts,
+		AgentAssemblySnapshot:         promptTrace.AgentAssemblySnapshot,
+		SpecialInputWorldState:        promptTrace.SpecialInputWorldState,
 		VerificationReportRef:         promptTrace.VerificationReportRef,
 		VerificationStatus:            promptTrace.VerificationStatus,
 		CompletionGate:                promptTrace.CompletionGate,

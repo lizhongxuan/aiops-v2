@@ -9,31 +9,35 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/specialinputmemory"
 )
 
 const TraceDocumentV2SchemaVersion = "aiops.trace/v2"
 
 type TraceDocumentV2 struct {
-	SchemaVersion      string               `json:"schemaVersion"`
-	CreatedAt          string               `json:"createdAt"`
-	SessionID          string               `json:"sessionId"`
-	TurnID             string               `json:"turnId"`
-	Iteration          int                  `json:"iteration"`
-	Metadata           map[string]string    `json:"metadata,omitempty"`
-	VisibleTools       []string             `json:"visibleTools,omitempty"`
-	PromptFingerprint  map[string]string    `json:"promptFingerprint,omitempty"`
-	TurnContext        any                  `json:"turnContext,omitempty"`
-	StepContext        any                  `json:"stepContext,omitempty"`
-	ProviderRequest    ProviderRequestTrace `json:"providerRequest,omitempty"`
-	ToolSurface        any                  `json:"toolSurface,omitempty"`
-	Prompt             Prompt               `json:"prompt,omitempty"`
-	ModelInput         any                  `json:"modelInput,omitempty"`
-	LLMRequests        []any                `json:"llmRequests,omitempty"`
-	PromptInputTrace   any                  `json:"promptInputTrace,omitempty"`
-	PromptInputDiff    any                  `json:"promptInputDiff,omitempty"`
-	DiagnosticTrace    any                  `json:"diagnosticTrace,omitempty"`
-	FinalEvidenceState any                  `json:"finalEvidenceState,omitempty"`
-	RawPayloadRefs     []RawPayloadRef      `json:"rawPayloadRefs,omitempty"`
+	SchemaVersion          string                                            `json:"schemaVersion"`
+	CreatedAt              string                                            `json:"createdAt"`
+	SessionID              string                                            `json:"sessionId"`
+	TurnID                 string                                            `json:"turnId"`
+	Iteration              int                                               `json:"iteration"`
+	Metadata               map[string]string                                 `json:"metadata,omitempty"`
+	VisibleTools           []string                                          `json:"visibleTools,omitempty"`
+	PromptFingerprint      map[string]string                                 `json:"promptFingerprint,omitempty"`
+	TurnContext            any                                               `json:"turnContext,omitempty"`
+	StepContext            any                                               `json:"stepContext,omitempty"`
+	HarnessTurn            any                                               `json:"harnessTurn,omitempty"`
+	ProviderRequest        ProviderRequestTrace                              `json:"providerRequest,omitempty"`
+	ToolSurface            any                                               `json:"toolSurface,omitempty"`
+	Prompt                 Prompt                                            `json:"prompt,omitempty"`
+	ModelInput             any                                               `json:"modelInput,omitempty"`
+	LLMRequests            []any                                             `json:"llmRequests,omitempty"`
+	SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState,omitempty"`
+	PromptInputTrace       any                                               `json:"promptInputTrace,omitempty"`
+	PromptInputDiff        any                                               `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace        any                                               `json:"diagnosticTrace,omitempty"`
+	FinalEvidenceState     any                                               `json:"finalEvidenceState,omitempty"`
+	RawPayloadRefs         []RawPayloadRef                                   `json:"rawPayloadRefs,omitempty"`
 }
 
 type ProviderRequestTrace struct {
@@ -106,6 +110,7 @@ func WriteTraceDocumentV2FromRequestWithConfig(cfg Config, req Request) (string,
 	if caseID := firstNonEmptyTraceV2(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]); caseID != "" {
 		metadata["caseId"] = caseID
 	}
+	promptTrace := mergeRequestToolTraceFields(req)
 	doc := TraceDocumentV2{
 		SchemaVersion:     TraceDocumentV2SchemaVersion,
 		SessionID:         firstNonEmptyTraceV2(req.SessionID, req.Kind, "session"),
@@ -114,14 +119,16 @@ func WriteTraceDocumentV2FromRequestWithConfig(cfg Config, req Request) (string,
 		Metadata:          metadata,
 		VisibleTools:      append([]string(nil), req.VisibleTools...),
 		PromptFingerprint: copyStringMap(req.PromptFingerprint),
+		HarnessTurn:       req.HarnessTurn,
 		Prompt:            redactPrompt(req.Prompt),
 		ModelInput:        req.ModelInput,
 		StepContext: map[string]any{
 			"modelInput": req.ModelInput,
 		},
-		PromptInputTrace:   req.PromptInputTrace,
-		PromptInputDiff:    req.PromptInputDiff,
-		FinalEvidenceState: req.FinalEvidenceState,
+		SpecialInputWorldState: specialinputmemory.CloneWorldStateSection(promptTrace.SpecialInputWorldState),
+		PromptInputTrace:       promptTrace,
+		PromptInputDiff:        req.PromptInputDiff,
+		FinalEvidenceState:     req.FinalEvidenceState,
 	}
 	if len(req.ModelInput) > 0 {
 		doc.ProviderRequest.ModelInputHash = stableTraceV2Hash(req.ModelInput)

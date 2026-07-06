@@ -45,6 +45,7 @@ func TestRunTurn_WritesAgentItemsForNoToolTurn(t *testing.T) {
 		agentstate.TurnItemTypeUserMessage,
 		agentstate.TurnItemTypeModelCall,
 		agentstate.TurnItemTypeAssistantMessage,
+		agentstate.TurnItemTypeFinalResponse,
 	}
 	if got := agentItemTypes(session.CurrentTurn.AgentItems); !sameTurnItemTypes(got, want) {
 		t.Fatalf("agent item types = %v, want %v", got, want)
@@ -133,6 +134,7 @@ func TestRunTurn_WritesAgentEvidenceItemForUserProvidedEvidence(t *testing.T) {
 		agentstate.TurnItemTypeEvidence,
 		agentstate.TurnItemTypeModelCall,
 		agentstate.TurnItemTypeAssistantMessage,
+		agentstate.TurnItemTypeFinalResponse,
 	}
 	if got := agentItemTypes(session.CurrentTurn.AgentItems); !sameTurnItemTypes(got, want) {
 		t.Fatalf("agent item types = %v, want %v", got, want)
@@ -235,6 +237,7 @@ func TestRunTurn_WritesAgentItemsForToolTurn(t *testing.T) {
 		agentstate.TurnItemTypeToolResult,
 		agentstate.TurnItemTypeModelCall,
 		agentstate.TurnItemTypeAssistantMessage,
+		agentstate.TurnItemTypeFinalResponse,
 	}
 	if got := agentItemTypes(session.CurrentTurn.AgentItems); !sameTurnItemTypes(got, want) {
 		t.Fatalf("agent item types = %v, want %v", got, want)

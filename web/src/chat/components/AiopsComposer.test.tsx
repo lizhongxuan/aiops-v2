@@ -9,6 +9,7 @@ import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
 const mockState = vi.hoisted(() => ({
   sendCommand: vi.fn(),
   composerText: "",
+  threadRunning: false,
   transportRunning: false,
   transportState: undefined as AiopsTransportState | undefined,
 }));
@@ -35,7 +36,7 @@ vi.mock("@assistant-ui/react", () => ({
       mockState.composerText = value;
     },
   }),
-  useThread: () => false,
+  useThread: () => mockState.threadRunning,
 }));
 
 vi.mock("@/transport/aiopsTransportConverter", () => ({ isAiopsTransportRunning: () => mockState.transportRunning }));
@@ -61,6 +62,7 @@ describe("AiopsComposer host mention fuzzy search", () => {
   beforeEach(() => {
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
     mockState.composerText = "";
+    mockState.threadRunning = false;
     mockState.transportRunning = false;
     mockState.transportState = undefined;
     mockWorkspace.composerFocusNonce = 0;
@@ -279,6 +281,35 @@ describe("AiopsComposer host mention fuzzy search", () => {
     expect(input.value).toBe("这是@120.77.239.90主机,查看@10.0.0.8内存情况");
   });
 
+  it("uses overlay-owned caret whenever host mention overlay is active", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+    const value = "@local查看";
+
+    await typeInComposer(input, value);
+
+    expect(input.className).toContain("caret-transparent");
+    const overlayCaret = container.querySelector('[data-testid="composer-inline-caret"]');
+    expect(overlayCaret).not.toBeNull();
+    expect(overlayCaret?.getAttribute("data-caret-index")).toBe(String(value.length));
+
+    await act(async () => {
+      input.setSelectionRange(6, 6);
+      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(input.className).toContain("caret-transparent");
+    expect(container.querySelector('[data-testid="composer-inline-caret"]')?.getAttribute("data-caret-index")).toBe("6");
+
+    await act(async () => {
+      input.setSelectionRange(value.length, value.length);
+      input.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(input.className).toContain("caret-transparent");
+    expect(container.querySelector('[data-testid="composer-inline-caret"]')?.getAttribute("data-caret-index")).toBe(String(value.length));
+  });
+
   it("does not restore stale host mention overlay from composer state after submit", async () => {
     await renderComposer(root);
     const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
@@ -413,6 +444,67 @@ describe("AiopsComposer host mention fuzzy search", () => {
       }),
     ]);
     expect(command.message.hostId).toBe("host-a");
+  });
+
+  it("submits typed host mention before Chinese punctuation with host metadata", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@120.77.239.90。现在只读看根分区和 inode，不要改");
+    await act(async () => {
+      container.querySelector('[data-testid="omnibar-primary-action"]')?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(command).toEqual(
+      expect.objectContaining({
+        type: "add-message",
+        message: expect.objectContaining({
+          hostId: "host-a",
+          metadata: expect.objectContaining({
+            "aiops.hostops.clientDetectedMultiHost": "false",
+            "aiops.hostops.mentions": expect.any(String),
+          }),
+        }),
+      }),
+    );
+    expect(JSON.parse(command.message.metadata["aiops.hostops.mentions"])).toEqual([
+      expect.objectContaining({
+        raw: "@120.77.239.90",
+        hostId: "host-a",
+        address: "120.77.239.90",
+        resolved: true,
+      }),
+    ]);
+  });
+
+  it("restores composer input after transport fails even if assistant-ui still reports running", async () => {
+    const state = createInitialAiopsTransportState("sess-failed-recovery");
+    state.sessionId = "sess-failed-recovery";
+    state.status = "failed";
+    state.currentTurnId = "turn-failed";
+    state.lastError = "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。";
+    state.turnOrder = ["turn-failed"];
+    state.turns = {
+      "turn-failed": {
+        id: "turn-failed",
+        status: "failed",
+        user: {
+          id: "turn-failed:user",
+          text: "@120.77.239.90 查看 inode",
+        },
+      },
+    };
+    mockState.transportState = state;
+    mockState.threadRunning = true;
+
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    expect(input.disabled).toBe(false);
+    await typeInComposer(input, "看一下 CPU");
+    const sendButton = container.querySelector('[data-testid="omnibar-primary-action"]') as HTMLButtonElement;
+    expect(sendButton.disabled).toBe(false);
   });
 
   it("does not send stale structured mention metadata after the selected token is deleted", async () => {

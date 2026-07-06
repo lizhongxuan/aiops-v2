@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 type transportCommandChatServiceStub struct {
@@ -223,6 +224,67 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	}
 	if result.SessionID != "sess-1" || result.TurnID != "turn-1" {
 		t.Fatalf("result = %+v, want sess-1/turn-1", result)
+	}
+}
+
+func TestTransportCommandsSpecialInputClearCallsChatServiceAndClearsContext(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-special", TurnID: "turn-clear", Status: "completed"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("sess-special", "thread-special")
+	state.SpecialInputContext = &specialinputmemory.TransportContext{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		ActiveGrant: &specialinputmemory.TransportGrant{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+		},
+	}
+
+	nextState, result, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type:              TransportCommandTypeSpecialInputClear,
+		SpecialInputClear: &TransportSpecialInputClearCommand{},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.Content != "忘记当前主机" {
+		t.Fatalf("chat content = %q, want forget command", chat.sendCmd.Content)
+	}
+	if chat.sendCmd.Metadata["aiops.specialInput.command"] != "clear" {
+		t.Fatalf("chat metadata = %#v, want clear marker", chat.sendCmd.Metadata)
+	}
+	if nextState.SpecialInputContext != nil {
+		t.Fatalf("SpecialInputContext = %#v, want nil", nextState.SpecialInputContext)
+	}
+	if result.Status != "completed" || result.TurnID != "turn-clear" {
+		t.Fatalf("result = %#v, want completed turn-clear", result)
+	}
+}
+
+func TestTransportCommandsSpecialInputConfirmCallsChatService(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-special", TurnID: "turn-confirm", Status: "completed"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("sess-special", "thread-special")
+
+	_, result, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type:                TransportCommandTypeSpecialInputConfirm,
+		SpecialInputConfirm: &TransportSpecialInputConfirmCommand{},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.Content != "确认" {
+		t.Fatalf("chat content = %q, want confirmation command", chat.sendCmd.Content)
+	}
+	if chat.sendCmd.Metadata["aiops.specialInput.command"] != "confirm" {
+		t.Fatalf("chat metadata = %#v, want confirm marker", chat.sendCmd.Metadata)
+	}
+	if result.Status != "completed" || result.TurnID != "turn-confirm" {
+		t.Fatalf("result = %#v, want completed turn-confirm", result)
 	}
 }
 

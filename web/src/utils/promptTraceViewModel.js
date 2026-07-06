@@ -115,6 +115,7 @@ export function parsePromptTrace(input) {
   const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
   const contextGovernance = buildContextGovernanceViewModel(payload);
   const toolSurface = buildToolSurfaceViewModel(payload, visibleTools);
+  const specialInput = buildSpecialInputViewModel(payload);
   const providerRequest = isPlainObject(payload.providerRequest) ? payload.providerRequest : {};
   const rawPayloadRefs = Array.isArray(payload.rawPayloadRefs)
     ? payload.rawPayloadRefs.map((ref) => ({
@@ -161,6 +162,7 @@ export function parsePromptTrace(input) {
     agentUiSources,
     agentUiArtifacts: agentUiSources.flatArtifacts,
     contextGovernance,
+    specialInput,
     warnings,
   };
 }
@@ -541,6 +543,80 @@ function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
     toolSearchEvents,
     selectedTools,
     rejectedToolReasons,
+  };
+}
+
+function buildSpecialInputViewModel(payload = {}) {
+  const promptTrace = isPlainObject(payload.promptInputTrace) ? payload.promptInputTrace : {};
+  const state = firstObject(promptTrace.specialInputWorldState, payload.specialInputWorldState);
+  if (!isPlainObject(state) || Object.keys(state).length === 0) return null;
+  const activeGrant = firstObject(state.activeExecutionScope, state.activeGrant);
+  const roleBindings = collectionToRecords(firstCollection(state.activeRoleBindings, state.roleBindings), "id")
+    .map((binding) => ({
+      id: redactSensitiveText(firstText(binding.id, binding.bindingHash)),
+      roleKey: redactSensitiveText(firstText(binding.roleKey, binding.role, binding.targetRole)),
+      runtimeName: redactSensitiveText(firstText(binding.runtimeName, binding.runtime_name)),
+      resourceKind: redactSensitiveText(firstText(binding.resourceKind, binding.resource_kind)),
+      resourceId: redactSensitiveText(firstText(binding.resourceId, binding.resourceID, binding.resource_id)),
+      environmentKey: redactSensitiveText(firstText(binding.environmentKey, binding.environment_key)),
+      clusterKey: redactSensitiveText(firstText(binding.clusterKey, binding.cluster_key)),
+      bindingHash: redactSensitiveText(firstText(binding.bindingHash, binding.binding_hash)),
+    }))
+    .filter((binding) => binding.roleKey || binding.resourceId || binding.bindingHash);
+  const pendingConfirmations = collectionToRecords(state.pendingConfirmations, "id")
+    .map((pending) => ({
+      id: redactSensitiveText(firstText(pending.id)),
+      kind: redactSensitiveText(firstText(pending.kind)),
+      reason: redactSensitiveText(firstText(pending.reason)),
+      roleKey: redactSensitiveText(firstText(pending.roleKey, pending.role_key)),
+      candidateIds: collectStringList(pending.candidateIds, pending.candidate_ids),
+    }))
+    .filter((pending) => pending.id || pending.reason);
+  const conflicts = collectionToRecords(state.conflicts, "id")
+    .map((conflict) => ({
+      id: redactSensitiveText(firstText(conflict.id, conflict.traceHash, conflict.trace_hash)),
+      kind: redactSensitiveText(firstText(conflict.kind)),
+      roleKey: redactSensitiveText(firstText(conflict.roleKey, conflict.role_key)),
+      environmentKey: redactSensitiveText(firstText(conflict.environmentKey, conflict.environment_key)),
+      clusterKey: redactSensitiveText(firstText(conflict.clusterKey, conflict.cluster_key)),
+      resourceIds: collectStringList(conflict.resourceIds, conflict.resource_ids),
+      reasons: collectStringList(conflict.reasons),
+    }))
+    .filter((conflict) => conflict.id || conflict.roleKey || conflict.reasons.length);
+  const readPlan = firstObject(state.readPlan);
+
+  return {
+    schemaVersion: redactSensitiveText(firstText(state.schemaVersion)),
+    turnId: redactSensitiveText(firstText(state.turnId, state.turn_id)),
+    modelSummary: redactSensitiveText(firstText(state.modelSummary, state.summary)),
+    activeGrant: isPlainObject(activeGrant) && Object.keys(activeGrant).length ? {
+      id: redactSensitiveText(firstText(activeGrant.id)),
+      resourceKind: redactSensitiveText(firstText(activeGrant.resourceKind, activeGrant.resource_kind)),
+      resourceId: redactSensitiveText(firstText(activeGrant.resourceId, activeGrant.resourceID, activeGrant.resource_id)),
+      display: redactSensitiveText(firstText(activeGrant.display)),
+      allowedActions: collectStringList(activeGrant.allowedActions, activeGrant.allowed_actions),
+      validationHash: redactSensitiveText(firstText(activeGrant.validationHash, activeGrant.validation_hash)),
+      status: redactSensitiveText(firstText(activeGrant.status)),
+      trustLevel: redactSensitiveText(firstText(activeGrant.trustLevel, activeGrant.trust_level)),
+    } : null,
+    roleBindings,
+    pendingConfirmations,
+    conflicts,
+    readPlan: isPlainObject(readPlan) && Object.keys(readPlan).length ? {
+      activeGrantId: redactSensitiveText(firstText(readPlan.activeGrantId, readPlan.active_grant_id)),
+      activeResourceKind: redactSensitiveText(firstText(readPlan.activeResourceKind, readPlan.active_resource_kind)),
+      activeResourceId: redactSensitiveText(firstText(readPlan.activeResourceId, readPlan.active_resource_id)),
+      visibleFactIds: collectStringList(readPlan.visibleFactIds, readPlan.visible_fact_ids),
+      candidateFactIds: collectStringList(readPlan.candidateFactIds, readPlan.candidate_fact_ids),
+      roleBindingHashes: collectStringList(readPlan.roleBindingHashes, readPlan.role_binding_hashes),
+      pendingConfirmationIds: collectStringList(readPlan.pendingConfirmationIds, readPlan.pending_confirmation_ids),
+    } : null,
+    summary: {
+      hasActiveGrant: isPlainObject(activeGrant) && Object.keys(activeGrant).length > 0,
+      roleBindingCount: roleBindings.length,
+      pendingConfirmationCount: pendingConfirmations.length,
+      conflictCount: conflicts.length,
+    },
   };
 }
 

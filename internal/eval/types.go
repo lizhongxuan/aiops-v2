@@ -28,48 +28,101 @@ type ScoreRules struct {
 
 // Expected captures deterministic checks that can be scored locally.
 type Expected struct {
-	MustInclude                   []string          `json:"mustInclude"`
-	MustNotInclude                []string          `json:"mustNotInclude"`
-	ExpectedToolCalls             []string          `json:"expectedToolCalls"`
-	MustMentionFiles              []string          `json:"mustMentionFiles"`
-	ExpectedTurnItems             []string          `json:"expectedTurnItems,omitempty"`
-	ExpectedPlanStatuses          []string          `json:"expectedPlanStatuses,omitempty"`
-	ExpectedPlanModeState         []string          `json:"expectedPlanModeState,omitempty"`
-	ExpectedPlanRequirement       []string          `json:"expectedPlanRequirement,omitempty"`
-	ExpectedPlanCompletionGate    []string          `json:"expectedPlanCompletionGate,omitempty"`
-	ExpectedTaskClaims            []string          `json:"expectedTaskClaims,omitempty"`
-	ExpectedPlanApprovalScope     []string          `json:"expectedPlanApprovalScope,omitempty"`
-	ExpectedPlanRejectionEvents   []string          `json:"expectedPlanRejectionEvents,omitempty"`
-	ExpectedVerificationStatus    []string          `json:"expectedVerificationStatus,omitempty"`
-	ExpectedCompletionGate        []string          `json:"expectedCompletionGate,omitempty"`
-	ExpectedSafetySignals         []string          `json:"expectedSafetySignals,omitempty"`
-	ExpectedUnexpectedStateGate   []string          `json:"expectedUnexpectedStateGate,omitempty"`
-	ExpectedApprovalScope         []string          `json:"expectedApprovalScope,omitempty"`
-	ExpectedTraceEvidence         []string          `json:"expectedTraceEvidence,omitempty"`
-	ExpectedTaskDepth             []string          `json:"expectedTaskDepth,omitempty"`
-	ExpectedRequiredGates         []string          `json:"expectedRequiredGates,omitempty"`
-	ExpectedCoverageAction        []string          `json:"expectedCoverageAction,omitempty"`
-	ExpectedReasoningFallback     []string          `json:"expectedReasoningFallback,omitempty"`
-	ExpectedResumeAction          []string          `json:"expectedResumeAction,omitempty"`
-	ExpectedManagerSynthesis      []string          `json:"expectedManagerSynthesis,omitempty"`
-	ExpectedFailureAction         []string          `json:"expectedFailureAction,omitempty"`
-	ExpectedGenericityFindings    []string          `json:"expectedGenericityFindings,omitempty"`
-	ExpectedResourceIDSource      []string          `json:"expectedResourceIdSource,omitempty"`
-	ExpectedResourceRoles         []string          `json:"expectedResourceRoles,omitempty"`
-	ExpectedCapabilityPath        []string          `json:"expectedCapabilityPath,omitempty"`
-	ExpectedWorkflowReviewStatus  []string          `json:"expectedWorkflowReviewStatus,omitempty"`
-	ExpectedObservabilityEvidence []string          `json:"expectedObservabilityEvidence,omitempty"`
-	ExpectedGenericOpsContract    []string          `json:"expectedGenericOpsContract,omitempty"`
-	ExpectedApprovals             []string          `json:"expectedApprovals,omitempty"`
-	ExpectedEvidence              []string          `json:"expectedEvidence,omitempty"`
-	Diagnosis                     DiagnosisExpected `json:"diagnosis,omitempty"`
-	MaxIterations                 int               `json:"maxIterations,omitempty"`
-	MaxToolCalls                  int               `json:"maxToolCalls,omitempty"`
-	MustHavePlan                  bool              `json:"mustHavePlan,omitempty"`
-	MustNotHavePlan               bool              `json:"mustNotHavePlan,omitempty"`
-	MustHaveEvidence              bool              `json:"mustHaveEvidence,omitempty"`
-	ForbidFirstTurnNoToolFinal    bool              `json:"forbidFirstTurnNoToolFinal,omitempty"`
-	MustMentionEvidenceLimits     bool              `json:"mustMentionEvidenceLimits,omitempty"`
+	MustInclude                   []string                     `json:"mustInclude"`
+	MustNotInclude                []string                     `json:"mustNotInclude"`
+	ExpectedToolCalls             []string                     `json:"expectedToolCalls"`
+	MustMentionFiles              []string                     `json:"mustMentionFiles"`
+	ExpectedTurnItems             []string                     `json:"expectedTurnItems,omitempty"`
+	ExpectedPlanStatuses          []string                     `json:"expectedPlanStatuses,omitempty"`
+	ExpectedPlanModeState         []string                     `json:"expectedPlanModeState,omitempty"`
+	ExpectedPlanRequirement       []string                     `json:"expectedPlanRequirement,omitempty"`
+	ExpectedPlanCompletionGate    []string                     `json:"expectedPlanCompletionGate,omitempty"`
+	ExpectedTaskClaims            []string                     `json:"expectedTaskClaims,omitempty"`
+	ExpectedPlanApprovalScope     []string                     `json:"expectedPlanApprovalScope,omitempty"`
+	ExpectedPlanRejectionEvents   []string                     `json:"expectedPlanRejectionEvents,omitempty"`
+	ExpectedVerificationStatus    []string                     `json:"expectedVerificationStatus,omitempty"`
+	ExpectedCompletionGate        []string                     `json:"expectedCompletionGate,omitempty"`
+	ExpectedSafetySignals         []string                     `json:"expectedSafetySignals,omitempty"`
+	ExpectedUnexpectedStateGate   []string                     `json:"expectedUnexpectedStateGate,omitempty"`
+	ExpectedApprovalScope         []string                     `json:"expectedApprovalScope,omitempty"`
+	ExpectedTraceEvidence         []string                     `json:"expectedTraceEvidence,omitempty"`
+	ExpectedTaskDepth             []string                     `json:"expectedTaskDepth,omitempty"`
+	ExpectedRequiredGates         []string                     `json:"expectedRequiredGates,omitempty"`
+	ExpectedCoverageAction        []string                     `json:"expectedCoverageAction,omitempty"`
+	ExpectedReasoningFallback     []string                     `json:"expectedReasoningFallback,omitempty"`
+	ExpectedResumeAction          []string                     `json:"expectedResumeAction,omitempty"`
+	ExpectedManagerSynthesis      []string                     `json:"expectedManagerSynthesis,omitempty"`
+	ExpectedFailureAction         []string                     `json:"expectedFailureAction,omitempty"`
+	ExpectedGenericityFindings    []string                     `json:"expectedGenericityFindings,omitempty"`
+	ExpectedResourceIDSource      []string                     `json:"expectedResourceIdSource,omitempty"`
+	ExpectedResourceRoles         []string                     `json:"expectedResourceRoles,omitempty"`
+	ExpectedCapabilityPath        []string                     `json:"expectedCapabilityPath,omitempty"`
+	ExpectedWorkflowReviewStatus  []string                     `json:"expectedWorkflowReviewStatus,omitempty"`
+	ExpectedObservabilityEvidence []string                     `json:"expectedObservabilityEvidence,omitempty"`
+	ExpectedGenericOpsContract    []string                     `json:"expectedGenericOpsContract,omitempty"`
+	ExpectedApprovals             []string                     `json:"expectedApprovals,omitempty"`
+	ExpectedEvidence              []string                     `json:"expectedEvidence,omitempty"`
+	ExpectedAssembly              *ExpectedAssemblyTrace       `json:"expectedAssembly,omitempty"`
+	ExpectedResources             *ExpectedResourceTrace       `json:"expectedResources,omitempty"`
+	ExpectedToolSurface           *ExpectedToolSurfaceTrace    `json:"expectedToolSurface,omitempty"`
+	ExpectedSessionTargets        *ExpectedSessionTargetTrace  `json:"expectedSessionTargets,omitempty"`
+	ExpectedRoleBindings          []ExpectedRoleBindingTrace   `json:"expectedRoleBindings,omitempty"`
+	ExpectedFinalReport           *ExpectedFinalReportTrace    `json:"expectedFinalReport,omitempty"`
+	ExpectedTraceExplainability   *ExpectedTraceExplainability `json:"expectedTraceExplainability,omitempty"`
+	Diagnosis                     DiagnosisExpected            `json:"diagnosis,omitempty"`
+	MaxIterations                 int                          `json:"maxIterations,omitempty"`
+	MaxToolCalls                  int                          `json:"maxToolCalls,omitempty"`
+	MustHavePlan                  bool                         `json:"mustHavePlan,omitempty"`
+	MustNotHavePlan               bool                         `json:"mustNotHavePlan,omitempty"`
+	MustHaveEvidence              bool                         `json:"mustHaveEvidence,omitempty"`
+	ForbidFirstTurnNoToolFinal    bool                         `json:"forbidFirstTurnNoToolFinal,omitempty"`
+	MustMentionEvidenceLimits     bool                         `json:"mustMentionEvidenceLimits,omitempty"`
+}
+
+type ExpectedAssemblyTrace struct {
+	AgentKind           string `json:"agentKind,omitempty"`
+	Profile             string `json:"profile,omitempty"`
+	RuntimeRole         string `json:"runtimeRole,omitempty"`
+	RouteReasonContains string `json:"routeReasonContains,omitempty"`
+}
+
+type ExpectedResourceTrace struct {
+	VerifiedIDs []string `json:"verifiedIds,omitempty"`
+	RejectedIDs []string `json:"rejectedIds,omitempty"`
+}
+
+type ExpectedToolSurfaceTrace struct {
+	VisibleTools        []string `json:"visibleTools,omitempty"`
+	DispatchableTools   []string `json:"dispatchableTools,omitempty"`
+	HiddenTools         []string `json:"hiddenTools,omitempty"`
+	RequireSingleSource bool     `json:"requireSingleSource,omitempty"`
+}
+
+type ExpectedSessionTargetTrace struct {
+	BindingMode  string   `json:"bindingMode,omitempty"`
+	HostIDs      []string `json:"hostIds,omitempty"`
+	SourceTurnID string   `json:"sourceTurnId,omitempty"`
+}
+
+type ExpectedRoleBindingTrace struct {
+	ResourceID    string `json:"resourceId,omitempty"`
+	Role          string `json:"role,omitempty"`
+	ConflictState string `json:"conflictState,omitempty"`
+}
+
+type ExpectedFinalReportTrace struct {
+	HostIDs      []string `json:"hostIds,omitempty"`
+	Roles        []string `json:"roles,omitempty"`
+	EvidenceRefs []string `json:"evidenceRefs,omitempty"`
+}
+
+type ExpectedTraceExplainability struct {
+	RequireAssemblySource         bool `json:"requireAssemblySource,omitempty"`
+	RequirePromptCompilerSource   bool `json:"requirePromptCompilerSource,omitempty"`
+	RequireToolSurfaceSource      bool `json:"requireToolSurfaceSource,omitempty"`
+	RequireAdapterName            bool `json:"requireAdapterName,omitempty"`
+	RequirePromptSectionHashes    bool `json:"requirePromptSectionHashes,omitempty"`
+	RequireToolSurfaceFingerprint bool `json:"requireToolSurfaceFingerprint,omitempty"`
 }
 
 // DiagnosisExpected captures opt-in deterministic checks for AIOps diagnosis accuracy.

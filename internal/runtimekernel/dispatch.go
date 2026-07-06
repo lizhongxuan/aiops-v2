@@ -65,28 +65,30 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup             ToolLookup
-	policy             *policyengine.Engine
-	permissions        *permissions.Engine
-	hooks              *hooks.Registry
-	projector          EventEmitter
-	spanSource         SpanStreamSource // optional: span tracking for tool calls
-	observer           Observer
-	progressSink       ToolProgressSink
-	approvalGrants     []SessionApprovalGrant
-	planMode           PlanModeState
-	planScopes         []PlanApprovalScope
-	unexpectedStates   []UnexpectedStateSignal
-	resourceLockGate   ToolResourceLockGate
-	toolSurfaceFP      string
-	permissionHash     string
-	surfacePolicy      *tooling.ToolSurfacePolicySnapshot
-	runtimeToolSurface *RuntimeToolRouterSnapshot
-	deferredCatalog    DeferredToolCatalogLookup
-	visibleTools       []tooling.ToolMetadata
-	retryConfig        ReadOnlyRetryConfig
-	retryMu            sync.Mutex
-	retriesThisTurn    int
+	lookup              ToolLookup
+	policy              *policyengine.Engine
+	permissions         *permissions.Engine
+	hooks               *hooks.Registry
+	projector           EventEmitter
+	spanSource          SpanStreamSource // optional: span tracking for tool calls
+	observer            Observer
+	progressSink        ToolProgressSink
+	approvalGrants      []SessionApprovalGrant
+	planMode            PlanModeState
+	planScopes          []PlanApprovalScope
+	unexpectedStates    []UnexpectedStateSignal
+	resourceLockGate    ToolResourceLockGate
+	toolSurfaceFP       string
+	permissionHash      string
+	surfacePolicy       *tooling.ToolSurfacePolicySnapshot
+	runtimeToolSurface  *RuntimeToolRouterSnapshot
+	deferredCatalog     DeferredToolCatalogLookup
+	visibleTools        []tooling.ToolMetadata
+	retryConfig         ReadOnlyRetryConfig
+	roleBindingGuard    RoleBindingGuardConfig
+	executionScopeGuard ExecutionScopeGuardConfig
+	retryMu             sync.Mutex
+	retriesThisTurn     int
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -398,6 +400,26 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", desc.Metadata)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, errMsg)
+		}
+		return result
+	}
+
+	if reason, blocked := d.checkExecutionScopeGuard(tc, desc.Metadata); blocked {
+		result := d.emitToolFailed(sessionID, turnID, tc, reason, "policy", "tool_denied", desc.Metadata)
+		result.Blocked = true
+		result.Reason = reason
+		if d.spanSource != nil && toolSpanID != "" {
+			d.spanSource.FailSpan(toolSpanID, reason)
+		}
+		return result
+	}
+
+	if reason, blocked := d.checkRoleBindingGuard(tc, desc.Metadata); blocked {
+		result := d.emitToolFailed(sessionID, turnID, tc, reason, "policy", "tool_denied", desc.Metadata)
+		result.Blocked = true
+		result.Reason = reason
+		if d.spanSource != nil && toolSpanID != "" {
+			d.spanSource.FailSpan(toolSpanID, reason)
 		}
 		return result
 	}
@@ -1032,11 +1054,15 @@ func (d *ToolDispatcher) hiddenToolUnavailableResult(tc ToolCall, hidden tooling
 		reason = "tool_hidden_by_policy"
 	}
 	toolName := firstNonEmpty(tc.Name, hidden.Name, meta.Name)
-	payload := map[string]string{
-		"schemaVersion": "aiops.tool_unavailable/v1",
-		"toolName":      strings.TrimSpace(toolName),
-		"reason":        reason,
-		"instruction":   "Continue without this tool or ask for explicit host target.",
+	failureClass := toolUnavailableFailureClass(reason)
+	payload := map[string]any{
+		"schemaVersion":  "aiops.tool_unavailable/v1",
+		"toolName":       strings.TrimSpace(toolName),
+		"failureClass":   failureClass,
+		"reason":         reason,
+		"retryable":      toolUnavailableRetryable(failureClass),
+		"requiredAction": toolUnavailableRequiredAction(failureClass),
+		"instruction":    "Continue without this tool or ask for explicit host target.",
 	}
 	if snapshot != nil && strings.TrimSpace(snapshot.Hash) != "" {
 		payload["policySnapshotHash"] = strings.TrimSpace(snapshot.Hash)
@@ -1050,6 +1076,76 @@ func (d *ToolDispatcher) hiddenToolUnavailableResult(tc ToolCall, hidden tooling
 		Outcome:     "tool_unavailable",
 		Source:      "policy",
 		HiddenTools: []string{strings.TrimSpace(toolName)},
+	}
+}
+
+func toolUnavailableFailureClass(reason string) string {
+	normalized := strings.TrimSpace(strings.ToLower(reason))
+	switch normalized {
+	case "needs_host_agent", "fallback_denied", "host_exec_disallowed", "target_host_out_of_scope",
+		"approval_required", "permission_denied", "mcp_unavailable", "pack_not_enabled",
+		"tool_search_required", "opsmanual_not_requested", "public_web_policy_disabled",
+		"mutation_not_allowed", "resource_lock_conflict", "profile_denied":
+		return normalized
+	case "profile_disallowed":
+		return "profile_denied"
+	case "approval_required_schema_hidden":
+		return "approval_required"
+	case "mode_denied", "agent_role_read_only", "agent_role_mutation_requires_approval":
+		return "mutation_not_allowed"
+	case "tool_not_dispatchable":
+		return "tool_unavailable"
+	}
+	if strings.Contains(normalized, "7072") || strings.Contains(normalized, "connection refused") {
+		return "needs_host_agent"
+	}
+	if strings.Contains(normalized, "ssh fallback") || strings.Contains(normalized, "read-only command") {
+		return "fallback_denied"
+	}
+	return "tool_unavailable"
+}
+
+func toolUnavailableRetryable(failureClass string) bool {
+	switch strings.TrimSpace(strings.ToLower(failureClass)) {
+	case "needs_host_agent", "host_exec_disallowed", "target_host_out_of_scope", "approval_required",
+		"mcp_unavailable", "pack_not_enabled", "tool_search_required", "opsmanual_not_requested",
+		"public_web_policy_disabled", "resource_lock_conflict":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolUnavailableRequiredAction(failureClass string) string {
+	switch strings.TrimSpace(strings.ToLower(failureClass)) {
+	case "needs_host_agent":
+		return "start_or_repair_host_agent"
+	case "fallback_denied":
+		return "use_read_only_command_or_request_scoped_execution"
+	case "host_exec_disallowed", "target_host_out_of_scope":
+		return "confirm_explicit_host_target"
+	case "approval_required":
+		return "request_approval"
+	case "permission_denied":
+		return "request_permission_or_use_allowed_tool"
+	case "mcp_unavailable":
+		return "enable_or_reconnect_mcp"
+	case "pack_not_enabled":
+		return "enable_tool_pack"
+	case "tool_search_required":
+		return "run_tool_search"
+	case "opsmanual_not_requested":
+		return "request_opsmanual_lookup"
+	case "public_web_policy_disabled":
+		return "enable_public_web_policy_or_use_internal_sources"
+	case "mutation_not_allowed":
+		return "switch_mode_or_choose_read_only_action"
+	case "resource_lock_conflict":
+		return "wait_for_resource_lock_or_choose_different_target"
+	case "profile_denied":
+		return "switch_profile_or_choose_allowed_tool"
+	default:
+		return "continue_without_tool_or_ask_for_clarification"
 	}
 }
 

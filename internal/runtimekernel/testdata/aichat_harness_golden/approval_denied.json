@@ -1,0 +1,17 @@
+{
+  "name": "approval_denied",
+  "userInput": "审批被拒绝后返回最终状态",
+  "modelFinalOutput": "{\"status\":\"approval_denied\",\"reason\":\"operator denied\",\"allowedNextSteps\":[\"ask_for_read_only_alternative\"]}",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "approvalDecided": false,
+    "finalStatus": "approval_denied",
+    "noRawDsmlFinal": true,
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

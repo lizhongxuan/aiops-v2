@@ -1,0 +1,36 @@
+{
+  "id": "host-target-memory",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "Turn 1: @hostA @hostB. Turn 2: 检查复制状态。",
+  "expected": {
+    "expectedAssembly": {
+      "agentKind": "manager",
+      "profile": "host.multi_target",
+      "runtimeRole": "runtime_agent",
+      "routeReasonContains": "multi-host"
+    },
+    "expectedResources": {
+      "verifiedIds": ["hostA", "hostB"]
+    },
+    "expectedSessionTargets": {
+      "bindingMode": "multi_host",
+      "hostIds": ["hostA", "hostB"],
+      "sourceTurnId": "turn-1"
+    },
+    "expectedToolSurface": {
+      "visibleTools": ["delegate_host_task"],
+      "dispatchableTools": ["delegate_host_task"],
+      "requireSingleSource": true
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}
+

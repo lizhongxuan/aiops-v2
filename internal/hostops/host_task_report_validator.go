@@ -16,6 +16,8 @@ type HostTaskReportValidationContext struct {
 	PlanStepID                 string
 	HostAgentID                string
 	HostID                     string
+	BoundRole                  string
+	RoleBindingHash            string
 	AllowHumanTerminalEvidence bool
 }
 
@@ -28,6 +30,8 @@ func NewHostTaskReportValidator(ctx HostTaskReportValidationContext) *HostTaskRe
 	ctx.PlanStepID = strings.TrimSpace(ctx.PlanStepID)
 	ctx.HostAgentID = strings.TrimSpace(ctx.HostAgentID)
 	ctx.HostID = strings.TrimSpace(ctx.HostID)
+	ctx.BoundRole = strings.TrimSpace(ctx.BoundRole)
+	ctx.RoleBindingHash = strings.TrimSpace(ctx.RoleBindingHash)
 	return &HostTaskReportValidator{ctx: ctx}
 }
 
@@ -53,6 +57,12 @@ func (v *HostTaskReportValidator) Validate(report HostTaskReport) error {
 	}
 	if v.ctx.HostID != "" && sanitized.HostID != v.ctx.HostID {
 		return fmt.Errorf("%w: host mismatch", ErrInvalidHostTaskReport)
+	}
+	if v.ctx.BoundRole != "" && sanitized.BoundRole != v.ctx.BoundRole {
+		return fmt.Errorf("%w: bound role mismatch", ErrInvalidHostTaskReport)
+	}
+	if v.ctx.RoleBindingHash != "" && sanitized.RoleBindingHash != v.ctx.RoleBindingHash {
+		return fmt.Errorf("%w: role binding hash mismatch", ErrInvalidHostTaskReport)
 	}
 	for _, evidence := range sanitized.Evidence {
 		if evidence.HostID != "" && evidence.HostID != sanitized.HostID {
@@ -80,6 +90,8 @@ func (v *HostTaskReportValidator) Sanitize(report HostTaskReport) (HostTaskRepor
 	report.PlanStepID = strings.TrimSpace(report.PlanStepID)
 	report.HostAgentID = strings.TrimSpace(report.HostAgentID)
 	report.HostID = strings.TrimSpace(report.HostID)
+	report.BoundRole = strings.TrimSpace(report.BoundRole)
+	report.RoleBindingHash = strings.TrimSpace(report.RoleBindingHash)
 	report.Status = strings.TrimSpace(report.Status)
 	report.Summary = RedactSensitiveText(report.Summary)
 	for i := range report.Commands {

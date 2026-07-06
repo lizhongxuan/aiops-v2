@@ -279,6 +279,12 @@ func (f *AgentFactory) CreateHostChildAgent(ctx context.Context, req hostops.Spa
 	cfg.Metadata["hostTaskPromptAssetSource"] = "agent-message:" + source
 	cfg.Metadata["runtimeBase"] = "host_agent"
 	cfg.Metadata["agentRole"] = "host_child_task"
+	if boundRole := strings.TrimSpace(req.BoundRole); boundRole != "" {
+		cfg.Metadata["boundRole"] = boundRole
+	}
+	if roleBindingHash := strings.TrimSpace(req.RoleBindingHash); roleBindingHash != "" {
+		cfg.Metadata["roleBindingHash"] = roleBindingHash
+	}
 	return cfg, nil
 }
 
@@ -343,6 +349,8 @@ type HostChildPromptContext struct {
 	HostID               string
 	HostDisplayName      string
 	Role                 string
+	BoundRole            string
+	RoleBindingHash      string
 	Goal                 string
 	PlanStepID           string
 	Risk                 string
@@ -361,6 +369,8 @@ func normalizeHostChildPromptContext(req hostops.SpawnHostChildRequest) HostChil
 		HostID:               hostPromptClean(req.HostID),
 		HostDisplayName:      hostPromptClean(agentFirstNonEmpty(req.HostDisplayName, req.HostAddress, req.HostID)),
 		Role:                 hostPromptClean(req.Role),
+		BoundRole:            hostPromptClean(req.BoundRole),
+		RoleBindingHash:      hostPromptClean(req.RoleBindingHash),
 		Goal:                 hostPromptClean(req.Task),
 		PlanStepID:           hostPromptClean(req.PlanStepID),
 		Risk:                 hostPromptClean(string(req.RiskLevel)),
@@ -396,6 +406,8 @@ func renderHostChildPrompt(ctx HostChildPromptContext) string {
 			"bound_host_id: " + ctx.HostID,
 			"host_display_name: " + ctx.HostDisplayName,
 			"role: " + ctx.Role,
+			"bound_role: " + agentFirstNonEmpty(ctx.BoundRole, "none"),
+			"role_binding_hash: " + agentFirstNonEmpty(ctx.RoleBindingHash, "none"),
 		}),
 		renderHostChildPromptSection("Assigned Subtask", "host_agent.assigned_subtask.v1", []string{
 			"plan_step_id: " + ctx.PlanStepID,
@@ -412,6 +424,7 @@ func renderHostChildPrompt(ctx HostChildPromptContext) string {
 		}),
 		renderHostChildPromptSection("Report Contract", "host_agent.report_contract.v1", []string{
 			"Return HostTaskReport with status, command summaries, evidence refs, errors, blockers, and next steps.",
+			"HostTaskReport must include host id, bound role, role binding hash, and evidence refs.",
 			"Allowed status values: completed, failed, blocked, needs_manager_coordination, needs_user_approval.",
 		}),
 		renderHostChildPromptSection("Stop And Block Conditions", "host_agent.stop_block_conditions.v1", []string{

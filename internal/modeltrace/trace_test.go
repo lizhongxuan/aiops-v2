@@ -9,10 +9,14 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
+	"aiops-v2/internal/tooling"
 )
 
 func TestWriteLocksJSONAndMarkdownTraceSchema(t *testing.T) {
@@ -198,6 +202,98 @@ func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(string(diffMarkdown), "tool_result") || strings.Contains(string(diffMarkdown), "secret-value") {
 		t.Fatalf("diff markdown missing semantic delta or leaked secret:\n%s", string(diffMarkdown))
+	}
+}
+
+func TestWriteIncludesSpecialInputWorldStateInPromptTrace(t *testing.T) {
+	dir := t.TempDir()
+	worldState := &specialinputmemory.SpecialInputWorldStateSection{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		ActiveExecutionScope: &specialinputmemory.ExecutionScopeGrantTrace{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+		},
+		ReadPlan: &specialinputmemory.MemoryReadPlanTrace{
+			ActiveGrantID:      "grant-host-a",
+			ActiveResourceKind: specialinputmemory.ResourceKindHost,
+			ActiveResourceID:   "host-a",
+		},
+	}
+
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:                   "runtime_model_input",
+		SessionID:              "sess-special",
+		TurnID:                 "turn-special",
+		SpecialInputWorldState: worldState,
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"specialInputWorldState"`) || !strings.Contains(string(data), "grant-host-a") {
+		t.Fatalf("json trace missing special input world state:\n%s", string(data))
+	}
+	var raw struct {
+		SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState"`
+		PromptInputTrace       struct {
+			SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatalf("unmarshal json trace: %v", err)
+	}
+	if raw.SpecialInputWorldState == nil || raw.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("top-level specialInputWorldState = %#v, want host-a", raw.SpecialInputWorldState)
+	}
+	if raw.PromptInputTrace.SpecialInputWorldState == nil || raw.PromptInputTrace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("promptInputTrace.specialInputWorldState = %#v, want host-a", raw.PromptInputTrace.SpecialInputWorldState)
+	}
+	markdownPath := strings.TrimSuffix(path, filepath.Ext(path)) + ".md"
+	markdown, err := os.ReadFile(markdownPath)
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	if !strings.Contains(string(markdown), "## Special Input Memory") || !strings.Contains(string(markdown), "grant-host-a") {
+		t.Fatalf("markdown missing special input world state:\n%s", string(markdown))
+	}
+}
+
+func TestWriteIncludesAssemblyBoundaryTraceFields(t *testing.T) {
+	dir := t.TempDir()
+
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-boundary",
+		TurnID:    "turn-boundary",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			AssemblySource:         "runtimekernel.buildModelInputTraceRequest",
+			PromptCompilerSource:   "promptcompiler.Compiler",
+			ToolSurfaceSource:      "runtimekernel.applyToolSurfacePolicyToCompileContext",
+			AdapterName:            "eino",
+			ToolSurfaceFingerprint: "surface-boundary",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	for _, want := range []string{
+		`"assembly_source": "runtimekernel.buildModelInputTraceRequest"`,
+		`"prompt_compiler_source": "promptcompiler.Compiler"`,
+		`"tool_surface_source": "runtimekernel.applyToolSurfacePolicyToCompileContext"`,
+		`"adapter_name": "eino"`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Fatalf("json trace missing %q:\n%s", want, string(data))
+		}
 	}
 }
 
@@ -661,6 +757,158 @@ func TestWriteIncludesResourceDedupeRange(t *testing.T) {
 	}
 	if strings.Contains(md, "full content should not repeat") {
 		t.Fatalf("markdown trace leaked resource content:\n%s", md)
+	}
+}
+
+func TestWriteIncludesResourceBindingTrace(t *testing.T) {
+	dir := t.TempDir()
+	binding := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a", DisplayName: "db-a"}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		VerifiedBy: resourcebinding.HostVerifierHostopsResolver,
+		TrustLevel: resourcebinding.TrustLevelVerified,
+	})
+
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-resource-binding",
+		TurnID:    "turn-resource-binding",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			ResourceBindings: []resourcebinding.ResourceBindingSnapshot{binding},
+			ResourceRoleBindings: []resourcebinding.ResourceRoleBinding{resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+				ResourceRef:  resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeDatabase, ID: "pg-a"},
+				Role:         "primary",
+				RoleAlias:    []string{"primary", "主节点"},
+				SourceTurnID: "turn-resource-binding",
+			})},
+			ResourceCapabilities: []resourcebinding.ResourceCapability{
+				resourcebinding.NewResourceCapability(binding, resourcebinding.CapabilityExec, []string{"host.exec"}, resourcebinding.CapabilityOptions{}),
+			},
+			ResourceEvidenceRefs: []resourcebinding.EvidenceRef{resourcebinding.BuildEvidenceRef(resourcebinding.EvidenceInput{
+				ID:          "ev-1",
+				ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+				Source:      resourcebinding.EvidenceSourceTool,
+				Kind:        resourcebinding.EvidenceKindCommandOutput,
+			})},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{
+		`"resourceBindings"`,
+		`"trustLevel": "verified"`,
+		`"resourceCapabilities"`,
+		`"host.exec"`,
+		`"resourceEvidenceRefs"`,
+		`"command_output"`,
+		`"resourceRoleBindings"`,
+		`"primary"`,
+	} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
+		}
+	}
+
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	md := string(markdown)
+	for _, want := range []string{"## Resource Binding Trace", "### Bindings", "### Capabilities", "### Evidence", "host.exec"} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("markdown trace missing %q:\n%s", want, md)
+		}
+	}
+}
+
+func TestWriteIncludesSessionTargetAndRoleConflictTrace(t *testing.T) {
+	dir := t.TempDir()
+	target := resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:          []string{"host-a", "host-b"},
+		SourceTurnID:     "turn-1",
+		SourceMentionIDs: []string{"m1", "m2"},
+	})
+	conflict := resourcebinding.DetectRoleBindingConflicts([]resourcebinding.ResourceRoleBinding{
+		resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}, Role: resourcebinding.RolePGPrimary}),
+		resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}, Role: resourcebinding.RolePGPrimary}),
+	})
+
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-target",
+		TurnID:    "turn-target",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			SessionTargetSnapshot: target,
+			RoleBindingConflicts:  conflict,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{`"sessionTargetSnapshot"`, `"bindingMode": "multi_host"`, `"roleBindingConflicts"`, `"unique_role_bound_to_multiple_resources"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
+		}
+	}
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	for _, want := range []string{"### Session Target", "### Role Conflicts", "multi_host"} {
+		if !strings.Contains(string(markdown), want) {
+			t.Fatalf("markdown trace missing %q:\n%s", want, string(markdown))
+		}
+	}
+}
+
+func TestWriteIncludesAgentAssemblySnapshot(t *testing.T) {
+	dir := t.TempDir()
+	snapshot := agentassembly.Build(agentassembly.BuildInput{
+		AgentKind:         "worker",
+		Profile:           "host_worker",
+		RuntimeRole:       "host.execute",
+		RouteReason:       []string{"aiops.route.mode=host_bound_ops"},
+		ModelVisibleTools: []tooling.ToolMetadata{{Name: "host.exec", Description: "execute host command"}},
+		DispatchableTools: []tooling.ToolMetadata{{Name: "host.exec", Description: "execute host command"}},
+	})
+
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:      "runtime_model_input",
+		SessionID: "sess-assembly",
+		TurnID:    "turn-assembly",
+		PromptInputTrace: promptinput.PromptInputTrace{
+			AgentAssemblySnapshot: &snapshot,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read json trace: %v", err)
+	}
+	jsonText := string(data)
+	for _, want := range []string{`"agentAssemblySnapshot"`, `"agentKind": "worker"`, `"profile": "host_worker"`, `"toolSurface"`, `"host.exec"`} {
+		if !strings.Contains(jsonText, want) {
+			t.Fatalf("json trace missing %q:\n%s", want, jsonText)
+		}
+	}
+	markdown, err := os.ReadFile(strings.TrimSuffix(path, filepath.Ext(path)) + ".md")
+	if err != nil {
+		t.Fatalf("read markdown trace: %v", err)
+	}
+	if !strings.Contains(string(markdown), "## Agent Assembly Snapshot") || !strings.Contains(string(markdown), "host_worker") {
+		t.Fatalf("markdown trace missing assembly snapshot:\n%s", string(markdown))
 	}
 }
 

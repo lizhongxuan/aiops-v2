@@ -9,6 +9,7 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
@@ -169,6 +170,104 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
+	}
+}
+
+func TestTransportProjectorProjectsSpecialInputContext(t *testing.T) {
+	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	state := NewAiopsTransportState("session-special-input", "thread-special-input")
+	grant := specialinputmemory.ExecutionScopeGrant{
+		ID:             "grant-host-a",
+		ResourceKind:   specialinputmemory.ResourceKindHost,
+		ResourceID:     "host-a",
+		CanonicalKey:   "host:host-a",
+		Display:        "host-a",
+		Status:         specialinputmemory.GrantStatusActive,
+		AllowedActions: []string{specialinputmemory.ActionExecLowRisk, specialinputmemory.ActionInspect, specialinputmemory.ActionRead},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-special-input",
+		SessionID:   "session-special-input",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		SpecialInputReadPlan: &specialinputmemory.MemoryReadPlan{
+			SchemaVersion:        specialinputmemory.SchemaVersion,
+			TurnID:               "turn-special-input",
+			ActiveExecutionScope: &grant,
+			CandidateFacts: []specialinputmemory.MentionFact{{
+				ID:           "fact-raw",
+				Kind:         specialinputmemory.FactKindHost,
+				ResourceKind: specialinputmemory.ResourceKindHost,
+				ResourceID:   "1.1.1.1",
+				CanonicalKey: "host:1.1.1.1",
+				Display:      "1.1.1.1",
+				TrustLevel:   specialinputmemory.TrustLevelRawTyped,
+				Status:       specialinputmemory.FactStatusActive,
+			}},
+			PendingConfirmations: []specialinputmemory.PendingConfirmation{{
+				ID:     "pending-target",
+				Kind:   "target",
+				Reason: "active_grant_revalidate_failed",
+			}},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.SpecialInputContext == nil {
+		t.Fatal("SpecialInputContext is nil, want projected context")
+	}
+	if projected.SpecialInputContext.ActiveGrant == nil || projected.SpecialInputContext.ActiveGrant.ResourceID != "host-a" {
+		t.Fatalf("ActiveGrant = %#v, want host-a", projected.SpecialInputContext.ActiveGrant)
+	}
+	if len(projected.SpecialInputContext.CandidateFacts) != 1 || projected.SpecialInputContext.CandidateFacts[0].TrustLevel != specialinputmemory.TrustLevelRawTyped {
+		t.Fatalf("CandidateFacts = %#v, want raw typed candidate", projected.SpecialInputContext.CandidateFacts)
+	}
+	if len(projected.SpecialInputContext.PendingConfirmations) != 1 {
+		t.Fatalf("PendingConfirmations = %#v, want one", projected.SpecialInputContext.PendingConfirmations)
+	}
+}
+
+func TestTransportProjectorKeepsSpecialInputContextWhenLaterTurnHasNoReadPlan(t *testing.T) {
+	now := time.Date(2026, 7, 3, 10, 5, 0, 0, time.UTC)
+	state := NewAiopsTransportState("session-special-input-carry", "thread-special-input-carry")
+	state.SpecialInputContext = &specialinputmemory.TransportContext{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		TurnID:        "turn-with-read-plan",
+		ActiveGrant: &specialinputmemory.TransportGrant{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			CanonicalKey: "host:host-a",
+			Display:      "host-a",
+			Status:       specialinputmemory.GrantStatusActive,
+		},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-without-read-plan",
+		SessionID:   "session-special-input-carry",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.SpecialInputContext == nil || projected.SpecialInputContext.ActiveGrant == nil {
+		t.Fatalf("SpecialInputContext = %#v, want previous active grant preserved", projected.SpecialInputContext)
+	}
+	if projected.SpecialInputContext.ActiveGrant.ResourceID != "host-a" {
+		t.Fatalf("ActiveGrant.ResourceID = %q, want host-a", projected.SpecialInputContext.ActiveGrant.ResourceID)
 	}
 }
 
@@ -1568,7 +1667,8 @@ func TestTransportProjectorDeduplicatesTerminalRuntimeErrors(t *testing.T) {
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-duplicate-error", "thread-duplicate-error")
-	errorText := "模型请求超时：约 1m0s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: dial tcp: i/o timeout"
+	errorText := `模型请求超时：约 20s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: Post "https://provider.invalid/v1/chat/completions": net/http: TLS handshake timeout`
+	wantVisibleError := "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。"
 	turn := &runtimekernel.TurnSnapshot{
 		ID:        "turn-duplicate-error",
 		SessionID: "session-duplicate-error",
@@ -1595,8 +1695,16 @@ func TestTransportProjectorDeduplicatesTerminalRuntimeErrors(t *testing.T) {
 	if len(runtimeErrors) != 1 {
 		t.Fatalf("runtime error blocks = %#v, want one deduplicated error", runtimeErrors)
 	}
-	if runtimeErrors[0].Text != errorText {
-		t.Fatalf("runtime error text = %q, want %q", runtimeErrors[0].Text, errorText)
+	if runtimeErrors[0].Text != wantVisibleError {
+		t.Fatalf("runtime error text = %q, want %q", runtimeErrors[0].Text, wantVisibleError)
+	}
+	if projected.LastError != wantVisibleError {
+		t.Fatalf("LastError = %q, want sanitized runtime error", projected.LastError)
+	}
+	for _, forbidden := range []string{"provider.invalid", "chat/completions", "Post ", "TLS handshake timeout", "约 20s"} {
+		if strings.Contains(runtimeErrors[0].Text, forbidden) || strings.Contains(projected.LastError, forbidden) {
+			t.Fatalf("visible runtime error leaked %q: block=%q lastError=%q", forbidden, runtimeErrors[0].Text, projected.LastError)
+		}
 	}
 }
 
@@ -1733,6 +1841,63 @@ func TestTransportProjectorProjectsStreamingAssistantMessageFinal(t *testing.T) 
 		if block.Kind == AiopsTransportProcessKindAssistant {
 			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
 		}
+	}
+}
+
+func TestTransportProjectorProjectsFinalContractStatusAndEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	finalText := "无法在目标主机执行命令：host agent 不可用。"
+	finalData := json.RawMessage(`{
+		"displayKind":"assistant.message",
+		"phase":"final_answer",
+		"streamState":"complete",
+		"durationMs":321,
+		"finalContract":{
+			"schemaVersion":"aiops.harness.final.v1",
+			"status":"tool_unavailable",
+			"confidence":"low",
+			"answerText":"无法在目标主机执行命令：host agent 不可用。",
+			"checkedEvidenceRefs":["call-dns"],
+			"uncheckedRequirements":["exec_command:needs_host_agent"],
+			"failedToolImpacts":[{"toolName":"exec_command","toolCallId":"call-exec","failureClass":"needs_host_agent","impact":"host agent 7072 refused"}],
+			"limitations":["host_agent_unavailable"]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-final-contract",
+		SessionID:   "session-final-contract",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-contract-1", Type: agentstate.TurnItemTypeFinalResponse, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: finalText,
+				Data:    finalData,
+			}, CreatedAt: now, UpdatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-final-contract", "thread-final-contract"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	final := projected.Turns["turn-final-contract"].Final
+	if final == nil {
+		t.Fatal("turn.Final is nil, want projected final contract")
+	}
+	if final.Status != AiopsTransportFinalStatusToolUnavailable {
+		t.Fatalf("final status = %q, want tool_unavailable: %#v", final.Status, final)
+	}
+	if final.SchemaVersion != "aiops.harness.final.v1" || final.Confidence != "low" || final.DurationMs != 321 {
+		t.Fatalf("final contract fields = %#v", final)
+	}
+	if !containsString(final.CheckedEvidenceRefs, "call-dns") || !containsString(final.UncheckedRequirements, "exec_command:needs_host_agent") {
+		t.Fatalf("final evidence refs = checked=%#v unchecked=%#v", final.CheckedEvidenceRefs, final.UncheckedRequirements)
+	}
+	if len(final.FailedToolImpacts) != 1 || final.FailedToolImpacts[0].FailureClass != "needs_host_agent" {
+		t.Fatalf("failedToolImpacts = %#v", final.FailedToolImpacts)
 	}
 }
 
@@ -1895,6 +2060,81 @@ func TestTransportProjectorProjectsAssistantCommentaryMetadataBeforeTool(t *test
 	}
 	if process[1].Kind == AiopsTransportProcessKindAssistant {
 		t.Fatalf("process = %#v, final/tool order broken", process)
+	}
+}
+
+func TestTransportProjectorPreservesLedgerInterleavingWithApprovalAndFinalResponse(t *testing.T) {
+	now := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-ledger-interleave",
+		SessionID: "session-ledger-interleave",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(9 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "assistant-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "先检查 agent 端口。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "tool-call-a", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "exec_command",
+				Data:    json.RawMessage(`{"toolCallId":"call-a","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"ss -tlnp"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+			{ID: "tool-result-a", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "ss unavailable",
+				Data:    json.RawMessage(`{"toolCallId":"call-a","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"ss -tlnp","outputSummary":"ss unavailable"}`),
+			}, CreatedAt: now.Add(3 * time.Second)},
+			{ID: "assistant-2", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "换用 /proc 继续查。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+			}, CreatedAt: now.Add(4 * time.Second)},
+			{ID: "tool-call-b", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "exec_command",
+				Data:    json.RawMessage(`{"toolCallId":"call-b","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"cat /proc/net/tcp"}`),
+			}, CreatedAt: now.Add(5 * time.Second)},
+			{ID: "tool-result-b", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "tcp rows",
+				Data:    json.RawMessage(`{"toolCallId":"call-b","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"cat /proc/net/tcp","outputSummary":"tcp rows"}`),
+			}, CreatedAt: now.Add(6 * time.Second)},
+			{ID: "approval-requested-1", Type: agentstate.TurnItemTypeApprovalRequested, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{
+				Summary: "需要审批 restart",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","approvalType":"command","command":"systemctl restart aiops-host-agent","reason":"需要重启 agent"}`),
+			}, CreatedAt: now.Add(7 * time.Second)},
+			{ID: "approval-decided-1", Type: agentstate.TurnItemTypeApprovalDecided, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "审批通过",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","approvalType":"command","command":"systemctl restart aiops-host-agent","reason":"用户批准"}`),
+			}, CreatedAt: now.Add(8 * time.Second)},
+			{ID: "final-response-1", Type: agentstate.TurnItemTypeFinalResponse, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "最终结论。",
+			}, CreatedAt: now.Add(9 * time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-ledger-interleave", "thread-ledger-interleave"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-ledger-interleave"].Process
+	if len(process) != 5 {
+		t.Fatalf("process len = %d, want assistant/tool/assistant/tool/approval: %#v", len(process), process)
+	}
+	if process[0].Kind != AiopsTransportProcessKindAssistant || !strings.Contains(process[0].Text, "先检查") {
+		t.Fatalf("process[0] = %+v", process[0])
+	}
+	if process[1].Kind != AiopsTransportProcessKindCommand || process[1].ToolCallID != "call-a" {
+		t.Fatalf("process[1] = %+v", process[1])
+	}
+	if process[2].Kind != AiopsTransportProcessKindAssistant || !strings.Contains(process[2].Text, "换用") {
+		t.Fatalf("process[2] = %+v", process[2])
+	}
+	if process[3].Kind != AiopsTransportProcessKindCommand || process[3].ToolCallID != "call-b" {
+		t.Fatalf("process[3] = %+v", process[3])
+	}
+	if process[4].Kind != AiopsTransportProcessKindApproval {
+		t.Fatalf("process[4] = %+v, want approval after second tool", process[4])
+	}
+	if final := projected.Turns["turn-ledger-interleave"].Final; final == nil || final.Text != "最终结论。" {
+		t.Fatalf("final = %+v", final)
 	}
 }
 

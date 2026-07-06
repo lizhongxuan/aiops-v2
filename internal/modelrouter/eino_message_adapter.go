@@ -66,16 +66,17 @@ func ModelInputItemsFromEinoMessages(messages []*schema.Message) []promptinput.M
 			continue
 		}
 		item := promptinput.ModelInputItem{
-			ID:           fmt.Sprintf("provider-message-%d", idx),
-			ProviderRole: providerRoleFromEino(msg.Role),
-			SemanticRole: semanticRoleFromEinoMessage(msg),
-			Content:      msg.Content,
-			Name:         firstNonEmptyString(msg.Name, msg.ToolName),
-			ToolCallID:   msg.ToolCallID,
-			Source:       promptinput.ModelInputSource{Layer: sourceLayerFromEinoMessage(msg), Origin: "provider_message"},
-			Phase:        "trace",
-			CacheGroup:   "dynamic",
-			Metadata:     map[string]string{},
+			ID:               fmt.Sprintf("provider-message-%d", idx),
+			ProviderRole:     providerRoleFromEino(msg.Role),
+			SemanticRole:     semanticRoleFromEinoMessage(msg),
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			Name:             firstNonEmptyString(msg.Name, msg.ToolName),
+			ToolCallID:       msg.ToolCallID,
+			Source:           promptinput.ModelInputSource{Layer: sourceLayerFromEinoMessage(msg), Origin: "provider_message"},
+			Phase:            "trace",
+			CacheGroup:       "dynamic",
+			Metadata:         map[string]string{},
 		}
 		for _, call := range msg.ToolCalls {
 			item.ToolCalls = append(item.ToolCalls, promptinput.ModelInputToolCall{
@@ -160,6 +161,7 @@ func einoMessageFromModelInputItem(item promptinput.ModelInputItem) *schema.Mess
 		msg = schema.UserMessage(content)
 	case promptinput.ProviderRoleAssistant:
 		msg = schema.AssistantMessage(content, schemaToolCallsFromModelInput(item.ToolCalls))
+		msg.ReasoningContent = item.ReasoningContent
 	case promptinput.ProviderRoleTool:
 		msg = schema.ToolMessage(content, firstNonEmptyString(item.ToolCallID, item.ToolResultToolCallID()))
 	default:

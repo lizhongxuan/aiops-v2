@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/tooling"
 )
 
@@ -59,6 +60,63 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	} {
 		if !strings.Contains(markdown, want) {
 			t.Fatalf("markdown trace missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
+func TestPromptInputTraceIncludesSpecialInputWorldState(t *testing.T) {
+	worldState := &specialinputmemory.SpecialInputWorldStateSection{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		TurnID:        "turn-special",
+		ActiveExecutionScope: &specialinputmemory.ExecutionScopeGrantTrace{
+			ID:             "grant-host-a",
+			ResourceKind:   specialinputmemory.ResourceKindHost,
+			ResourceID:     "host-a",
+			AllowedActions: []string{specialinputmemory.ActionRead},
+			ValidationHash: "hash-a",
+		},
+		ActiveRoleBindings: []specialinputmemory.RoleBindingTrace{{
+			RoleKey:        "pg_primary",
+			RuntimeName:    "primary",
+			ResourceKind:   specialinputmemory.ResourceKindHost,
+			ResourceID:     "host-a",
+			EnvironmentKey: "prod",
+			ClusterKey:     "orders",
+			BindingHash:    "role-hash-a",
+		}},
+		PendingConfirmations: []specialinputmemory.PendingConfirmation{{ID: "pending-raw", Kind: "target", Reason: "raw_typed_requires_confirmation"}},
+		ReadPlan: &specialinputmemory.MemoryReadPlanTrace{
+			ActiveGrantID:          "grant-host-a",
+			ActiveResourceKind:     specialinputmemory.ResourceKindHost,
+			ActiveResourceID:       "host-a",
+			PendingConfirmationIDs: []string{"pending-raw"},
+		},
+		ModelSummary: "active host host-a from previous confirmed mention",
+	}
+
+	result, err := Builder{}.Build(BuildRequest{SpecialInputWorldState: worldState})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if result.Trace.SpecialInputWorldState == nil || result.Trace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("SpecialInputWorldState = %#v, want host-a", result.Trace.SpecialInputWorldState)
+	}
+	worldState.ActiveExecutionScope.AllowedActions[0] = specialinputmemory.ActionMutate
+	if result.Trace.SpecialInputWorldState.ActiveExecutionScope.AllowedActions[0] != specialinputmemory.ActionRead {
+		t.Fatalf("trace did not clone world state: %#v", result.Trace.SpecialInputWorldState)
+	}
+
+	data, err := json.Marshal(result.Trace)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"specialInputWorldState"`) || !strings.Contains(string(data), `"grant-host-a"`) {
+		t.Fatalf("json trace missing special input state:\n%s", string(data))
+	}
+	markdown := RenderMarkdown(result.Trace)
+	for _, want := range []string{"## Special Input Memory", "grant-host-a", "pg_primary", "pending-raw"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
 		}
 	}
 }
@@ -311,6 +369,34 @@ func TestPromptInputTraceCarriesContextGovernance(t *testing.T) {
 		got[0].RetryAttempt != 1 ||
 		got[0].RetryMax != 3 {
 		t.Fatalf("context governance trace = %#v", got[0])
+	}
+}
+
+func TestPromptInputTraceNormalizesPromptSectionHarnessMetadata(t *testing.T) {
+	req := BuildRequest{
+		Compiled: promptcompiler.CompiledPrompt{
+			System: promptcompiler.SystemPrompt{Content: "system layer"},
+			PromptSections: []promptcompiler.PromptSectionTrace{{
+				ID:             "protocol.state",
+				Kind:           "system",
+				Source:         "compiler",
+				Hash:           "sha256:protocol",
+				TokensEstimate: 8,
+				RetentionRank:  promptcompiler.RetentionRankP0,
+				CompactAction:  promptcompiler.CompactActionKeptOriginal,
+			}},
+		},
+	}
+	result, err := Builder{}.Build(req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if len(result.Trace.PromptSections) != 1 {
+		t.Fatalf("prompt sections = %#v", result.Trace.PromptSections)
+	}
+	section := result.Trace.PromptSections[0]
+	if section.TokenEstimate != 8 || section.Action != "kept" || section.RetentionRank != promptcompiler.RetentionRankP0 {
+		t.Fatalf("prompt section harness metadata = %#v", section)
 	}
 }
 

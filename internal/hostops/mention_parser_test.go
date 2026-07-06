@@ -62,3 +62,23 @@ func TestDetectInventoryHostMentionsSkipsBareServerLocal(t *testing.T) {
 		t.Fatalf("mentions = %#v, want no bare server-local mention", mentions)
 	}
 }
+
+func TestResourceBindingProjectionFromMention(t *testing.T) {
+	mention := HostMention{
+		Raw:         "@db-a",
+		HostID:      "host-a",
+		DisplayName: "db-a",
+		Source:      HostMentionSourceInventory,
+		Resolved:    true,
+		Confidence:  1,
+	}
+
+	projection := ResourceBindingProjectionFromMention(mention)
+	if projection.HostID != "host-a" || projection.Source != string(HostMentionSourceInventory) || !projection.Resolved {
+		t.Fatalf("projection = %+v, want resolved host-a", projection)
+	}
+	ref := ResourceRefFromHostMention(mention)
+	if ref.Type != "host" || ref.ID != "host-a" {
+		t.Fatalf("resource ref = %+v, want host-a", ref)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/tooling"
 	"pgregory.net/rapid"
 )
@@ -702,5 +703,63 @@ func TestWorkspaceTasksPersistAcrossStoreRestart(t *testing.T) {
 	}
 	if restored.Status != "running" {
 		t.Fatalf("restored Status = %q", restored.Status)
+	}
+}
+
+func TestSessionSpecialInputMemoryPersistsAcrossStoreRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	store, err := NewJSONFileStore(dataDir, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+
+	session := &runtimekernel.SessionState{
+		ID:        "sess-special-input",
+		Type:      runtimekernel.SessionTypeWorkspace,
+		Mode:      runtimekernel.ModeChat,
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	session.SpecialInputMemory, _ = specialinputmemory.Consolidate(session.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+		SessionID: session.ID,
+		TaskID:    "task-1",
+		TurnID:    "turn-1",
+		Now:       time.Now().UTC(),
+		Mentions: []specialinputmemory.MentionObservation{{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:host-a",
+			Display:      "host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+		}},
+	})
+
+	if err := store.SaveSession(session); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	if err := store.Flush(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	store2, err := NewJSONFileStore(dataDir, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("create store2: %v", err)
+	}
+	defer store2.Close()
+
+	restored, err := store2.GetSession(session.ID)
+	if err != nil {
+		t.Fatalf("get session after restart: %v", err)
+	}
+	if restored.SpecialInputMemory.SchemaVersion != specialinputmemory.SchemaVersion {
+		t.Fatalf("schema version = %q, want %q", restored.SpecialInputMemory.SchemaVersion, specialinputmemory.SchemaVersion)
+	}
+	if len(restored.SpecialInputMemory.Grants) != 1 || restored.SpecialInputMemory.Grants[0].ResourceID != "host-a" {
+		t.Fatalf("restored grants = %#v, want host-a grant", restored.SpecialInputMemory.Grants)
 	}
 }

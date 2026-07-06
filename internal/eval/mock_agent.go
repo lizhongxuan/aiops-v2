@@ -237,6 +237,9 @@ func mockTurnItems(c Case, toolCalls []ToolCall, now time.Time) []agentstate.Tur
 	if hasGeneralOpsExpectedSignals(c) {
 		items = append(items, mockGeneralOpsSignalItem(c, now))
 	}
+	if hasMultiAgentAssemblyExpectations(c) {
+		items = append(items, mockMultiAgentAssemblyTraceItem(c, now))
+	}
 	items = append(items, mockAssistantFinalItem(c.ID+"-final", agentstate.ItemStatusCompleted, "mock final answer", now))
 	return items
 }
@@ -547,6 +550,56 @@ func hasGeneralOpsExpectedSignals(c Case) bool {
 		len(c.Expected.ExpectedWorkflowReviewStatus) > 0 ||
 		len(c.Expected.ExpectedObservabilityEvidence) > 0 ||
 		len(c.Expected.ExpectedGenericOpsContract) > 0
+}
+
+func hasMultiAgentAssemblyExpectations(c Case) bool {
+	return c.Expected.ExpectedAssembly != nil ||
+		c.Expected.ExpectedResources != nil ||
+		c.Expected.ExpectedToolSurface != nil ||
+		c.Expected.ExpectedSessionTargets != nil ||
+		len(c.Expected.ExpectedRoleBindings) > 0 ||
+		c.Expected.ExpectedFinalReport != nil ||
+		c.Expected.ExpectedTraceExplainability != nil
+}
+
+func mockMultiAgentAssemblyTraceItem(c Case, ts time.Time) agentstate.TurnItem {
+	fingerprint := "surface:" + c.ID
+	toolSurface := map[string]any{"fingerprint": fingerprint}
+	if expected := c.Expected.ExpectedToolSurface; expected != nil {
+		toolSurface["visibleTools"] = expected.VisibleTools
+		toolSurface["dispatchableTools"] = expected.DispatchableTools
+		toolSurface["hiddenTools"] = expected.HiddenTools
+	}
+	payload := map[string]any{
+		"assembly":       c.Expected.ExpectedAssembly,
+		"resources":      c.Expected.ExpectedResources,
+		"toolSurface":    toolSurface,
+		"sessionTargets": c.Expected.ExpectedSessionTargets,
+		"roleBindings":   c.Expected.ExpectedRoleBindings,
+		"finalReport":    c.Expected.ExpectedFinalReport,
+		"finalContract":  "multi_agent_assembly_p0",
+		"promptInputTrace": map[string]any{
+			"assembly_source":        "runtimekernel.buildModelInputTraceRequest",
+			"prompt_compiler_source": "promptcompiler.Compiler",
+			"tool_surface_source":    "runtimekernel.applyToolSurfacePolicyToCompileContext",
+			"adapter_name":           "eino",
+			"toolSurfaceFingerprint": fingerprint,
+			"promptSections": []map[string]any{{
+				"id":     "base.contract",
+				"source": "promptcompiler.base",
+				"hash":   "sha256:" + sanitizePathComponent(c.ID),
+			}},
+		},
+	}
+	data, _ := json.Marshal(payload)
+	return agentstate.TurnItem{
+		ID:        c.ID + "-multi-agent-assembly-trace",
+		Type:      agentstate.TurnItemTypeModelCall,
+		Status:    agentstate.ItemStatusCompleted,
+		Payload:   agentstate.PayloadEnvelope{Kind: "multi_agent_assembly_trace", Summary: "multi-agent assembly trace", Data: data},
+		CreatedAt: ts,
+		UpdatedAt: ts,
+	}
 }
 
 func generalOpsSignalPayload(c Case) map[string]any {

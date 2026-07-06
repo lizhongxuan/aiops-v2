@@ -29,5 +29,14 @@
   "modelFinalOutput": "api 服务指标正常。",
   "expectedStatus": "completed",
   "expectedVisibleStates": ["running", "completed"],
-  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"]
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "modelVisibleTools": ["read_metrics"],
+    "toolCalls": ["read_metrics"],
+    "finalStatus": "verified",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
 }

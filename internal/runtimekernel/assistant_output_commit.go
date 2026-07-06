@@ -3,6 +3,8 @@ package runtimekernel
 import (
 	"strings"
 	"time"
+
+	"aiops-v2/internal/agentstate"
 )
 
 const (
@@ -22,6 +24,7 @@ type assistantOutputCommitInput struct {
 	EvidenceBoundary string
 	BoundaryAction   FinalMessageBoundaryAction
 	EvidenceRefs     []string
+	FinalContract    *FinalContract
 }
 
 type assistantOutputCommitResult struct {
@@ -85,7 +88,7 @@ func commitFinalAssistantOutput(snapshot *TurnSnapshot, input assistantOutputCom
 		return assistantOutputCommitResult{}
 	}
 	itemID := assistantMessageItemID(turnID, input.Iteration)
-	completeAssistantMessageItem(snapshot, itemID, text, assistantMessageData{
+	data := assistantMessageData{
 		MessageID:        input.MessageID,
 		Iteration:        input.Iteration,
 		Phase:            AssistantMessagePhaseFinalAnswer,
@@ -95,7 +98,16 @@ func commitFinalAssistantOutput(snapshot *TurnSnapshot, input assistantOutputCom
 		EvidenceRefs:     input.EvidenceRefs,
 		TextHash:         debugTextHash(text),
 		Duration:         input.Duration,
-	})
+		FinalContract:    input.FinalContract,
+	}
+	completeAssistantMessageItem(snapshot, itemID, text, data)
+	appendAgentItem(snapshot, newAgentItem(
+		finalResponseItemID(turnID, input.Iteration),
+		agentstate.TurnItemTypeFinalResponse,
+		agentstate.ItemStatusCompleted,
+		text,
+		assistantMessageAgentItemData(data),
+	))
 	return assistantOutputCommitResult{
 		ItemID:    itemID,
 		Phase:     AssistantMessagePhaseFinalAnswer,

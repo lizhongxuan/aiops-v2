@@ -3,6 +3,8 @@ package runtimekernel
 import (
 	"strconv"
 	"strings"
+
+	"aiops-v2/internal/agentstate"
 )
 
 type incompleteFinalInput struct {
@@ -127,6 +129,26 @@ func sanitizeFinalAssistantContentForCommit(text string, decision FinalEvidenceV
 	decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
 	decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "raw_tool_call_markup_final")
 	return incompleteFinalFromEvidenceDecision(decision), true
+}
+
+func recordRawToolCallMarkupFinalSanitized(snapshot *TurnSnapshot, turnID string, iteration int, _ string) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.Metadata == nil {
+		snapshot.Metadata = map[string]string{}
+	}
+	snapshot.Metadata["rawToolCallMarkupSanitized"] = "true"
+	snapshot.Metadata["finalRawToolCallMarkupConstrained"] = "true"
+	appendAgentItem(snapshot, newAgentItem(
+		errorItemID(turnID, iteration),
+		agentstate.TurnItemTypeError,
+		agentstate.ItemStatusFailed,
+		"raw_tool_call_markup_final: final answer contained tool-call markup and was replaced with a safe evidence-limited response.",
+		map[string]any{
+			"reason": "raw_tool_call_markup_final",
+		},
+	))
 }
 
 func constrainedFinalShouldBecomeIncomplete(text string, decision FinalEvidenceVerification) bool {
@@ -260,14 +282,18 @@ func containsInternalFinalFallbackText(text string) bool {
 }
 
 func containsRawToolCallMarkup(lower string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(lower))
+	normalized := strings.ToLower(strings.TrimSpace(normalizeRawToolCallMarkup(lower)))
 	if normalized == "" {
 		return false
 	}
+	compact := strings.NewReplacer(" ", "", "\n", "", "\t", "", "\r", "").Replace(normalized)
 	for _, marker := range []string{
 		"tool_calls>",
 		"<tool_calls",
 		"<|tool_call",
+		"||dsml||tool_calls",
+		"||dsml||invoke",
+		"||dsml||parameter",
 		"<｜｜dsml｜｜tool_calls",
 		"<｜｜dsml｜｜invoke",
 		"<｜｜dsml｜｜parameter",
@@ -275,7 +301,7 @@ func containsRawToolCallMarkup(lower string) bool {
 		"invoke name=\"web_search\"",
 		"invoke name=\"exec_command\"",
 	} {
-		if strings.Contains(normalized, marker) {
+		if strings.Contains(normalized, marker) || strings.Contains(compact, strings.ReplaceAll(marker, " ", "")) {
 			return true
 		}
 	}

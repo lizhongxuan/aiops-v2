@@ -68,6 +68,50 @@ func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
 	}
 }
 
+func TestEinoProviderAdapterPreservesReasoningContentForThinkingMode(t *testing.T) {
+	model := &streamingResponseModel{chunks: []*schema.Message{
+		{Role: schema.Assistant, ReasoningContent: "先检查工具状态。"},
+		schema.AssistantMessage("需要继续检查。", nil),
+	}}
+	adapter := NewEinoProviderAdapter(model)
+	resp, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
+		Provider: "deepseek",
+		Model:    "deepseek-v4-pro",
+		Input: []promptinput.ModelInputItem{{
+			ID:           "user-1",
+			ProviderRole: promptinput.ProviderRoleUser,
+			Content:      "检查 agent",
+		}},
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("Call() error = %v", err)
+	}
+	if resp.Output != "需要继续检查。" {
+		t.Fatalf("Output = %q, want final content", resp.Output)
+	}
+	if resp.ReasoningContent != "先检查工具状态。" {
+		t.Fatalf("ReasoningContent = %q, want provider reasoning preserved", resp.ReasoningContent)
+	}
+}
+
+func TestModelInputItemsToEinoMessagesPreservesAssistantReasoningContent(t *testing.T) {
+	messages, _, err := ModelInputItemsToEinoMessages([]promptinput.ModelInputItem{{
+		ID:               "assistant-1",
+		ProviderRole:     promptinput.ProviderRoleAssistant,
+		Content:          "需要继续检查。",
+		ReasoningContent: "先检查工具状态。",
+	}})
+	if err != nil {
+		t.Fatalf("ModelInputItemsToEinoMessages() error = %v", err)
+	}
+	if len(messages) != 1 || messages[0].Role != schema.Assistant {
+		t.Fatalf("messages = %#v, want one assistant message", messages)
+	}
+	if messages[0].ReasoningContent != "先检查工具状态。" {
+		t.Fatalf("ReasoningContent = %q, want preserved on provider message", messages[0].ReasoningContent)
+	}
+}
+
 func TestGenerateModelResponseRejectsEmptyAssistantMessage(t *testing.T) {
 	_, err := generateEinoModelResponse(context.Background(), &emptyResponseModel{}, []*schema.Message{schema.UserMessage("ping")}, nil, nil, nil)
 	if err == nil {
@@ -510,7 +554,7 @@ func (m *cancelStreamModel) BindTools([]*schema.ToolInfo) error {
 type wrappedObservedTimeoutError struct{}
 
 func (wrappedObservedTimeoutError) Error() string {
-	return `Post "https://api.z.ai/api/paas/v4/chat/completions": dial tcp 128.1.150.233:443: i/o timeout`
+	return `Post "https://provider.invalid/v1/chat/completions": net/http: TLS handshake timeout`
 }
 
 func (wrappedObservedTimeoutError) Timeout() bool {
@@ -601,7 +645,7 @@ func TestGenerateModelResponseWrapsProviderDeadlineWithReadableTimeout(t *testin
 	}
 }
 
-func TestGenerateModelResponseReportsObservedNetworkTimeoutDuration(t *testing.T) {
+func TestGenerateModelResponseSanitizesObservedNetworkTimeout(t *testing.T) {
 	_, err := generateEinoModelResponseWithTimeout(
 		context.Background(),
 		&observedNetworkTimeoutModel{delay: 20 * time.Millisecond},
@@ -614,11 +658,19 @@ func TestGenerateModelResponseReportsObservedNetworkTimeoutDuration(t *testing.T
 	if err == nil {
 		t.Fatal("expected network timeout error")
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context.DeadlineExceeded", err)
+	}
 	got := err.Error()
 	if strings.Contains(got, "5m0s") {
 		t.Fatalf("error = %q, must not report configured 5m budget for observed network timeout", got)
 	}
-	for _, want := range []string{"模型请求超时", "约", "i/o timeout"} {
+	for _, forbidden := range []string{"provider.invalid", "chat/completions", "Post ", "TLS handshake timeout", "i/o timeout", "约 20ms", "约 20s"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("error = %q, must not expose raw provider timeout detail %q", got, forbidden)
+		}
+	}
+	for _, want := range []string{"模型服务连接超时", "上下文较大", "稍后重试"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("error = %q, want %q", got, want)
 		}

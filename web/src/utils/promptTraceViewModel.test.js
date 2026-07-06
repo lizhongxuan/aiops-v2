@@ -141,6 +141,63 @@ describe("parsePromptTrace", () => {
     expect(vm.layers).toHaveLength(5);
   });
 
+  it("parses special input world state from prompt input trace", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      promptInputTrace: {
+        specialInputWorldState: {
+          schemaVersion: "aiops.special_input_memory.v1",
+          turnId: "turn-special",
+          modelSummary: "active host host-a from previous confirmed mention",
+          activeExecutionScope: {
+            id: "grant-host-a",
+            resourceKind: "host",
+            resourceId: "host-a",
+            allowedActions: ["inspect", "read"],
+            validationHash: "validation-hash-a",
+          },
+          activeRoleBindings: [{
+            id: "role-primary",
+            roleKey: "pg_primary",
+            runtimeName: "primary",
+            resourceKind: "host",
+            resourceId: "host-a",
+            environmentKey: "prod",
+            clusterKey: "orders",
+            bindingHash: "role-hash-a",
+          }],
+          pendingConfirmations: [{
+            id: "pending-raw",
+            kind: "target",
+            reason: "raw_typed_requires_confirmation",
+            candidateIds: ["raw-1"],
+          }],
+          conflicts: [{
+            id: "conflict-role",
+            kind: "role_binding",
+            roleKey: "pg_primary",
+            environmentKey: "prod",
+            clusterKey: "orders",
+            resourceIds: ["host-a", "host-b"],
+            reasons: ["unique_role_bound_to_multiple_resources"],
+          }],
+          readPlan: {
+            activeGrantId: "grant-host-a",
+            activeResourceKind: "host",
+            activeResourceId: "host-a",
+            pendingConfirmationIds: ["pending-raw"],
+          },
+        },
+      },
+    }));
+
+    expect(vm.specialInput.summary.hasActiveGrant).toBe(true);
+    expect(vm.specialInput.activeGrant.resourceId).toBe("host-a");
+    expect(vm.specialInput.roleBindings[0].bindingHash).toBe("role-hash-a");
+    expect(vm.specialInput.pendingConfirmations[0].reason).toBe("raw_typed_requires_confirmation");
+    expect(vm.specialInput.conflicts[0].resourceIds).toEqual(["host-a", "host-b"]);
+    expect(vm.specialInput.readPlan.activeGrantId).toBe("grant-host-a");
+  });
+
   it("returns a warning view model for invalid JSON", () => {
     const vm = parsePromptTrace("{bad json");
     expect(vm.layers).toHaveLength(0);

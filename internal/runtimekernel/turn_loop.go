@@ -134,6 +134,12 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 		req.VisibleTools = append([]string(nil), step.ToolSurface.ModelVisibleTools...)
 	}
 	traceReq := buildModelInputTraceRequest(req)
+	finalEvidenceState, _ := traceReq.FinalEvidenceState.(FinalEvidenceState)
+	harnessTurn := BuildHarnessTurnTrace(nil, step, FinalEvidenceVerification{
+		Action:     FinalEvidenceActionAllow,
+		Confidence: finalEvidenceState.Confidence,
+		State:      finalEvidenceState,
+	})
 	root := modeltrace.TraceDocumentV2Directory(traceConfig.RootDir, step.Turn.SessionID, step.Turn.TurnID)
 	rawRef, err := modeltrace.WriteRawPayloadRef(root, "provider-request", "provider_request", step.ProviderRequest)
 	if err != nil {
@@ -147,6 +153,7 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 		VisibleTools:      traceReq.VisibleTools,
 		PromptFingerprint: traceReq.PromptFingerprint,
 		TurnContext:       step.Turn,
+		HarnessTurn:       harnessTurn,
 		StepContext: runtimeStepTraceDocumentV2{
 			RuntimeStepContext: step,
 			PromptInputTrace:   traceReq.PromptInputTrace,
@@ -159,14 +166,15 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 			RequestPropertiesHash: step.ProviderRequest.RequestPropertiesHash,
 			PromptCacheKey:        step.ProviderRequest.PromptCacheKey,
 		},
-		ToolSurface:        step.ToolSurface,
-		Prompt:             traceReq.Prompt,
-		ModelInput:         traceReq.ModelInput,
-		PromptInputTrace:   traceReq.PromptInputTrace,
-		PromptInputDiff:    traceReq.PromptInputDiff,
-		DiagnosticTrace:    traceReq.DiagnosticTrace,
-		FinalEvidenceState: traceReq.FinalEvidenceState,
-		RawPayloadRefs:     []modeltrace.RawPayloadRef{rawRef},
+		ToolSurface:            step.ToolSurface,
+		Prompt:                 traceReq.Prompt,
+		ModelInput:             traceReq.ModelInput,
+		SpecialInputWorldState: traceReq.SpecialInputWorldState,
+		PromptInputTrace:       traceReq.PromptInputTrace,
+		PromptInputDiff:        traceReq.PromptInputDiff,
+		DiagnosticTrace:        traceReq.DiagnosticTrace,
+		FinalEvidenceState:     traceReq.FinalEvidenceState,
+		RawPayloadRefs:         []modeltrace.RawPayloadRef{rawRef},
 	})
 }
 

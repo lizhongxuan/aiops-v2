@@ -9,6 +9,8 @@ import (
 
 func HostSubTaskToAssignment(task hostops.HostSubTask) AgentAssignment {
 	hostID := strings.TrimSpace(task.HostID)
+	boundRole := strings.TrimSpace(task.BoundRole)
+	roleBindingHash := strings.TrimSpace(task.RoleBindingHash)
 	goal := strings.TrimSpace(task.Goal)
 	if goal == "" {
 		goal = "operate on the assigned host and return bounded evidence"
@@ -22,7 +24,20 @@ func HostSubTaskToAssignment(task hostops.HostSubTask) AgentAssignment {
 	if task.RiskLevel != "" {
 		constraints = append(constraints, "risk="+string(task.RiskLevel))
 	}
+	if roleBindingHash != "" {
+		constraints = append(constraints, "role_binding_hash="+roleBindingHash)
+	}
 	constraints = append(constraints, "host_binding_required")
+	knownFacts := []string{
+		"host_agent_id=" + strings.TrimSpace(task.HostAgentID),
+		"bound_host_id=" + hostID,
+	}
+	if boundRole != "" {
+		knownFacts = append(knownFacts, "bound_role="+boundRole)
+	}
+	if roleBindingHash != "" {
+		knownFacts = append(knownFacts, "role_binding_hash="+roleBindingHash)
+	}
 	return AgentAssignment{
 		Objective: goal,
 		Background: strings.Join(nonEmptyStrings([]string{
@@ -30,14 +45,11 @@ func HostSubTaskToAssignment(task hostops.HostSubTask) AgentAssignment {
 			"planStep=" + strings.TrimSpace(task.PlanStepID),
 			"hostAgent=" + strings.TrimSpace(task.HostAgentID),
 		}), "; "),
-		KnownFacts: []string{
-			"host_agent_id=" + strings.TrimSpace(task.HostAgentID),
-			"bound_host_id=" + hostID,
-		},
+		KnownFacts: knownFacts,
 		Scope: AgentScope{
 			ResourceRefs: []string{"host:" + hostID},
 		},
-		ExpectedOutput: "Return a HostTaskReport with status, executed commands, evidence refs, errors, blockers, and next step suggestions.",
+		ExpectedOutput: "Return a HostTaskReport with status, bound host id, bound role, role binding hash, executed commands, evidence refs, errors, blockers, and next step suggestions.",
 		EvidenceRequirement: EvidenceRequirement{
 			MinEvidenceRefs: minEvidenceRefs,
 			RequiredKinds:   evidenceKinds,
@@ -68,13 +80,15 @@ func HostTaskReportFromAgentResult(result AgentResult, task hostops.HostSubTask)
 		status = "unknown"
 	}
 	report := hostops.HostTaskReport{
-		MissionID:    strings.TrimSpace(task.MissionID),
-		PlanStepID:   strings.TrimSpace(task.PlanStepID),
-		HostAgentID:  firstNonEmptyAgentString(strings.TrimSpace(task.HostAgentID), strings.TrimSpace(result.AgentID)),
-		HostID:       firstNonEmptyAgentString(strings.TrimSpace(task.HostID), strings.TrimSpace(result.HostID)),
-		Status:       status,
-		Summary:      strings.TrimSpace(result.Output),
-		EvidenceRefs: append([]string(nil), result.ResultRefs...),
+		MissionID:       strings.TrimSpace(task.MissionID),
+		PlanStepID:      strings.TrimSpace(task.PlanStepID),
+		HostAgentID:     firstNonEmptyAgentString(strings.TrimSpace(task.HostAgentID), strings.TrimSpace(result.AgentID)),
+		HostID:          firstNonEmptyAgentString(strings.TrimSpace(task.HostID), strings.TrimSpace(result.HostID)),
+		BoundRole:       strings.TrimSpace(task.BoundRole),
+		RoleBindingHash: strings.TrimSpace(task.RoleBindingHash),
+		Status:          status,
+		Summary:         strings.TrimSpace(result.Output),
+		EvidenceRefs:    append([]string(nil), result.ResultRefs...),
 	}
 	if strings.TrimSpace(result.Error) != "" {
 		report.Errors = []string{strings.TrimSpace(result.Error)}

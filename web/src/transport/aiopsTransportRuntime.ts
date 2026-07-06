@@ -1,10 +1,12 @@
 import type {
   AiopsProcessBlock,
+  AiopsSpecialInputContext,
   AiopsTransportTimelineItem,
   AiopsTransportHostMission,
   AiopsTransportState,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
+import { isRawTransportErrorMessage, toUserFacingTransportErrorMessage } from "./transportErrorMessage";
 
 export type AiopsTransportCommand =
   | { type: "aiops.stop"; sessionId?: string; turnId?: string; reason?: string }
@@ -25,7 +27,9 @@ export type AiopsTransportCommand =
       params?: Record<string, unknown>;
     }
   | { type: "aiops.mcp-refresh"; surfaceId: string }
-  | { type: "aiops.mcp-pin"; surfaceId: string; pinned: boolean };
+  | { type: "aiops.mcp-pin"; surfaceId: string; pinned: boolean }
+  | { type: "aiops.special-input-clear"; sessionId?: string; resourceKind?: string; resourceId?: string; canonicalKey?: string }
+  | { type: "aiops.special-input-confirm"; sessionId?: string; resourceKind?: string; resourceId?: string; canonicalKey?: string };
 
 export type AiopsTransportCommandActions = {
   stop: (reason?: string) => void;
@@ -43,6 +47,8 @@ export type AiopsTransportCommandActions = {
   ) => void;
   mcpRefresh: (surfaceId: string) => void;
   mcpPin: (surfaceId: string, pinned: boolean) => void;
+  specialInputClear: (target?: { resourceKind?: string; resourceId?: string; canonicalKey?: string }) => void;
+  specialInputConfirm: (target?: { resourceKind?: string; resourceId?: string; canonicalKey?: string }) => void;
 };
 
 export function createInitialAiopsTransportState(
@@ -77,7 +83,7 @@ export function normalizeAiopsTransportState(
   fallbackThreadId = "default",
 ): AiopsTransportState {
   const base = createInitialAiopsTransportState(fallbackThreadId);
-  if (!value || typeof value !== "object") {
+  if (!isCurrentAiopsTransportState(value)) {
     return base;
   }
 
@@ -97,6 +103,7 @@ export function normalizeAiopsTransportState(
     artifacts: value.artifacts || {},
     hostMissions: normalizeHostMissions(value.hostMissions),
     childAgents: value.childAgents || {},
+    specialInputContext: normalizeSpecialInputContext(value.specialInputContext),
     runtimeLiveness: {
       ...base.runtimeLiveness,
       ...runtimeLiveness,
@@ -109,6 +116,44 @@ export function normalizeAiopsTransportState(
     seq: typeof value.seq === "number" ? value.seq : base.seq,
     updatedAt: value.updatedAt || base.updatedAt,
   };
+}
+
+export function isCurrentAiopsTransportState(
+  value: Partial<AiopsTransportState> | AiopsTransportState | null | undefined,
+): value is AiopsTransportState {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  if (value.schemaVersion !== "aiops.transport.v2") {
+    return false;
+  }
+  return Boolean(
+    isRecord(value.turns) &&
+    Array.isArray(value.turnOrder) &&
+    isRecord(value.pendingApprovals) &&
+    isRecord(value.mcpSurfaces) &&
+    isRecord(value.artifacts) &&
+    isRecord(value.hostMissions) &&
+    isRecord(value.childAgents) &&
+    isRuntimeLiveness(value.runtimeLiveness),
+  );
+}
+
+function isRuntimeLiveness(value: unknown): value is AiopsTransportState["runtimeLiveness"] {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    isRecord(value.activeTurns) &&
+    isRecord(value.activeAgents) &&
+    isRecord(value.pendingApprovals) &&
+    isRecord(value.pendingUserInputs) &&
+    isRecord(value.activeCommandStreams)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 export function createAiopsTransportCommandActions(
@@ -180,6 +225,28 @@ export function createAiopsTransportCommandActions(
         pinned,
       });
     },
+    specialInputClear(target = {}) {
+      sendCommand(
+        removeUndefined({
+          type: "aiops.special-input-clear",
+          sessionId,
+          resourceKind: target.resourceKind,
+          resourceId: target.resourceId,
+          canonicalKey: target.canonicalKey,
+        }),
+      );
+    },
+    specialInputConfirm(target = {}) {
+      sendCommand(
+        removeUndefined({
+          type: "aiops.special-input-confirm",
+          sessionId,
+          resourceKind: target.resourceKind,
+          resourceId: target.resourceId,
+          canonicalKey: target.canonicalKey,
+        }),
+      );
+    },
   };
 }
 
@@ -187,7 +254,7 @@ export function markAiopsTransportFailed(
   state: AiopsTransportState,
   message: string,
 ): AiopsTransportState {
-  return markAiopsTransportTerminalState(state, "failed", message);
+  return markAiopsTransportTerminalState(state, "failed", toUserFacingTransportErrorMessage(message));
 }
 
 export function markAiopsTransportCanceled(
@@ -250,19 +317,22 @@ function markProcessBlockTerminal(
   block: AiopsProcessBlock,
   status: "failed" | "canceled",
 ): AiopsProcessBlock {
+  const modelWaitBlock = isModelWaitBlock(block);
   const shouldFinalize =
     block.status === "running" ||
     block.status === "queued" ||
     block.status === "blocked";
-  if (!shouldFinalize && !(status === "canceled" && isModelWaitBlock(block))) {
+  if (!shouldFinalize && !modelWaitBlock) {
     return { ...block };
   }
   return {
     ...block,
     status: status === "canceled" ? "rejected" : "failed",
     text:
-      status === "canceled" && isModelWaitBlock(block)
-        ? "模型调用已取消"
+      modelWaitBlock
+        ? status === "canceled"
+          ? "模型调用已取消"
+          : "模型调用失败"
         : block.text,
   };
 }
@@ -291,6 +361,199 @@ function normalizeOpsRun(value: unknown): AiopsTransportState["opsRun"] {
   return run;
 }
 
+function normalizeSpecialInputContext(value: unknown): AiopsSpecialInputContext | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const context = value as AiopsSpecialInputContext;
+  if (context.schemaVersion !== "aiops.special_input_memory.v1") {
+    return undefined;
+  }
+  const activeGrant = normalizeSpecialInputGrant(context.activeGrant);
+  const visibleFacts = normalizeSpecialInputFacts(context.visibleFacts);
+  const candidateFacts = normalizeSpecialInputFacts(context.candidateFacts);
+  const suspendedGrants = normalizeSpecialInputGrants(context.suspendedGrants);
+  const roleBindings = normalizeSpecialInputRoleBindings(context.roleBindings);
+  const conflicts = normalizeSpecialInputConflicts(context.conflicts);
+  const pendingConfirmations = normalizeSpecialInputPendingConfirmations(context.pendingConfirmations);
+  const hasContent =
+    Boolean(activeGrant) ||
+    visibleFacts.length > 0 ||
+    candidateFacts.length > 0 ||
+    suspendedGrants.length > 0 ||
+    roleBindings.length > 0 ||
+    conflicts.length > 0 ||
+    pendingConfirmations.length > 0 ||
+    Boolean(context.modelSummary);
+  if (!hasContent) {
+    return undefined;
+  }
+  return {
+    schemaVersion: context.schemaVersion,
+    turnId: stringOrUndefined(context.turnId),
+    activeGrant,
+    visibleFacts,
+    candidateFacts,
+    suspendedGrants,
+    roleBindings,
+    conflicts,
+    pendingConfirmations,
+    modelSummary: stringOrUndefined(context.modelSummary),
+  };
+}
+
+function normalizeSpecialInputGrant(value: unknown): AiopsSpecialInputContext["activeGrant"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const grant = value as NonNullable<AiopsSpecialInputContext["activeGrant"]>;
+  const resourceId = stringOrUndefined(grant.resourceId);
+  const canonicalKey = stringOrUndefined(grant.canonicalKey);
+  if (!resourceId && !canonicalKey) {
+    return undefined;
+  }
+  return {
+    id: stringOrUndefined(grant.id),
+    factId: stringOrUndefined(grant.factId),
+    resourceKind: stringOrUndefined(grant.resourceKind),
+    resourceId,
+    canonicalKey,
+    display: stringOrUndefined(grant.display),
+    allowedActions: normalizeStringList(grant.allowedActions),
+    trustLevel: stringOrUndefined(grant.trustLevel),
+    status: stringOrUndefined(grant.status),
+    scope: stringOrUndefined(grant.scope),
+  };
+}
+
+function normalizeSpecialInputGrants(value: unknown): NonNullable<AiopsSpecialInputContext["suspendedGrants"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map(normalizeSpecialInputGrant).filter((grant): grant is NonNullable<AiopsSpecialInputContext["activeGrant"]> => Boolean(grant));
+}
+
+function normalizeSpecialInputFacts(value: unknown): NonNullable<AiopsSpecialInputContext["visibleFacts"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const facts: NonNullable<AiopsSpecialInputContext["visibleFacts"]> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const fact = item as NonNullable<AiopsSpecialInputContext["visibleFacts"]>[number];
+    const id = stringOrUndefined(fact.id);
+    const display = stringOrUndefined(fact.display);
+    const resourceId = stringOrUndefined(fact.resourceId);
+    const canonicalKey = stringOrUndefined(fact.canonicalKey);
+    if (!id && !display && !resourceId && !canonicalKey) {
+      continue;
+    }
+    facts.push({
+      id,
+      kind: stringOrUndefined(fact.kind),
+      resourceKind: stringOrUndefined(fact.resourceKind),
+      resourceId,
+      canonicalKey,
+      display,
+      trustLevel: stringOrUndefined(fact.trustLevel),
+      status: stringOrUndefined(fact.status),
+      environmentKey: stringOrUndefined(fact.environmentKey),
+      clusterKey: stringOrUndefined(fact.clusterKey),
+    });
+  }
+  return facts;
+}
+
+function normalizeSpecialInputRoleBindings(value: unknown): NonNullable<AiopsSpecialInputContext["roleBindings"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const bindings: NonNullable<AiopsSpecialInputContext["roleBindings"]> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const binding = item as NonNullable<AiopsSpecialInputContext["roleBindings"]>[number];
+    const roleKey = stringOrUndefined(binding.roleKey);
+    const resourceId = stringOrUndefined(binding.resourceId);
+    if (!roleKey && !resourceId) {
+      continue;
+    }
+    bindings.push({
+      id: stringOrUndefined(binding.id),
+      roleKey,
+      runtimeName: stringOrUndefined(binding.runtimeName),
+      resourceKind: stringOrUndefined(binding.resourceKind),
+      resourceId,
+      display: stringOrUndefined(binding.display),
+      environmentKey: stringOrUndefined(binding.environmentKey),
+      clusterKey: stringOrUndefined(binding.clusterKey),
+      bindingHash: stringOrUndefined(binding.bindingHash),
+      status: stringOrUndefined(binding.status),
+      confidence: typeof binding.confidence === "number" ? binding.confidence : undefined,
+    });
+  }
+  return bindings;
+}
+
+function normalizeSpecialInputConflicts(value: unknown): NonNullable<AiopsSpecialInputContext["conflicts"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const conflicts: NonNullable<AiopsSpecialInputContext["conflicts"]> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const conflict = item as NonNullable<AiopsSpecialInputContext["conflicts"]>[number];
+    const id = stringOrUndefined(conflict.id);
+    if (!id) {
+      continue;
+    }
+    conflicts.push({
+      id,
+      kind: stringOrUndefined(conflict.kind),
+      canonicalKey: stringOrUndefined(conflict.canonicalKey),
+      roleKey: stringOrUndefined(conflict.roleKey),
+      environmentKey: stringOrUndefined(conflict.environmentKey),
+      clusterKey: stringOrUndefined(conflict.clusterKey),
+      resourceIds: normalizeStringList(conflict.resourceIds),
+      reasons: normalizeStringList(conflict.reasons),
+    });
+  }
+  return conflicts;
+}
+
+function normalizeSpecialInputPendingConfirmations(value: unknown): NonNullable<AiopsSpecialInputContext["pendingConfirmations"]> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const pendingItems: NonNullable<AiopsSpecialInputContext["pendingConfirmations"]> = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      continue;
+    }
+    const pending = item as NonNullable<AiopsSpecialInputContext["pendingConfirmations"]>[number];
+    const id = stringOrUndefined(pending.id);
+    const reason = stringOrUndefined(pending.reason);
+    if (!id && !reason) {
+      continue;
+    }
+    pendingItems.push({
+      id,
+      kind: stringOrUndefined(pending.kind),
+      reason,
+      roleKey: stringOrUndefined(pending.roleKey),
+      environmentKey: stringOrUndefined(pending.environmentKey),
+      clusterKey: stringOrUndefined(pending.clusterKey),
+      candidateIds: normalizeStringList(pending.candidateIds),
+    });
+  }
+  return pendingItems;
+}
+
 function normalizeTurns(value: unknown): AiopsTransportState["turns"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return {};
@@ -298,6 +561,20 @@ function normalizeTurns(value: unknown): AiopsTransportState["turns"] {
   return Object.fromEntries(
     Object.entries(value as AiopsTransportState["turns"]).map(([turnId, turn]) => [turnId, normalizeTurn(turn)]),
   );
+}
+
+function stringOrUndefined(value: unknown) {
+  const text = typeof value === "string" ? value.trim() : "";
+  return text || undefined;
+}
+
+function normalizeStringList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item) => (typeof item === "string" ? item.trim() : ""))
+    .filter(Boolean);
 }
 
 function normalizeTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
@@ -391,6 +668,9 @@ function sanitizeUserVisibleRuntimeText(value: string) {
     lower.includes("execution_required,missing_verification_report")
   ) {
     return "";
+  }
+  if (isRawTransportErrorMessage(text)) {
+    return toUserFacingTransportErrorMessage(text);
   }
   return text;
 }

@@ -331,10 +331,10 @@ function processHeaderLabel({ running, waiting }: { running: boolean; waiting: b
 }
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
-  if (block.kind === "approval") {
-    return block.status === "rejected";
-  }
   const text = (block.text || block.command || block.outputPreview || "").trim().toLowerCase();
+  if (block.kind === "approval") {
+    return Boolean(text || block.approvalId || block.targetSummary || block.riskSummary || block.expectedEffect);
+  }
   if (isRuntimeInternalGateText(text)) {
     return false;
   }
@@ -1508,9 +1508,15 @@ function readableBlockSummary(block?: AiopsProcessBlock) {
     const text = cleanToolText(stripHtml(block.text || "") || block.displayKind || "");
     return text || "正在调用工具";
   }
-  if (block.kind === "approval" && block.status === "rejected") {
+  if (block.kind === "approval") {
     const target = stripHtml(block.command || block.targetSummary || block.text || "").trim();
-    return target ? `已拒绝，将基于已有证据继续分析：${target}` : "已拒绝，将基于已有证据继续分析";
+    if (block.status === "rejected") {
+      return target ? `已拒绝，将基于已有证据继续分析：${target}` : "已拒绝，将基于已有证据继续分析";
+    }
+    if (block.status === "blocked") {
+      return target ? `等待审批：${target}` : "等待审批";
+    }
+    return target || "已处理审批";
   }
   return cleanToolText(stripHtml(block.text || "") || block.displayKind || block.kind);
 }

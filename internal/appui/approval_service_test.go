@@ -456,6 +456,48 @@ func TestApprovalResumeErrorDoesNotStartFallbackRunTurn(t *testing.T) {
 	}
 }
 
+func TestApprovalResumeRequestCarriesRollbackContractFingerprints(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-approval-fingerprint", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	session.PendingApprovals = []runtimekernel.PendingApproval{{
+		ID:                     "approval-fingerprint",
+		SessionID:              session.ID,
+		TurnID:                 "turn-fingerprint",
+		Iteration:              1,
+		ToolName:               "restart_service",
+		InputHash:              "sha256:input",
+		ArgumentsHash:          "sha256:args",
+		ToolSurfaceFingerprint: "surface-1",
+		PermissionSnapshotHash: "permission-1",
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}}
+	sessions.Update(session)
+
+	service := NewApprovalServiceWithContext(context.Background(), &approvalRuntimeStub{}, sessions, NewSnapshotBuilder())
+	_, approval, req, err := service.(*defaultApprovalService).approvalResumeRequest(ApprovalDecision{
+		ID:       "approval-fingerprint",
+		Decision: "accept",
+	})
+	if err != nil {
+		t.Fatalf("approvalResumeRequest() error = %v", err)
+	}
+	if approval.ID != "approval-fingerprint" {
+		t.Fatalf("approval = %#v", approval)
+	}
+	for key, want := range map[string]string{
+		"inputHash":              "sha256:input",
+		"argumentsHash":          "sha256:args",
+		"toolSurfaceFingerprint": "surface-1",
+		"permissionSnapshotHash": "permission-1",
+	} {
+		if got := req.Metadata[key]; got != want {
+			t.Fatalf("req.Metadata[%q] = %q, want %q; metadata=%#v", key, got, want, req.Metadata)
+		}
+	}
+}
+
 func TestApprovalFallbackDoesNotRunForApprovedDecision(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()

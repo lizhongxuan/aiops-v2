@@ -6,6 +6,7 @@ import type {
 import type {
   AiopsTransportState,
   AiopsTransportAgentUiArtifact,
+  AiopsTransportFinal,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
 import { normalizeAiopsTransportState } from "./aiopsTransportRuntime";
@@ -95,6 +96,10 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
         turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
         finalDurationMs: turn.final?.durationMs,
         finalText: displayText,
+        finalStatus: turn.final?.status,
+        finalConfidence: turn.final?.confidence,
+        finalContract: finalContractForMetadata(turn.final),
+        timeline: turn.timeline || [],
         process: turn.process || [],
         agentRun: agentRunForTurn(state, turn),
         contextGovernance: turn.contextGovernance || [],
@@ -119,7 +124,7 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
 function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTurn) {
   const finalText = turn.final?.text?.trim() || "";
   const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
-  if (finalText && !finalIsRawRuntimeFailure) {
+  if (finalText && !finalIsRawRuntimeFailure && !isDuplicateRunningFinalDraft(turn, finalText)) {
     return finalText;
   }
   if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
@@ -137,6 +142,45 @@ function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTu
     }
   }
   return "";
+}
+
+function finalContractForMetadata(final?: AiopsTransportFinal) {
+  if (!final?.schemaVersion) {
+    return undefined;
+  }
+  return {
+    schemaVersion: final.schemaVersion,
+    status: final.status,
+    confidence: final.confidence,
+    answerText: final.answerText || final.text || "",
+    checkedEvidenceRefs: final.checkedEvidenceRefs || [],
+    uncheckedRequirements: final.uncheckedRequirements || [],
+    failedToolImpacts: final.failedToolImpacts || [],
+    approvedActions: final.approvedActions || [],
+    performedActions: final.performedActions || [],
+    postChecks: final.postChecks || [],
+    limitations: final.limitations || [],
+  };
+}
+
+function isDuplicateRunningFinalDraft(turn: AiopsTransportTurn, finalText: string) {
+  if (turn.final?.status !== "running") {
+    return false;
+  }
+  const normalizedFinal = normalizeAssistantDraftText(finalText);
+  if (!normalizedFinal) {
+    return false;
+  }
+  return (turn.process || []).some((block) => {
+    if (block?.kind !== "assistant") {
+      return false;
+    }
+    return normalizeAssistantDraftText(block.text || "") === normalizedFinal;
+  });
+}
+
+function normalizeAssistantDraftText(text: string) {
+  return text.trim().replace(/\s+/g, " ");
 }
 
 function latestAssistantProcessText(process: AiopsTransportTurn["process"]) {
@@ -309,14 +353,8 @@ function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAg
   const searchFlowID = opsManualFlowID(searchData);
   const resolutionManualID = text(pick(resolutionData, "manualId", "manual_id"));
   const resolutionWorkflowID = text(pick(resolutionData, "workflowId", "workflow_id"));
-  const resolutionWorkflowIDForMatching = resolutionWorkflowID === searchFlowID ? "" : resolutionWorkflowID;
   if (resolutionFlowID && searchFlowID) {
-    if (resolutionFlowID === searchFlowID) {
-      return true;
-    }
-    if (resolutionWorkflowID !== searchFlowID) {
-      return false;
-    }
+    return resolutionFlowID === searchFlowID;
   }
   const manuals = arrayRecords(pick(searchData, "manuals", "hits", "matches", "items"));
   if (!manuals.length) {
@@ -331,7 +369,7 @@ function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAg
       text(pick(workflowRef, "workflowId", "workflow_id")),
     );
     const manualMatches = !resolutionManualID || !hitManualID || resolutionManualID === hitManualID;
-    const workflowMatches = !resolutionWorkflowIDForMatching || !hitWorkflowID || resolutionWorkflowIDForMatching === hitWorkflowID;
+    const workflowMatches = !resolutionWorkflowID || !hitWorkflowID || resolutionWorkflowID === hitWorkflowID;
     return manualMatches && workflowMatches;
   });
 }

@@ -36,7 +36,18 @@ export type AiopsTransportProcessStatus =
   | "rejected"
   | "skipped";
 
-export type AiopsTransportFinalStatus = "running" | "completed" | "failed";
+export type AiopsTransportFinalStatus =
+  | "running"
+  | "completed"
+  | "failed"
+  | "verified"
+  | "partial"
+  | "blocked"
+  | "needs_evidence"
+  | "approval_denied"
+  | "tool_unavailable"
+  | "cancelled"
+  | "unknown";
 
 export type AgentRunStatus =
   | "pending"
@@ -73,11 +84,17 @@ export type AiopsTransportTimelineItemType =
   | "tool_result"
   | "approval_requested"
   | "approval_decided"
+  | "evidence_requested"
+  | "evidence_collected"
   | "child_agent_started"
   | "child_agent_result"
   | "context_compacted"
+  | "checkpoint"
+  | "final_response"
   | "pending_input_accepted"
   | "turn_cancelled"
+  | "turn_failed"
+  | "error"
   | "permission_snapshot"
   | "resource_lock";
 
@@ -112,10 +129,85 @@ export type AiopsTransportState = {
   runtimeLiveness: AiopsRuntimeLiveness;
   hostMissions: Record<string, AiopsTransportHostMission>;
   childAgents: Record<string, AiopsTransportChildAgent>;
+  specialInputContext?: AiopsSpecialInputContext;
   activeHostMissionId?: string;
   lastError?: string;
   seq: number;
   updatedAt: string;
+};
+
+export type AiopsSpecialInputContext = {
+  schemaVersion: string;
+  turnId?: string;
+  activeGrant?: AiopsSpecialInputGrant;
+  visibleFacts?: AiopsSpecialInputFact[];
+  candidateFacts?: AiopsSpecialInputFact[];
+  suspendedGrants?: AiopsSpecialInputGrant[];
+  roleBindings?: AiopsSpecialInputRoleBinding[];
+  conflicts?: AiopsSpecialInputConflict[];
+  pendingConfirmations?: AiopsSpecialInputPendingConfirmation[];
+  modelSummary?: string;
+};
+
+export type AiopsSpecialInputFact = {
+  id?: string;
+  kind?: string;
+  resourceKind?: string;
+  resourceId?: string;
+  canonicalKey?: string;
+  display?: string;
+  trustLevel?: string;
+  status?: string;
+  environmentKey?: string;
+  clusterKey?: string;
+};
+
+export type AiopsSpecialInputGrant = {
+  id?: string;
+  factId?: string;
+  resourceKind?: string;
+  resourceId?: string;
+  canonicalKey?: string;
+  display?: string;
+  allowedActions?: string[];
+  trustLevel?: string;
+  status?: string;
+  scope?: string;
+};
+
+export type AiopsSpecialInputRoleBinding = {
+  id?: string;
+  roleKey?: string;
+  runtimeName?: string;
+  resourceKind?: string;
+  resourceId?: string;
+  display?: string;
+  environmentKey?: string;
+  clusterKey?: string;
+  bindingHash?: string;
+  status?: string;
+  confidence?: number;
+};
+
+export type AiopsSpecialInputConflict = {
+  id?: string;
+  kind?: string;
+  canonicalKey?: string;
+  roleKey?: string;
+  environmentKey?: string;
+  clusterKey?: string;
+  resourceIds?: string[];
+  reasons?: string[];
+};
+
+export type AiopsSpecialInputPendingConfirmation = {
+  id?: string;
+  kind?: string;
+  reason?: string;
+  roleKey?: string;
+  environmentKey?: string;
+  clusterKey?: string;
+  candidateIds?: string[];
 };
 
 export type AiopsTransportOpsRun = {
@@ -218,7 +310,24 @@ export type AiopsTransportFinal = {
   id: string;
   text: string;
   status: AiopsTransportFinalStatus;
+  schemaVersion?: string;
+  confidence?: "high" | "medium" | "low" | string;
+  answerText?: string;
+  checkedEvidenceRefs?: string[];
+  uncheckedRequirements?: string[];
+  failedToolImpacts?: AiopsTransportFailedToolImpact[];
+  approvedActions?: string[];
+  performedActions?: string[];
+  postChecks?: string[];
+  limitations?: string[];
   durationMs?: number;
+};
+
+export type AiopsTransportFailedToolImpact = {
+  toolName?: string;
+  toolCallId?: string;
+  failureClass?: string;
+  impact?: string;
 };
 
 export type AiopsProcessBlock = {

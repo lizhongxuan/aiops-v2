@@ -68,6 +68,23 @@ func TestProfileFragmentsRenderOnlySelectedProfile(t *testing.T) {
 				"exec_command",
 			},
 		},
+		{
+			profile: "workflow_agent",
+			wants: []string{
+				"## Profile Rules",
+				"Inspect the current Runner Workflow snapshot before proposing edits.",
+				"Produce a workflow edit plan before any patch.",
+				"Propose one minimal workflow patch at a time and wait for confirmation before applying it.",
+				"Do not publish or execute workflows.",
+			},
+			forbidden: []string{
+				"Answer advisory questions",
+				"Build a concise incident timeline",
+				"Operate only within the bound host scope",
+				"Delegate clear sub-tasks",
+				"exec_command",
+			},
+		},
 	}
 
 	for _, tc := range cases {

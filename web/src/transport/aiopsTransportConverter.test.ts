@@ -56,6 +56,8 @@ function createState(): AiopsTransportState {
     pendingApprovals: {},
     mcpSurfaces: {},
     artifacts: {},
+    hostMissions: {},
+    childAgents: {},
     runtimeLiveness: {
       activeTurns: {},
       activeAgents: {},
@@ -107,6 +109,172 @@ describe("aiopsTransportConverter", () => {
         expect.objectContaining({ text: "systemctl status payment-api" }),
       ]),
     );
+  });
+
+  it("passes final contract status and evidence through assistant metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      final: {
+        id: "final-contract-1",
+        text: "无法在目标主机执行命令：host agent 不可用。",
+        status: "tool_unavailable",
+        schemaVersion: "aiops.harness.final.v1",
+        confidence: "low",
+        checkedEvidenceRefs: ["call-dns"],
+        uncheckedRequirements: ["exec_command:needs_host_agent"],
+        failedToolImpacts: [
+          {
+            toolName: "exec_command",
+            toolCallId: "call-exec",
+            failureClass: "needs_host_agent",
+            impact: "host agent 7072 refused",
+          },
+        ],
+        limitations: ["host_agent_unavailable"],
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      finalText: "无法在目标主机执行命令：host agent 不可用。",
+      finalStatus: "tool_unavailable",
+      finalConfidence: "low",
+      finalContract: {
+        schemaVersion: "aiops.harness.final.v1",
+        status: "tool_unavailable",
+        confidence: "low",
+        checkedEvidenceRefs: ["call-dns"],
+        uncheckedRequirements: ["exec_command:needs_host_agent"],
+        failedToolImpacts: [
+          expect.objectContaining({
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+          }),
+        ],
+        limitations: ["host_agent_unavailable"],
+      },
+    });
+  });
+
+  it("localizes raw final transport errors before rendering assistant text", () => {
+    const state = createState();
+    state.status = "failed";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      process: [
+        {
+          id: "wait-model",
+          kind: "reasoning",
+          status: "failed",
+          text: "模型调用失败",
+        },
+      ],
+      final: {
+        id: "final-network-error",
+        text: "network error",
+        status: "failed",
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([
+      { type: "text", text: "网络异常,请检查后重试" },
+    ]);
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      finalText: "网络异常,请检查后重试",
+      process: [
+        expect.objectContaining({
+          id: "wait-model",
+          text: "模型调用失败",
+        }),
+      ],
+    });
+  });
+
+  it("passes timeline order and structured final status without parsing markdown", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      timeline: [
+        { id: "item-assistant-1", type: "assistant_message", text: "先说明限制" },
+        { id: "item-approval-requested", type: "approval_requested", text: "请求执行只读检查" },
+        { id: "item-approval-decided", type: "approval_decided", status: "rejected", text: "用户拒绝" },
+        { id: "item-tool-unavailable", type: "tool_result", status: "failed", text: "exec_command unavailable" },
+        { id: "item-final", type: "final_response", status: "tool_unavailable", text: "最终结论" },
+      ],
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "先说明限制",
+        },
+        {
+          id: "approval-rejected",
+          kind: "approval",
+          status: "rejected",
+          text: "用户拒绝执行只读检查",
+        },
+        {
+          id: "exec-unavailable",
+          kind: "tool",
+          displayKind: "exec_command",
+          status: "failed",
+          text: "exec_command unavailable",
+          outputPreview: "needs_host_agent",
+        },
+      ],
+      final: {
+        id: "final-tool-unavailable",
+        text: "## 已验证\n\n看起来已经成功。",
+        status: "tool_unavailable",
+        schemaVersion: "aiops.harness.final.v1",
+        confidence: "low",
+        uncheckedRequirements: ["exec_command"],
+        failedToolImpacts: [
+          {
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+            impact: "host agent 不可用",
+          },
+        ],
+        limitations: ["无法执行主机命令"],
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const meta = result.messages[1]?.metadata?.unstable_state;
+
+    expect(meta?.finalStatus).toBe("tool_unavailable");
+    expect(meta?.finalConfidence).toBe("low");
+    expect(meta?.timeline?.map((item) => item.type)).toEqual([
+      "assistant_message",
+      "approval_requested",
+      "approval_decided",
+      "tool_result",
+      "final_response",
+    ]);
+    expect(meta?.finalContract).toMatchObject({
+      status: "tool_unavailable",
+      confidence: "low",
+      failedToolImpacts: [
+        expect.objectContaining({
+          toolName: "exec_command",
+          failureClass: "needs_host_agent",
+        }),
+      ],
+      limitations: ["无法执行主机命令"],
+    });
   });
 
   it("uses the backend error when a failed turn only has a short assistant prelude", () => {
@@ -192,6 +360,54 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
+  it("does not duplicate a running final draft when it is already shown as assistant commentary", () => {
+    const state = createState();
+    const duplicateText = "前两个命令因 agent 端口 7072 拒绝连接且 SSH 回退失败，但 DNS 查询成功了。";
+    state.status = "working";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      completedAt: undefined,
+      final: {
+        id: "final-running-duplicate",
+        text: duplicateText,
+        status: "running",
+      },
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: duplicateText,
+        },
+        {
+          id: "command-next",
+          kind: "command",
+          status: "completed",
+          text: "cat /proc/net/dev",
+          command: "cat /proc/net/dev",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.content).toEqual([]);
+    expect(result.messages[1]?.metadata?.unstable_state?.finalText).toBe("");
+    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "commentary",
+          text: duplicateText,
+        }),
+      ]),
+    );
+  });
+
   it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
     const state = createState();
     const preservedAnswer = [
@@ -266,7 +482,7 @@ describe("aiopsTransportConverter", () => {
     ]);
   });
 
-  it("normalizes legacy stream states before reading liveness and extension maps", () => {
+  it("drops incomplete stream states instead of migrating old transport data", () => {
     const state = createState() as Partial<AiopsTransportState>;
     delete state.runtimeLiveness;
     delete state.hostMissions;
@@ -279,7 +495,12 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state as AiopsTransportState, metadata());
 
     expect(result.isRunning).toBe(false);
+    expect(result.messages).toEqual([]);
     expect(result.state).toMatchObject({
+      sessionId: "",
+      threadId: "default",
+      turns: {},
+      turnOrder: [],
       runtimeLiveness: {
         activeTurns: {},
         activeAgents: {},
@@ -971,7 +1192,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("merges legacy parameter resolution when workflow_id carries the search flow id", () => {
+  it("does not merge parameter resolution when flow ids differ", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -1012,18 +1233,15 @@ describe("aiopsTransportConverter", () => {
     const artifacts =
       result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
 
-    expect(artifacts).toHaveLength(1);
+    expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({
-      id: "artifact-ops-manual-params",
+      id: "artifact-ops-manual-search",
       type: "ops_manual_search_result",
-      inlineData: {
-        original_search_artifact_id: "artifact-ops-manual-search",
-        merged_param_resolution: expect.objectContaining({
-          artifact_id: "artifact-ops-manual-params",
-          manual_id: "manual-mysql-backup-ssh",
-          workflow_id: "flow-search-mysql",
-        }),
-      },
+    });
+    expect(artifacts?.[0]?.inlineData).not.toHaveProperty("merged_param_resolution");
+    expect(artifacts?.[1]).toMatchObject({
+      id: "artifact-ops-manual-params",
+      type: "ops_manual_param_resolution",
     });
   });
 

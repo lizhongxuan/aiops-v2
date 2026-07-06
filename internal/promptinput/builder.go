@@ -180,13 +180,14 @@ func MessagesToModelInputItems(history []Message) ([]ModelInputItem, error) {
 	out := make([]ModelInputItem, 0, len(history))
 	for idx, msg := range history {
 		item := ModelInputItem{
-			ID:           fmt.Sprintf("history-%d", idx),
-			ProviderRole: providerRoleFromConversationRole(msg.Role),
-			SemanticRole: conversationSemanticRole(msg),
-			Content:      msg.Content,
-			Source:       ModelInputSource{Layer: "history", Origin: "conversation"},
-			Phase:        "history",
-			CacheGroup:   "dynamic",
+			ID:               fmt.Sprintf("history-%d", idx),
+			ProviderRole:     providerRoleFromConversationRole(msg.Role),
+			SemanticRole:     conversationSemanticRole(msg),
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			Source:           ModelInputSource{Layer: "history", Origin: "conversation"},
+			Phase:            "history",
+			CacheGroup:       "dynamic",
 		}
 		for _, call := range msg.ToolCalls {
 			item.ToolCalls = append(item.ToolCalls, ModelInputToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})

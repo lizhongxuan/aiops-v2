@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"aiops-v2/internal/resourcebinding"
 )
 
 // ParseHostMentions extracts @host references for UX and orchestration routing.
@@ -217,6 +219,22 @@ func UniqueMentionKeys(mentions []HostMention) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func ResourceBindingProjectionFromMention(mention HostMention) resourcebinding.HostMentionProjection {
+	return resourcebinding.HostMentionProjection{
+		Raw:         mention.Raw,
+		HostID:      mention.HostID,
+		Address:     mention.Address,
+		DisplayName: mention.DisplayName,
+		Source:      string(mention.Source),
+		Resolved:    mention.Resolved,
+		Confidence:  mention.Confidence,
+	}
+}
+
+func ResourceRefFromHostMention(mention HostMention) resourcebinding.ResourceRef {
+	return resourcebinding.HostBindingFromMention(ResourceBindingProjectionFromMention(mention)).Ref
 }
 
 func mentionKey(mention HostMention) string {

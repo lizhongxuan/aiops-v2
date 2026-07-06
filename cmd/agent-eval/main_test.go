@@ -142,6 +142,63 @@ func TestRunCLIFiltersCasesByPriority(t *testing.T) {
 	}
 }
 
+func TestRunCLISelectsNamedSuite(t *testing.T) {
+	casesRoot := t.TempDir()
+	suiteDir := filepath.Join(casesRoot, "multi_agent_assembly")
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLIRawCase(t, filepath.Join(suiteDir, "suite-case.json"), `{"id":"suite-case","category":"multi_agent_assembly","priority":"P0","input":"Run suite","expected":{"mustInclude":["mock agent"]}}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesRoot,
+		"-suite", "multi_agent_assembly",
+		"-priority", "P0",
+		"-out", outDir,
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- suite-case [PASS]") {
+		t.Fatalf("stdout missing suite case:\n%s", stdout.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if report.CasesDir != suiteDir || report.Metadata["suite"] != "multi_agent_assembly" {
+		t.Fatalf("report suite metadata = casesDir %q metadata %#v", report.CasesDir, report.Metadata)
+	}
+}
+
+func TestRunCLIMarksHarnessContractSuiteMetadata(t *testing.T) {
+	casesRoot := t.TempDir()
+	suiteDir := filepath.Join(casesRoot, "harness_contract")
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLIRawCase(t, filepath.Join(suiteDir, "harness-case.json"), `{"id":"harness-case","category":"harness_contract","priority":"P0","input":"Run harness","expected":{"mustInclude":["mock agent"]}}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesRoot,
+		"-suite", "harness_contract",
+		"-out", outDir,
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if report.Metadata["suite"] != "harness_contract" ||
+		report.Metadata["harness_contract_schema"] != "aiops.harness.golden.v1" {
+		t.Fatalf("report harness metadata = %#v", report.Metadata)
+	}
+}
+
 func TestRunCLIRecordsRunPhaseRepetitionsAndFlagMetadata(t *testing.T) {
 	casesDir := t.TempDir()
 	outDir := filepath.Join(t.TempDir(), "out")

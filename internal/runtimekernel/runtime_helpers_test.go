@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
@@ -65,6 +66,9 @@ type aiChatHarnessGoldenCase struct {
 	ForbiddenVisibleStates []string                `json:"forbiddenVisibleStates,omitempty"`
 	ExpectedFailureKind    string                  `json:"expectedFailureKind,omitempty"`
 	ExpectedAttempts       []aiChatExpectedAttempt `json:"expectedAttempts,omitempty"`
+	HostID                 string                  `json:"hostId,omitempty"`
+	Mode                   string                  `json:"mode,omitempty"`
+	ExpectedHarness        aiChatExpectedHarness   `json:"expectedHarness,omitempty"`
 }
 
 type aiChatGoldenToolCall struct {
@@ -80,6 +84,14 @@ type aiChatGoldenTool struct {
 	Result      string          `json:"result,omitempty"`
 	RiskLevel   string          `json:"riskLevel,omitempty"`
 	Mutating    bool            `json:"mutating,omitempty"`
+	Approval    *struct {
+		Reason         string `json:"reason,omitempty"`
+		Risk           string `json:"risk,omitempty"`
+		Source         string `json:"source,omitempty"`
+		ExpectedEffect string `json:"expectedEffect,omitempty"`
+		Rollback       string `json:"rollback,omitempty"`
+		Validation     string `json:"validation,omitempty"`
+	} `json:"approval,omitempty"`
 }
 
 type aiChatExpectedAttempt struct {
@@ -87,6 +99,28 @@ type aiChatExpectedAttempt struct {
 	Action             string `json:"action"`
 	Outcome            string `json:"outcome"`
 	TriggerFailureKind string `json:"triggerFailureKind,omitempty"`
+}
+
+type aiChatExpectedHarness struct {
+	SchemaVersion            string                     `json:"schemaVersion,omitempty"`
+	RouteMode                string                     `json:"routeMode,omitempty"`
+	TargetBinding            string                     `json:"targetBinding,omitempty"`
+	ModelVisibleTools        []string                   `json:"modelVisibleTools,omitempty"`
+	HiddenTools              []aiChatExpectedHiddenTool `json:"hiddenTools,omitempty"`
+	ToolCalls                []string                   `json:"toolCalls,omitempty"`
+	ApprovalRequested        *bool                      `json:"approvalRequested,omitempty"`
+	ApprovalDecided          *bool                      `json:"approvalDecided,omitempty"`
+	EvidenceRefs             []string                   `json:"evidenceRefs,omitempty"`
+	FinalStatus              string                     `json:"finalStatus,omitempty"`
+	RollbackContractRequired *bool                      `json:"rollbackContractRequired,omitempty"`
+	TimelineOrder            []string                   `json:"timelineOrder,omitempty"`
+	NoRawDSMLFinal           bool                       `json:"noRawDsmlFinal,omitempty"`
+	Extra                    map[string]json.RawMessage `json:"extra,omitempty"`
+}
+
+type aiChatExpectedHiddenTool struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason,omitempty"`
 }
 
 func loadAIChatHarnessGoldenCases(t *testing.T, dir string) []aiChatHarnessGoldenCase {
@@ -154,14 +188,31 @@ func runGoldenTurn(t *testing.T, tc aiChatHarnessGoldenCase) (TurnResult, *TurnS
 		}
 	}
 	kernel, emitter := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, &testMockCompiler{}, model)
+	mode := ModeInspect
+	if strings.TrimSpace(tc.Mode) != "" {
+		mode = Mode(strings.TrimSpace(tc.Mode))
+	}
+	metadata := map[string]string{
+		"taskDepth":                     "simple_read",
+		"aiops.target.binding":          "none",
+		"aiops.tool.execCommandAllowed": "false",
+	}
+	if hostID := strings.TrimSpace(tc.HostID); hostID != "" {
+		metadata["aiops.target.binding"] = "host"
+		metadata["aiops.target.hostId"] = hostID
+		metadata["aiops.target.refs"] = "host:" + hostID
+		metadata["aiops.tool.execCommandAllowed"] = "true"
+		metadata["aiops.route.allowsExecCommand"] = "true"
+	}
 
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-golden-" + tc.Name,
 		SessionType: SessionTypeHost,
-		Mode:        ModeInspect,
+		Mode:        mode,
 		TurnID:      "turn-golden-" + tc.Name,
+		HostID:      strings.TrimSpace(tc.HostID),
 		Input:       tc.UserInput,
-		Metadata:    map[string]string{"taskDepth": "simple_read"},
+		Metadata:    metadata,
 	})
 	if err != nil && tc.ExpectedStatus != "error" {
 		t.Fatalf("RunTurn returned error: %v", err)
@@ -196,6 +247,22 @@ func staticToolFromGolden(t *testing.T, spec aiChatGoldenTool) *tooling.StaticTo
 		Origin:      tooling.ToolOriginBuiltin,
 		Mutating:    spec.Mutating,
 	}
+	if spec.Mutating {
+		meta.RequiresApproval = true
+		meta.RiskLevel = tooling.ToolRiskHigh
+		meta.ResourceLocks = []tooling.ToolResourceLockKey{{
+			ResourceType:  "host",
+			ResourceID:    "golden-target",
+			OperationKind: "mutation",
+		}}
+		meta.Idempotency = tooling.ToolIdempotencyMetadata{
+			Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+			PostCheckRefs: []string{"golden-post-check"},
+		}
+	}
+	if spec.Approval != nil {
+		meta.Discovery.PermissionScope = "argument_scoped"
+	}
 	if spec.RiskLevel != "" {
 		meta.RiskLevel = tooling.ToolRiskLevel(spec.RiskLevel)
 	}
@@ -209,9 +276,26 @@ func staticToolFromGolden(t *testing.T, spec aiChatGoldenTool) *tooling.StaticTo
 		InputSchemaData: inputSchema,
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
-			Modes:        []string{string(ModeInspect)},
+			Modes:        []string{string(ModeInspect), string(ModeExecute)},
 		},
 		ReadOnlyFunc: func(json.RawMessage) bool { return !spec.Mutating },
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			if spec.Approval == nil {
+				return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+			}
+			return tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval,
+				Reason: firstNonEmpty(spec.Approval.Reason, "approval required"),
+				Approval: &tooling.PermissionApprovalPayload{
+					Reason:         firstNonEmpty(spec.Approval.Reason, "approval required"),
+					Risk:           firstNonEmpty(spec.Approval.Risk, string(meta.RiskLevel.Normalize())),
+					Source:         firstNonEmpty(spec.Approval.Source, "golden"),
+					ExpectedEffect: spec.Approval.ExpectedEffect,
+					Rollback:       spec.Approval.Rollback,
+					Validation:     spec.Approval.Validation,
+				},
+			}
+		},
 		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
 			return tooling.ToolResult{Content: result}, nil
 		},
@@ -233,11 +317,75 @@ func assertGoldenTurnContract(t *testing.T, tc aiChatHarnessGoldenCase, result T
 	assertFailureKindIfExpected(t, snapshot, tc.ExpectedFailureKind)
 	assertToolInvocationsRecorded(t, tc, snapshot)
 	assertCheckpointSequenceMonotonic(t, snapshot)
+	assertExpectedHarnessContract(t, tc, snapshot, events)
 	if strings.TrimSpace(snapshot.StableToolFingerprint) == "" {
 		t.Fatal("expected stable tool fingerprint to be recorded")
 	}
 	if len(snapshot.Iterations) > 0 && strings.TrimSpace(snapshot.Iterations[len(snapshot.Iterations)-1].ToolSurfaceFingerprint) == "" {
 		t.Fatal("expected latest iteration tool surface fingerprint to be recorded")
+	}
+}
+
+func assertExpectedHarnessContract(t *testing.T, tc aiChatHarnessGoldenCase, snapshot *TurnSnapshot, events []LifecycleEvent) {
+	t.Helper()
+	expected := tc.ExpectedHarness
+	if strings.TrimSpace(expected.SchemaVersion) == "" && strings.TrimSpace(expected.RouteMode) == "" && strings.TrimSpace(expected.FinalStatus) == "" {
+		return
+	}
+	if expected.RouteMode != "" && string(snapshot.Mode) != expected.RouteMode {
+		t.Fatalf("harness routeMode = %q, want %q", snapshot.Mode, expected.RouteMode)
+	}
+	if expected.TargetBinding != "" {
+		if got := goldenTargetBinding(snapshot); got != expected.TargetBinding {
+			t.Fatalf("harness targetBinding = %q, want %q", got, expected.TargetBinding)
+		}
+	}
+	for _, name := range expected.ModelVisibleTools {
+		if !goldenToolSurfaceHasTool(snapshot, name) {
+			t.Fatalf("modelVisibleTools missing %q; snapshot=%#v", name, snapshot.ToolSurfaceSnapshot)
+		}
+	}
+	for _, hidden := range expected.HiddenTools {
+		if !goldenHiddenToolObserved(snapshot, hidden) {
+			t.Fatalf("hidden tool not observed: %#v; snapshot=%#v", hidden, snapshot.ToolSurfaceSnapshot)
+		}
+	}
+	for _, callName := range expected.ToolCalls {
+		if !goldenToolCallObserved(snapshot, callName) {
+			t.Fatalf("tool call %q not observed", callName)
+		}
+	}
+	if expected.ApprovalRequested != nil {
+		got := len(snapshot.PendingApprovals) > 0 || hasEventType(events, EventApprovalNeeded)
+		if got != *expected.ApprovalRequested {
+			t.Fatalf("approvalRequested = %v, want %v", got, *expected.ApprovalRequested)
+		}
+	}
+	if expected.ApprovalDecided != nil {
+		got := hasEventType(events, EventApprovalDecided)
+		if got != *expected.ApprovalDecided {
+			t.Fatalf("approvalDecided = %v, want %v", got, *expected.ApprovalDecided)
+		}
+	}
+	for _, ref := range expected.EvidenceRefs {
+		if !containsString(assistantMessageEvidenceRefsFromSnapshot(snapshot), ref) {
+			t.Fatalf("evidence refs = %#v, want %q", assistantMessageEvidenceRefsFromSnapshot(snapshot), ref)
+		}
+	}
+	if expected.FinalStatus != "" {
+		if got := goldenFinalContractStatus(snapshot); got != expected.FinalStatus {
+			t.Fatalf("final contract status = %q, want %q; final=%q", got, expected.FinalStatus, snapshot.FinalOutput)
+		}
+	}
+	if expected.RollbackContractRequired != nil {
+		got := goldenPendingApprovalHasRollbackContract(snapshot)
+		if got != *expected.RollbackContractRequired {
+			t.Fatalf("rollbackContractRequired = %v, want %v; approvals=%#v", got, *expected.RollbackContractRequired, snapshot.PendingApprovals)
+		}
+	}
+	assertGoldenTimelineOrder(t, snapshot, expected.TimelineOrder)
+	if expected.NoRawDSMLFinal && strings.Contains(snapshot.FinalOutput, "DSML") {
+		t.Fatalf("final output leaked raw DSML markup: %q", snapshot.FinalOutput)
 	}
 }
 
@@ -413,6 +561,117 @@ func goldenStateObserved(state string, snapshot *TurnSnapshot, events []Lifecycl
 	return false
 }
 
+func goldenTargetBinding(snapshot *TurnSnapshot) string {
+	if snapshot == nil {
+		return "none"
+	}
+	if binding := strings.TrimSpace(snapshot.Metadata["aiops.target.binding"]); binding != "" {
+		return binding
+	}
+	if strings.TrimSpace(snapshot.Metadata["aiops.target.hostId"]) != "" {
+		return "host"
+	}
+	if strings.TrimSpace(snapshot.Metadata["hostId"]) != "" {
+		return "host"
+	}
+	return "none"
+}
+
+func goldenToolSurfaceHasTool(snapshot *TurnSnapshot, name string) bool {
+	name = strings.TrimSpace(name)
+	if snapshot == nil || snapshot.ToolSurfaceSnapshot == nil || name == "" {
+		return false
+	}
+	return containsString(snapshot.ToolSurfaceSnapshot.ToolNames, name)
+}
+
+func goldenHiddenToolObserved(snapshot *TurnSnapshot, expected aiChatExpectedHiddenTool) bool {
+	if snapshot == nil || snapshot.ToolSurfaceSnapshot == nil || snapshot.ToolSurfaceSnapshot.PolicySnapshot == nil {
+		return false
+	}
+	for _, hidden := range snapshot.ToolSurfaceSnapshot.PolicySnapshot.HiddenTools {
+		if strings.TrimSpace(hidden.Name) != strings.TrimSpace(expected.Name) {
+			continue
+		}
+		if strings.TrimSpace(expected.Reason) == "" || strings.Contains(strings.TrimSpace(hidden.Reason), strings.TrimSpace(expected.Reason)) {
+			return true
+		}
+	}
+	return false
+}
+
+func goldenToolCallObserved(snapshot *TurnSnapshot, name string) bool {
+	name = strings.TrimSpace(name)
+	if snapshot == nil || name == "" {
+		return false
+	}
+	for _, iter := range snapshot.Iterations {
+		for _, call := range iter.ToolCalls {
+			if strings.TrimSpace(call.Name) == name || strings.TrimSpace(call.ID) == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func goldenFinalContractStatus(snapshot *TurnSnapshot) string {
+	if snapshot == nil {
+		return ""
+	}
+	for i := len(snapshot.AgentItems) - 1; i >= 0; i-- {
+		item := snapshot.AgentItems[i]
+		if item.Type != agentstate.TurnItemTypeFinalResponse && item.Type != agentstate.TurnItemTypeAssistantMessage {
+			continue
+		}
+		var payload struct {
+			FinalContract FinalContract `json:"finalContract"`
+		}
+		if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil && payload.FinalContract.Status != "" {
+			return string(payload.FinalContract.Status)
+		}
+	}
+	return ""
+}
+
+func goldenPendingApprovalHasRollbackContract(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, approval := range snapshot.PendingApprovals {
+		if approval.Mutating && approval.RollbackContract.SchemaVersion == ActionRollbackContractSchemaVersion {
+			return true
+		}
+	}
+	return false
+}
+
+func assertGoldenTimelineOrder(t *testing.T, snapshot *TurnSnapshot, expected []string) {
+	t.Helper()
+	if len(expected) == 0 {
+		return
+	}
+	var actual []string
+	for _, item := range snapshot.AgentItems {
+		actual = append(actual, string(item.Type))
+	}
+	cursor := 0
+	for _, want := range expected {
+		found := false
+		for cursor < len(actual) {
+			if actual[cursor] == want {
+				found = true
+				cursor++
+				break
+			}
+			cursor++
+		}
+		if !found {
+			t.Fatalf("timeline order %v missing %q in actual %v", expected, want, actual)
+		}
+	}
+}
+
 func hasEventType(events []LifecycleEvent, typ EventType) bool {
 	for _, event := range events {
 		if event.Type == typ {
@@ -444,6 +703,23 @@ func TestRuntimeProviderResponseAdapterPreservesToolCalls(t *testing.T) {
 	}
 	if got := msg.ToolCalls[0]; got.ID != "call-1" || got.Name != "read_file" || string(got.Arguments) != `{"path":"x"}` {
 		t.Fatalf("runtime tool call = %#v, want provider-neutral tool call metadata preserved", got)
+	}
+}
+
+func TestRuntimeProviderResponseAdapterPreservesReasoningContent(t *testing.T) {
+	msg := runtimeMessageFromProviderResponse(modelrouter.ProviderResponse{
+		Output:           "需要继续检查。",
+		ReasoningContent: "先检查工具状态。",
+	})
+	if msg.Role != "assistant" || msg.Content != "需要继续检查。" {
+		t.Fatalf("runtime message = %#v, want assistant content", msg)
+	}
+	if msg.ReasoningContent != "先检查工具状态。" {
+		t.Fatalf("ReasoningContent = %q, want provider reasoning preserved", msg.ReasoningContent)
+	}
+	items := promptInputMessagesFromRuntime([]Message{msg})
+	if len(items) != 1 || items[0].ReasoningContent != "先检查工具状态。" {
+		t.Fatalf("prompt input messages = %#v, want reasoning content preserved", items)
 	}
 }
 

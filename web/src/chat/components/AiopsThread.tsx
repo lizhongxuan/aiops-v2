@@ -4,7 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
-import type { AgentRunView, AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportMcpSurface, AiopsTransportState } from "@/transport/aiopsTransportTypes";
+import type { AgentRunView, AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportFinal, AiopsTransportFinalStatus, AiopsTransportMcpSurface, AiopsTransportState, AiopsTransportTimelineItem } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { parseHostMentionCandidates, parseSpecialAiMentionCandidates, type HostMentionCandidate, type SpecialAiMentionCandidate } from "../hostMentions";
@@ -15,6 +15,7 @@ import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
+import { SpecialInputContextBar } from "./SpecialInputContextBar";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
@@ -30,10 +31,15 @@ type AssistantMessageMeta = {
   turnUpdatedAt?: string;
   finalDurationMs?: number;
   finalText?: string;
+  finalStatus?: AiopsTransportFinalStatus;
+  finalConfidence?: string;
+  finalContract?: Partial<AiopsTransportFinal>;
+  timeline?: AiopsTransportTimelineItem[];
 };
 
 export function AiopsThread() {
   const state = useAssistantTransportState() as AiopsTransportState;
+  const commands = useAiopsTransportCommands();
   const surfaces = Object.values(state.mcpSurfaces || {});
   const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
@@ -102,6 +108,19 @@ export function AiopsThread() {
               )}
             </div>
           </ThreadPrimitive.Empty>
+          <SpecialInputContextBar
+            context={state.specialInputContext}
+            onClear={() => commands.specialInputClear({
+              resourceKind: state.specialInputContext?.activeGrant?.resourceKind,
+              resourceId: state.specialInputContext?.activeGrant?.resourceId,
+              canonicalKey: state.specialInputContext?.activeGrant?.canonicalKey,
+            })}
+            onConfirm={() => commands.specialInputConfirm({
+              resourceKind: state.specialInputContext?.candidateFacts?.[0]?.resourceKind,
+              resourceId: state.specialInputContext?.candidateFacts?.[0]?.resourceId,
+              canonicalKey: state.specialInputContext?.candidateFacts?.[0]?.canonicalKey,
+            })}
+          />
           <div className="flex flex-1 flex-col gap-6 empty:hidden">
             <ThreadPrimitive.Messages
               components={{
@@ -329,11 +348,14 @@ function AssistantMessage() {
           />
         ) : null}
         {finalText || artifacts.length || deferredArtifacts.length ? (
-          <AnswerDocumentRenderer
-            finalText={finalText}
-            artifacts={corootArtifacts}
-            deferredArtifacts={deferredArtifacts}
-          />
+          <>
+            <FinalContractSummary meta={meta} />
+            <AnswerDocumentRenderer
+              finalText={finalText}
+              artifacts={corootArtifacts}
+              deferredArtifacts={deferredArtifacts}
+            />
+          </>
         ) : null}
         {otherArtifacts.length ? (
           <div className="grid gap-2">
@@ -406,4 +428,206 @@ export function assistantMessageRenderedFinalText(
     return meta.finalText;
   }
   return messageText(content);
+}
+
+type FinalContractSummaryInput = Pick<
+  AssistantMessageMeta,
+  "finalText" | "finalStatus" | "finalConfidence" | "finalContract"
+>;
+
+type FinalContractSummaryModel = {
+  status: AiopsTransportFinalStatus;
+  statusLabel: string;
+  confidenceLabel?: string;
+  evidenceLabel?: string;
+  uncheckedRequirements: string[];
+  failedToolImpacts: string[];
+  limitations: string[];
+};
+
+function FinalContractSummary({ meta }: { meta: FinalContractSummaryInput }) {
+  const summary = finalContractSummaryView(meta);
+  if (!summary) {
+    return null;
+  }
+  return (
+    <div
+      className="space-y-1 rounded-md border border-slate-200 bg-white px-3 py-2 text-[13px] leading-6 text-slate-600"
+      data-testid="aiops-final-contract-summary"
+      data-final-status={summary.status}
+    >
+      <div className="flex flex-wrap items-center gap-2">
+        <span className={finalContractStatusClass(summary.status)}>{summary.statusLabel}</span>
+        {summary.confidenceLabel ? <span className="text-slate-400">{summary.confidenceLabel}</span> : null}
+      </div>
+      {summary.evidenceLabel ? <div className="break-words">{summary.evidenceLabel}</div> : null}
+      {summary.failedToolImpacts.length ? (
+        <div className="break-words">工具限制：{summary.failedToolImpacts.join("；")}</div>
+      ) : null}
+      {summary.uncheckedRequirements.length ? (
+        <div className="break-words">未完成检查：{summary.uncheckedRequirements.join("，")}</div>
+      ) : null}
+      {summary.limitations.length ? (
+        <div className="break-words">限制：{summary.limitations.join("，")}</div>
+      ) : null}
+    </div>
+  );
+}
+
+export function finalContractSummaryView(meta: FinalContractSummaryInput): FinalContractSummaryModel | null {
+  const contract = meta.finalContract || {};
+  const status = normalizeFinalStatus(contract.status || meta.finalStatus);
+  const checkedEvidenceRefs = stringList(contract.checkedEvidenceRefs);
+  const uncheckedRequirements = stringList(contract.uncheckedRequirements);
+  const failedToolImpacts = failedToolImpactList(contract.failedToolImpacts);
+  const limitations = stringList(contract.limitations);
+  const confidence = String(contract.confidence || meta.finalConfidence || "").trim();
+
+  if (
+    !contract.schemaVersion &&
+    !status &&
+    !confidence &&
+    !checkedEvidenceRefs.length &&
+    !uncheckedRequirements.length &&
+    !failedToolImpacts.length &&
+    !limitations.length
+  ) {
+    return null;
+  }
+
+  const normalizedStatus = status || "unknown";
+  const evidenceCount = checkedEvidenceRefs.length;
+  const hasUserActionableDetails =
+    evidenceCount > 0 ||
+    uncheckedRequirements.length > 0 ||
+    failedToolImpacts.length > 0 ||
+    limitations.length > 0;
+  const hasSummaryDetails =
+    Boolean(confidence) ||
+    hasUserActionableDetails;
+  if (normalizedStatus === "unknown" && !hasUserActionableDetails) {
+    return null;
+  }
+  if (
+    !contract.schemaVersion &&
+    (normalizedStatus === "running" || normalizedStatus === "completed") &&
+    !hasSummaryDetails
+  ) {
+    return null;
+  }
+  if (
+    !contract.schemaVersion &&
+    normalizedStatus === "failed" &&
+    Boolean(String(meta.finalText || "").trim()) &&
+    !hasSummaryDetails
+  ) {
+    return null;
+  }
+
+  return {
+    status: normalizedStatus,
+    statusLabel: finalStatusLabel(normalizedStatus),
+    confidenceLabel: finalConfidenceLabel(confidence),
+    evidenceLabel: evidenceCount > 0 ? `已采集 ${evidenceCount} 条证据` : undefined,
+    uncheckedRequirements,
+    failedToolImpacts,
+    limitations,
+  };
+}
+
+function normalizeFinalStatus(status?: string): AiopsTransportFinalStatus | undefined {
+  switch (status) {
+    case "running":
+    case "completed":
+    case "failed":
+    case "verified":
+    case "partial":
+    case "blocked":
+    case "needs_evidence":
+    case "approval_denied":
+    case "tool_unavailable":
+    case "cancelled":
+    case "unknown":
+      return status;
+    default:
+      return status ? "unknown" : undefined;
+  }
+}
+
+function finalStatusLabel(status: AiopsTransportFinalStatus) {
+  switch (status) {
+    case "verified":
+      return "已验证";
+    case "partial":
+      return "部分确认";
+    case "blocked":
+      return "已阻止";
+    case "needs_evidence":
+      return "证据不足";
+    case "approval_denied":
+      return "审批拒绝";
+    case "tool_unavailable":
+      return "工具不可用";
+    case "cancelled":
+      return "已取消";
+    case "failed":
+      return "失败";
+    case "running":
+      return "生成中";
+    case "completed":
+      return "已完成";
+    default:
+      return "未确认";
+  }
+}
+
+function finalContractStatusClass(status: AiopsTransportFinalStatus) {
+  switch (status) {
+    case "verified":
+      return "font-medium text-emerald-700";
+    case "partial":
+    case "needs_evidence":
+      return "font-medium text-amber-700";
+    case "blocked":
+    case "approval_denied":
+    case "tool_unavailable":
+    case "failed":
+      return "font-medium text-red-700";
+    default:
+      return "font-medium text-slate-700";
+  }
+}
+
+function finalConfidenceLabel(confidence: string) {
+  switch (confidence) {
+    case "high":
+      return "置信度高";
+    case "medium":
+      return "置信度中";
+    case "low":
+      return "置信度低";
+    default:
+      return confidence ? `置信度${confidence}` : undefined;
+  }
+}
+
+function stringList(value: unknown) {
+  return Array.isArray(value)
+    ? value.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+}
+
+function failedToolImpactList(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    if (!item || typeof item !== "object") {
+      return [];
+    }
+    const record = item as Record<string, unknown>;
+    const name = String(record.toolName || record.toolCallId || "工具").trim();
+    const detail = String(record.impact || record.failureClass || "影响未知").trim();
+    return name || detail ? [`${name}: ${detail}`] : [];
+  });
 }

@@ -32,6 +32,7 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
 	runtimestate "aiops-v2/internal/runtimekernel/state"
 	"aiops-v2/internal/runtimekernel/toolfailure"
@@ -582,6 +583,7 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 	} else if hostID := strings.TrimSpace(session.HostID); hostID != "" {
 		req.HostID = hostID
 	}
+	persistSessionTargetRequestState(session, req)
 	runCtx, runCancel := context.WithCancel(ctx)
 	if observedCtx, span := k.runtimeObserver().StartTurn(runCtx, TurnSpanAttrs{
 		SessionID:       session.ID,
@@ -1170,6 +1172,15 @@ func approvalFingerprintDriftPayload(approval PendingApproval, snapshot *TurnSna
 }
 
 func approvalFingerprintDriftReason(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) string {
+	currentInputHash := firstNonEmpty(
+		req.Metadata["inputHash"],
+		req.Metadata["argumentsHash"],
+		req.Metadata["aiops.inputHash"],
+		req.Metadata["aiops.argumentsHash"],
+	)
+	if approval.InputHash != "" && currentInputHash != "" && approval.InputHash != currentInputHash {
+		return "input hash changed"
+	}
 	currentSurface := firstNonEmpty(
 		req.Metadata["toolSurfaceFingerprint"],
 		req.Metadata["aiops.toolSurfaceFingerprint"],
@@ -1266,7 +1277,8 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
-	completeAssistantMessageItem(snapshot, itemID, finalText, assistantMessageData{
+	finalContract := BuildTerminalFinalContract(finalText, FinalContractStatusApprovalDenied, []string{firstNonEmpty(strings.TrimSpace(reason), approval.Reason, "approval_denied")})
+	finalData := assistantMessageData{
 		MessageID:        message.ID,
 		Iteration:        snapshot.Iteration,
 		Phase:            AssistantMessagePhaseFinalAnswer,
@@ -1274,7 +1286,16 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 		EvidenceBoundary: "blocked",
 		BoundaryAction:   FinalMessageBoundaryBlock,
 		TextHash:         debugTextHash(finalText),
-	})
+		FinalContract:    &finalContract,
+	}
+	completeAssistantMessageItem(snapshot, itemID, finalText, finalData)
+	appendAgentItem(snapshot, newAgentItem(
+		finalResponseItemID(snapshot.ID, snapshot.Iteration),
+		agentstate.TurnItemTypeFinalResponse,
+		agentstate.ItemStatusCompleted,
+		finalText,
+		assistantMessageAgentItemData(finalData),
+	))
 	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
 	syncActiveTurnState(session, snapshot)
@@ -1410,6 +1431,21 @@ func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnRe
 	}, nil
 }
 
+func persistSessionTargetRequestState(session *SessionState, req TurnRequest) {
+	if session == nil {
+		return
+	}
+	if req.SessionTargetSnapshot != nil {
+		session.SessionTargetSnapshot = req.SessionTargetSnapshot
+	}
+	if len(req.ResourceRoleBindings) > 0 {
+		session.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+	}
+	if len(req.RoleBindingConflicts) > 0 {
+		session.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	}
+}
+
 // RunTurnWithRecorder executes RunTurn while recording pipeline steps for testing.
 func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, recorder *PipelineRecorder) (result TurnResult, err error) {
 	// Panic recovery
@@ -1441,6 +1477,7 @@ func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest
 	// Step 1: Assemble context
 	recorder.Record(StepAssembleContext)
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	persistSessionTargetRequestState(session, req)
 	preTurnEvent, err := k.runTurnHook(ctx, hooks.StagePreTurn, session, req, turnID, "", nil)
 	if err != nil {
 		return TurnResult{}, fmt.Errorf("pre_turn: %w", err)
@@ -2079,6 +2116,13 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			promptInputDiff = &diff
 		}
 		toolTraceFields := buildModelInputToolTraceFields(session, snapshot, toolFingerprint, surfacePolicy.Hash)
+		toolTraceFields.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...)
+		toolTraceFields.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+		toolTraceFields.ResourceEvidenceRefs = append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...)
+		toolTraceFields.ResourceCapabilities = append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...)
+		if len(toolTraceFields.ResourceCapabilities) == 0 {
+			toolTraceFields.ResourceCapabilities = resourceCapabilitiesFromAssembledTools(toolTraceFields.ResourceBindings, compileCtx.AssembledTools, surfacePolicy.Hash)
+		}
 		webSearchTrace := promptInputWebSearchTrace(snapshot, dispatchTools)
 		finalTrace := promptInputFinalTrace(snapshot)
 		finalEvidenceTrace := BuildFinalEvidenceState(snapshot, session)
@@ -2112,6 +2156,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			ApprovalScope:                 toolTraceFields.ApprovalScope,
 			ReasoningEffort:               compileCtx.ReasoningEffort,
 			AnswerStyle:                   compileCtx.AnswerStyle,
+			AssemblySource:                toolTraceFields.AssemblySource,
+			PromptCompilerSource:          toolTraceFields.PromptCompilerSource,
+			ToolSurfaceSource:             toolTraceFields.ToolSurfaceSource,
+			AdapterName:                   toolTraceFields.AdapterName,
 			ToolSurfaceFingerprint:        toolTraceFields.ToolSurfaceFingerprint,
 			ToolSurfacePolicySnapshotHash: toolTraceFields.ToolSurfacePolicySnapshotHash,
 			ToolSurfaceSnapshot:           toolTraceFields.ToolSurfaceSnapshot,
@@ -2131,10 +2179,30 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			MCPInstructionDeltas:          toolTraceFields.MCPInstructionDeltas,
 			ParallelDispatchGroups:        toolTraceFields.ParallelDispatchGroups,
 			TaskClaims:                    taskClaimTracesFromSnapshot(snapshot),
-			ResourceLocks:                 toolTraceFields.ResourceLocks,
-			OwnerWriteTraces:              toolTraceFields.OwnerWriteTraces,
-			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
-			FinalEvidenceState:            &finalEvidenceTrace,
+			ResourceBindings:              toolTraceFields.ResourceBindings,
+			ResourceRoleBindings:          toolTraceFields.ResourceRoleBindings,
+			ResourceCapabilities:          toolTraceFields.ResourceCapabilities,
+			ResourceEvidenceRefs:          toolTraceFields.ResourceEvidenceRefs,
+			SpecialInputWorldState:        toolTraceFields.SpecialInputWorldState,
+			SessionTargetSnapshot:         req.SessionTargetSnapshot,
+			RoleBindingConflicts:          req.RoleBindingConflicts,
+			AgentAssemblySnapshot: buildAgentAssemblySnapshotForTrace(agentAssemblyTraceInput{
+				AgentKind:              agentKind,
+				SessionType:            req.SessionType,
+				Mode:                   req.Mode,
+				Metadata:               turnMetadata,
+				CompileContext:         compileCtx,
+				Compiled:               compiled,
+				ToolSurfacePolicy:      surfacePolicy,
+				ToolSurfaceFingerprint: toolFingerprint,
+				ResourceBindings:       toolTraceFields.ResourceBindings,
+				SessionTargetSnapshot:  req.SessionTargetSnapshot,
+				RoleBindings:           toolTraceFields.ResourceRoleBindings,
+			}),
+			ResourceLocks:       toolTraceFields.ResourceLocks,
+			OwnerWriteTraces:    toolTraceFields.OwnerWriteTraces,
+			FailedToolSummaries: toolTraceFields.FailedToolSummaries,
+			FinalEvidenceState:  &finalEvidenceTrace,
 		})
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
@@ -2541,10 +2609,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			finalEvidence := BuildFinalEvidenceState(snapshot, session)
 			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
 			if sanitized, changed := sanitizeFinalAssistantContentForCommit(assistantContent, finalEvidenceDecision); changed {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalRawToolCallMarkupConstrained"] = "true"
+				recordRawToolCallMarkupFinalSanitized(snapshot, turnID, iteration, assistantContent)
 				fields := debugTextFacts(assistantContent)
 				fields["replaceReason"] = "raw_tool_call_markup_final"
 				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
@@ -2609,12 +2674,22 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				assistantContent = blocker
 				boundaryDecision.Action = FinalMessageBoundaryBlock
 				boundaryDecision.EvidenceBoundary = "blocked"
+				finalEvidenceDecision.Action = FinalEvidenceActionBlock
+				finalEvidenceDecision.Confidence = FinalEvidenceConfidenceLow
+				finalEvidenceDecision.Reasons = appendFinalEvidenceReason(finalEvidenceDecision.Reasons, "missing_evidence_final_blocker")
 			}
 			if boundaryDecision.Action == "" {
 				boundaryDecision.Action = FinalMessageBoundaryAllow
 			}
 			if strings.TrimSpace(boundaryDecision.EvidenceBoundary) == "" {
 				boundaryDecision.EvidenceBoundary = "sufficient"
+			}
+			finalContract := BuildFinalContract(assistantContent, finalEvidenceDecision)
+			if boundaryDecision.Action == FinalMessageBoundaryBlock &&
+				(finalContract.Status == FinalContractStatusUnknown || finalContract.Status == FinalContractStatusVerified) {
+				finalContract.Status = FinalContractStatusBlocked
+				finalContract.Confidence = FinalEvidenceConfidenceLow
+				finalContract.Limitations = uniqueSortedHarnessStrings(append(finalContract.Limitations, boundaryDecision.Reasons...))
 			}
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
@@ -2637,6 +2712,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				EvidenceBoundary: boundaryDecision.EvidenceBoundary,
 				BoundaryAction:   boundaryDecision.Action,
 				EvidenceRefs:     assistantMessageEvidenceRefsFromSnapshot(snapshot),
+				FinalContract:    &finalContract,
 			})
 			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
@@ -4956,6 +5032,8 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithRuntimeToolRouterSnapshot(runtimeToolSurface).
 		WithVisibleToolMetadata(toolMetadataList(tools)).
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(k.runtimeFeatureFlags(context.Background()))).
+		WithExecutionScopeGuard(executionScopeGuardConfigFromSnapshot(snapshot)).
+		WithRoleBindingGuard(roleBindingGuardConfigFromSession(session, snapshot)).
 		WithResourceLockGate(k.resourceLockGate).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
 	if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
@@ -5036,10 +5114,11 @@ func reasoningItemID(event modelrouter.ReasoningStreamEvent) string {
 
 func runtimeMessageFromProviderResponse(response modelrouter.ProviderResponse) Message {
 	return Message{
-		Role:      "assistant",
-		Content:   response.Output,
-		ToolCalls: runtimeToolCallsFromModelInput(response.ToolCalls),
-		Timestamp: time.Now(),
+		Role:             "assistant",
+		Content:          response.Output,
+		ReasoningContent: response.ReasoningContent,
+		ToolCalls:        runtimeToolCallsFromModelInput(response.ToolCalls),
+		Timestamp:        time.Now(),
 	}
 }
 
@@ -5670,22 +5749,26 @@ func appendCheckpointExternalRefs(checkpoint *CheckpointMetadata, refs []Externa
 
 func (k *RuntimeKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRequest, turnID string) *TurnSnapshot {
 	if session.CurrentTurn != nil && session.CurrentTurn.ID == turnID {
+		if req.SpecialInputReadPlan != nil {
+			session.CurrentTurn.SpecialInputReadPlan = req.SpecialInputReadPlan
+		}
 		syncActiveTurnState(session, session.CurrentTurn)
 		return session.CurrentTurn
 	}
 	now := time.Now()
 	snapshot := &TurnSnapshot{
-		ID:              turnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       session.ID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Metadata:        cloneTurnMetadata(req.Metadata),
-		Lifecycle:       TurnLifecycleRunning,
-		ResumeState:     TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
+		ID:                   turnID,
+		ClientTurnID:         req.ClientTurnID,
+		ClientMessageID:      req.ClientMessageID,
+		SessionID:            session.ID,
+		SessionType:          req.SessionType,
+		Mode:                 req.Mode,
+		Metadata:             cloneTurnMetadata(req.Metadata),
+		SpecialInputReadPlan: req.SpecialInputReadPlan,
+		Lifecycle:            TurnLifecycleRunning,
+		ResumeState:          TurnResumeStateNone,
+		StartedAt:            now,
+		UpdatedAt:            now,
 	}
 	session.CurrentTurn = snapshot
 	syncActiveTurnState(session, snapshot)
@@ -5805,6 +5888,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 	} else {
 		resourceScopes := pendingApprovalResourceScopes(result.Metadata)
 		argumentsHash := firstNonEmpty(result.DecisionTrace.ArgumentsHash, toolArgumentsHash(tc.Arguments))
+		targetRefs := pendingApprovalTargetRefs(session.HostID, resourceScopes)
 		iterationID := ""
 		if last := latestIteration(snapshot); last != nil {
 			iterationID = last.ID
@@ -5817,7 +5901,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			IterationID:   iterationID,
 			ToolName:      tc.Name,
 			ToolCallID:    tc.ID,
-			TargetRefs:    append([]string(nil), resourceScopes...),
+			TargetRefs:    targetRefs,
 			HostID:        session.HostID,
 			Command:       command,
 			ArgumentsHash: argumentsHash,
@@ -5827,12 +5911,18 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			},
 			ResourceScopes:         resourceScopes,
 			RiskCeiling:            firstNonEmpty(approvalPayloadField(result.Approval, "risk"), string(result.Metadata.EffectiveGovernance(0).RiskLevel)),
-			RequestedScope:         strings.Join(resourceScopes, ","),
+			RequestedScope:         strings.Join(targetRefs, ","),
+			ApprovalScope:          strings.Join(targetRefs, ","),
 			ApprovalOptions:        []string{"approved", "denied"},
 			ToolSurfaceFingerprint: result.DecisionTrace.ToolSurfaceFingerprint,
 			PermissionSnapshotHash: result.DecisionTrace.PermissionSnapshotHash,
 			ExpiresAt:              pendingApprovalDefaultExpiry(now),
 			InputHash:              argumentsHash,
+			PreChangeEvidenceRefs:  assistantMessageEvidenceRefsFromSnapshot(snapshot),
+			PostCheck:              strings.Join(normalizedPostCheckRefs(result.Metadata), "; "),
+			StopCondition:          "stop if validation fails or observed state diverges",
+			IdempotencyKey:         argumentsHash,
+			Mutating:               dispatchResultRequiresRollbackContract(result),
 			Status:                 "pending",
 			CreatedAt:              now,
 			UpdatedAt:              now,
@@ -5845,6 +5935,39 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			approval.ExpectedEffect = result.Approval.ExpectedEffect
 			approval.Rollback = result.Approval.Rollback
 			approval.Validation = result.Approval.Validation
+		}
+		approval.RollbackContract = BuildActionRollbackContractFromApproval(approval)
+		if err := ValidatePendingApprovalRollbackContract(approval); err != nil {
+			reason := err.Error()
+			evidence := PendingEvidence{
+				ID:         fmt.Sprintf("evidence-%d", now.UnixNano()),
+				SessionID:  session.ID,
+				TurnID:     snapshot.ID,
+				Iteration:  snapshot.Iteration,
+				ToolName:   tc.Name,
+				ToolCallID: tc.ID,
+				Reason:     reason,
+				Status:     "pending",
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			snapshot.ResumeState = TurnResumeStatePendingEvidence
+			snapshot.Error = reason
+			if checkpoint != nil {
+				checkpoint.Kind = "rollback_contract_invalid"
+				checkpoint.ResumeState = TurnResumeStatePendingEvidence
+			}
+			if last := latestIteration(snapshot); last != nil {
+				last.ResumeState = TurnResumeStatePendingEvidence
+				last.Checkpoint = checkpoint
+			}
+			snapshot.PendingEvidence = []PendingEvidence{evidence}
+			snapshot.PendingApprovals = nil
+			session.PendingEvidence = []PendingEvidence{evidence}
+			session.PendingApprovals = nil
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
+			k.persistTurnSnapshot(session, snapshot)
+			return nil
 		}
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
@@ -6418,6 +6541,21 @@ func pendingApprovalResourceScopes(meta tooling.ToolMetadata) []string {
 	}
 	sort.Strings(scopes)
 	return uniqueRuntimeStrings(scopes)
+}
+
+func pendingApprovalTargetRefs(hostID string, resourceScopes []string) []string {
+	refs := make([]string, 0, 1+len(resourceScopes))
+	if hostID = strings.TrimSpace(hostID); hostID != "" {
+		refs = append(refs, "host:"+hostID)
+	}
+	refs = append(refs, resourceScopes...)
+	return uniqueRuntimeStrings(refs)
+}
+
+func dispatchResultRequiresRollbackContract(result DispatchResult) bool {
+	meta := result.Metadata
+	governance := meta.EffectiveGovernance(0)
+	return governance.Mutating || meta.Layer == tooling.ToolLayerMutation
 }
 
 func approvalPayloadField(payload *tooling.PermissionApprovalPayload, field string) string {

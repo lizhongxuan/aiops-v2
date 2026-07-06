@@ -13,9 +13,14 @@ describe("HostMentionInlineOverlay CSS", () => {
 
   it("allows the visual chip to be wider than the raw @token layout anchor", () => {
     const css = readFileSync(path.resolve(process.cwd(), "src/index.css"), "utf8");
+    const anchorRule = css.match(/\.aiops-inline-mention-anchor\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
     const visualRule = css.match(/\.aiops-inline-mention-visual\s*\{(?<body>[^}]*)\}/)?.groups?.body || "";
 
+    expect(anchorRule).toContain("display: inline-grid");
+    expect(anchorRule).toContain("width: max-content");
     expect(visualRule).toContain("width: max-content");
+    expect(visualRule).toContain("position: relative");
+    expect(visualRule).not.toContain("position: absolute");
     expect(visualRule).not.toContain("inset: 0");
     expect(visualRule).not.toContain("overflow: hidden");
   });

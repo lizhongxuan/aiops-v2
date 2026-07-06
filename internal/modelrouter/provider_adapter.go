@@ -79,6 +79,7 @@ func (a *EinoProviderAdapter) Call(ctx context.Context, req ProviderRequestSnaps
 	}
 	if response != nil {
 		providerResp.Output = response.Content
+		providerResp.ReasoningContent = response.ReasoningContent
 		providerResp.ToolCalls = providerToolCallsFromEino(response.ToolCalls)
 		providerResp.NativeWebSearchEvents = ProviderNativeWebSearchEventsFromExtra(response.Extra)
 	}
@@ -193,12 +194,30 @@ func generateEinoModelResponseWithTimeout(
 }
 
 const defaultModelResponseTimeout = 5 * time.Minute
+const modelConnectionTimeoutVisibleMessage = "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。"
 
 func modelResponseTimeout(timeoutMs int) time.Duration {
 	if timeoutMs > 0 {
 		return time.Duration(timeoutMs) * time.Millisecond
 	}
 	return defaultModelResponseTimeout
+}
+
+type userVisibleModelTimeoutError struct {
+	message string
+	cause   error
+}
+
+func (e userVisibleModelTimeoutError) Error() string {
+	return e.message
+}
+
+func (e userVisibleModelTimeoutError) Unwrap() error {
+	return e.cause
+}
+
+func (e userVisibleModelTimeoutError) Timeout() bool {
+	return true
 }
 
 func readableModelResponseTimeoutError(err error, timeout time.Duration, elapsed time.Duration) error {
@@ -212,10 +231,13 @@ func readableModelResponseTimeoutError(err error, timeout time.Duration, elapsed
 		return err
 	}
 	if !usedConfiguredTimeoutBudget(timeout, elapsed) {
-		return fmt.Errorf("模型请求超时：约 %s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: %w", formatObservedModelTimeout(elapsed), err)
+		return userVisibleModelTimeoutError{message: modelConnectionTimeoutVisibleMessage, cause: err}
 	}
 	if errors.Is(err, context.DeadlineExceeded) || isTimeoutLikeError(err) {
-		return fmt.Errorf("模型响应超时：%s 内未收到模型完整响应或下一个流式片段: %w", timeout, err)
+		return userVisibleModelTimeoutError{
+			message: fmt.Sprintf("模型响应超时：%s 内未收到模型完整响应。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。", timeout),
+			cause:   err,
+		}
 	}
 	return err
 }

@@ -442,10 +442,12 @@ type PromptSectionTrace struct {
 	Hash           string `json:"hash"`
 	Bytes          int    `json:"bytes"`
 	TokensEstimate int    `json:"tokensEstimate"`
+	TokenEstimate  int    `json:"tokenEstimate,omitempty"`
 	Cache          string `json:"cache,omitempty"`
 	RetentionRank  string `json:"retentionRank,omitempty"`
 	RetentionClass string `json:"retentionClass,omitempty"`
 	CompactAction  string `json:"compactAction,omitempty"`
+	Action         string `json:"action,omitempty"`
 	CompactSchema  string `json:"compactSchema,omitempty"`
 	SourceRef      string `json:"sourceRef,omitempty"`
 	Redaction      string `json:"redaction,omitempty"`

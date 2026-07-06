@@ -9,10 +9,16 @@ import (
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/tooling"
 )
 
 type ModelInputToolTraceFields struct {
+	AssemblySource                string
+	PromptCompilerSource          string
+	ToolSurfaceSource             string
+	AdapterName                   string
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
 	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
@@ -29,6 +35,11 @@ type ModelInputToolTraceFields struct {
 	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent
 	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace
 	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding
+	ResourceCapabilities          []resourcebinding.ResourceCapability
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef
+	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection
 	ResourceLocks                 []promptinput.ResourceLockTrace
 	OwnerWriteTraces              []OwnerWriteTrace
 	FailedToolSummaries           []promptinput.FailedToolSummary
@@ -39,6 +50,10 @@ type ModelInputToolTraceFields struct {
 
 func buildModelInputToolTraceFields(session *SessionState, snapshot *TurnSnapshot, toolSurfaceFingerprint, policySnapshotHash string) ModelInputToolTraceFields {
 	fields := ModelInputToolTraceFields{
+		AssemblySource:                "runtimekernel.buildModelInputTraceRequest",
+		PromptCompilerSource:          "promptcompiler.Compiler",
+		ToolSurfaceSource:             "runtimekernel.applyToolSurfacePolicyToCompileContext",
+		AdapterName:                   "eino",
 		ToolSurfaceFingerprint:        strings.TrimSpace(toolSurfaceFingerprint),
 		ToolSurfacePolicySnapshotHash: strings.TrimSpace(policySnapshotHash),
 		PublicWebBudget:               promptInputPublicWebBudgetTrace(DefaultPublicWebBudget()),
@@ -68,8 +83,56 @@ func buildModelInputToolTraceFields(session *SessionState, snapshot *TurnSnapsho
 		fields.ResourceLocks = resourceLockTracesFromSnapshot(snapshot)
 		fields.FailedToolSummaries = failedToolSummariesFromSnapshot(snapshot)
 		fields.OwnerWriteTraces = append(fields.OwnerWriteTraces, snapshot.OwnerWriteTraces...)
+		if snapshot.SpecialInputReadPlan != nil {
+			fields.SpecialInputWorldState = specialinputmemory.BuildWorldStateSection(*snapshot.SpecialInputReadPlan)
+		}
 	}
 	return fields
+}
+
+func resourceCapabilitiesFromAssembledTools(bindings []resourcebinding.ResourceBindingSnapshot, tools []tooling.Tool, policyHash string) []resourcebinding.ResourceCapability {
+	if len(bindings) == 0 || len(tools) == 0 {
+		return nil
+	}
+	metas := make([]tooling.ToolMetadata, 0, len(tools))
+	for _, tool := range tools {
+		if tool == nil {
+			continue
+		}
+		metas = append(metas, tool.Metadata())
+	}
+	inputs := resourcebinding.ToolCapabilityInputsFromMetadata(metas, policyHash)
+	if len(inputs) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]resourcebinding.ResourceCapability, 0, len(inputs))
+	for _, binding := range bindings {
+		for _, capability := range resourcebinding.BuildCapabilities(binding, inputs) {
+			key := capability.TraceHash
+			if key == "" {
+				key = capability.ResourceRef.IdentityHash() + "\x00" + capability.Capability + "\x00" + strings.Join(capability.ToolNames, "\x00")
+			}
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			out = append(out, capability)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].ResourceRef.ID != out[j].ResourceRef.ID {
+			return out[i].ResourceRef.ID < out[j].ResourceRef.ID
+		}
+		if out[i].Capability != out[j].Capability {
+			return out[i].Capability < out[j].Capability
+		}
+		return strings.Join(out[i].ToolNames, "\x00") < strings.Join(out[j].ToolNames, "\x00")
+	})
+	return out
 }
 
 func promptInputPublicWebBudgetTrace(budget PublicWebBudget) *promptinput.PublicWebBudgetTrace {

@@ -18,6 +18,7 @@ import {
 } from "./aiopsTransportRuntime";
 import { setCachedAiopsTransportState, type AiopsTransportCacheScope } from "./aiopsTransportStateCache";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
+import { toUserFacingTransportErrorMessage } from "./transportErrorMessage";
 
 type ChatTransportProviderProps = PropsWithChildren<{
   autoResume?: boolean;
@@ -49,7 +50,7 @@ export function ChatTransportProvider({
       Accept: "text/plain",
     },
     onError(error, { updateState }) {
-      updateState((state) => markAiopsTransportFailed(state, error.message));
+      updateState((state) => markAiopsTransportFailed(state, toUserFacingTransportErrorMessage(error)));
     },
     onCancel({ updateState, error }) {
       if (error) {

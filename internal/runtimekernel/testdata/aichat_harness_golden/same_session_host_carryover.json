@@ -1,0 +1,40 @@
+{
+  "name": "same_session_host_carryover",
+  "hostId": "host-kme",
+  "userInput": "继续检查 agent 端口，不重复 @IP",
+  "availableTools": [
+    {
+      "name": "read_agent_status",
+      "description": "Read selected host agent status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "service": { "type": "string" }
+        }
+      },
+      "result": "host-kme agent status is active"
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_carryover",
+      "name": "read_agent_status",
+      "arguments": {
+        "service": "aiops-host-agent"
+      }
+    }
+  ],
+  "modelFinalOutput": "已沿用本会话主机绑定检查 agent，服务 active。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "host",
+    "modelVisibleTools": ["read_agent_status"],
+    "toolCalls": ["read_agent_status"],
+    "finalStatus": "verified",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
+}

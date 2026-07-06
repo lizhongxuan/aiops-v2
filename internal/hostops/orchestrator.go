@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"aiops-v2/internal/observability"
 	"aiops-v2/internal/opssemantic"
+	"aiops-v2/internal/resourcebinding"
 )
 
 var (
@@ -16,11 +18,15 @@ var (
 	ErrChildSpawnerUnavailable = errors.New("host child spawner is unavailable")
 )
 
+const envRoleBindingAssignmentEnabled = "AIOPS_ROLE_BINDING_ASSIGNMENT"
+
 type ChildAgentAssignment struct {
 	HostID               string                   `json:"hostId"`
 	HostAddress          string                   `json:"hostAddress,omitempty"`
 	HostDisplayName      string                   `json:"hostDisplayName,omitempty"`
 	Role                 string                   `json:"role,omitempty"`
+	BoundRole            string                   `json:"boundRole,omitempty"`
+	RoleBindingHash      string                   `json:"roleBindingHash,omitempty"`
 	Task                 string                   `json:"task"`
 	SessionID            string                   `json:"sessionId,omitempty"`
 	ParentAgentID        string                   `json:"parentAgentId,omitempty"`
@@ -39,6 +45,8 @@ type SpawnHostChildRequest struct {
 	HostAddress            string
 	HostDisplayName        string
 	Role                   string
+	BoundRole              string
+	RoleBindingHash        string
 	Task                   string
 	PlanStepID             string
 	Constraints            []string
@@ -235,6 +243,8 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 			HostAddress:          assignment.HostAddress,
 			HostDisplayName:      assignment.HostDisplayName,
 			Role:                 assignment.Role,
+			BoundRole:            assignment.BoundRole,
+			RoleBindingHash:      assignment.RoleBindingHash,
 			Task:                 assignment.Task,
 			PlanStepID:           firstNonEmptyString(assignment.PlanStepID, "unplanned"),
 			Constraints:          append([]string(nil), assignment.Constraints...),
@@ -290,6 +300,8 @@ func (o *Orchestrator) SpawnChildren(ctx context.Context, missionID string, assi
 				PlanStepID:           req.PlanStepID,
 				HostAgentID:          req.ChildAgentID,
 				HostID:               req.HostID,
+				BoundRole:            req.BoundRole,
+				RoleBindingHash:      req.RoleBindingHash,
 				Goal:                 req.Task,
 				Constraints:          req.Constraints,
 				ActionType:           step.ActionType,
@@ -502,12 +514,18 @@ func normalizeAssignment(assignment ChildAgentAssignment, mission HostOperationM
 	assignment.HostAddress = strings.TrimSpace(assignment.HostAddress)
 	assignment.HostDisplayName = strings.TrimSpace(assignment.HostDisplayName)
 	assignment.Role = strings.TrimSpace(assignment.Role)
+	assignment.BoundRole = strings.TrimSpace(assignment.BoundRole)
+	if normalizedRole := resourcebinding.NormalizeRole(assignment.BoundRole); normalizedRole != "" {
+		assignment.BoundRole = normalizedRole
+	}
+	assignment.RoleBindingHash = strings.TrimSpace(assignment.RoleBindingHash)
 	assignment.Task = strings.TrimSpace(assignment.Task)
 	assignment.SessionID = strings.TrimSpace(assignment.SessionID)
 	assignment.ParentAgentID = strings.TrimSpace(assignment.ParentAgentID)
 	if assignment.Task == "" {
 		assignment.Task = "Operate on the assigned host and report evidence to the manager."
 	}
+	assignment = resolveAssignmentHostFromRoleBinding(assignment, mission)
 	if assignment.HostID == "" {
 		assignment.HostID = firstNonEmptyString(assignment.HostAddress, assignment.HostDisplayName)
 	}
@@ -520,6 +538,41 @@ func normalizeAssignment(assignment ChildAgentAssignment, mission HostOperationM
 		}
 	}
 	return assignment
+}
+
+func resolveAssignmentHostFromRoleBinding(assignment ChildAgentAssignment, mission HostOperationMission) ChildAgentAssignment {
+	if !roleBindingAssignmentEnabled(mission) {
+		return assignment
+	}
+	if strings.TrimSpace(assignment.HostID) != "" {
+		return assignment
+	}
+	role := firstNonEmptyString(assignment.BoundRole, assignment.Role)
+	resolution := resourcebinding.ResolveUniqueRoleBinding(mission.RoleBindings, mission.RoleConflicts, role)
+	if resolution.Status != resourcebinding.RoleBindingResolutionResolved {
+		return assignment
+	}
+	ref := resourcebinding.NormalizeRef(resolution.ResourceRef)
+	if ref.Type != resourcebinding.ResourceTypeHost || strings.TrimSpace(ref.ID) == "" {
+		return assignment
+	}
+	assignment.HostID = ref.ID
+	assignment.HostDisplayName = firstNonEmptyString(assignment.HostDisplayName, ref.DisplayName)
+	assignment.BoundRole = resolution.Role
+	assignment.RoleBindingHash = firstNonEmptyString(assignment.RoleBindingHash, resolution.Binding.TraceHash, resolution.TraceHash)
+	return assignment
+}
+
+func roleBindingAssignmentEnabled(mission HostOperationMission) bool {
+	if mission.RoleBindingAssignmentEnabled {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envRoleBindingAssignmentEnabled))) {
+	case "1", "true", "yes", "on", "enabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func bindAssignmentPlanStep(assignment ChildAgentAssignment, mission HostOperationMission) ChildAgentAssignment {
@@ -589,6 +642,8 @@ func normalizeSpawnedChild(child HostChildAgent, req SpawnHostChildRequest) Host
 	child.HostAddress = firstNonEmptyString(child.HostAddress, req.HostAddress)
 	child.HostDisplayName = firstNonEmptyString(child.HostDisplayName, req.HostDisplayName)
 	child.Role = firstNonEmptyString(child.Role, req.Role)
+	child.BoundRole = firstNonEmptyString(child.BoundRole, req.BoundRole)
+	child.RoleBindingHash = firstNonEmptyString(child.RoleBindingHash, req.RoleBindingHash)
 	child.Task = firstNonEmptyString(child.Task, req.Task)
 	if req.PlanStepID != "" && !stringSliceContains(child.PlanStepIDs, req.PlanStepID) {
 		child.PlanStepIDs = append(child.PlanStepIDs, req.PlanStepID)
@@ -613,6 +668,8 @@ func mergeChildAgentUpdate(current HostChildAgent, update HostChildAgent) HostCh
 	update.HostAddress = firstNonEmptyString(update.HostAddress, current.HostAddress)
 	update.HostDisplayName = firstNonEmptyString(update.HostDisplayName, current.HostDisplayName)
 	update.Role = firstNonEmptyString(update.Role, current.Role)
+	update.BoundRole = firstNonEmptyString(update.BoundRole, current.BoundRole)
+	update.RoleBindingHash = firstNonEmptyString(update.RoleBindingHash, current.RoleBindingHash)
 	update.Task = firstNonEmptyString(update.Task, current.Task)
 	update.PlanStepIDs = append([]string(nil), current.PlanStepIDs...)
 	update.StartedAt = firstNonZeroTime(update.StartedAt, current.StartedAt)

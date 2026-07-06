@@ -43,6 +43,7 @@ type assistantMessageData struct {
 	GenerationDuration  time.Duration
 	CommentarySource    string
 	ToolCallIDs         []string
+	FinalContract       *FinalContract
 }
 
 type finalMessageBoundaryInput struct {
@@ -97,6 +98,9 @@ func assistantMessageAgentItemData(data assistantMessageData) map[string]any {
 	}
 	if ids := compactStringList(data.ToolCallIDs); len(ids) > 0 {
 		payload["toolCallIds"] = ids
+	}
+	if data.FinalContract != nil && strings.TrimSpace(data.FinalContract.SchemaVersion) != "" {
+		payload["finalContract"] = data.FinalContract
 	}
 	duration := data.GenerationDuration
 	if duration <= 0 {

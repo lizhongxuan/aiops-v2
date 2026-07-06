@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createInitialAiopsTransportState } from "./aiopsTransportRuntime";
 import {
@@ -8,6 +8,10 @@ import {
 } from "./assistantTransportControl";
 
 describe("assistantTransportControl", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("posts control commands to the assistant transport endpoint with the current state", async () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response("aui-state:[]\n", {
@@ -55,32 +59,17 @@ describe("assistantTransportControl", () => {
     expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`)).toEqual(state);
   });
 
-  it("normalizes legacy resume states with missing transport maps", () => {
-    const legacyState = createInitialAiopsTransportState("sess-legacy") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
-    legacyState.sessionId = "sess-legacy";
-    delete legacyState.hostMissions;
-    delete legacyState.childAgents;
-    delete legacyState.pendingApprovals;
-    delete legacyState.mcpSurfaces;
-    delete legacyState.artifacts;
-    delete legacyState.runtimeLiveness;
+  it("drops incomplete resume states instead of migrating old transport data", () => {
+    const staleState = createInitialAiopsTransportState("sess-stale") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
+    staleState.sessionId = "sess-stale";
+    delete staleState.hostMissions;
+    delete staleState.childAgents;
+    delete staleState.pendingApprovals;
+    delete staleState.mcpSurfaces;
+    delete staleState.artifacts;
+    delete staleState.runtimeLiveness;
 
-    expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: legacyState }])}\n`)).toMatchObject({
-      sessionId: "sess-legacy",
-      threadId: "sess-legacy",
-      hostMissions: {},
-      childAgents: {},
-      pendingApprovals: {},
-      mcpSurfaces: {},
-      artifacts: {},
-      runtimeLiveness: {
-        activeTurns: {},
-        activeAgents: {},
-        pendingApprovals: {},
-        pendingUserInputs: {},
-        activeCommandStreams: {},
-      },
-    });
+    expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: staleState }])}\n`)).toBeNull();
   });
 
   it("fetches completed history through the resume endpoint", async () => {
@@ -102,5 +91,37 @@ describe("assistantTransportControl", () => {
         headers: expect.objectContaining({ Accept: "text/plain" }),
       }),
     );
+  });
+
+  it("localizes transport network failures instead of surfacing raw fetch errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("Failed to fetch"));
+    const state = createInitialAiopsTransportState("thread-network-error");
+    state.sessionId = "sess-network-error";
+
+    await expect(
+      postAssistantTransportCommand(state, {
+        type: "aiops.retry",
+        sessionId: "sess-network-error",
+      }),
+    ).rejects.toThrow("网络异常,请检查后重试");
+  });
+
+  it("localizes raw HTTP transport errors before showing them to the user", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("network error", { status: 502 }));
+    const state = createInitialAiopsTransportState("thread-http-error");
+    state.sessionId = "sess-http-error";
+
+    await expect(
+      postAssistantTransportCommand(state, {
+        type: "aiops.stop",
+        sessionId: "sess-http-error",
+      }),
+    ).rejects.toThrow("网络异常,请检查后重试");
+  });
+
+  it("localizes resume network failures instead of surfacing raw fetch errors", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new TypeError("NetworkError when attempting to fetch resource."));
+
+    await expect(fetchAssistantTransportResumeState("sess-resume-network-error")).rejects.toThrow("网络异常,请检查后重试");
   });
 });

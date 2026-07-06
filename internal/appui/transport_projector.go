@@ -11,6 +11,7 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 type TransportProjector struct{}
@@ -23,6 +24,9 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	next := ensureAiopsTransportState(state)
 	if turn == nil {
 		return next, nil
+	}
+	if turn.SpecialInputReadPlan != nil {
+		next.SpecialInputContext = projectSpecialInputContextFromTurn(turn)
 	}
 
 	turnID := strings.TrimSpace(turn.ID)
@@ -94,13 +98,20 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 
 	applyTurnLiveness(&next, turnID, projectedTurn.Status)
 	if errText := firstNonEmptyString(strings.TrimSpace(turn.Error), strings.TrimSpace(next.LastError)); errText != "" && projectedTurn.Status == AiopsTransportTurnStatusFailed {
-		next.LastError = errText
+		next.LastError = sanitizeUserVisibleRuntimeErrorText(errText)
 	}
 	next.Status = mapTurnStatusToTransportStatus(projectedTurn.Status)
 	next.Seq += int64(len(turn.AgentItems))
 	next.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), next.UpdatedAt)
 
 	return next, nil
+}
+
+func projectSpecialInputContextFromTurn(turn *runtimekernel.TurnSnapshot) *specialinputmemory.TransportContext {
+	if turn == nil || turn.SpecialInputReadPlan == nil {
+		return nil
+	}
+	return specialinputmemory.ProjectTransportContext(*turn.SpecialInputReadPlan)
 }
 
 func projectOpsRunFromTurn(turn *runtimekernel.TurnSnapshot, projectedTurn AiopsTransportTurn) *AiopsTransportOpsRun {
@@ -843,7 +854,7 @@ func projectTurnItem(
 			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 		}
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
-	case agentstate.TurnItemTypeApproval:
+	case agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeApprovalRequested, agentstate.TurnItemTypeApprovalDecided:
 		var payload struct {
 			ApprovalID   string `json:"approvalId"`
 			ApprovalType string `json:"approvalType"`
@@ -878,6 +889,14 @@ func projectTurnItem(
 			delete(state.PendingApprovals, approvalID)
 			delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 		}
+	case agentstate.TurnItemTypeFinalResponse:
+		text := sanitizeUserVisibleFinalAnswerText(item.Payload.Summary)
+		if text == "" {
+			return turn
+		}
+		message := assistantMessageProjectionData(item)
+		durationMs := firstNonZeroInt64(message.DurationMs, finalDurationMsFromAgentItem(item))
+		turn.Final = transportFinalFromAgentItem(item.ID, text, mapItemStatusToTransportFinalStatus(item.Status), durationMs, message.FinalContract)
 	case agentstate.TurnItemTypeAssistantMessage:
 		message := assistantMessageProjectionData(item)
 		switch message.Phase {
@@ -887,12 +906,7 @@ func projectTurnItem(
 				return turn
 			}
 			durationMs := firstNonZeroInt64(message.DurationMs, finalDurationMsFromAgentItem(item))
-			turn.Final = &AiopsTransportFinal{
-				ID:         item.ID,
-				Text:       text,
-				Status:     mapItemStatusToTransportFinalStatus(item.Status),
-				DurationMs: durationMs,
-			}
+			turn.Final = transportFinalFromAgentItem(item.ID, text, mapItemStatusToTransportFinalStatus(item.Status), durationMs, message.FinalContract)
 		default:
 			text := sanitizeUserVisibleProcessText(item.Payload.Summary)
 			if text == "" {
@@ -932,11 +946,11 @@ func projectTurnItem(
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	case agentstate.TurnItemTypeError:
 		text := strings.TrimSpace(item.Payload.Summary)
-		state.LastError = text
 		if text == "" {
 			return turn
 		}
 		visibleText := sanitizeUserVisibleRuntimeErrorText(text)
+		state.LastError = visibleText
 		block := AiopsProcessBlock{
 			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindSystem), item.ID),
 			Kind:        AiopsTransportProcessKindSystem,
@@ -951,14 +965,59 @@ func projectTurnItem(
 	return turn
 }
 
+func transportFinalFromAgentItem(id string, text string, fallbackStatus AiopsTransportFinalStatus, durationMs int64, contract runtimekernel.FinalContract) *AiopsTransportFinal {
+	final := &AiopsTransportFinal{
+		ID:         strings.TrimSpace(id),
+		Text:       strings.TrimSpace(text),
+		Status:     fallbackStatus,
+		DurationMs: durationMs,
+	}
+	if strings.TrimSpace(contract.SchemaVersion) == "" {
+		return final
+	}
+	final.SchemaVersion = strings.TrimSpace(contract.SchemaVersion)
+	final.Status = mapFinalContractStatusToTransportStatus(contract.Status, fallbackStatus)
+	final.Confidence = strings.TrimSpace(contract.Confidence)
+	final.AnswerText = strings.TrimSpace(contract.AnswerText)
+	final.CheckedEvidenceRefs = cleanTransportStringList(contract.CheckedEvidenceRefs)
+	final.UncheckedRequirements = cleanTransportStringList(contract.UncheckedRequirements)
+	final.FailedToolImpacts = transportFailedToolImpacts(contract.FailedToolImpacts)
+	final.ApprovedActions = cleanTransportStringList(contract.ApprovedActions)
+	final.PerformedActions = cleanTransportStringList(contract.PerformedActions)
+	final.PostChecks = cleanTransportStringList(contract.PostChecks)
+	final.Limitations = cleanTransportStringList(contract.Limitations)
+	return final
+}
+
+func transportFailedToolImpacts(items []runtimekernel.FailedToolImpact) []AiopsTransportFailedToolImpact {
+	out := make([]AiopsTransportFailedToolImpact, 0, len(items))
+	for _, item := range items {
+		impact := AiopsTransportFailedToolImpact{
+			ToolName:     strings.TrimSpace(item.ToolName),
+			ToolCallID:   strings.TrimSpace(item.ToolCallID),
+			FailureClass: strings.TrimSpace(item.FailureClass),
+			Impact:       strings.TrimSpace(item.Impact),
+		}
+		if impact.ToolName == "" && impact.ToolCallID == "" && impact.FailureClass == "" && impact.Impact == "" {
+			continue
+		}
+		out = append(out, impact)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 type assistantMessageProjectionPayload struct {
-	DisplayKind      string   `json:"displayKind"`
-	Phase            string   `json:"phase"`
-	StreamState      string   `json:"streamState"`
-	EvidenceBoundary string   `json:"evidenceBoundary"`
-	DurationMs       int64    `json:"durationMs"`
-	CommentarySource string   `json:"commentarySource"`
-	ToolCallIDs      []string `json:"toolCallIds"`
+	DisplayKind      string                      `json:"displayKind"`
+	Phase            string                      `json:"phase"`
+	StreamState      string                      `json:"streamState"`
+	EvidenceBoundary string                      `json:"evidenceBoundary"`
+	DurationMs       int64                       `json:"durationMs"`
+	CommentarySource string                      `json:"commentarySource"`
+	ToolCallIDs      []string                    `json:"toolCallIds"`
+	FinalContract    runtimekernel.FinalContract `json:"finalContract"`
 }
 
 func assistantMessageProjectionData(item agentstate.TurnItem) assistantMessageProjectionPayload {
@@ -1528,8 +1587,10 @@ func mapTurnStatusToTransportStatus(status AiopsTransportTurnStatus) AiopsTransp
 
 func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportFinalStatus {
 	switch status {
-	case AiopsTransportTurnStatusFailed, AiopsTransportTurnStatusCanceled:
+	case AiopsTransportTurnStatusFailed:
 		return AiopsTransportFinalStatusFailed
+	case AiopsTransportTurnStatusCanceled:
+		return AiopsTransportFinalStatusCancelled
 	case AiopsTransportTurnStatusCompleted:
 		return AiopsTransportFinalStatusCompleted
 	default:
@@ -1539,12 +1600,39 @@ func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportF
 
 func mapFinalStatusToTransportProcessStatus(status AiopsTransportFinalStatus) AiopsTransportProcessStatus {
 	switch status {
-	case AiopsTransportFinalStatusCompleted:
+	case AiopsTransportFinalStatusCompleted, AiopsTransportFinalStatusVerified, AiopsTransportFinalStatusPartial:
 		return AiopsTransportProcessStatusCompleted
-	case AiopsTransportFinalStatusFailed:
+	case AiopsTransportFinalStatusFailed, AiopsTransportFinalStatusCancelled:
 		return AiopsTransportProcessStatusFailed
+	case AiopsTransportFinalStatusBlocked, AiopsTransportFinalStatusNeedsEvidence, AiopsTransportFinalStatusApprovalDenied, AiopsTransportFinalStatusToolUnavailable:
+		return AiopsTransportProcessStatusBlocked
 	default:
 		return AiopsTransportProcessStatusRunning
+	}
+}
+
+func mapFinalContractStatusToTransportStatus(status runtimekernel.FinalContractStatus, fallback AiopsTransportFinalStatus) AiopsTransportFinalStatus {
+	switch status {
+	case runtimekernel.FinalContractStatusVerified:
+		return AiopsTransportFinalStatusVerified
+	case runtimekernel.FinalContractStatusPartial:
+		return AiopsTransportFinalStatusPartial
+	case runtimekernel.FinalContractStatusBlocked:
+		return AiopsTransportFinalStatusBlocked
+	case runtimekernel.FinalContractStatusNeedsEvidence:
+		return AiopsTransportFinalStatusNeedsEvidence
+	case runtimekernel.FinalContractStatusApprovalDenied:
+		return AiopsTransportFinalStatusApprovalDenied
+	case runtimekernel.FinalContractStatusToolUnavailable:
+		return AiopsTransportFinalStatusToolUnavailable
+	case runtimekernel.FinalContractStatusCancelled:
+		return AiopsTransportFinalStatusCancelled
+	case runtimekernel.FinalContractStatusFailed:
+		return AiopsTransportFinalStatusFailed
+	case runtimekernel.FinalContractStatusUnknown:
+		return AiopsTransportFinalStatusUnknown
+	default:
+		return fallback
 	}
 }
 
@@ -3064,15 +3152,38 @@ func sanitizeUserVisibleProcessText(content string) string {
 	return text
 }
 
+const modelConnectionTimeoutUserVisibleText = "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。"
+
 func sanitizeUserVisibleRuntimeErrorText(content string) string {
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return ""
 	}
+	if isRawModelConnectionTimeoutText(text) {
+		return modelConnectionTimeoutUserVisibleText
+	}
 	if isRawRuntimeStreamFailureText(text) {
 		return "模型流中断，已保留已生成内容"
 	}
 	return sanitizeUserVisibleProcessText(text)
+}
+
+func isRawModelConnectionTimeoutText(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" {
+		return false
+	}
+	if !transportContainsAny(normalized, "timeout", "timed out", "超时") {
+		return false
+	}
+	return transportContainsAny(normalized,
+		"模型请求超时",
+		"模型服务连接超时",
+		"tls handshake timeout",
+		"chat/completions",
+		"llm 地址",
+		"llm address",
+	)
 }
 
 func isRawRuntimeStreamFailureText(text string) bool {

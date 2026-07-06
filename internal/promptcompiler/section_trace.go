@@ -101,17 +101,20 @@ func ApplyPromptSectionCache(previous, current []PromptSectionTrace) []PromptSec
 func promptSectionTrace(id, kind, source, content, cache string) PromptSectionTrace {
 	trimmed := strings.TrimSpace(content)
 	contract := LookupPromptSectionContract(id)
+	tokensEstimate := promptSectionEstimateTokens(trimmed)
 	return PromptSectionTrace{
 		ID:             id,
 		Kind:           kind,
 		Source:         source,
 		Hash:           "sha256:" + hashPromptText(trimmed),
 		Bytes:          len([]byte(trimmed)),
-		TokensEstimate: promptSectionEstimateTokens(trimmed),
+		TokensEstimate: tokensEstimate,
+		TokenEstimate:  tokensEstimate,
 		Cache:          cache,
 		RetentionRank:  contract.RetentionRank,
 		RetentionClass: contract.RetentionClass,
 		CompactAction:  CompactActionKeptOriginal,
+		Action:         "kept",
 		CompactSchema:  contract.CompactSchema,
 		Redaction:      contract.RedactionPolicy,
 		Purpose:        contract.Purpose,

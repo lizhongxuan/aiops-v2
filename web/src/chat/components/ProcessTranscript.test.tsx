@@ -121,6 +121,58 @@ describe("ProcessTranscript", () => {
     expect(text).not.toContain(final);
   });
 
+  it("keeps assistant, command, and approval rows in their process order", async () => {
+    const process = [
+      makeBlock({
+        id: "assistant-before-command",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "先检查网络配置。",
+      }),
+      makeBlock({
+        id: "cmd-ip-addr",
+        kind: "command",
+        status: "failed",
+        command: "ip addr show",
+        outputPreview: "needs_host_agent",
+      }),
+      makeBlock({
+        id: "assistant-before-approval",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "命令不可用，改为请求只读日志检查。",
+      }),
+      makeBlock({
+        id: "approval-read-log",
+        kind: "approval",
+        status: "blocked",
+        text: "需要审批：读取 /var/log",
+        approvalId: "approval-read-log",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="blocked" />);
+    });
+
+    const processText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    const assistantBeforeCommand = processText.indexOf("先检查网络配置");
+    const command = processText.indexOf("运行失败 ip addr show");
+    const assistantBeforeApproval = processText.indexOf("改为请求只读日志检查");
+    const approval = processText.indexOf("需要审批：读取 /var/log");
+
+    expect(assistantBeforeCommand).toBeGreaterThanOrEqual(0);
+    expect(command).toBeGreaterThan(assistantBeforeCommand);
+    expect(assistantBeforeApproval).toBeGreaterThan(command);
+    expect(approval).toBeGreaterThan(assistantBeforeApproval);
+  });
+
   it("keeps preserved final output out of the process transcript when a raw stream error is present", async () => {
     const rawError = "failed to receive stream chunk: context deadline exceeded";
     const preservedAnswer = [

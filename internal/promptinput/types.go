@@ -3,9 +3,12 @@ package promptinput
 import (
 	"encoding/json"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 // ToolCall is the promptinput-local tool call shape. Keeping it local avoids
@@ -25,10 +28,11 @@ type ToolResult struct {
 // Message is the conversation message shape consumed by the prompt input
 // builder.
 type Message struct {
-	Role       string      `json:"role"`
-	Content    string      `json:"content,omitempty"`
-	ToolCalls  []ToolCall  `json:"toolCalls,omitempty"`
-	ToolResult *ToolResult `json:"toolResult,omitempty"`
+	Role             string      `json:"role"`
+	Content          string      `json:"content,omitempty"`
+	ReasoningContent string      `json:"reasoningContent,omitempty"`
+	ToolCalls        []ToolCall  `json:"toolCalls,omitempty"`
+	ToolResult       *ToolResult `json:"toolResult,omitempty"`
 }
 
 // BuildRequest contains all structured inputs needed to build provider model
@@ -47,15 +51,23 @@ type BuildRequest struct {
 	DroppedContextReasons []string
 	ContextGovernance     []ContextGovernanceTraceItem
 
-	VerificationReportRef string
-	VerificationStatus    string
-	TaskDepth             *TaskDepthTrace
-	EvidenceCoverage      *EvidenceCoverageTrace
-	GenericityTrace       *GenericityTrace
-	CompletionGate        *CompletionGateTrace
-	SafetySignals         []SafetySignalTrace
-	UnexpectedStateGate   *UnexpectedStateGateTrace
-	ApprovalScope         *ApprovalScopeTrace
+	VerificationReportRef  string
+	VerificationStatus     string
+	TaskDepth              *TaskDepthTrace
+	EvidenceCoverage       *EvidenceCoverageTrace
+	GenericityTrace        *GenericityTrace
+	CompletionGate         *CompletionGateTrace
+	SafetySignals          []SafetySignalTrace
+	UnexpectedStateGate    *UnexpectedStateGateTrace
+	ApprovalScope          *ApprovalScopeTrace
+	ResourceBindings       []resourcebinding.ResourceBindingSnapshot
+	ResourceRoleBindings   []resourcebinding.ResourceRoleBinding
+	ResourceCapabilities   []resourcebinding.ResourceCapability
+	ResourceEvidenceRefs   []resourcebinding.EvidenceRef
+	SessionTargetSnapshot  *resourcebinding.SessionTargetSnapshot
+	RoleBindingConflicts   []resourcebinding.RoleBindingConflict
+	AgentAssemblySnapshot  *agentassembly.AgentAssemblySnapshot
+	SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection
 }
 
 // BuildResult is the provider-neutral model input plus its explainable trace.
@@ -66,70 +78,82 @@ type BuildResult struct {
 
 // PromptInputTrace records where each prompt input item came from.
 type PromptInputTrace struct {
-	Items                         []TraceItem                                 `json:"items"`
-	PromptSections                []promptcompiler.PromptSectionTrace         `json:"promptSections,omitempty"`
-	ChangedSections               []promptcompiler.ChangedPromptSection       `json:"changedSections,omitempty"`
-	OpsContextCapsuleChars        int                                         `json:"opsContextCapsuleChars,omitempty"`
-	SessionFactCount              int                                         `json:"sessionFactCount,omitempty"`
-	LettaHintCount                int                                         `json:"lettaHintCount,omitempty"`
-	MemoryItemCount               int                                         `json:"memoryItemCount,omitempty"`
-	VisibleOpsManualTools         []string                                    `json:"visibleOpsManualTools,omitempty"`
-	DroppedContextReasons         []string                                    `json:"droppedContextReasons,omitempty"`
-	ContextDedupe                 *ContextDedupeTrace                         `json:"contextDedupe,omitempty"`
-	ContextGovernance             []ContextGovernanceTraceItem                `json:"contextGovernance,omitempty"`
-	ContextUsage                  ContextUsage                                `json:"contextUsage,omitempty"`
-	ToolSurfaceFingerprint        string                                      `json:"toolSurfaceFingerprint,omitempty"`
-	ToolSurfacePolicySnapshotHash string                                      `json:"toolSurfacePolicySnapshotHash,omitempty"`
-	ToolSurfaceSnapshot           *ToolSurfaceSnapshot                        `json:"toolSurfaceSnapshot,omitempty"`
-	PublicWebBudget               *PublicWebBudgetTrace                       `json:"publicWebBudget,omitempty"`
-	WebSearchPolicy               *WebSearchPolicyTrace                       `json:"webSearchPolicy,omitempty"`
-	WebSearch                     *WebSearchTrace                             `json:"webSearch,omitempty"`
-	Final                         *FinalTrace                                 `json:"final,omitempty"`
-	DeferredToolDirectory         []promptcompiler.DeferredToolDirectoryEntry `json:"deferredToolDirectory,omitempty"`
-	LoadedToolsDelta              []string                                    `json:"loadedToolsDelta,omitempty"`
-	LoadedPacksDelta              []string                                    `json:"loadedPacksDelta,omitempty"`
-	SkillIndexHash                string                                      `json:"skillIndexHash,omitempty"`
-	LoadedSkillsDelta             []string                                    `json:"loadedSkillsDelta,omitempty"`
-	ToolSearchEvents              []ToolSearchTraceEvent                      `json:"toolSearchEvents,omitempty"`
-	ToolSelectionEvents           []ToolSelectionTraceEvent                   `json:"toolSelectionEvents,omitempty"`
-	RejectedToolCalls             []RejectedToolCallTraceEvent                `json:"rejectedToolCalls,omitempty"`
-	DispatchDecisions             []DispatchDecisionTrace                     `json:"dispatchDecisions,omitempty"`
-	SkillSearchEvents             []SkillSearchTraceEvent                     `json:"skillSearchEvents,omitempty"`
-	SkillReadEvents               []SkillReadTraceEvent                       `json:"skillReadEvents,omitempty"`
-	RejectedSkillActivations      []RejectedSkillActivationTraceEvent         `json:"rejectedSkillActivations,omitempty"`
-	MCPInstructionDeltas          []MCPInstructionDeltaTrace                  `json:"mcpInstructionDeltas,omitempty"`
-	ParallelDispatchGroups        []ParallelDispatchTraceGroup                `json:"parallelDispatchGroups,omitempty"`
-	FailedToolSummaries           []FailedToolSummary                         `json:"failedToolSummaries,omitempty"`
-	AgentIndexHash                string                                      `json:"agentIndexHash,omitempty"`
-	AgentIndexEntries             []AgentIndexEntryTrace                      `json:"agentIndexEntries,omitempty"`
-	AgentIndexDropped             []DroppedAgentIndexEntryTrace               `json:"agentIndexDropped,omitempty"`
-	AgentIndexDelta               []string                                    `json:"agentIndexDelta,omitempty"`
-	AgentDelegationDecision       *AgentDelegationDecisionTrace               `json:"agentDelegationDecision,omitempty"`
-	AgentAssignmentLint           []AgentAssignmentLintTrace                  `json:"agentAssignmentLint,omitempty"`
-	AgentParallelTraceGroups      []AgentParallelTraceGroup                   `json:"agentParallelTraceGroups,omitempty"`
-	ResourceLocks                 []ResourceLockTrace                         `json:"resourceLocks,omitempty"`
-	OwnerWriteTraces              []OwnerWriteTrace                           `json:"ownerWriteTraces,omitempty"`
-	AgentFinalGate                *AgentFinalGateDecisionTrace                `json:"agentFinalGate,omitempty"`
-	AgentNotifications            []AgentNotificationTrace                    `json:"agentNotifications,omitempty"`
-	VerificationAgentReport       *VerificationAgentReportTrace               `json:"verificationAgentReport,omitempty"`
-	VerificationReportRef         string                                      `json:"verificationReportRef,omitempty"`
-	VerificationStatus            string                                      `json:"verificationStatus,omitempty"`
-	TaskDepth                     *TaskDepthTrace                             `json:"taskDepth,omitempty"`
-	EvidenceCoverage              *EvidenceCoverageTrace                      `json:"evidenceCoverage,omitempty"`
-	GenericityTrace               *GenericityTrace                            `json:"genericityTrace,omitempty"`
-	CompletionGate                *CompletionGateTrace                        `json:"completionGate,omitempty"`
-	SafetySignals                 []SafetySignalTrace                         `json:"safetySignals,omitempty"`
-	UnexpectedStateGate           *UnexpectedStateGateTrace                   `json:"unexpectedStateGate,omitempty"`
-	ApprovalScope                 *ApprovalScopeTrace                         `json:"approvalScope,omitempty"`
-	PlanModeState                 *PlanModeTraceState                         `json:"planModeState,omitempty"`
-	PlanArtifactRef               string                                      `json:"planArtifactRef,omitempty"`
-	PlanTransitions               []PlanTransitionTrace                       `json:"planTransitions,omitempty"`
-	PlanRequirementDecision       *PlanRequirementDecisionTrace               `json:"planRequirementDecision,omitempty"`
-	PlanCompletionGate            *PlanCompletionGateTrace                    `json:"planCompletionGate,omitempty"`
-	TaskClaims                    []TaskClaimTrace                            `json:"taskClaims,omitempty"`
-	PlanApprovalScope             *PlanApprovalScopeTrace                     `json:"planApprovalScope,omitempty"`
-	PlanRejectionEvents           []PlanRejectionEventTrace                   `json:"planRejectionEvents,omitempty"`
-	TaskTodoState                 *TaskTodoTraceState                         `json:"taskTodoState,omitempty"`
+	Items                         []TraceItem                                       `json:"items"`
+	PromptSections                []promptcompiler.PromptSectionTrace               `json:"promptSections,omitempty"`
+	ChangedSections               []promptcompiler.ChangedPromptSection             `json:"changedSections,omitempty"`
+	OpsContextCapsuleChars        int                                               `json:"opsContextCapsuleChars,omitempty"`
+	SessionFactCount              int                                               `json:"sessionFactCount,omitempty"`
+	LettaHintCount                int                                               `json:"lettaHintCount,omitempty"`
+	MemoryItemCount               int                                               `json:"memoryItemCount,omitempty"`
+	VisibleOpsManualTools         []string                                          `json:"visibleOpsManualTools,omitempty"`
+	DroppedContextReasons         []string                                          `json:"droppedContextReasons,omitempty"`
+	ContextDedupe                 *ContextDedupeTrace                               `json:"contextDedupe,omitempty"`
+	ContextGovernance             []ContextGovernanceTraceItem                      `json:"contextGovernance,omitempty"`
+	ContextUsage                  ContextUsage                                      `json:"contextUsage,omitempty"`
+	AssemblySource                string                                            `json:"assembly_source,omitempty"`
+	PromptCompilerSource          string                                            `json:"prompt_compiler_source,omitempty"`
+	ToolSurfaceSource             string                                            `json:"tool_surface_source,omitempty"`
+	AdapterName                   string                                            `json:"adapter_name,omitempty"`
+	ToolSurfaceFingerprint        string                                            `json:"toolSurfaceFingerprint,omitempty"`
+	ToolSurfacePolicySnapshotHash string                                            `json:"toolSurfacePolicySnapshotHash,omitempty"`
+	ToolSurfaceSnapshot           *ToolSurfaceSnapshot                              `json:"toolSurfaceSnapshot,omitempty"`
+	PublicWebBudget               *PublicWebBudgetTrace                             `json:"publicWebBudget,omitempty"`
+	WebSearchPolicy               *WebSearchPolicyTrace                             `json:"webSearchPolicy,omitempty"`
+	WebSearch                     *WebSearchTrace                                   `json:"webSearch,omitempty"`
+	Final                         *FinalTrace                                       `json:"final,omitempty"`
+	DeferredToolDirectory         []promptcompiler.DeferredToolDirectoryEntry       `json:"deferredToolDirectory,omitempty"`
+	LoadedToolsDelta              []string                                          `json:"loadedToolsDelta,omitempty"`
+	LoadedPacksDelta              []string                                          `json:"loadedPacksDelta,omitempty"`
+	SkillIndexHash                string                                            `json:"skillIndexHash,omitempty"`
+	LoadedSkillsDelta             []string                                          `json:"loadedSkillsDelta,omitempty"`
+	ToolSearchEvents              []ToolSearchTraceEvent                            `json:"toolSearchEvents,omitempty"`
+	ToolSelectionEvents           []ToolSelectionTraceEvent                         `json:"toolSelectionEvents,omitempty"`
+	RejectedToolCalls             []RejectedToolCallTraceEvent                      `json:"rejectedToolCalls,omitempty"`
+	DispatchDecisions             []DispatchDecisionTrace                           `json:"dispatchDecisions,omitempty"`
+	SkillSearchEvents             []SkillSearchTraceEvent                           `json:"skillSearchEvents,omitempty"`
+	SkillReadEvents               []SkillReadTraceEvent                             `json:"skillReadEvents,omitempty"`
+	RejectedSkillActivations      []RejectedSkillActivationTraceEvent               `json:"rejectedSkillActivations,omitempty"`
+	MCPInstructionDeltas          []MCPInstructionDeltaTrace                        `json:"mcpInstructionDeltas,omitempty"`
+	ParallelDispatchGroups        []ParallelDispatchTraceGroup                      `json:"parallelDispatchGroups,omitempty"`
+	FailedToolSummaries           []FailedToolSummary                               `json:"failedToolSummaries,omitempty"`
+	AgentIndexHash                string                                            `json:"agentIndexHash,omitempty"`
+	AgentIndexEntries             []AgentIndexEntryTrace                            `json:"agentIndexEntries,omitempty"`
+	AgentIndexDropped             []DroppedAgentIndexEntryTrace                     `json:"agentIndexDropped,omitempty"`
+	AgentIndexDelta               []string                                          `json:"agentIndexDelta,omitempty"`
+	AgentDelegationDecision       *AgentDelegationDecisionTrace                     `json:"agentDelegationDecision,omitempty"`
+	AgentAssignmentLint           []AgentAssignmentLintTrace                        `json:"agentAssignmentLint,omitempty"`
+	AgentParallelTraceGroups      []AgentParallelTraceGroup                         `json:"agentParallelTraceGroups,omitempty"`
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot         `json:"resourceBindings,omitempty"`
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding             `json:"resourceRoleBindings,omitempty"`
+	ResourceCapabilities          []resourcebinding.ResourceCapability              `json:"resourceCapabilities,omitempty"`
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef                     `json:"resourceEvidenceRefs,omitempty"`
+	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot            `json:"sessionTargetSnapshot,omitempty"`
+	RoleBindingConflicts          []resourcebinding.RoleBindingConflict             `json:"roleBindingConflicts,omitempty"`
+	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot              `json:"agentAssemblySnapshot,omitempty"`
+	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState,omitempty"`
+	ResourceLocks                 []ResourceLockTrace                               `json:"resourceLocks,omitempty"`
+	OwnerWriteTraces              []OwnerWriteTrace                                 `json:"ownerWriteTraces,omitempty"`
+	AgentFinalGate                *AgentFinalGateDecisionTrace                      `json:"agentFinalGate,omitempty"`
+	AgentNotifications            []AgentNotificationTrace                          `json:"agentNotifications,omitempty"`
+	VerificationAgentReport       *VerificationAgentReportTrace                     `json:"verificationAgentReport,omitempty"`
+	VerificationReportRef         string                                            `json:"verificationReportRef,omitempty"`
+	VerificationStatus            string                                            `json:"verificationStatus,omitempty"`
+	TaskDepth                     *TaskDepthTrace                                   `json:"taskDepth,omitempty"`
+	EvidenceCoverage              *EvidenceCoverageTrace                            `json:"evidenceCoverage,omitempty"`
+	GenericityTrace               *GenericityTrace                                  `json:"genericityTrace,omitempty"`
+	CompletionGate                *CompletionGateTrace                              `json:"completionGate,omitempty"`
+	SafetySignals                 []SafetySignalTrace                               `json:"safetySignals,omitempty"`
+	UnexpectedStateGate           *UnexpectedStateGateTrace                         `json:"unexpectedStateGate,omitempty"`
+	ApprovalScope                 *ApprovalScopeTrace                               `json:"approvalScope,omitempty"`
+	PlanModeState                 *PlanModeTraceState                               `json:"planModeState,omitempty"`
+	PlanArtifactRef               string                                            `json:"planArtifactRef,omitempty"`
+	PlanTransitions               []PlanTransitionTrace                             `json:"planTransitions,omitempty"`
+	PlanRequirementDecision       *PlanRequirementDecisionTrace                     `json:"planRequirementDecision,omitempty"`
+	PlanCompletionGate            *PlanCompletionGateTrace                          `json:"planCompletionGate,omitempty"`
+	TaskClaims                    []TaskClaimTrace                                  `json:"taskClaims,omitempty"`
+	PlanApprovalScope             *PlanApprovalScopeTrace                           `json:"planApprovalScope,omitempty"`
+	PlanRejectionEvents           []PlanRejectionEventTrace                         `json:"planRejectionEvents,omitempty"`
+	TaskTodoState                 *TaskTodoTraceState                               `json:"taskTodoState,omitempty"`
 }
 
 type ContextDedupeTrace struct {

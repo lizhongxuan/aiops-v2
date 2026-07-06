@@ -28,6 +28,16 @@ import {
   getCachedAiopsTransportState,
   resetAiopsTransportStateCacheForTest,
 } from "./aiopsTransportStateCache";
+import type { AiopsTransportState } from "./aiopsTransportTypes";
+
+type TransportRuntimeOptions = {
+  onError: (
+    error: Error,
+    context: {
+      updateState: (updater: (state: AiopsTransportState) => AiopsTransportState) => void;
+    },
+  ) => void;
+};
 
 describe("ChatTransportProvider", () => {
   let container: HTMLDivElement;
@@ -82,18 +92,18 @@ describe("ChatTransportProvider", () => {
     expect(resumeRunSpy).toHaveBeenCalledWith({});
   });
 
-  it("normalizes legacy initial state before creating the assistant transport runtime", async () => {
-    const legacyState = createInitialAiopsTransportState("thread-legacy") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
-    delete legacyState.hostMissions;
-    delete legacyState.childAgents;
-    delete legacyState.pendingApprovals;
-    delete legacyState.mcpSurfaces;
-    delete legacyState.artifacts;
-    delete legacyState.runtimeLiveness;
+  it("drops incomplete initial state instead of migrating old transport data", async () => {
+    const staleState = createInitialAiopsTransportState("thread-stale") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
+    delete staleState.hostMissions;
+    delete staleState.childAgents;
+    delete staleState.pendingApprovals;
+    delete staleState.mcpSurfaces;
+    delete staleState.artifacts;
+    delete staleState.runtimeLiveness;
 
     await act(async () => {
       root.render(
-        <ChatTransportProvider initialState={legacyState as ReturnType<typeof createInitialAiopsTransportState>} threadId="thread-legacy">
+        <ChatTransportProvider initialState={staleState as ReturnType<typeof createInitialAiopsTransportState>} threadId="thread-current">
           <div>chat</div>
         </ChatTransportProvider>,
       );
@@ -102,6 +112,10 @@ describe("ChatTransportProvider", () => {
     expect(transportRuntimeSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         initialState: expect.objectContaining({
+          sessionId: "",
+          threadId: "thread-current",
+          turns: {},
+          turnOrder: [],
           hostMissions: {},
           childAgents: {},
           pendingApprovals: {},
@@ -137,6 +151,51 @@ describe("ChatTransportProvider", () => {
       sessionId: "sess-cache-provider",
       threadId: "thread-cache-provider",
       turnOrder: ["turn-1"],
+    });
+  });
+
+  it("localizes network errors and clears model wait state when the transport fails", async () => {
+    const state = createInitialAiopsTransportState("thread-error-provider");
+    state.sessionId = "sess-error-provider";
+    state.status = "working";
+    state.currentTurnId = "turn-error";
+    state.turnOrder = ["turn-error"];
+    state.turns = {
+      "turn-error": {
+        id: "turn-error",
+        status: "working",
+        process: [
+          {
+            id: "wait-model",
+            kind: "reasoning",
+            status: "running",
+            text: "正在等待模型返回",
+          },
+        ],
+      },
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatTransportProvider initialState={state} threadId="thread-error-provider">
+          <div>chat</div>
+        </ChatTransportProvider>,
+      );
+    });
+
+    const options = transportRuntimeSpy.mock.calls[0]?.[0] as TransportRuntimeOptions;
+    let nextState = state;
+    options.onError(new Error("network error"), {
+      updateState(updater) {
+        nextState = updater(nextState);
+      },
+    });
+
+    expect(nextState.lastError).toBe("网络异常,请检查后重试");
+    expect(nextState.turns["turn-error"]?.process?.[0]).toMatchObject({
+      id: "wait-model",
+      status: "failed",
+      text: "模型调用失败",
     });
   });
 });

@@ -399,6 +399,30 @@ func TestHostChildPromptAssetIncludesBindingSubtaskProtocolReportAndStopSections
 	}
 }
 
+func TestHostChildPromptAssetIncludesRoleBindingContract(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:            "mission-role",
+		ChildAgentID:         "child-primary",
+		HostID:               "host-a",
+		BoundRole:            "pg_primary",
+		RoleBindingHash:      "role-hash-a",
+		Task:                 "inspect assigned primary host",
+		PlanStepID:           "step-primary",
+		RiskLevel:            "read_only",
+		EvidenceRequirements: []string{"command_result"},
+	})
+	for _, want := range []string{
+		"bound_host_id: host-a",
+		"bound_role: pg_primary",
+		"role_binding_hash: role-hash-a",
+		"HostTaskReport must include host id, bound role, role binding hash, and evidence refs.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing role binding contract %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestHostChildPromptAssetRedactsSecrets(t *testing.T) {
 	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
 		MissionID:    "mission-prompt",

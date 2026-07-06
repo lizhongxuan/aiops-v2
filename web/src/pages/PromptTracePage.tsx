@@ -659,6 +659,7 @@ function PromptTraceDetailDialog({
                     </div>
                   </section>
                 ) : null}
+                <SpecialInputTracePanel specialInput={traceViewModel?.specialInput} />
                 <ContextGovernancePanels
                   contextGovernance={contextGovernance}
                   emptyText={contextGovernanceEmptyText}
@@ -701,6 +702,7 @@ function PromptTraceDetailDialog({
 
 type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
 type ToolSurfaceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["toolSurface"]>;
+type SpecialInputViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["specialInput"]>;
 
 function CompactMetricCard({ label, value }: { label: string; value: ReactNode }) {
   const title = `${label}: ${String(value ?? "")}`;
@@ -886,6 +888,79 @@ function ToolSurfacePanels({ toolSurface }: { toolSurface?: ToolSurfaceViewModel
           ) : <EmptyGovernanceState text="暂无 rejected tools" />}
         </ContextPanel>
       </section>
+    </section>
+  );
+}
+
+function SpecialInputTracePanel({ specialInput }: { specialInput?: SpecialInputViewModel | null }) {
+  if (!specialInput) {
+    return (
+      <section className="rounded-lg border border-slate-200 bg-white p-4 sm:col-span-2 lg:col-span-6">
+        <h3 className="font-medium text-slate-950">特殊输入短期记忆</h3>
+        <div className="mt-3">
+          <EmptyGovernanceState text="暂无特殊输入短期记忆 trace" />
+        </div>
+      </section>
+    );
+  }
+  const active = specialInput.activeGrant;
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4 sm:col-span-2 lg:col-span-6" data-testid="prompt-trace-special-input">
+      <div className="flex min-w-0 flex-wrap items-center gap-2">
+        <h3 className="font-medium text-slate-950">特殊输入短期记忆</h3>
+        {active ? <ToneBadge>{active.resourceKind || "resource"}:{active.resourceId || active.display || active.id}</ToneBadge> : <ToneBadge>无 active grant</ToneBadge>}
+        {specialInput.summary.pendingConfirmationCount ? <ToneBadge>待确认 {specialInput.summary.pendingConfirmationCount}</ToneBadge> : null}
+        {specialInput.summary.conflictCount ? <ToneBadge>冲突 {specialInput.summary.conflictCount}</ToneBadge> : null}
+      </div>
+      {specialInput.modelSummary ? <p className="mt-2 break-words text-sm text-slate-600">{specialInput.modelSummary}</p> : null}
+      <div className="mt-3 grid gap-3 lg:grid-cols-2">
+        <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+          <div className="font-medium text-slate-700">Active Grant</div>
+          {active ? (
+            <div className="mt-2 grid gap-1 text-slate-600">
+              <div>grant: <span className="font-mono">{active.id || "-"}</span></div>
+              <div>resource: <span className="font-mono">{active.resourceKind || "-"}/{active.resourceId || active.display || "-"}</span></div>
+              <div>actions: <span className="font-mono">{active.allowedActions?.join(", ") || "-"}</span></div>
+              <div>validation: <span className="font-mono">{active.validationHash || "-"}</span></div>
+            </div>
+          ) : <p className="mt-2 text-slate-500">没有 active execution scope。</p>}
+        </div>
+        <div className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-xs">
+          <div className="font-medium text-slate-700">Role Bindings</div>
+          {specialInput.roleBindings?.length ? (
+            <div className="mt-2 grid gap-2">
+              {specialInput.roleBindings.map((binding) => (
+                <div key={binding.id || binding.bindingHash || `${binding.roleKey}-${binding.resourceId}`} className="rounded-md bg-white px-2 py-1">
+                  <span className="font-mono">{[binding.environmentKey, binding.clusterKey, binding.roleKey].filter(Boolean).join("/") || binding.roleKey || "-"}</span>
+                  <span className="mx-2 text-slate-400">-&gt;</span>
+                  <span className="font-mono">{binding.resourceKind || "resource"}:{binding.resourceId || "-"}</span>
+                  {binding.runtimeName ? <span className="ml-2 text-slate-500">{binding.runtimeName}</span> : null}
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-2 text-slate-500">没有 role binding。</p>}
+        </div>
+        {specialInput.pendingConfirmations?.length ? (
+          <div className="rounded-lg border border-amber-100 bg-amber-50 p-3 text-xs">
+            <div className="font-medium text-amber-900">Pending Confirmation</div>
+            <div className="mt-2 grid gap-1 text-amber-900">
+              {specialInput.pendingConfirmations.map((pending) => (
+                <div key={pending.id || pending.reason}>{pending.kind || "target"}: {pending.reason || pending.id}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+        {specialInput.conflicts?.length ? (
+          <div className="rounded-lg border border-red-100 bg-red-50 p-3 text-xs">
+            <div className="font-medium text-red-900">Conflicts</div>
+            <div className="mt-2 grid gap-1 text-red-900">
+              {specialInput.conflicts.map((conflict) => (
+                <div key={conflict.id || conflict.roleKey}>{[conflict.environmentKey, conflict.clusterKey, conflict.roleKey].filter(Boolean).join("/")}: {conflict.reasons?.join(", ") || conflict.id}</div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

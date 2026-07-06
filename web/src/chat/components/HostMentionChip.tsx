@@ -4,6 +4,7 @@ import type { HostMentionCandidate } from "../hostMentions";
 
 export type DisplayHostMention = HostMentionCandidate & {
   hostId?: string;
+  address?: string;
   displayName?: string;
   resolved?: boolean;
 };

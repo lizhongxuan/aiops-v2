@@ -1,0 +1,29 @@
+{
+  "id": "tool-surface-single-source",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "验证模型可见工具、runtime 可执行工具、trace 工具来自同一个装配快照。",
+  "expected": {
+    "expectedAssembly": {
+      "agentKind": "advisor",
+      "profile": "advisor.default",
+      "runtimeRole": "profile_only",
+      "routeReasonContains": "tool-surface"
+    },
+    "expectedToolSurface": {
+      "visibleTools": ["search_ops_manuals"],
+      "dispatchableTools": ["search_ops_manuals"],
+      "hiddenTools": ["exec_command"],
+      "requireSingleSource": true
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}
+

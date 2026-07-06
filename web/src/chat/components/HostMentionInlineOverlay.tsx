@@ -1,4 +1,5 @@
 import { Activity, BookOpen, GitBranch, Server, Wrench } from "lucide-react";
+import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,6 +10,7 @@ type HostMentionInlineOverlayVariant = "chat" | "default";
 type HostMentionInlineOverlayProps = {
   text: string;
   mentions: InlineMention[];
+  caretIndex?: number | null;
   variant?: HostMentionInlineOverlayVariant;
 };
 
@@ -26,14 +28,15 @@ export type ResourceInlineMentionCandidate = {
 export type InlineMention = HostMentionCandidate | SpecialAiMentionCandidate | ResourceInlineMentionCandidate;
 
 type HostMentionTextSegment =
-  | { type: "text"; text: string; key: string }
-  | { type: "mention"; text: string; key: string; mention: InlineMention };
+  | { type: "text"; text: string; key: string; start: number; end: number }
+  | { type: "mention"; text: string; key: string; start: number; end: number; mention: InlineMention };
 
-export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: HostMentionInlineOverlayProps) {
+export function HostMentionInlineOverlay({ text, mentions, caretIndex, variant = "chat" }: HostMentionInlineOverlayProps) {
   const segments = buildHostMentionTextSegments(text, mentions);
   if (!text || segments.every((segment) => segment.type !== "mention")) {
     return null;
   }
+  const overlayCaretIndex = normalizeOverlayCaretIndex(caretIndex, text, mentions);
 
   return (
     <div
@@ -44,38 +47,97 @@ export function HostMentionInlineOverlay({ text, mentions, variant = "chat" }: H
         variant === "chat" ? "min-h-12 max-h-40 px-3 py-2 text-[16px] leading-7 md:text-[16px]" : "min-h-11 max-h-44 px-2.5 py-2 text-sm leading-6",
       )}
     >
-      {segments.map((segment) =>
-        segment.type === "mention" ? (
-          <span
-            key={segment.key}
-            data-testid={inlineMentionTestId(segment.mention)}
-            data-mention-kind={inlineMentionKind(segment.mention)}
-            data-layout-text={segment.text}
-            className={cn(
-              "aiops-inline-mention-anchor align-baseline",
-              segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
-                ? "bg-blue-50 text-blue-700"
-                : "bg-sky-50 text-sky-700",
-            )}
-          >
-            <span
-              data-testid="composer-inline-mention-visual"
-              className={cn(
-                "aiops-inline-mention-visual max-w-max rounded-md px-0.5 font-medium",
-                segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
-                  ? "bg-blue-50 text-blue-700"
-                  : "bg-sky-50 text-sky-700",
-              )}
-            >
-              <InlineMentionIcon mention={segment.mention} />
-              <span className="whitespace-nowrap">{inlineMentionLabel(segment.text, segment.mention)}</span>
-            </span>
-          </span>
-        ) : (
-          <span key={segment.key}>{segment.text}</span>
-        ),
-      )}
+      {renderHostMentionSegments(segments, overlayCaretIndex)}
     </div>
+  );
+}
+
+function renderHostMentionSegments(
+  segments: HostMentionTextSegment[],
+  caretIndex?: number,
+) {
+  const nodes: ReactNode[] = [];
+  let caretRendered = false;
+
+  function pushCaret(key: string) {
+    if (caretIndex === undefined || caretRendered) return;
+    nodes.push(
+      <span
+        key={key}
+        aria-hidden="true"
+        className="aiops-inline-caret"
+        data-caret-index={String(caretIndex)}
+        data-testid="composer-inline-caret"
+      />,
+    );
+    caretRendered = true;
+  }
+
+  for (const segment of segments) {
+    if (caretIndex === segment.start) {
+      pushCaret(`caret-${segment.start}-before-${segment.key}`);
+    }
+
+    if (segment.type === "text") {
+      if (
+        caretIndex !== undefined &&
+        caretIndex > segment.start &&
+        caretIndex < segment.end
+      ) {
+        const offset = caretIndex - segment.start;
+        nodes.push(
+          <span key={`${segment.key}-before-caret`}>
+            {segment.text.slice(0, offset)}
+          </span>,
+        );
+        pushCaret(`caret-${caretIndex}-inside-${segment.key}`);
+        nodes.push(
+          <span key={`${segment.key}-after-caret`}>
+            {segment.text.slice(offset)}
+          </span>,
+        );
+      } else {
+        nodes.push(<span key={segment.key}>{segment.text}</span>);
+      }
+    } else {
+      nodes.push(renderMentionSegment(segment));
+    }
+
+    if (caretIndex === segment.end) {
+      pushCaret(`caret-${segment.end}-after-${segment.key}`);
+    }
+  }
+
+  return nodes;
+}
+
+function renderMentionSegment(segment: Extract<HostMentionTextSegment, { type: "mention" }>) {
+  return (
+    <span
+      key={segment.key}
+      data-testid={inlineMentionTestId(segment.mention)}
+      data-mention-kind={inlineMentionKind(segment.mention)}
+      data-layout-text={segment.text}
+      className={cn(
+        "aiops-inline-mention-anchor align-baseline",
+        segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
+          ? "bg-blue-50 text-blue-700"
+          : "bg-sky-50 text-sky-700",
+      )}
+    >
+      <span
+        data-testid="composer-inline-mention-visual"
+        className={cn(
+          "aiops-inline-mention-visual max-w-max rounded-md px-0.5 font-medium",
+          segment.mention.source === "ai_tool" || segment.mention.source === "ops_resource"
+            ? "bg-blue-50 text-blue-700"
+            : "bg-sky-50 text-sky-700",
+        )}
+      >
+        <InlineMentionIcon mention={segment.mention} />
+        <span className="whitespace-nowrap">{inlineMentionLabel(segment.text, segment.mention)}</span>
+      </span>
+    </span>
   );
 }
 
@@ -95,12 +157,16 @@ function buildHostMentionTextSegments(text: string, mentions: InlineMention[]): 
         type: "text",
         text: text.slice(cursor, mention.start),
         key: `text-${cursor}-${mention.start}`,
+        start: cursor,
+        end: mention.start,
       });
     }
     segments.push({
       type: "mention",
       text: text.slice(mention.start, mention.end),
       key: `mention-${mention.start}-${mention.end}-${mention.raw}`,
+      start: mention.start,
+      end: mention.end,
       mention,
     });
     cursor = mention.end;
@@ -111,10 +177,27 @@ function buildHostMentionTextSegments(text: string, mentions: InlineMention[]): 
       type: "text",
       text: text.slice(cursor),
       key: `text-${cursor}-${text.length}`,
+      start: cursor,
+      end: text.length,
     });
   }
 
   return segments;
+}
+
+function normalizeOverlayCaretIndex(
+  caretIndex: number | null | undefined,
+  text: string,
+  mentions: InlineMention[],
+) {
+  if (typeof caretIndex !== "number" || !Number.isFinite(caretIndex)) {
+    return undefined;
+  }
+  const clamped = Math.max(0, Math.min(text.length, Math.trunc(caretIndex)));
+  const containingMention = mentions.find(
+    (mention) => clamped > mention.start && clamped < mention.end,
+  );
+  return containingMention ? containingMention.end : clamped;
 }
 
 function InlineMentionIcon({ mention }: { mention: InlineMention }) {

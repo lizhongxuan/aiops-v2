@@ -21,6 +21,9 @@ func RenderMarkdown(trace PromptInputTrace) string {
 	renderDepthCoverageGenericityMarkdown(&b, trace)
 	renderVerificationSafetyMarkdown(&b, trace)
 	renderPlanModeMarkdown(&b, trace)
+	renderAgentAssemblyMarkdown(&b, trace)
+	renderResourceBindingMarkdown(&b, trace)
+	renderSpecialInputWorldStateMarkdown(&b, trace)
 	renderToolDiscoveryMarkdown(&b, trace)
 	renderSkillDiscoveryMarkdown(&b, trace)
 	renderAgentSchedulingMarkdown(&b, trace)
@@ -457,6 +460,257 @@ func renderToolDiscoveryMarkdown(b *strings.Builder, trace PromptInputTrace) {
 	renderParallelDispatchGroupsMarkdown(b, trace.ParallelDispatchGroups)
 	renderFailedToolSummariesMarkdown(b, trace.FailedToolSummaries)
 	fmt.Fprintln(b)
+}
+
+func renderResourceBindingMarkdown(b *strings.Builder, trace PromptInputTrace) {
+	if len(trace.ResourceBindings) == 0 &&
+		len(trace.ResourceRoleBindings) == 0 &&
+		len(trace.ResourceCapabilities) == 0 &&
+		len(trace.ResourceEvidenceRefs) == 0 &&
+		trace.SessionTargetSnapshot == nil &&
+		len(trace.RoleBindingConflicts) == 0 {
+		return
+	}
+	fmt.Fprintln(b, "## Resource Binding Trace")
+	if trace.SessionTargetSnapshot != nil {
+		target := trace.SessionTargetSnapshot
+		fmt.Fprintln(b, "### Session Target")
+		fmt.Fprintf(b, "- target_set: `%s`\n", escapeBackticks(redactSecrets(target.ActiveTargetSetID)))
+		fmt.Fprintf(b, "- binding_mode: `%s`\n", escapeBackticks(redactSecrets(target.BindingMode)))
+		if len(target.HostIDs) > 0 {
+			fmt.Fprintf(b, "- host_ids: `%s`\n", escapeBackticks(redactSecrets(strings.Join(target.HostIDs, ", "))))
+		}
+		if target.SourceTurnID != "" {
+			fmt.Fprintf(b, "- source_turn: `%s`\n", escapeBackticks(redactSecrets(target.SourceTurnID)))
+		}
+		fmt.Fprintf(b, "- expires_after_turns: `%d`\n", target.ExpiresAfterTurns)
+		fmt.Fprintf(b, "- requires_confirmation: `%t`\n", target.RequiresConfirmation)
+		fmt.Fprintln(b)
+	}
+	if len(trace.ResourceBindings) > 0 {
+		fmt.Fprintln(b, "### Bindings")
+		fmt.Fprintln(b, "| resource | source | trust | verified by | fail closed | trace |")
+		fmt.Fprintln(b, "|---|---|---|---|---|---|")
+		for _, binding := range trace.ResourceBindings {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s | %t | %s |\n",
+				escapeMarkdownCell(resourceRefLabel(binding.Ref.Type, binding.Ref.ID, binding.Ref.DisplayName)),
+				escapeMarkdownCell(redactSecrets(binding.Source)),
+				escapeMarkdownCell(redactSecrets(binding.TrustLevel)),
+				escapeMarkdownCell(redactSecrets(binding.VerifiedBy)),
+				binding.FailClosed,
+				escapeMarkdownCell(redactSecrets(binding.TraceHash)),
+			)
+		}
+		fmt.Fprintln(b)
+	}
+	if len(trace.ResourceRoleBindings) > 0 {
+		fmt.Fprintln(b, "### Role Bindings")
+		fmt.Fprintln(b, "| resource | role | alias | confidence | conflict policy | trace |")
+		fmt.Fprintln(b, "|---|---|---|---:|---|---|")
+		for _, binding := range trace.ResourceRoleBindings {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %.2f | %s | %s |\n",
+				escapeMarkdownCell(resourceRefLabel(binding.ResourceRef.Type, binding.ResourceRef.ID, binding.ResourceRef.DisplayName)),
+				escapeMarkdownCell(redactSecrets(binding.Role)),
+				escapeMarkdownCell(redactSecrets(strings.Join(binding.RoleAlias, ", "))),
+				binding.Confidence,
+				escapeMarkdownCell(redactSecrets(binding.ConflictPolicy)),
+				escapeMarkdownCell(redactSecrets(binding.TraceHash)),
+			)
+		}
+		fmt.Fprintln(b)
+	}
+	if len(trace.ResourceCapabilities) > 0 {
+		fmt.Fprintln(b, "### Capabilities")
+		fmt.Fprintln(b, "| resource | capability | tools | approval | policy | binding trace |")
+		fmt.Fprintln(b, "|---|---|---|---|---|---|")
+		for _, capability := range trace.ResourceCapabilities {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %t | %s | %s |\n",
+				escapeMarkdownCell(resourceRefLabel(capability.ResourceRef.Type, capability.ResourceRef.ID, capability.ResourceRef.DisplayName)),
+				escapeMarkdownCell(redactSecrets(capability.Capability)),
+				escapeMarkdownCell(redactSecrets(strings.Join(capability.ToolNames, ", "))),
+				capability.RequiresApproval,
+				escapeMarkdownCell(redactSecrets(capability.PolicyHash)),
+				escapeMarkdownCell(redactSecrets(capability.BindingTraceHash)),
+			)
+		}
+		fmt.Fprintln(b)
+	}
+	if len(trace.ResourceEvidenceRefs) > 0 {
+		fmt.Fprintln(b, "### Evidence")
+		fmt.Fprintln(b, "| id | resource | source | kind | trace |")
+		fmt.Fprintln(b, "|---|---|---|---|---|")
+		for _, evidence := range trace.ResourceEvidenceRefs {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s | %s |\n",
+				escapeMarkdownCell(redactSecrets(evidence.ID)),
+				escapeMarkdownCell(resourceRefLabel(evidence.ResourceRef.Type, evidence.ResourceRef.ID, evidence.ResourceRef.DisplayName)),
+				escapeMarkdownCell(redactSecrets(evidence.Source)),
+				escapeMarkdownCell(redactSecrets(evidence.Kind)),
+				escapeMarkdownCell(redactSecrets(evidence.TraceHash)),
+			)
+		}
+		fmt.Fprintln(b)
+	}
+	if len(trace.RoleBindingConflicts) > 0 {
+		fmt.Fprintln(b, "### Role Conflicts")
+		fmt.Fprintln(b, "| resource | role | reasons | trace |")
+		fmt.Fprintln(b, "|---|---|---|---|")
+		for _, conflict := range trace.RoleBindingConflicts {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s |\n",
+				escapeMarkdownCell(redactSecrets(conflict.ResourceID)),
+				escapeMarkdownCell(redactSecrets(conflict.Role)),
+				escapeMarkdownCell(redactSecrets(strings.Join(conflict.Reasons, ", "))),
+				escapeMarkdownCell(redactSecrets(conflict.TraceHash)),
+			)
+		}
+		fmt.Fprintln(b)
+	}
+}
+
+func renderSpecialInputWorldStateMarkdown(b *strings.Builder, trace PromptInputTrace) {
+	state := trace.SpecialInputWorldState
+	if state == nil {
+		return
+	}
+	fmt.Fprintln(b, "## Special Input Memory")
+	if state.ModelSummary != "" {
+		fmt.Fprintf(b, "- summary: %s\n", escapeMarkdownLine(redactSecrets(state.ModelSummary)))
+	}
+	if state.TurnID != "" {
+		fmt.Fprintf(b, "- turn: `%s`\n", escapeBackticks(redactSecrets(state.TurnID)))
+	}
+	if state.ActiveExecutionScope != nil {
+		grant := state.ActiveExecutionScope
+		fmt.Fprintln(b, "### Active Execution Scope")
+		fmt.Fprintf(b, "- grant: `%s`\n", escapeBackticks(redactSecrets(grant.ID)))
+		fmt.Fprintf(b, "- resource: `%s/%s`\n", escapeBackticks(redactSecrets(grant.ResourceKind)), escapeBackticks(redactSecrets(grant.ResourceID)))
+		if len(grant.AllowedActions) > 0 {
+			fmt.Fprintf(b, "- allowed_actions: `%s`\n", escapeBackticks(redactSecrets(strings.Join(grant.AllowedActions, ", "))))
+		}
+		if grant.ValidationHash != "" {
+			fmt.Fprintf(b, "- validation_hash: `%s`\n", escapeBackticks(redactSecrets(grant.ValidationHash)))
+		}
+	}
+	if len(state.ActiveRoleBindings) > 0 {
+		fmt.Fprintln(b, "### Role Bindings")
+		fmt.Fprintln(b, "| env | cluster | role | runtime | resource | hash |")
+		fmt.Fprintln(b, "|---|---|---|---|---|---|")
+		for _, binding := range state.ActiveRoleBindings {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s | %s/%s | %s |\n",
+				escapeMarkdownCell(redactSecrets(binding.EnvironmentKey)),
+				escapeMarkdownCell(redactSecrets(binding.ClusterKey)),
+				escapeMarkdownCell(redactSecrets(binding.RoleKey)),
+				escapeMarkdownCell(redactSecrets(binding.RuntimeName)),
+				escapeMarkdownCell(redactSecrets(binding.ResourceKind)),
+				escapeMarkdownCell(redactSecrets(binding.ResourceID)),
+				escapeMarkdownCell(redactSecrets(binding.BindingHash)),
+			)
+		}
+	}
+	if len(state.PendingConfirmations) > 0 {
+		fmt.Fprintln(b, "### Pending Confirmation")
+		fmt.Fprintln(b, "| id | kind | reason | candidates |")
+		fmt.Fprintln(b, "|---|---|---|---|")
+		for _, pending := range state.PendingConfirmations {
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s |\n",
+				escapeMarkdownCell(redactSecrets(pending.ID)),
+				escapeMarkdownCell(redactSecrets(pending.Kind)),
+				escapeMarkdownCell(redactSecrets(pending.Reason)),
+				escapeMarkdownCell(redactSecrets(strings.Join(pending.CandidateIDs, ", "))),
+			)
+		}
+	}
+	if len(state.Conflicts) > 0 {
+		fmt.Fprintln(b, "### Conflicts")
+		fmt.Fprintln(b, "| id | kind | scope | resources | reasons |")
+		fmt.Fprintln(b, "|---|---|---|---|---|")
+		for _, conflict := range state.Conflicts {
+			scope := strings.Join([]string{conflict.EnvironmentKey, conflict.ClusterKey, conflict.RoleKey}, "/")
+			fmt.Fprintf(
+				b,
+				"| %s | %s | %s | %s | %s |\n",
+				escapeMarkdownCell(redactSecrets(conflict.ID)),
+				escapeMarkdownCell(redactSecrets(conflict.Kind)),
+				escapeMarkdownCell(redactSecrets(scope)),
+				escapeMarkdownCell(redactSecrets(strings.Join(conflict.ResourceIDs, ", "))),
+				escapeMarkdownCell(redactSecrets(strings.Join(conflict.Reasons, ", "))),
+			)
+		}
+	}
+	if state.ReadPlan != nil {
+		plan := state.ReadPlan
+		fmt.Fprintln(b, "### Read Plan")
+		if plan.ActiveGrantID != "" {
+			fmt.Fprintf(b, "- active_grant: `%s`\n", escapeBackticks(redactSecrets(plan.ActiveGrantID)))
+		}
+		if plan.ActiveResourceID != "" {
+			fmt.Fprintf(b, "- active_resource: `%s/%s`\n", escapeBackticks(redactSecrets(plan.ActiveResourceKind)), escapeBackticks(redactSecrets(plan.ActiveResourceID)))
+		}
+		if len(plan.RoleBindingHashes) > 0 {
+			fmt.Fprintf(b, "- role_binding_hashes: `%s`\n", escapeBackticks(redactSecrets(strings.Join(plan.RoleBindingHashes, ", "))))
+		}
+		if len(plan.PendingConfirmationIDs) > 0 {
+			fmt.Fprintf(b, "- pending_confirmations: `%s`\n", escapeBackticks(redactSecrets(strings.Join(plan.PendingConfirmationIDs, ", "))))
+		}
+	}
+	fmt.Fprintln(b)
+}
+
+func renderAgentAssemblyMarkdown(b *strings.Builder, trace PromptInputTrace) {
+	if trace.AgentAssemblySnapshot == nil {
+		return
+	}
+	snapshot := trace.AgentAssemblySnapshot
+	fmt.Fprintln(b, "## Agent Assembly Snapshot")
+	if snapshot.AgentKind != "" {
+		fmt.Fprintf(b, "- agent_kind: `%s`\n", escapeBackticks(redactSecrets(snapshot.AgentKind)))
+	}
+	if snapshot.Profile != "" {
+		fmt.Fprintf(b, "- profile: `%s`\n", escapeBackticks(redactSecrets(snapshot.Profile)))
+	}
+	if snapshot.RuntimeRole != "" {
+		fmt.Fprintf(b, "- runtime_role: `%s`\n", escapeBackticks(redactSecrets(snapshot.RuntimeRole)))
+	}
+	if len(snapshot.RouteReason) > 0 {
+		fmt.Fprintf(b, "- route_reason: `%s`\n", escapeBackticks(redactSecrets(strings.Join(snapshot.RouteReason, ", "))))
+	}
+	if snapshot.SpecHash != "" {
+		fmt.Fprintf(b, "- spec_hash: `%s`\n", escapeBackticks(redactSecrets(snapshot.SpecHash)))
+	}
+	if snapshot.ToolSurface.Hash != "" {
+		fmt.Fprintf(b, "- tool_surface_hash: `%s`\n", escapeBackticks(redactSecrets(snapshot.ToolSurface.Hash)))
+	}
+	if snapshot.ToolSurface.Fingerprint != "" {
+		fmt.Fprintf(b, "- tool_surface_fingerprint: `%s`\n", escapeBackticks(redactSecrets(snapshot.ToolSurface.Fingerprint)))
+	}
+	if snapshot.PromptSections.Hash != "" {
+		fmt.Fprintf(b, "- prompt_sections_hash: `%s`\n", escapeBackticks(redactSecrets(snapshot.PromptSections.Hash)))
+	}
+	fmt.Fprintln(b)
+}
+
+func resourceRefLabel(resourceType, id, displayName string) string {
+	label := strings.TrimSpace(resourceType)
+	if id = strings.TrimSpace(id); id != "" {
+		label += ":" + id
+	}
+	if displayName = strings.TrimSpace(displayName); displayName != "" && displayName != id {
+		label += " (" + displayName + ")"
+	}
+	return redactSecrets(label)
 }
 
 func renderOwnerWriteTraceMarkdown(b *strings.Builder, traces []OwnerWriteTrace) {

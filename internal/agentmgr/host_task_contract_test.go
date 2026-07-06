@@ -1,6 +1,7 @@
 package agentmgr
 
 import (
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/hostops"
@@ -13,6 +14,8 @@ func TestHostSubTaskToAssignmentBuildsSelfContainedWorkerTask(t *testing.T) {
 		PlanStepID:           "step-1",
 		HostAgentID:          "child-a",
 		HostID:               "host-a",
+		BoundRole:            "pg_primary",
+		RoleBindingHash:      "role-hash-a",
 		Goal:                 "执行通用主机操作并返回证据",
 		Constraints:          []string{"仅操作绑定主机", "非白名单命令先申请审批"},
 		RiskLevel:            opssemantic.RiskMediumWrite,
@@ -32,8 +35,43 @@ func TestHostSubTaskToAssignmentBuildsSelfContainedWorkerTask(t *testing.T) {
 	if !containsString(assignment.Constraints, "仅操作绑定主机") || !containsString(assignment.Constraints, "risk=medium_write") {
 		t.Fatalf("constraints = %#v, want original constraints and risk marker", assignment.Constraints)
 	}
+	if !containsString(assignment.KnownFacts, "bound_role=pg_primary") || !containsString(assignment.KnownFacts, "role_binding_hash=role-hash-a") {
+		t.Fatalf("known facts = %#v, want role binding facts", assignment.KnownFacts)
+	}
+	if !containsString(assignment.Constraints, "role_binding_hash=role-hash-a") {
+		t.Fatalf("constraints = %#v, want role binding hash constraint", assignment.Constraints)
+	}
+	if !strings.Contains(assignment.ExpectedOutput, "bound role") || !strings.Contains(assignment.ExpectedOutput, "role binding hash") {
+		t.Fatalf("expected output = %q, want role binding report contract", assignment.ExpectedOutput)
+	}
 	if result := ValidateAgentAssignment(assignment); result.Status != AssignmentLintPass {
 		t.Fatalf("assignment lint = %#v, want pass", result)
+	}
+}
+
+func TestHostTaskReportFromAgentResultPreservesRoleBinding(t *testing.T) {
+	task := hostops.HostSubTask{
+		MissionID:       "mission-1",
+		PlanStepID:      "step-1",
+		HostAgentID:     "child-a",
+		HostID:          "host-a",
+		BoundRole:       "pg_primary",
+		RoleBindingHash: "role-hash-a",
+	}
+	result := AgentResult{
+		AgentID:    "child-a",
+		HostID:     "host-a",
+		Status:     AgentStatusCompleted,
+		Output:     "主节点检查完成",
+		ResultRefs: []string{"tool:host-a:df"},
+	}
+
+	report := HostTaskReportFromAgentResult(result, task)
+	if report.BoundRole != "pg_primary" || report.RoleBindingHash != "role-hash-a" {
+		t.Fatalf("report role binding = %q/%q, want task role binding", report.BoundRole, report.RoleBindingHash)
+	}
+	if report.HostID != "host-a" || report.HostAgentID != "child-a" {
+		t.Fatalf("report binding = %#v, want task host binding", report)
 	}
 }
 

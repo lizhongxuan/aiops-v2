@@ -109,6 +109,17 @@ func TestAgentRuntimeProfileNamedProfiles(t *testing.T) {
 			wantAllowed:   []string{"create_plan", "spawn_host_agent", "wait_host_report"},
 			wantForbidden: []string{"direct_host_command", "direct_host_mutation"},
 		},
+		{
+			name:          "workflow_agent",
+			profile:       WorkflowAgentRuntimeProfile(),
+			wantProfile:   "workflow_agent",
+			wantName:      "workflow_agent",
+			wantAgentKind: "workflow_planner",
+			wantSession:   SessionTypeWorkspace,
+			wantMode:      ModePlan,
+			wantAllowed:   []string{"inspect_workflow", "create_workflow_edit_plan", "propose_workflow_patch", "validate_workflow_patch", "propose_ops_manual_candidate"},
+			wantForbidden: []string{"publish_workflow", "execute_workflow", "direct_host_command", "host_mutation"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

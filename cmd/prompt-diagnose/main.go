@@ -58,6 +58,9 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	if strings.TrimSpace(outDir) == "" {
 		outDir = ".data/prompt_optimization/current"
 	}
+	if strings.TrimSpace(llmAPIKey) == "" {
+		llmAPIKey = os.Getenv("AIOPS_LAB_LLM_API_KEY")
+	}
 	if now == nil {
 		now = time.Now
 	}
