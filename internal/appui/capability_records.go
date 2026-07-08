@@ -34,10 +34,14 @@ func capabilityRecordFromSkillCatalogItem(item SkillCatalogItem) CapabilityRecor
 
 func capabilityRecordFromMcpCatalogItem(item McpCatalogItem) CapabilityRecord {
 	status := firstNonEmpty(item.RuntimeStatus, item.ApprovalStatus, "available")
+	category := "data"
+	if strings.TrimSpace(item.ID) == "runner" {
+		category = "automation"
+	}
 	return CapabilityRecord{
 		ID:             item.ID,
 		Kind:           "capability",
-		Category:       "data",
+		Category:       category,
 		Name:           firstNonEmpty(item.Name, item.ID),
 		Source:         item.Source,
 		SourceScope:    item.SourceScope,

@@ -3,10 +3,11 @@ package promptcompiler
 import "strings"
 
 const (
-	PromptProfileAdvisor     = "advisor"
-	PromptProfileEvidenceRCA = "evidence_rca"
-	PromptProfileHostWorker  = "host_worker"
-	PromptProfileHostManager = "host_manager"
+	PromptProfileAdvisor       = "advisor"
+	PromptProfileEvidenceRCA   = "evidence_rca"
+	PromptProfileHostWorker    = "host_worker"
+	PromptProfileHostManager   = "host_manager"
+	PromptProfileWorkflowAgent = "workflow_agent"
 )
 
 type runtimeProfileFragment struct {
@@ -72,6 +73,19 @@ func profileFragment(profile string, hostContext string) (runtimeProfileFragment
 				"Delegate clear sub-tasks to host-bound child agents and wait for their results before synthesis.",
 			},
 		}, true
+	case PromptProfileWorkflowAgent:
+		return runtimeProfileFragment{
+			Profile: PromptProfileWorkflowAgent,
+			Lines: []string{
+				"Inspect the current Runner Workflow snapshot before proposing edits.",
+				"Separate current graph facts, assumptions, and requested changes.",
+				"Produce a workflow edit plan before any patch.",
+				"Propose one minimal workflow patch at a time and wait for confirmation before applying it.",
+				"After applying a patch, use workflow.describe and effect status before moving to the next patch.",
+				"Do not publish or execute workflows.",
+				"Do not run host commands.",
+			},
+		}, true
 	default:
 		return runtimeProfileFragment{}, false
 	}
@@ -87,6 +101,8 @@ func normalizePromptProfile(profile string) string {
 		return PromptProfileHostWorker
 	case "host-manager", "manager_agent_full_runtime":
 		return PromptProfileHostManager
+	case "workflow-agent", "workflow", "workflow_planner", "workflow_agent_runtime":
+		return PromptProfileWorkflowAgent
 	default:
 		return strings.ToLower(strings.TrimSpace(profile))
 	}

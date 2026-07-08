@@ -1,9 +1,10 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AppRouter } from "@/router";
+import { AppRouter as RawAppRouter } from "@/router";
 
 const routedPaths = [
   "/",
@@ -37,6 +38,23 @@ const routedPaths = [
   "/generator",
   "/debug/prompts",
 ];
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function AppRouter() {
+  return (
+    <QueryClientProvider client={createTestQueryClient()}>
+      <RawAppRouter />
+    </QueryClientProvider>
+  );
+}
 
 describe("AppRouter", () => {
   let container: HTMLDivElement;
@@ -79,6 +97,15 @@ describe("AppRouter", () => {
   });
 
   it("redirects legacy hosts route to settings hosts", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ items: [], sessions: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
     await act(async () => {
       root.render(
         <MemoryRouter initialEntries={["/hosts"]}>
@@ -86,6 +113,7 @@ describe("AppRouter", () => {
         </MemoryRouter>,
       );
     });
+    await flushRouteWork();
 
     expect(container.textContent).toContain("主机列表");
     expect(container.textContent).toContain("暂无主机");
@@ -163,3 +191,12 @@ describe("AppRouter", () => {
     expect(container.querySelector('a[title="Prompt Trace"]')).toBeTruthy();
   });
 });
+
+async function flushRouteWork() {
+  for (let index = 0; index < 5; index += 1) {
+    await act(async () => {
+      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}

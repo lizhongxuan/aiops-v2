@@ -852,9 +852,8 @@ test.describe("Ops Manual workflow UX", () => {
   test("Runner Studio generates a workflow reverse candidate and opens the review card", async ({ page }) => {
     await routeRunnerWorkflowManualApis(page);
     await page.goto("/runner");
-    await page.getByTestId("runner-open-manager").click();
-    await page.getByTestId("workflow-create-blank").click();
-    await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
+    await page.getByTestId("runner-create-workflow").click();
+    await expect(page.getByTestId("runner-studio-topbar")).toContainText("新建工作流");
 
     await page.getByTestId("runner-toolbar-more").click();
     await page.getByTestId("runner-toolbar-ops-manual").click();

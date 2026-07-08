@@ -612,6 +612,33 @@ func applyHostOpsManagerRuntimeMetadata(metadata map[string]string) {
 	metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], hostops.ToolPackHostOps)
 }
 
+func applyWorkflowAgentRuntimeMetadata(req *runtimekernel.TurnRequest) {
+	if req == nil {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(req.Metadata["aiops.workflowAgent.enabled"]) != "true" {
+		return
+	}
+	req.HostID = ""
+	req.SessionType = runtimekernel.SessionTypeWorkspace
+	req.Mode = runtimekernel.ModePlan
+	req.Metadata["profile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["toolProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["agentProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["runtimeProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["runtimeRoute"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "workflow_editor")
+	req.Metadata["aiops.target.binding"] = "none"
+	req.Metadata["aiops.target.hostId"] = ""
+	req.Metadata["aiops.target.summary"] = "Workflow AI Drawer"
+	req.Metadata["aiops.tool.execCommandAllowed"] = "false"
+	req.Metadata["aiops.tool.hostMutationAllowed"] = "false"
+	req.Metadata["aiops.workflowAgent.routeApplied"] = "true"
+}
+
 func firstRouteTargetHostID(targets []envcontext.TargetRef, mentions []hostops.HostMention) string {
 	if hostID := firstRouteMentionHostID(mentions); hostID != "" {
 		return hostID

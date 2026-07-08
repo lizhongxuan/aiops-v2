@@ -40,6 +40,7 @@ export type HostMentionBindingInput = {
   address?: string;
   displayName?: string;
   status?: string;
+  hostMentionSource?: "inventory" | "local_alias";
   source?: AiopsMentionSource;
 };
 
@@ -97,6 +98,7 @@ export function buildHostMentionBinding(input: HostMentionBindingInput): AiopsMe
       hostId,
       address: cleanText(input.address) || hostId,
       displayName: cleanText(input.displayName) || hostId,
+      source: normalizeHostMentionSource(input.hostMentionSource),
       ...(cleanText(input.status) ? { status: cleanText(input.status) } : {}),
     },
   };
@@ -199,6 +201,7 @@ export function deriveHostMentionMetadata(bindings: AiopsMentionBinding[]): Reco
       const hostId = cleanText(payload.hostId) || decodeHostPath(binding.path);
       const address = cleanText(payload.address) || hostId;
       const displayName = cleanText(payload.displayName) || hostId;
+      const source = normalizeHostMentionSource(payload.source);
       return {
         tokenId: binding.tokenId,
         raw: binding.rawText,
@@ -208,7 +211,7 @@ export function deriveHostMentionMetadata(bindings: AiopsMentionBinding[]): Reco
         hostId,
         address,
         displayName,
-        source: "inventory",
+        source,
         resolved: true,
         confidence: 1,
       };
@@ -331,6 +334,10 @@ function uniqueValues(values: string[]) {
 
 function isStrongMentionSource(source: AiopsMentionSource) {
   return source === "selection" || source === "history_restore";
+}
+
+function normalizeHostMentionSource(value: unknown): "inventory" | "local_alias" {
+  return value === "local_alias" ? "local_alias" : "inventory";
 }
 
 function cleanText(value: unknown) {

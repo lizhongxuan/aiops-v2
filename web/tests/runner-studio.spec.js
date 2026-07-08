@@ -28,9 +28,8 @@ const EMPTY_STATE = {
 
 async function createBlankWorkflow(page) {
   await page.goto("/runner");
-  await page.getByTestId("runner-open-manager").click();
-  await page.getByTestId("workflow-create-blank").click();
-  await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
+  await page.getByTestId("runner-create-workflow").click();
+  await expect(page.getByTestId("runner-studio-topbar")).toContainText("新建工作流");
 }
 
 async function openCanvasContextMenu(page) {
@@ -198,6 +197,34 @@ test.describe("Runner Studio", () => {
           diff_summary: {
             semantic_changes: [{ title: "AI bad node", detail: "invalid shell.run patch" }],
           },
+        },
+      }),
+    );
+    await page.route("**/api/runner-studio/workflow-ai/sessions", (route) =>
+      route.fulfill({ json: { id: "drawer-runner-blank-0", workflowId: "runner-blank", baseRevision: "rev-e2e", activeRevision: "rev-e2e", status: "active" } }),
+    );
+    await page.route("**/api/runner-studio/workflow-ai/plan", (route) =>
+      route.fulfill({
+        json: {
+          id: "plan-e2e",
+          workflowId: "runner-blank",
+          message: "添加验证步骤",
+          items: [{
+            id: "item-1",
+            title: "添加验证步骤",
+            description: "在 Start 后添加一个验证节点。",
+            goal: "验证工作流输入。",
+            environment: "读取 workflow_context。",
+            nodeLabel: "添加验证步骤",
+            nodeType: "action",
+            nodeAction: "script.python",
+            scriptSummary: "检查上下文并输出 validation_result。",
+            validationSummary: "确认 validation_result.ok 为 true。",
+            inputVariables: [{ name: "workflow_context", type: "object" }],
+            outputVariables: [{ name: "validation_result", type: "object" }],
+            script: "print({'validation_result': {'ok': True}})",
+            status: "pending",
+          }],
         },
       }),
     );
@@ -419,10 +446,9 @@ test.describe("Runner Studio", () => {
 
   test("creates a blank workflow, drags nodes, configures I/O, validates, and runs publish precheck", async ({ page }) => {
     await page.goto("/runner");
-    await page.getByTestId("runner-open-manager").click();
-    await page.getByTestId("workflow-create-blank").click();
-    await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
-    await expect(page.getByTestId("app-shell-header").getByTestId("runner-studio-topbar")).toContainText("runner-blank");
+    await page.getByTestId("runner-create-workflow").click();
+    await expect(page.getByTestId("runner-studio-topbar")).toContainText("新建工作流");
+    await expect(page.getByTestId("app-shell-header").getByTestId("runner-studio-topbar")).toContainText("新建工作流");
     await expect(page.locator(".runner-studio-shell > .runner-studio-topbar")).toHaveCount(0);
     await expect.poll(async () => currentCanvasZoom(page)).toBeLessThanOrEqual(0.9);
     await expect(page).toHaveURL(/\/runner\/runner-blank$/);
@@ -489,7 +515,7 @@ test.describe("Runner Studio", () => {
     await dryRunRequest;
 
     await page.reload();
-    await expect(page.getByTestId("runner-studio-topbar")).toContainText("runner-blank");
+    await expect(page.getByTestId("runner-studio-topbar")).toContainText("新建工作流");
     await expect(page.getByTestId("canvas-node-script-shell")).toBeVisible();
     await expect(page.getByTestId("canvas-node-condition-evaluate")).toBeVisible();
     await expect(page.getByTestId("canvas-node-manual-approval")).toHaveCount(0);
@@ -594,12 +620,13 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-toolbar-save")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-run")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-run-details")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-events")).toHaveCount(0);
+    await expect(page.getByTestId("runner-toolbar-ai-generate")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-more")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-validate")).toHaveCount(0);
     await expect(page.getByTestId("runner-toolbar-dry-run")).toHaveCount(0);
     await expect(page.getByTestId("runner-toolbar-variables")).toHaveCount(0);
     await expect(page.getByTestId("runner-toolbar-publish")).toHaveCount(0);
-    await expect(page.getByTestId("runner-toolbar-ai-generate")).toHaveCount(0);
 
     await page.getByTestId("runner-toolbar-more").click();
     await expect(page.getByTestId("runner-toolbar-more-menu")).toBeVisible();
@@ -607,11 +634,16 @@ test.describe("Runner Studio", () => {
     await expect(page.getByTestId("runner-toolbar-dry-run")).toContainText("发布前检查");
     await expect(page.getByTestId("runner-toolbar-variables")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-publish")).toBeVisible();
-    await expect(page.getByTestId("runner-toolbar-ai-generate")).toBeVisible();
+    await expect(page.getByTestId("runner-toolbar-more-menu").getByText("AI")).toHaveCount(0);
     await expect(page.getByTestId("runner-toolbar-import")).toBeVisible();
     await expect(page.getByTestId("runner-toolbar-export")).toBeVisible();
     await page.getByTestId("runner-studio-canvas").click({ position: { x: 20, y: 20 } });
     await expect(page.getByTestId("runner-toolbar-more-menu")).toHaveCount(0);
+
+    await page.getByTestId("runner-toolbar-ai-generate").click();
+    const workflowAiDrawer = page.getByTestId("workflow-ai-drawer");
+    await expect(workflowAiDrawer.getByRole("button", { name: "新会话" })).toBeVisible();
+    await expect(workflowAiDrawer.getByRole("button", { name: "事件" })).toBeVisible();
   });
 
   test("imports and exports compact workflow JSON without layout metadata", async ({ page }) => {
@@ -1047,25 +1079,32 @@ test.describe("Runner Studio", () => {
     await expect(picker).not.toContainText("Run a shell command");
   });
 
-  test("does not overwrite the graph when AI draft validation fails", async ({ page }) => {
+  test("Workflow AI confirms a plan once and adds a visible workflow node", async ({ page }) => {
     await page.goto("/runner");
-    await page.getByTestId("runner-open-manager").click();
-    await page.getByTestId("workflow-create-blank").click();
+    await page.getByTestId("runner-create-workflow").click();
 
     await clickToolbar(page, "ai-generate");
-    await page.getByTestId("runner-ai-instruction").fill("生成一个非法 AI patch");
-    await page.getByTestId("runner-ai-generate").click();
-    await expect(page.getByText("AI bad node")).toBeVisible();
-    await page.getByTestId("runner-ai-apply").click();
+    await expect(page.getByTestId("workflow-ai-drawer")).toBeVisible();
+    await expect(page.getByTestId("workflow-ai-context-card")).toHaveCount(0);
+    await expect(page.getByTestId("workflow-ai-updated-label")).toContainText("修改");
+    await page.getByPlaceholder(/Workflow AI/).fill("添加验证步骤");
+    await page.getByRole("button", { name: "Send" }).click();
+    const drawer = page.getByTestId("workflow-ai-drawer");
+    await expect(page.getByTestId("workflow-ai-plan-card")).toContainText("添加验证步骤");
+    await expect(drawer.getByRole("button", { name: "Start" })).toHaveCount(0);
+    await expect(drawer.getByRole("button", { name: "Apply" })).toHaveCount(0);
+    await drawer.getByPlaceholder(/Workflow AI/).fill("确认");
+    await drawer.getByRole("button", { name: "Send" }).click();
 
-    await expect(page.getByText("AI patch validation failed")).toBeVisible();
-    await expect(page.getByTestId("canvas-node-ai-invalid")).toHaveCount(0);
+    await expect(page.getByTestId("canvas-node-ai-step-item-1")).toContainText("添加验证步骤");
+    await drawer.getByRole("button", { name: "事件" }).click();
+    await expect(page.getByTestId("workflow-event-drawer")).toContainText("workflow.ai.plan.confirmed");
+    await expect(page.getByTestId("workflow-event-drawer")).toContainText("workflow.graph.node.added");
   });
 
   test("publish review requires graph hash, publish precheck hash, and publish note", async ({ page }) => {
     await page.goto("/runner");
-    await page.getByTestId("runner-open-manager").click();
-    await page.getByTestId("workflow-create-blank").click();
+    await page.getByTestId("runner-create-workflow").click();
 
     await clickToolbar(page, "publish");
     await expect(page.getByText("缺少当前 validated_graph_hash")).toBeVisible();
@@ -1131,6 +1170,6 @@ test.describe("Runner Studio", () => {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto("/runner");
     await expect(page.getByTestId("runner-workflow-library")).toBeVisible();
-    await expect(page.getByTestId("runner-open-manager")).toBeVisible();
+    await expect(page.getByTestId("runner-create-workflow")).toBeVisible();
   });
 });

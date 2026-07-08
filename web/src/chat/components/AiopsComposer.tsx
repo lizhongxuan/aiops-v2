@@ -1184,6 +1184,7 @@ function ComposerBody({
                 address: suggestion.payload.address,
                 displayName: suggestion.payload.displayName,
                 status: suggestion.payload.status,
+                hostMentionSource: suggestion.payload.source,
               }),
             ];
       composer.setText(next.text);

@@ -735,6 +735,9 @@ func projectTurnItem(
 			if artifact, ok := transportGenericAgentUIArtifactFromToolPayload(turnID, item.ID, artifactTool, rcaProjectionAllowed(metadata)); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
+			if artifact, ok := transportWorkflowEditorArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
+				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
+			}
 			if artifact, ok := transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, item.ID, artifactTool); ok {
 				turn.AgentUIArtifacts = upsertTransportAgentUIArtifact(turn.AgentUIArtifacts, artifact)
 			}
@@ -2128,6 +2131,73 @@ func transportRunnerWorkflowGenerationArtifactFromToolPayload(turnID, itemID str
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func transportWorkflowEditorArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload) (AiopsTransportAgentUIArtifact, bool) {
+	displayKind := strings.TrimSpace(tool.DisplayKind)
+	if !isWorkflowEditorCardType(displayKind) {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	data := tool.OutputPreview
+	if len(data) == 0 {
+		data = tool.DisplayData
+	}
+	if len(data) == 0 {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return AiopsTransportAgentUIArtifact{}, false
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), jsonStringValueFromMap(payload, "effect_status"), "ready")
+	return AiopsTransportAgentUIArtifact{
+		ID:              "workflow-editor:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "artifact"),
+		Type:            displayKind,
+		Title:           firstNonEmptyString(jsonStringValueFromMap(payload, "title"), workflowEditorCardTitle(displayKind)),
+		Summary:         firstNonEmptyString(jsonStringValueFromMap(payload, "summary"), jsonStringValueFromMap(payload, "description")),
+		Status:          status,
+		Severity:        firstNonEmptyString(jsonStringValueFromMap(payload, "severity"), "info"),
+		Source:          "workflow_editor",
+		PermissionScope: firstNonEmptyString(jsonStringValueFromMap(payload, "permissionScope"), "draft"),
+		RedactionStatus: "redacted",
+		InlineData:      payload,
+		Actions:         asStringAnyMapList(payload["actions"]),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}, true
+}
+
+func isWorkflowEditorCardType(value string) bool {
+	switch strings.TrimSpace(value) {
+	case "workflow_context",
+		"workflow_edit_plan",
+		"workflow_patch_preview",
+		"workflow_patch_apply",
+		"workflow_patch_result",
+		"workflow_patch_validation",
+		"workflow_conflict",
+		"workflow_manual_candidate",
+		"workflow_tool_timeline":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowEditorCardTitle(value string) string {
+	switch value {
+	case "workflow_edit_plan":
+		return "Workflow edit plan"
+	case "workflow_patch_preview":
+		return "Workflow patch preview"
+	case "workflow_patch_result":
+		return "Workflow patch result"
+	case "workflow_manual_candidate":
+		return "Workflow manual candidate"
+	default:
+		return "Workflow AI"
+	}
 }
 
 func transportCorootServiceMetricsArtifactFromToolPayload(turnID, itemID string, tool transportToolPayload, userQuery string) (AiopsTransportAgentUIArtifact, bool) {

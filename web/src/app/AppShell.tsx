@@ -1,3 +1,4 @@
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
@@ -5,6 +6,7 @@ import { matchPath, NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAppShellChrome } from "@/app/AppShellChromeContext";
 import { navigationSections, routeInventory } from "@/app/navigation";
 import { Button } from "@/components/ui/button";
+import { prefetchRouteData } from "@/queries/routePrefetch";
 
 function currentTitle(pathname: string) {
   for (const route of routeInventory) {
@@ -17,6 +19,7 @@ function currentTitle(pathname: string) {
 
 export function AppShell() {
   const location = useLocation();
+  const queryClient = useQueryClient();
   const active = currentTitle(location.pathname);
   const { headerActions, headerContent, headerDescription, headerTitle } = useAppShellChrome();
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -87,6 +90,8 @@ export function AppShell() {
                         end={item.path === "/"}
                         title={item.title}
                         aria-label={sidebarCollapsed ? item.title : undefined}
+                        onMouseEnter={() => prefetchRouteData(queryClient, item.path)}
+                        onFocus={() => prefetchRouteData(queryClient, item.path)}
                         className={({ isActive }) =>
                           [
                             "flex rounded-lg transition-colors",

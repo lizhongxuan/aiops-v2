@@ -2854,6 +2854,100 @@ func TestTransportProjectorProjectsRunnerWorkflowGenerationArtifact(t *testing.T
 	}
 }
 
+func TestTransportProjectorProjectsWorkflowEditorToolResultCards(t *testing.T) {
+	now := time.Date(2026, 7, 6, 11, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-workflow-editor", "thread-workflow-editor")
+	workflowPayload, _ := json.Marshal(map[string]any{
+		"status":        "changed",
+		"summary":       "Patch applied to Redis restart workflow.",
+		"workflow_id":   "workflow-redis",
+		"patch_id":      "patch-1",
+		"effect_status": "changed",
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-workflow",
+		"toolName":"workflow.apply_patch",
+		"displayKind":"workflow_patch_result",
+		"outputPreview":` + string(workflowPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-workflow-editor",
+		SessionID:   "session-workflow-editor",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-workflow-editor",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "workflow_patch_result",
+					Summary: "workflow patch applied",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-workflow-editor"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1: %#v", len(artifacts), artifacts)
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "workflow_patch_result" || artifact.Source != "workflow_editor" || artifact.PermissionScope != "draft" {
+		t.Fatalf("artifact = %+v, want workflow editor patch result artifact", artifact)
+	}
+	if artifact.InlineData["patch_id"] != "patch-1" || artifact.InlineData["effect_status"] != "changed" {
+		t.Fatalf("inlineData = %#v, want patch and effect status", artifact.InlineData)
+	}
+}
+
+func TestTransportProjectorDoesNotCreateWorkflowSuccessCardFromFinalText(t *testing.T) {
+	now := time.Date(2026, 7, 6, 11, 35, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-workflow-final-only", "thread-workflow-final-only")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-workflow-final-only",
+		SessionID:   "session-workflow-final-only",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "final-workflow-only",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "Workflow patch_result 已应用，patch_id=patch-1。",
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-workflow-final-only"].AgentUIArtifacts
+	for _, artifact := range artifacts {
+		if strings.HasPrefix(artifact.Type, "workflow_") {
+			t.Fatalf("AgentUIArtifacts = %#v, want no workflow artifact from final prose", artifacts)
+		}
+	}
+}
+
 func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.T) {
 	now := time.Date(2026, 5, 19, 9, 30, 0, 0, time.UTC)
 	projector := NewTransportProjector()

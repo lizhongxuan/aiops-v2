@@ -4,8 +4,46 @@ export type HostMentionCandidate = {
   value: string;
   start: number;
   end: number;
-  source: "ip_literal" | "hostname_literal" | "local_alias";
+  source: HostMentionSource;
   hostId?: string;
+  address?: string;
+  displayName?: string;
+  resolved?: boolean;
+  confidence?: number;
+};
+
+export type HostMentionSource =
+  | "ip_literal"
+  | "hostname_literal"
+  | "local_alias"
+  | "inventory";
+
+export type SelectedHostMentionMetadata = {
+  tokenId?: string;
+  raw: string;
+  value: string;
+  start?: number;
+  end?: number;
+  source: HostMentionSource;
+  hostId?: string;
+  address?: string;
+  displayName?: string;
+  resolved?: boolean;
+  confidence?: number;
+};
+
+export type SerializedHostMentionMetadata = {
+  tokenId: string;
+  raw: string;
+  value: string;
+  start: number;
+  end: number;
+  source: HostMentionSource;
+  hostId: string;
+  address: string;
+  displayName: string;
+  resolved: boolean;
+  confidence: number;
 };
 
 export type SpecialAiMentionCandidate = {
@@ -39,11 +77,11 @@ export function parseHostMentionCandidates(input: string): HostMentionCandidate[
       continue;
     }
     const raw = `@${value}`;
-    const localAlias = normalizedValue === "local";
+    const localAlias = isLocalAliasValue(normalizedValue);
     candidates.push({
       tokenId: `hm-${atIndex}-${value.toLowerCase()}`,
       raw,
-      value: localAlias ? "local" : value,
+      value: localAlias ? normalizedLocalAliasValue(normalizedValue) : value,
       start: atIndex,
       end: atIndex + raw.length,
       source: localAlias
@@ -77,22 +115,77 @@ export function parseSpecialAiMentionCandidates(input: string): SpecialAiMention
 }
 
 export function uniqueHostMentionKeys(candidates: HostMentionCandidate[]): string[] {
-  return Array.from(new Set(candidates.map((item) => item.value.toLowerCase())));
+  return Array.from(new Set(candidates.map((item) => normalizeHostMentionKey(item.value))));
 }
 
-export function buildHostMentionMetadata(candidates: HostMentionCandidate[]): Record<string, string> {
+export function buildHostMentionMetadata(
+  candidates: HostMentionCandidate[],
+  selectedMetadata: SelectedHostMentionMetadata[] = [],
+): Record<string, string> {
   if (!candidates.length) {
     return {};
   }
+  const selectedByKey = new Map(
+    selectedMetadata
+      .filter((item) => item.hostId)
+      .map((item) => [normalizeHostMentionKey(item.value || item.raw), item]),
+  );
   const serializedCandidates = candidates.map((candidate) =>
-    candidate.source === "local_alias"
-      ? { ...candidate, value: "server-local", hostId: "server-local" }
-      : candidate,
+    serializeHostMention(candidate, selectedByKey.get(normalizeHostMentionKey(candidate.value))),
   );
   return {
     "aiops.hostops.mentions": JSON.stringify(serializedCandidates),
     "aiops.hostops.clientDetectedMultiHost": String(uniqueHostMentionKeys(candidates).length >= 2),
   };
+}
+
+function serializeHostMention(
+  candidate: HostMentionCandidate,
+  selected?: SelectedHostMentionMetadata,
+): SerializedHostMentionMetadata {
+  const localAlias = candidate.source === "local_alias";
+  const value = localAlias ? "server-local" : candidate.value;
+  const hostId = selected?.hostId || candidate.hostId || (localAlias ? "server-local" : "");
+  const address =
+    selected?.address ||
+    candidate.address ||
+    (localAlias ? "server-local" : candidate.value);
+  const displayName =
+    selected?.displayName ||
+    candidate.displayName ||
+    (localAlias ? "server-local" : candidate.value);
+  const resolved = selected?.resolved ?? candidate.resolved ?? localAlias;
+  return {
+    tokenId: candidate.tokenId,
+    raw: candidate.raw,
+    value: selected?.value || value,
+    start: candidate.start,
+    end: candidate.end,
+    source: selected?.source || candidate.source,
+    hostId,
+    address,
+    displayName,
+    resolved,
+    confidence: selected?.confidence ?? candidate.confidence ?? (resolved ? 1 : 0),
+  };
+}
+
+function normalizeHostMentionKey(value: string) {
+  const normalized = value.trim().replace(/^@+/, "").toLowerCase();
+  return isLocalAliasValue(normalized) ? "server-local" : normalized;
+}
+
+function normalizedLocalAliasValue(value: string) {
+  return value === "local" ? "local" : "server-local";
+}
+
+function isLocalAliasValue(value: string) {
+  return (
+    value === "local" ||
+    value === "server-local" ||
+    value === "localhost" ||
+    value === "127.0.0.1"
+  );
 }
 
 function isEmailLikeMention(input: string, atIndex: number) {

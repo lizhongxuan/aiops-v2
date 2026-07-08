@@ -38,6 +38,64 @@ func TestToolDispatcherExecutionScopeGuardAllowsBoundLowRiskHostExec(t *testing.
 	}
 }
 
+func TestToolDispatcherExecutionScopeGuardAllowsReadOnlyExecCommandWithHighRiskMetadata(t *testing.T) {
+	executor := &mockToolExecutor{result: "8"}
+	dispatcher := NewToolDispatcher(executionScopeGuardLookup(executor, tooling.ToolMetadata{
+		Name:      "exec_command",
+		RiskLevel: tooling.ToolRiskHigh,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			ResourceTypes:  []string{"host"},
+			OperationKinds: []string{"execute"},
+		},
+	}), nil, &testMockEventEmitter{}).
+		WithExecutionScopeGuard(ExecutionScopeGuardConfig{
+			Enabled: true,
+			Grants:  []specialinputmemory.ExecutionScopeGrant{executionScopeGrant("host-a", []string{specialinputmemory.ActionExecLowRisk})},
+		})
+
+	result := dispatcher.Dispatch(context.Background(), "sess-scope", "turn-scope", ToolCall{
+		ID:        "call-readonly-exec",
+		Name:      "exec_command",
+		Arguments: json.RawMessage(`{"command":"nproc"}`),
+	}, SessionTypeHost, ModeExecute)
+
+	if result.Blocked || result.Error != "" {
+		t.Fatalf("dispatch result = %#v, want allowed read-only exec_command", result)
+	}
+	if executor.calls != 1 {
+		t.Fatalf("executor calls = %d, want 1", executor.calls)
+	}
+}
+
+func TestToolDispatcherExecutionScopeGuardBlocksMutatingExecCommandWithoutMutationGrant(t *testing.T) {
+	executor := &mockToolExecutor{result: "should-not-run"}
+	dispatcher := NewToolDispatcher(executionScopeGuardLookup(executor, tooling.ToolMetadata{
+		Name:      "exec_command",
+		RiskLevel: tooling.ToolRiskHigh,
+		Discovery: tooling.ToolDiscoveryMetadata{
+			ResourceTypes:  []string{"host"},
+			OperationKinds: []string{"execute"},
+		},
+	}), nil, &testMockEventEmitter{}).
+		WithExecutionScopeGuard(ExecutionScopeGuardConfig{
+			Enabled: true,
+			Grants:  []specialinputmemory.ExecutionScopeGrant{executionScopeGrant("host-a", []string{specialinputmemory.ActionExecLowRisk})},
+		})
+
+	result := dispatcher.Dispatch(context.Background(), "sess-scope", "turn-scope", ToolCall{
+		ID:        "call-mutating-exec",
+		Name:      "exec_command",
+		Arguments: json.RawMessage(`{"command":"systemctl","args":["restart","nginx"]}`),
+	}, SessionTypeHost, ModeExecute)
+
+	if !result.Blocked || result.Outcome != "tool_denied" || !strings.Contains(result.Reason, "action mutate is not allowed") {
+		t.Fatalf("dispatch result = %#v, want action mismatch denial", result)
+	}
+	if executor.calls != 0 {
+		t.Fatalf("executor calls = %d, want 0", executor.calls)
+	}
+}
+
 func TestToolDispatcherExecutionScopeGuardBlocksCrossHostToolCall(t *testing.T) {
 	executor := &mockToolExecutor{result: "should-not-run"}
 	dispatcher := NewToolDispatcher(executionScopeGuardLookup(executor, tooling.ToolMetadata{Name: "host.exec", RiskLevel: tooling.ToolRiskLow}), nil, &testMockEventEmitter{}).

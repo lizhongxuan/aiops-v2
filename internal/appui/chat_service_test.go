@@ -141,11 +141,10 @@ func (r *lifecycleContextRuntime) CancelTurn(context.Context, runtimekernel.Canc
 	return runtimekernel.TurnResult{}, nil
 }
 
-func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceSendMessageMigratesAddWorkflowToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := newBlockingChatRuntime()
-	events := NewAgentEventService(nil)
-	service := NewChatService(runtime, sessions, events)
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	result, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID:       "sess-workflowgen",
@@ -158,40 +157,36 @@ func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+		t.Fatalf("Status = %q, want completed migration notice", result.Status)
+	}
+	if !strings.Contains(result.Output, "Workflow 创建已经迁移到 Runner Studio") ||
+		!strings.Contains(result.Output, "Workflow AI Chat") {
+		t.Fatalf("Output = %q, want Runner Studio migration notice", result.Output)
+	}
+	if !strings.Contains(result.Output, "/runner?workflow_ai=create&prompt=") ||
+		strings.Contains(result.Output, "%40add_workflow") {
+		t.Fatalf("Output = %q, want runner create link with encoded requirement and no add_workflow mention", result.Output)
 	}
 	select {
 	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; @add_workflow should use controlled internal workflow generation")
+		t.Fatal("runtime RunTurn was called; migrated @add_workflow should be handled synchronously")
 	default:
 	}
 	session := sessions.Get("sess-workflowgen")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write current turn")
+		t.Fatal("migration notice did not write current turn")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
-		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
+	if session.CurrentTurn.FinalOutput != result.Output {
+		t.Fatalf("FinalOutput = %q, want result output", session.CurrentTurn.FinalOutput)
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "初始生成大纲") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "拆分、合并或调整节点") {
-		t.Fatalf("FinalOutput = %q, want plan to be described as adjustable generation outline", session.CurrentTurn.FinalOutput)
-	}
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
+			t.Fatalf("agent item = %#v, migrated @add_workflow must not create runner_workflow_generation artifact", item)
 		}
-	}
-	if artifactPayload == "" {
-		t.Fatalf("agent items = %#v, want runner_workflow_generation artifact payload", session.CurrentTurn.AgentItems)
-	}
-	if !strings.Contains(artifactPayload, `"planIsProvisional":true`) ||
-		!strings.Contains(artifactPayload, `"status":"planned"`) {
-		t.Fatalf("artifact payload = %s, want provisional plan step status", artifactPayload)
 	}
 }
 
-func TestChatServiceSendMessageHandlesPlainWorkflowWritingRequestWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceSendMessageMigratesPlainWorkflowWritingRequestToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := newBlockingChatRuntime()
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
@@ -207,52 +202,64 @@ func TestChatServiceSendMessageHandlesPlainWorkflowWritingRequestWithoutRuntimeT
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+		t.Fatalf("Status = %q, want completed migration notice", result.Status)
+	}
+	if !strings.Contains(result.Output, "Workflow 创建已经迁移到 Runner Studio") ||
+		!strings.Contains(result.Output, "Workflow AI Chat") {
+		t.Fatalf("Output = %q, want Runner Studio migration notice", result.Output)
+	}
+	if !strings.Contains(result.Output, "/runner?workflow_ai=create&prompt=") {
+		t.Fatalf("Output = %q, want runner create link", result.Output)
 	}
 	select {
 	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; plain workflow writing request should use controlled internal workflow generation")
+		t.Fatal("runtime RunTurn was called; migrated plain workflow request should be handled synchronously")
 	default:
 	}
 	session := sessions.Get("sess-workflowgen-plain")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write current turn")
+		t.Fatal("migration notice did not write current turn")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
-		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "主机A") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "主机B") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "主机C") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "pg_mon") {
-		t.Fatalf("FinalOutput = %q, want resource roles from user request", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "generate_resource_ops_workflow") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "pending_review") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "preflight") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "verify") {
-		t.Fatalf("FinalOutput = %q, want resource workflow contract signals", session.CurrentTurn.FinalOutput)
-	}
-	var hasModelCall, hasEvidence bool
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
-		if item.Type == "model_call" {
-			hasModelCall = true
-		}
-		if item.Type == "evidence" {
-			hasEvidence = true
-		}
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
+			t.Fatalf("agent item = %#v, migrated workflow writing request must not create runner_workflow_generation artifact", item)
 		}
 	}
-	if !hasModelCall || !hasEvidence {
-		t.Fatalf("agent items = %#v, want model_call and evidence items", session.CurrentTurn.AgentItems)
+}
+
+func TestChatServiceWorkflowAIChatSourceBypassesWorkflowMigrationNotice(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-workflow-ai-chat",
+		SessionType:     "workflow",
+		Mode:            "chat",
+		Content:         "你是 AIOps Workflow AI。用户消息：你好。不要生成修改计划。",
+		ClientMessageID: "client-msg-workflow-ai-chat",
+		ClientTurnID:    "client-turn-workflow-ai-chat",
+		Metadata: map[string]string{
+			"source": "workflow_ai_chat",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
 	}
-	for _, want := range []string{"generate_resource_ops_workflow", "pending_review", "data_node", "monitor", "draft_until_reviewed", "secret_ref_only"} {
-		if !strings.Contains(artifactPayload, want) {
-			t.Fatalf("artifact payload = %s, want %q", artifactPayload, want)
+	t.Cleanup(func() { close(runtime.release) })
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted runtime turn", result.Status)
+	}
+	if strings.Contains(result.Output, "Workflow 创建已经迁移") {
+		t.Fatalf("Output = %q, workflow-ai chat source must not receive migration notice", result.Output)
+	}
+	select {
+	case req := <-runtime.started:
+		if req.Metadata["source"] != "workflow_ai_chat" {
+			t.Fatalf("runtime metadata[source] = %q", req.Metadata["source"])
 		}
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called for Workflow AI chat source")
 	}
 }
 
@@ -361,17 +368,21 @@ func TestChatServiceDoesNotTreatWorkflowConfirmationAsNewPlainRequestWithoutActi
 	}
 }
 
-func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceDoesNotGenerateWorkflowDraftFromConfirmationAfterMigration(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
+	runtime := newCancelledChatRuntime()
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
-	if _, err := service.SendMessage(context.Background(), ChatCommand{
+	initial, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID: "sess-workflowgen-confirm",
 		Content:   "@add_workflow 每天早上8点抓取AI新闻，提取三条关键内容直接返回给我",
 		HostID:    "server-local",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("initial SendMessage() error = %v", err)
+	}
+	if initial.Status != "completed" || !strings.Contains(initial.Output, "Workflow 创建已经迁移到 Runner Studio") {
+		t.Fatalf("initial response = %+v, want migration notice", initial)
 	}
 	result, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID: "sess-workflowgen-confirm",
@@ -382,36 +393,22 @@ func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t 
 	if err != nil {
 		t.Fatalf("confirmation SendMessage() error = %v", err)
 	}
-	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted runtime path without active workflow generation session", result.Status)
 	}
 	select {
 	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; workflow draft generation should stay inside controlled service")
-	default:
+	case <-time.After(time.Second):
+		t.Fatal("runtime RunTurn was not called; confirmation after migration must not generate draft internally")
 	}
 	session := sessions.Get("sess-workflowgen-confirm")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write confirmation turn")
+		t.Fatal("session current turn missing")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "静态验证通过") {
-		t.Fatalf("FinalOutput = %q, want static validation summary", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "Docker") {
-		t.Fatalf("FinalOutput = %q, want Docker provider boundary mentioned", session.CurrentTurn.FinalOutput)
-	}
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
-			break
+			t.Fatalf("agent item = %#v, migrated confirmation must not create runner_workflow_generation artifact", item)
 		}
-	}
-	if !strings.Contains(artifactPayload, `"scriptLanguage":"python"`) || !strings.Contains(artifactPayload, `"scriptPreview"`) {
-		t.Fatalf("artifact payload = %s, want generated node script details", artifactPayload)
-	}
-	if !strings.Contains(artifactPayload, `"validationDetails"`) || !strings.Contains(artifactPayload, `"mode":"static"`) {
-		t.Fatalf("artifact payload = %s, want validation details", artifactPayload)
 	}
 }
 
@@ -1255,6 +1252,87 @@ func TestChatServiceStructuredHostMentionBindsAfterServerResolution(t *testing.T
 	}
 	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
 		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceLegacyHostMetadataBindsAfterServerResolution(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "server-local",
+		Name:       "server-local",
+		Address:    "server-local",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://server-local:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-legacy-hostops-server-local",
+		Content:   "@server-local 查看 CPU 情况",
+		Metadata: map[string]string{
+			"aiops.hostops.mentions": `[{"raw":"@server-local","value":"server-local","hostId":"server-local","address":"server-local","displayName":"server-local","source":"inventory","resolved":true,"confidence":1}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn HostID = %q, want server-local; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn SessionType = %q, want host; metadata=%#v", runReq.SessionType, runReq.Metadata)
+	}
+	for key, want := range map[string]string{
+		"aiops.route.mode":              string(ChatRouteHostBoundOps),
+		"aiops.target.binding":          "host",
+		"aiops.tool.execCommandAllowed": "true",
+	} {
+		if got := runReq.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
+		}
+	}
+}
+
+func TestChatServiceLegacyHostMetadataFailsClosedWhenForged(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "server-local",
+		Name:       "server-local",
+		Address:    "server-local",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://server-local:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-legacy-hostops-forged",
+		Content:   "@server-local 查看 CPU 情况",
+		Metadata: map[string]string{
+			"aiops.hostops.mentions": `[{"raw":"@server-local","value":"server-local","hostId":"does-not-exist","address":"10.255.255.255","displayName":"server-local","source":"inventory","resolved":true,"confidence":1}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty for forged metadata; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn SessionType = %q, want workspace; metadata=%#v", runReq.SessionType, runReq.Metadata)
+	}
+	for key, want := range map[string]string{
+		"aiops.target.binding":          "none",
+		"aiops.tool.execCommandAllowed": "false",
+	} {
+		if got := runReq.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
+		}
 	}
 }
 

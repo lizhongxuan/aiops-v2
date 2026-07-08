@@ -1,4 +1,5 @@
-import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -28,6 +29,23 @@ vi.mock("@/pages/settingsApi", () => ({
 vi.mock("@/transport/assistantTransportControl", () => ({
   fetchAssistantTransportResumeState: vi.fn(),
 }));
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function withProviders(node: ReactNode, queryClient = createTestQueryClient()) {
+  return (
+    <QueryClientProvider client={queryClient}>
+      <AppShellChromeProvider>{node}</AppShellChromeProvider>
+    </QueryClientProvider>
+  );
+}
 
 describe("SessionContextBar auto-create", () => {
   let container: HTMLDivElement;
@@ -76,6 +94,7 @@ describe("SessionContextBar auto-create", () => {
   it("creates a usable single-host session when entering chat with no prior sessions", async () => {
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="default"
           description="AI Chat"
@@ -86,6 +105,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
 
@@ -110,6 +130,7 @@ describe("SessionContextBar auto-create", () => {
   it("does not require manual session creation when an initial chat state is already active", async () => {
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="fixture-session"
           description="AI Chat"
@@ -121,6 +142,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
 
@@ -158,6 +180,7 @@ describe("SessionContextBar auto-create", () => {
 
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="session-existing"
           description="AI Chat"
@@ -168,6 +191,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
 
@@ -180,6 +204,57 @@ describe("SessionContextBar auto-create", () => {
     });
 
     expect(container.textContent).toContain("llm=gpt-5.4");
+  });
+
+  it("renders cached session context while refreshing sessions and hosts", async () => {
+    const queryClient = createTestQueryClient();
+    queryClient.setQueryData(["sessions", "list"], {
+      activeSessionId: "session-warm",
+      sessions: [
+        {
+          id: "session-warm",
+          kind: "single_host",
+          title: "Warm session",
+          selectedHostId: "",
+          status: "empty",
+          messageCount: 1,
+        },
+      ],
+    });
+    queryClient.setQueryData(["hosts", "list"], { items: [] });
+    queryClient.setQueryData(["settings", "llmConfig"], {
+      provider: "zhipu",
+      model: "glm-5.1",
+      apiKeySet: true,
+    });
+    vi.mocked(fetchSessions).mockReturnValue(new Promise(() => {}));
+    vi.mocked(fetchHosts).mockReturnValue(new Promise(() => {}));
+    vi.mocked(fetchLlmConfig).mockReturnValue(new Promise(() => {}));
+
+    await act(async () => {
+      root.render(
+        withProviders(
+          <SessionContextBar
+            activeThreadId="session-warm"
+            description="AI Chat"
+            kind="single_host"
+            newSessionLabel="新建会话"
+            onThreadChange={onThreadChange}
+            title="单机会话"
+          >
+            <ContextProbe />
+          </SessionContextBar>,
+          queryClient,
+        ),
+      );
+    });
+
+    expect(container.textContent).toContain("active=session-warm");
+    expect(container.textContent).toContain("llm=glm-5.1");
+    expect(container.textContent).toContain("reason=");
+    expect(fetchSessions).toHaveBeenCalled();
+    expect(fetchHosts).toHaveBeenCalled();
+    expect(fetchLlmConfig).toHaveBeenCalled();
   });
 
   it("does not remount the same active session with an empty state after loading session context", async () => {
@@ -200,6 +275,7 @@ describe("SessionContextBar auto-create", () => {
 
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="session-existing"
           description="AI Chat"
@@ -210,6 +286,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
 
@@ -243,6 +320,7 @@ describe("SessionContextBar auto-create", () => {
 
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="default"
           description="AI Chat"
@@ -253,6 +331,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
 
@@ -298,7 +377,8 @@ describe("SessionContextBar auto-create", () => {
 
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
+        withProviders(
+        <>
           <SessionContextBar
             activeThreadId="session-existing"
             description="AI Chat"
@@ -310,7 +390,8 @@ describe("SessionContextBar auto-create", () => {
             <ContextProbe />
           </SessionContextBar>
           <HeaderActionsProbe />
-        </AppShellChromeProvider>,
+        </>,
+        ),
       );
     });
 
@@ -374,6 +455,7 @@ describe("SessionContextBar auto-create", () => {
 
     await act(async () => {
       root.render(
+        withProviders(
         <SessionContextBar
           activeThreadId="session-existing"
           description="AI Chat"
@@ -384,6 +466,7 @@ describe("SessionContextBar auto-create", () => {
         >
           <ContextProbe />
         </SessionContextBar>,
+        ),
       );
     });
     await act(async () => {

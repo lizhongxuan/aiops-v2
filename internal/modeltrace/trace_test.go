@@ -205,6 +205,48 @@ func TestWriteIncludesPromptInputTraceAndDiffMarkdown(t *testing.T) {
 	}
 }
 
+func TestWriteIncludesWorkflowTraceAndToolSurfaceFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteWithConfig(Config{Enabled: true, RootDir: dir}, Request{
+		Kind:                   "runtime_model_input",
+		SessionID:              "sess-workflow",
+		TurnID:                 "turn-workflow",
+		ToolSurfaceFingerprint: "surface-hash",
+		WorkflowTrace: &WorkflowTrace{
+			WorkflowID:         "workflow-redis",
+			DrawerSessionID:    "drawer-1",
+			BaseRevision:       "rev-1",
+			NextRevision:       "rev-2",
+			PatchID:            "patch-1",
+			UserConfirmationID: "confirm-1",
+			ValidationStatus:   "valid",
+			EffectStatus:       "changed",
+			UndoCheckpointID:   "undo-1",
+			ManualCandidateID:  "candidate-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteWithConfig() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read trace: %v", err)
+	}
+	var got struct {
+		WorkflowTrace WorkflowTrace `json:"workflowTrace"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal trace: %v", err)
+	}
+	if got.WorkflowTrace.WorkflowID != "workflow-redis" ||
+		got.WorkflowTrace.DrawerSessionID != "drawer-1" ||
+		got.WorkflowTrace.PatchID != "patch-1" ||
+		got.WorkflowTrace.EffectStatus != "changed" ||
+		got.WorkflowTrace.ToolSurfaceFingerprint != "surface-hash" {
+		t.Fatalf("workflowTrace = %#v, want workflow audit fields", got.WorkflowTrace)
+	}
+}
+
 func TestWriteIncludesSpecialInputWorldStateInPromptTrace(t *testing.T) {
 	dir := t.TempDir()
 	worldState := &specialinputmemory.SpecialInputWorldStateSection{

@@ -38,6 +38,20 @@ func TestParseHostMentionsIncludesLocalAlias(t *testing.T) {
 	}
 }
 
+func TestParseHostMentionsIncludesExplicitLocalAliases(t *testing.T) {
+	for _, input := range []string{
+		"@local 查看 CPU",
+		"@server-local 查看 CPU",
+		"@localhost 查看 CPU",
+		"@127.0.0.1 查看 CPU",
+	} {
+		mentions := ParseHostMentions(input)
+		if len(mentions) != 1 || mentions[0].Source != HostMentionSourceLocalAlias {
+			t.Fatalf("%q parsed as %#v, want one local_alias mention", input, mentions)
+		}
+	}
+}
+
 func TestParseHostMentionsSkipsCorootObservabilityMention(t *testing.T) {
 	mentions := ParseHostMentions("@Coroot 分析 order-api 延迟")
 	if len(mentions) != 0 {

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/specialinputmemory"
+	"aiops-v2/internal/terminalpolicy"
 	"aiops-v2/internal/tooling"
 )
 
@@ -57,7 +58,7 @@ func (d *ToolDispatcher) checkExecutionScopeGuard(tc ToolCall, meta tooling.Tool
 		return "", false
 	}
 	args := executionScopeGuardArgs(tc.Arguments)
-	action := executionScopeGuardAction(meta)
+	action := executionScopeGuardAction(meta, tc.Arguments)
 	requiresHostScope := args.hostID != "" || executionScopeToolTargetsHost(meta)
 	if !requiresHostScope {
 		return "", false
@@ -158,7 +159,12 @@ func executionScopeToolTargetsHost(meta tooling.ToolMetadata) bool {
 	return false
 }
 
-func executionScopeGuardAction(meta tooling.ToolMetadata) string {
+func executionScopeGuardAction(meta tooling.ToolMetadata, rawArgs json.RawMessage) string {
+	if executionScopeToolIsTerminalCommand(meta) {
+		if command, args, ok := executionScopeTerminalCommand(rawArgs); ok && terminalpolicy.IsReadOnlyCommand(command, args) {
+			return specialinputmemory.ActionExecLowRisk
+		}
+	}
 	governance := meta.EffectiveGovernance(4096)
 	if governance.Mutating || meta.Layer == tooling.ToolLayerMutation {
 		return specialinputmemory.ActionMutate
@@ -188,4 +194,42 @@ func executionScopeGuardAction(meta tooling.ToolMetadata) string {
 	default:
 		return specialinputmemory.ActionExecLowRisk
 	}
+}
+
+func executionScopeToolIsTerminalCommand(meta tooling.ToolMetadata) bool {
+	names := append([]string{meta.Name}, meta.Aliases...)
+	for _, name := range names {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "exec_command", "terminal_command", "shell_command":
+			return true
+		}
+	}
+	return false
+}
+
+func executionScopeTerminalCommand(raw json.RawMessage) (string, []string, bool) {
+	var payload struct {
+		Command string   `json:"command"`
+		Cmd     string   `json:"cmd"`
+		Args    []string `json:"args"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &payload) != nil {
+		return "", nil, false
+	}
+	command := strings.TrimSpace(payload.Command)
+	args := append([]string(nil), payload.Args...)
+	if command == "" {
+		command = strings.TrimSpace(payload.Cmd)
+	}
+	if command == "" {
+		return "", nil, false
+	}
+	if len(args) == 0 {
+		parsedCommand, parsedArgs, ok := terminalpolicy.SplitCommandLine(command)
+		if ok {
+			command = parsedCommand
+			args = parsedArgs
+		}
+	}
+	return command, args, true
 }

@@ -11,6 +11,7 @@ import (
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/terminal"
+	"aiops-v2/internal/workfloweditor"
 )
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ type HTTPServer struct {
 	mux                            *http.ServeMux
 	web                            http.Handler
 	runnerStudioHandler            http.Handler
+	workflowEditor                 *workfloweditor.Service
 	terminalManager                *terminal.Manager
 	appWSHeartbeatTick             time.Duration
 	appSnapshots                   *AppSnapshotBroadcaster
@@ -147,6 +149,12 @@ func WithRunnerStudioHandler(handler http.Handler) HTTPServerOption {
 	}
 }
 
+func WithWorkflowEditorService(service *workfloweditor.Service) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.workflowEditor = service
+	}
+}
+
 // NewHTTPServer creates a new HTTPServer wired to the given application services.
 func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer {
 	agentEvents := appui.NewAgentEventService(nil)
@@ -160,6 +168,7 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 	s := &HTTPServer{
 		ui:                 ui,
 		mux:                http.NewServeMux(),
+		workflowEditor:     workfloweditor.NewService(nil),
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
 		agentEvents:        agentEvents,
@@ -237,6 +246,7 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/runbooks/", s.handleRunbooks)
 	s.mux.HandleFunc("/api/v1/erp/", s.handleERPContext)
 	s.mux.HandleFunc("/api/v1/changes/", s.handleChanges)
+	s.mux.HandleFunc("/api/runner-studio/workflow-ai/", s.handleRunnerStudioWorkflowAI)
 	s.mux.HandleFunc("/api/runner-studio/ai/", s.handleRunnerStudioAI)
 	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 

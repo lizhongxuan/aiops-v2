@@ -123,6 +123,21 @@ type Request struct {
 	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
 	ApprovalScope                 *promptinput.ApprovalScopeTrace
 	FinalEvidenceState            any
+	WorkflowTrace                 *WorkflowTrace
+}
+
+type WorkflowTrace struct {
+	WorkflowID             string `json:"workflow_id,omitempty"`
+	DrawerSessionID        string `json:"drawer_session_id,omitempty"`
+	BaseRevision           string `json:"base_revision,omitempty"`
+	NextRevision           string `json:"next_revision,omitempty"`
+	PatchID                string `json:"patch_id,omitempty"`
+	UserConfirmationID     string `json:"user_confirmation_id,omitempty"`
+	ValidationStatus       string `json:"validation_status,omitempty"`
+	EffectStatus           string `json:"effect_status,omitempty"`
+	UndoCheckpointID       string `json:"undo_checkpoint_id,omitempty"`
+	ManualCandidateID      string `json:"manual_candidate_id,omitempty"`
+	ToolSurfaceFingerprint string `json:"tool_surface_fingerprint,omitempty"`
 }
 
 type payload struct {
@@ -202,6 +217,7 @@ type payload struct {
 	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace             `json:"unexpectedStateGate,omitempty"`
 	ApprovalScope                 *promptinput.ApprovalScopeTrace                   `json:"approvalScope,omitempty"`
 	FinalEvidenceState            any                                               `json:"finalEvidenceState,omitempty"`
+	WorkflowTrace                 *WorkflowTrace                                    `json:"workflowTrace,omitempty"`
 	Prompt                        Prompt                                            `json:"prompt"`
 	ModelInput                    []traceMessage                                    `json:"modelInput"`
 	ContextDedupe                 *promptinput.ContextDedupeTrace                   `json:"contextDedupe,omitempty"`
@@ -412,6 +428,7 @@ func buildPayload(req Request) payload {
 		UnexpectedStateGate:           redactedPromptTrace.UnexpectedStateGate,
 		ApprovalScope:                 redactedPromptTrace.ApprovalScope,
 		FinalEvidenceState:            req.FinalEvidenceState,
+		WorkflowTrace:                 workflowTracePayload(req.WorkflowTrace, redactedPromptTrace.ToolSurfaceFingerprint),
 		Prompt:                        prompt,
 		ModelInput:                    modelInput,
 		ContextDedupe:                 redactedPromptTrace.ContextDedupe,
@@ -440,6 +457,28 @@ func buildToolSurfaceTrace(visibleTools []string, trace promptinput.PromptInputT
 		return nil
 	}
 	return surface
+}
+
+func workflowTracePayload(trace *WorkflowTrace, fallbackToolSurfaceFingerprint string) *WorkflowTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.WorkflowID = strings.TrimSpace(out.WorkflowID)
+	out.DrawerSessionID = strings.TrimSpace(out.DrawerSessionID)
+	out.BaseRevision = strings.TrimSpace(out.BaseRevision)
+	out.NextRevision = strings.TrimSpace(out.NextRevision)
+	out.PatchID = strings.TrimSpace(out.PatchID)
+	out.UserConfirmationID = strings.TrimSpace(out.UserConfirmationID)
+	out.ValidationStatus = strings.TrimSpace(out.ValidationStatus)
+	out.EffectStatus = strings.TrimSpace(out.EffectStatus)
+	out.UndoCheckpointID = strings.TrimSpace(out.UndoCheckpointID)
+	out.ManualCandidateID = strings.TrimSpace(out.ManualCandidateID)
+	out.ToolSurfaceFingerprint = firstNonEmpty(strings.TrimSpace(out.ToolSurfaceFingerprint), strings.TrimSpace(fallbackToolSurfaceFingerprint))
+	if out == (WorkflowTrace{}) {
+		return nil
+	}
+	return &out
 }
 
 func selectedToolsFromTrace(trace promptinput.PromptInputTrace) []string {

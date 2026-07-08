@@ -22,6 +22,7 @@ export type HostMentionSuggestion = {
     hostId: string;
     address: string;
     displayName: string;
+    source: "inventory" | "local_alias";
     status?: string;
   };
 };
@@ -102,7 +103,8 @@ function buildLocalSuggestion(query: string): HostMentionSuggestion | null {
     payload: {
       hostId: "server-local",
       address: "server-local",
-      displayName: "local",
+      displayName: "server-local",
+      source: "local_alias",
       status: "online",
     },
   };
@@ -140,6 +142,7 @@ function buildSuggestion(host: HostInventoryItem, query: string, index: number):
       hostId,
       address: address || hostId,
       displayName: label,
+      source: "inventory",
       ...(status ? { status } : {}),
     },
   };

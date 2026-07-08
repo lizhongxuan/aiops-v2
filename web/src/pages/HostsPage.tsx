@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertCircle,
   CheckCircle2,
@@ -11,7 +12,7 @@ import {
   Trash2,
   XCircle,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
 import { Button } from "@/components/ui/button";
@@ -40,13 +41,17 @@ import {
   buildHostsViewModel,
   createHost,
   deleteHost,
-  fetchHosts,
-  fetchSessions,
-  fetchTerminalSessions,
   retryHostInstall,
   type HostRecord,
   updateHost,
 } from "@/pages/settingsApi";
+import { hostListQuery } from "@/queries/hostQueries";
+import { queryKeys } from "@/queries/queryKeys";
+import {
+  normalizeSessionItems,
+  sessionListQuery,
+} from "@/queries/sessionQueries";
+import { terminalSessionListQuery } from "@/queries/terminalQueries";
 
 type HostDraft = {
   id: string;
@@ -117,14 +122,10 @@ const hostAgentInstallSteps = [
 
 export function HostsPage() {
   const navigate = useNavigate();
-  const [hosts, setHosts] = useState<HostRecord[]>([]);
-  const [sessions, setSessions] = useState<unknown[]>([]);
-  const [terminalSessions, setTerminalSessions] = useState<unknown[]>([]);
+  const queryClient = useQueryClient();
   const [query, setQuery] = useState("");
   const [heartbeat, setHeartbeat] = useState("all");
-  const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [pageError, setPageError] = useState("");
   const [operationResult, setOperationResult] =
     useState<HostOperationResultState | null>(null);
   const [dialogMessage, setDialogMessage] = useState<{
@@ -149,6 +150,34 @@ export function HostsPage() {
     detailLabel: "",
     error: "",
   });
+  const hostQuery = useQuery(hostListQuery());
+  const sessionQuery = useQuery(sessionListQuery());
+  const terminalSessionQuery = useQuery(terminalSessionListQuery());
+  const hosts = hostQuery.data?.items || [];
+  const sessions = normalizeSessionItems(sessionQuery.data);
+  const terminalSessions =
+    terminalSessionQuery.data?.items || terminalSessionQuery.data?.sessions || [];
+  const hasAnyCachedData = Boolean(
+    hostQuery.data || sessionQuery.data || terminalSessionQuery.data,
+  );
+  const loading =
+    !hasAnyCachedData &&
+    (hostQuery.isLoading ||
+      sessionQuery.isLoading ||
+      terminalSessionQuery.isLoading);
+  const isRefreshing =
+    hasAnyCachedData &&
+    (hostQuery.isFetching ||
+      sessionQuery.isFetching ||
+      terminalSessionQuery.isFetching);
+  const pageError =
+    hostQuery.error instanceof Error
+      ? hostQuery.error.message
+      : sessionQuery.error instanceof Error
+        ? sessionQuery.error.message
+        : terminalSessionQuery.error instanceof Error
+          ? terminalSessionQuery.error.message
+          : "";
 
   const model = useMemo(
     () =>
@@ -162,27 +191,6 @@ export function HostsPage() {
       }),
     [heartbeat, hosts, query, sessions, terminalSessions],
   );
-
-  async function load() {
-    setLoading(true);
-    try {
-      const [hostPayload, sessionPayload, terminalPayload] = await Promise.all([
-        fetchHosts(),
-        fetchSessions(),
-        fetchTerminalSessions(),
-      ]);
-      setHosts(hostPayload.items || []);
-      setSessions(sessionPayload.items || sessionPayload.sessions || []);
-      setTerminalSessions(
-        terminalPayload.items || terminalPayload.sessions || [],
-      );
-      setPageError("");
-    } catch (error) {
-      setPageError(error instanceof Error ? error.message : "加载主机列表失败");
-    } finally {
-      setLoading(false);
-    }
-  }
 
   function openCreate() {
     setEditingHost(null);
@@ -215,6 +223,77 @@ export function HostsPage() {
     if (!open) setDialogMessage(null);
   }
 
+  function invalidateHostPageQueries() {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all });
+    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+    void queryClient.invalidateQueries({
+      queryKey: queryKeys.terminalSessions.all,
+    });
+  }
+
+  const createHostMutation = useMutation({
+    mutationFn: createHost,
+    onSuccess: () => invalidateHostPageQueries(),
+  });
+
+  const updateHostMutation = useMutation({
+    mutationFn: ({
+      hostId,
+      payload,
+    }: {
+      hostId: string;
+      payload: Record<string, unknown>;
+    }) => updateHost(hostId, payload),
+    onSuccess: () => invalidateHostPageQueries(),
+  });
+
+  const deleteHostMutation = useMutation({
+    mutationFn: deleteHost,
+    onSuccess: (_payload, hostId) => {
+      queryClient.setQueryData<{ items?: HostRecord[] }>(
+        queryKeys.hosts.list(),
+        (current) => ({
+          ...current,
+          items: (current?.items || []).filter((host) => host.id !== hostId),
+        }),
+      );
+      invalidateHostPageQueries();
+    },
+  });
+
+  const installHostMutation = useMutation({
+    mutationFn: ({
+      hostId,
+      payload,
+    }: {
+      hostId: string;
+      payload: Record<string, unknown>;
+    }) => retryHostInstall(hostId, payload),
+    onSuccess: (response, variables) => {
+      const typed = response as {
+        host?: HostRecord;
+        items?: HostRecord[];
+      };
+      const responseHost =
+        typed.items?.find((item) => item.id === variables.hostId) ||
+        typed.host;
+      if (responseHost) {
+        queryClient.setQueryData<{ items?: HostRecord[] }>(
+          queryKeys.hosts.list(),
+          (current) => ({
+            ...current,
+            items: (current?.items || []).map((host) =>
+              host.id === variables.hostId
+                ? { ...host, ...responseHost }
+                : host,
+            ),
+          }),
+        );
+      }
+      invalidateHostPageQueries();
+    },
+  });
+
   async function saveHost() {
     setSaving(true);
     setDialogMessage(null);
@@ -235,13 +314,15 @@ export function HostsPage() {
       };
       if (editingHost?.id) {
         payload.id = draft.id;
-        await updateHost(editingHost.id, payload);
+        await updateHostMutation.mutateAsync({
+          hostId: editingHost.id,
+          payload,
+        });
       } else {
-        await createHost(payload);
+        await createHostMutation.mutateAsync(payload);
       }
       setDialogOpen(false);
       showOperationResult("success", "主机信息已保存");
-      await load();
     } catch (error) {
       setDialogMessage({
         type: "error",
@@ -254,9 +335,8 @@ export function HostsPage() {
 
   async function removeHost(hostId: string) {
     try {
-      await deleteHost(hostId);
+      await deleteHostMutation.mutateAsync(hostId);
       showOperationResult("success", "主机已删除");
-      await load();
     } catch (error) {
       showOperationResult(
         "error",
@@ -276,15 +356,18 @@ export function HostsPage() {
       error: "",
     });
     try {
-      const response = (await retryHostInstall(host.id, {
-        agentVersion: host.agentVersion || "v0.1.0",
-        connectionMode,
-        agentServerUrl:
-          connectionMode === "node_push_grpc"
-            ? resolveInstallCallbackURL(host)
-            : "",
-        sshCredentialRef: host.sshCredentialRef || "",
-        force: false,
+      const response = (await installHostMutation.mutateAsync({
+        hostId: host.id,
+        payload: {
+          agentVersion: host.agentVersion || "v0.1.0",
+          connectionMode,
+          agentServerUrl:
+            connectionMode === "node_push_grpc"
+              ? resolveInstallCallbackURL(host)
+              : "",
+          sshCredentialRef: host.sshCredentialRef || "",
+          force: false,
+        },
       })) as {
         host?: HostRecord;
         items?: HostRecord[];
@@ -314,7 +397,6 @@ export function HostsPage() {
         error: responseHost.lastError || "",
       });
       showOperationResult("success", "已提交 Node 安装任务");
-      await load();
     } catch (error) {
       setInstallDialog((current) => ({
         ...current,
@@ -345,10 +427,6 @@ export function HostsPage() {
     setOperationResult({ open: true, type, text });
   }
 
-  useEffect(() => {
-    void load();
-  }, []);
-
   const draftConnectionMode = normalizeHostConnectionMode(draft.connectionMode);
 
   return (
@@ -370,6 +448,14 @@ export function HostsPage() {
       ) : (
         <Card className="rounded-lg bg-white">
           <CardContent className="flex flex-col gap-3 pt-0">
+            {isRefreshing ? (
+              <div
+                className="text-xs text-slate-500"
+                data-testid="hosts-background-refresh"
+              >
+                正在后台刷新
+              </div>
+            ) : null}
             <div className="flex flex-col gap-2 md:flex-row md:items-center">
               <label className="relative min-w-0 flex-1">
                 <Search className="pointer-events-none absolute left-2.5 top-2 h-4 w-4 text-slate-400" />

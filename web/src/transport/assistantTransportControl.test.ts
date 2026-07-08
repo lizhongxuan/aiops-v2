@@ -59,7 +59,22 @@ describe("assistantTransportControl", () => {
     expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`)).toEqual(state);
   });
 
-  it("drops incomplete resume states instead of migrating old transport data", () => {
+  it("normalizes legacy resume state missing host mission maps", () => {
+    const state = createInitialAiopsTransportState("sess-legacy-history") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
+    state.sessionId = "sess-legacy-history";
+    state.turnOrder = ["turn-1"];
+    delete state.hostMissions;
+    delete state.childAgents;
+
+    expect(parseAssistantTransportResumeState(`aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`)).toMatchObject({
+      sessionId: "sess-legacy-history",
+      turnOrder: ["turn-1"],
+      hostMissions: {},
+      childAgents: {},
+    });
+  });
+
+  it("drops incomplete resume states missing critical transport maps", () => {
     const staleState = createInitialAiopsTransportState("sess-stale") as Partial<ReturnType<typeof createInitialAiopsTransportState>>;
     staleState.sessionId = "sess-stale";
     delete staleState.hostMissions;

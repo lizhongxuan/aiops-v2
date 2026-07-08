@@ -1,4 +1,5 @@
-import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,7 @@ import {
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import { resetAiopsTransportStateCacheForTest } from "@/transport/aiopsTransportStateCache";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
-import { ChatPage } from "./ChatPage";
+import { ChatPage as RawChatPage } from "./ChatPage";
 
 vi.mock("@/api/hostInventory", () => ({
   listHostInventory: vi.fn(),
@@ -20,6 +21,23 @@ vi.mock("@/api/hostOps", () => ({
   getChildAgentTranscript: vi.fn(),
   submitHostOpsApprovalDecision: vi.fn(),
 }));
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function ChatPage(props: ComponentProps<typeof RawChatPage>) {
+  return (
+    <QueryClientProvider client={createTestQueryClient()}>
+      <RawChatPage {...props} />
+    </QueryClientProvider>
+  );
+}
 
 describe("ChatPage runtime contract V3", () => {
   let container: HTMLDivElement;

@@ -1,4 +1,5 @@
-import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -6,7 +7,7 @@ import {
   getChildAgentTranscript,
   submitHostOpsApprovalDecision,
 } from "@/api/hostOps";
-import { ChatPage } from "./ChatPage";
+import { ChatPage as RawChatPage } from "./ChatPage";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import {
   resetAiopsTransportStateCacheForTest,
@@ -18,6 +19,23 @@ vi.mock("@/api/hostOps", () => ({
   getChildAgentTranscript: vi.fn(),
   submitHostOpsApprovalDecision: vi.fn(),
 }));
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function ChatPage(props: ComponentProps<typeof RawChatPage>) {
+  return (
+    <QueryClientProvider client={createTestQueryClient()}>
+      <RawChatPage {...props} />
+    </QueryClientProvider>
+  );
+}
 
 describe("ChatPage", () => {
   let container: HTMLDivElement;
@@ -116,6 +134,194 @@ describe("ChatPage", () => {
     );
     expect(container.textContent).not.toContain("Hello there");
     fetchSpy.mockRestore();
+  });
+
+  it("keeps cached transcript visible when background resume fails", async () => {
+    const cached = sampleState();
+    cached.sessionId = "cached-failure";
+    cached.threadId = "cached-failure";
+    cached.currentTurnId = "turn-1";
+    cached.turns["turn-1"].user.text = "缓存里的问题";
+    cached.turns["turn-1"].final = {
+      id: "final-cached-failure",
+      text: "缓存里的回答",
+      status: "completed",
+    };
+    setCachedAiopsTransportState("single_host", cached);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/api/v1/sessions")) {
+          return new Response(
+            JSON.stringify({
+              activeSessionId: "cached-failure",
+              sessions: [
+                {
+                  id: "cached-failure",
+                  kind: "single_host",
+                  status: "completed",
+                  messageCount: 2,
+                },
+              ],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/v1/hosts")) {
+          return new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/api/v1/llm-config")) {
+          return new Response(
+            JSON.stringify({ provider: "openai", model: "gpt-5", apiKeySet: true }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        if (url.includes("/api/v1/assistant/resume")) {
+          return new Response("resume failed", {
+            status: 500,
+            headers: { "Content-Type": "text/plain" },
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+    try {
+      await act(async () => {
+        root.render(<ChatPage />);
+        await flushMicrotasks();
+      });
+
+      expect(container.textContent).toContain("缓存里的问题");
+      expect(container.textContent).toContain("缓存里的回答");
+      expect(container.textContent).not.toContain("Hello there");
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it("does not show an empty chat while restoring the active persisted session", async () => {
+    const restored = createInitialAiopsTransportState("session-history");
+    restored.sessionId = "session-history";
+    restored.threadId = "session-history";
+    restored.status = "idle";
+    restored.currentTurnId = "turn-history";
+    restored.turnOrder = ["turn-history"];
+    restored.turns = {
+      "turn-history": {
+        id: "turn-history",
+        status: "completed",
+        startedAt: "2026-07-06T00:00:00Z",
+        completedAt: "2026-07-06T00:00:05Z",
+        user: {
+          id: "user-history",
+          text: "旧历史问题",
+          createdAt: "2026-07-06T00:00:00Z",
+        },
+        process: [],
+        final: {
+          id: "final-history",
+          text: "旧历史回答",
+          status: "completed",
+        },
+      },
+    };
+    const legacyRestored = { ...restored } as Partial<AiopsTransportState>;
+    delete legacyRestored.hostMissions;
+    delete legacyRestored.childAgents;
+    let resolveResume:
+      | ((response: Response) => void)
+      | undefined;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.includes("/api/v1/sessions")) {
+          return new Response(
+            JSON.stringify({
+              activeSessionId: "session-history",
+              sessions: [
+                {
+                  id: "session-history",
+                  kind: "single_host",
+                  selectedHostId: "",
+                  status: "completed",
+                  messageCount: 2,
+                  title: "历史会话",
+                },
+              ],
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (url.includes("/api/v1/hosts")) {
+          return new Response(JSON.stringify({ items: [] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        if (url.includes("/api/v1/llm-config")) {
+          return new Response(
+            JSON.stringify({
+              provider: "zhipu",
+              model: "glm-5.1",
+              apiKeySet: true,
+            }),
+            {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            },
+          );
+        }
+        if (url.includes("/api/v1/assistant/resume")) {
+          return new Promise<Response>((resolve) => {
+            resolveResume = resolve;
+          });
+        }
+        return new Response(JSON.stringify({}), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      });
+
+    try {
+      await act(async () => {
+        root.render(<ChatPage />);
+      });
+      await flushMicrotasks();
+
+      expect(container.textContent).toContain("正在恢复会话");
+      expect(container.textContent).not.toContain("Hello there");
+      expect(container.textContent).not.toContain("旧历史问题");
+
+      await act(async () => {
+        resolveResume?.(
+          new Response(
+            `aui-state:${JSON.stringify([{ type: "set", path: [], value: legacyRestored }])}\n`,
+            {
+              status: 200,
+              headers: { "Content-Type": "text/plain" },
+            },
+          ),
+        );
+        await flushMicrotasks();
+      });
+
+      expect(container.textContent).toContain("旧历史问题");
+      expect(container.textContent).toContain("旧历史回答");
+      expect(container.textContent).not.toContain("Hello there");
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 
   it("renders assistant-ui chat state with typed process and approval blocks", async () => {

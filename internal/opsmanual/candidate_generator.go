@@ -76,8 +76,15 @@ func GenerateCandidateFromWorkflowDraft(input WorkflowDraftInput) (ManualCandida
 	if err != nil {
 		return ManualCandidate{}, err
 	}
-	candidate.SourceType = "workflow_draft"
-	candidate.ProposedManual.Metadata["source_type"] = "workflow_draft"
+	sourceType := metadataString(input.Metadata, "source_type")
+	if sourceType == "" {
+		sourceType = metadataString(input.Metadata, "source")
+	}
+	if sourceType == "" {
+		sourceType = "workflow_draft"
+	}
+	candidate.SourceType = sourceType
+	candidate.ProposedManual.Metadata["source_type"] = sourceType
 	if values := metadataStringSlice(analysis.XOpsManual, "cannot_use_when"); len(values) > 0 {
 		candidate.ProposedManual.CannotUseWhen = values
 	}

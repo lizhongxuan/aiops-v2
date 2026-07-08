@@ -256,6 +256,67 @@ func TestMultiHostProfileEnablesHostManagerRuntimeMetadata(t *testing.T) {
 	}
 }
 
+func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
+	mentions := []hostops.HostMention{{Raw: "@local", HostID: "server-local", Resolved: true}}
+	route := BuildChatRuntimeRoute("@local 修改当前 Workflow 的执行步骤", mentions, UserEvidenceExtraction{})
+	req := runtimekernel.TurnRequest{
+		Input: "@local 修改当前 Workflow 的执行步骤",
+		Metadata: map[string]string{
+			"aiops.workflowAgent.enabled":   "true",
+			"aiops.workflow.sessionIntent":  "edit",
+			"aiops.workflow.id":             "workflow",
+			"aiops.workflow.baseRevision":   "rev",
+			"aiops.workflow.selectedNodeId": "execute",
+		},
+	}
+
+	applyChatRuntimeRouteHostBinding(&req, route, mentions)
+	applyChatRuntimeToolSurfaceMetadata(&req, route)
+	applyChatRuntimeRouteMetadata(&req, route)
+	applyWorkflowAgentRuntimeMetadata(&req)
+
+	if req.HostID != "" {
+		t.Fatalf("HostID = %q, want empty for workflow agent drawer route", req.HostID)
+	}
+	if req.SessionType != runtimekernel.SessionTypeWorkspace || req.Mode != runtimekernel.ModePlan {
+		t.Fatalf("request session/mode = %s/%s, want workspace/plan", req.SessionType, req.Mode)
+	}
+	for key, want := range map[string]string{
+		"profile":                          runtimekernel.RuntimePromptProfileWorkflowAgent,
+		"toolProfile":                      runtimekernel.RuntimePromptProfileWorkflowAgent,
+		"aiops.tool.execCommandAllowed":    "false",
+		"aiops.tool.hostMutationAllowed":   "false",
+		"aiops.workflowAgent.routeApplied": "true",
+	} {
+		if got := req.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, req.Metadata)
+		}
+	}
+	if !strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
+		t.Fatalf("enableToolPack = %q, want workflow_editor", req.Metadata["enableToolPack"])
+	}
+}
+
+func TestWorkflowAgentRuntimeMetadataRequiresExplicitDrawerFlag(t *testing.T) {
+	req := runtimekernel.TurnRequest{
+		HostID:      "server-local",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Metadata: map[string]string{
+			"aiops.workflow.id": "workflow",
+		},
+	}
+
+	applyWorkflowAgentRuntimeMetadata(&req)
+
+	if req.HostID != "server-local" || req.SessionType != runtimekernel.SessionTypeHost || req.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("request = %#v, should not change without explicit workflow agent flag", req)
+	}
+	if req.Metadata["profile"] == runtimekernel.RuntimePromptProfileWorkflowAgent || strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
+		t.Fatalf("metadata = %#v, should not enable workflow agent without explicit drawer flag", req.Metadata)
+	}
+}
+
 func TestBuildChatRuntimeRouteCorootMentionDoesNotBecomeHostOps(t *testing.T) {
 	route := BuildChatRuntimeRoute("@Coroot 分析 order-api 延迟", nil, UserEvidenceExtraction{})
 	if route.Mode != ChatRouteAdvisory {

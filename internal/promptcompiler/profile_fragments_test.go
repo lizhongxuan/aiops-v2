@@ -73,9 +73,12 @@ func TestProfileFragmentsRenderOnlySelectedProfile(t *testing.T) {
 			wants: []string{
 				"## Profile Rules",
 				"Inspect the current Runner Workflow snapshot before proposing edits.",
+				"Separate current graph facts, assumptions, and requested changes.",
 				"Produce a workflow edit plan before any patch.",
 				"Propose one minimal workflow patch at a time and wait for confirmation before applying it.",
+				"After applying a patch, use workflow.describe and effect status before moving to the next patch.",
 				"Do not publish or execute workflows.",
+				"Do not run host commands.",
 			},
 			forbidden: []string{
 				"Answer advisory questions",
@@ -103,6 +106,23 @@ func TestProfileFragmentsRenderOnlySelectedProfile(t *testing.T) {
 				if strings.Contains(content, forbidden) {
 					t.Fatalf("profile fragment leaked %q:\n%s", forbidden, content)
 				}
+			}
+		})
+	}
+}
+
+func TestWorkflowAgentProfileAliasesNormalize(t *testing.T) {
+	for _, profile := range []string{"workflow", "workflow_planner"} {
+		t.Run(profile, func(t *testing.T) {
+			compiled, err := NewCompiler().Compile(CompileContext{Mode: "plan", Profile: profile})
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			if got := compiled.Envelope.Sections[2].ID; got != "profile.workflow_agent" {
+				t.Fatalf("profile section = %q, want profile.workflow_agent", got)
+			}
+			if !strings.Contains(CompiledPromptProfileText(compiled), "Inspect the current Runner Workflow snapshot before proposing edits.") {
+				t.Fatalf("workflow profile alias did not render workflow rules:\n%s", CompiledPromptProfileText(compiled))
 			}
 		})
 	}

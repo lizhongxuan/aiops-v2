@@ -65,6 +65,13 @@ func TestRunnerStudioAPIRoutesToEmbeddedRunnerAPI(t *testing.T) {
 			wantPath:   "/api/v1/workflows",
 		},
 		{
+			name:       "workflow delete",
+			method:     http.MethodDelete,
+			path:       "/api/runner-studio/workflows/pg-restore",
+			wantMethod: http.MethodDelete,
+			wantPath:   "/api/v1/workflows/pg-restore",
+		},
+		{
 			name:       "workflow graph",
 			method:     http.MethodGet,
 			path:       "/api/runner-studio/workflows/pg-restore/graph",

@@ -650,6 +650,45 @@ func TestAssistantTransportAPILocalMentionBindsServerLocal(t *testing.T) {
 	}
 }
 
+func TestAssistantTransportAPIServerLocalMentionBindsServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-v2-server-local-mention", "@server-local 查看 CPU 情况")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body = %s", resp.StatusCode, string(raw))
+	}
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(appui.ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "host" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "true" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
 func TestAssistantTransportAPIStructuredHostMentionBindsAfterServerResolution(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &assistantTransportAPITestRuntime{
@@ -1546,11 +1585,15 @@ func TestAssistantTransportAPIStreamsFailedStateAndErrorRecordOnBackendError(t *
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	text := string(raw)
-	if !strings.Contains(text, "3:\"context deadline exceeded\"") {
-		t.Fatalf("response = %q, want error record", text)
+	const visibleStreamFailure = "模型流中断，已保留已生成内容"
+	if !strings.Contains(text, "3:\""+visibleStreamFailure+"\"") {
+		t.Fatalf("response = %q, want user-visible error record", text)
 	}
-	if !strings.Contains(text, "\"lastError\",\"value\":\"context deadline exceeded\"") && !strings.Contains(text, "context deadline exceeded") {
+	if !strings.Contains(text, "\"path\":[\"lastError\"],\"value\":\""+visibleStreamFailure+"\"") {
 		t.Fatalf("response = %q, want lastError update", text)
+	}
+	if !strings.Contains(text, context.DeadlineExceeded.Error()) {
+		t.Fatalf("response = %q, want raw backend error retained in timeline", text)
 	}
 	if !strings.Contains(text, "\"path\":[\"status\"],\"value\":\"failed\"") {
 		t.Fatalf("response = %q, want failed status update", text)
@@ -1583,8 +1626,8 @@ func TestAssistantTransportAPIBackendErrorMarksCurrentTurnFailed(t *testing.T) {
 	if state.Status != appui.AiopsTransportStatusFailed {
 		t.Fatalf("state.Status = %q, want failed", state.Status)
 	}
-	if state.LastError != context.DeadlineExceeded.Error() {
-		t.Fatalf("state.LastError = %q, want %q", state.LastError, context.DeadlineExceeded.Error())
+	if state.LastError != "模型流中断，已保留已生成内容" {
+		t.Fatalf("state.LastError = %q, want user-visible stream failure text", state.LastError)
 	}
 	if state.Turns[state.CurrentTurnID].Status != appui.AiopsTransportTurnStatusFailed {
 		t.Fatalf("turn status = %q, want failed", state.Turns[state.CurrentTurnID].Status)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"sort"
 	"strconv"
@@ -11,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
@@ -214,6 +216,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	applyChatRuntimeRouteHostBinding(&req, activeRoute, routeBindingMentions)
 	applyExplicitSelectedHostContext(&req, activeRoute, selectedHostID, requestedSessionType, requestedMode)
 	s.applyHostOpsTurnMetadata(ctx, cmd, &req, &structuredMentions, routeBindingMentions)
+	applyWorkflowAgentRuntimeMetadata(&req)
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}
@@ -226,7 +229,14 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	applyChatRuntimeResourceProjection(&req, mentions)
 	applySessionTargetRouteResourceProjection(&req, sessionTargetRoute)
 	applyChatRuntimeSessionTargetRoleTrace(&req, commandSession, content, mentions)
-	if s.workflowGeneration != nil {
+	if !isWorkflowAIChatSource(req.Metadata) {
+		if notice, ok := workflowCreationMigrationNotice(content); ok {
+			response := s.writeWorkflowCreationMigrationTurn(req, content, notice)
+			response = attachOpsRunToTurnResponse(response, opsRun)
+			return response, nil
+		}
+	}
+	if s.workflowGeneration != nil && !isWorkflowAIChatSource(req.Metadata) {
 		if response, handled, err := s.workflowGeneration.Handle(ctx, cmd, req); handled || err != nil {
 			response = attachOpsRunToTurnResponse(response, opsRun)
 			return response, err
@@ -252,6 +262,100 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		Status:          "accepted",
 		OpsRun:          &opsRun,
 	}, nil
+}
+
+func workflowCreationMigrationNotice(input string) (string, bool) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", false
+	}
+	if _, ok := parseAddWorkflowMention(trimmed); ok {
+		return workflowCreationMigrationNoticeText(trimmed), true
+	}
+	if _, ok := parsePlainWorkflowWritingRequest(trimmed); ok {
+		return workflowCreationMigrationNoticeText(trimmed), true
+	}
+	return "", false
+}
+
+func isWorkflowAIChatSource(metadata map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(metadata["source"]), "workflow_ai_chat")
+}
+
+func workflowCreationMigrationNoticeText(input string) string {
+	requirement := strings.TrimSpace(input)
+	if parsed, ok := parseAddWorkflowMention(requirement); ok {
+		requirement = parsed
+	}
+	if parsed, ok := parsePlainWorkflowWritingRequest(requirement); ok {
+		requirement = parsed
+	}
+	link := "/runner?workflow_ai=create"
+	if requirement != "" {
+		link += "&prompt=" + url.QueryEscape(requirement)
+	}
+	return "Workflow 创建已经迁移到 Runner Studio 的 Workflow AI Chat。\n\n[打开 Workflow AI Chat 创建](" + link + ") [复制需求]"
+}
+
+func (s *defaultChatService) writeWorkflowCreationMigrationTurn(req runtimekernel.TurnRequest, userText string, notice string) TurnResponse {
+	now := time.Now().UTC()
+	completedAt := now
+	turn := runtimekernel.TurnSnapshot{
+		ID:              req.TurnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		SessionID:       req.SessionID,
+		SessionType:     req.SessionType,
+		Mode:            req.Mode,
+		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
+		ResumeState:     runtimekernel.TurnResumeStateNone,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		CompletedAt:     &completedAt,
+		FinalOutput:     notice,
+		AgentItems: []agentstate.TurnItem{
+			workflowGenerationUserItem(req, userText, now),
+			workflowGenerationFinalItem(req, notice, now),
+		},
+	}
+	if store, ok := s.sessions.(SessionStore); ok {
+		session := store.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+		if session.HostID == "" {
+			session.HostID = req.HostID
+		}
+		if session.CurrentTurn != nil {
+			session.TurnHistory = append(session.TurnHistory, *session.CurrentTurn)
+		}
+		session.Messages = append(session.Messages,
+			runtimekernel.Message{
+				ID:              firstNonEmptyString(req.ClientMessageID, req.TurnID+":user"),
+				ClientMessageID: req.ClientMessageID,
+				ClientTurnID:    req.ClientTurnID,
+				Role:            "user",
+				Content:         userText,
+				Timestamp:       now,
+			},
+			runtimekernel.Message{
+				ID:           req.TurnID + ":assistant",
+				ClientTurnID: req.ClientTurnID,
+				Role:         "assistant",
+				Content:      notice,
+				Timestamp:    now,
+			},
+		)
+		session.CurrentTurn = &turn
+		session.PendingApprovals = nil
+		session.PendingEvidence = nil
+		store.Update(session)
+	}
+	return TurnResponse{
+		SessionID:       req.SessionID,
+		TurnID:          req.TurnID,
+		ClientTurnID:    req.ClientTurnID,
+		ClientMessageID: req.ClientMessageID,
+		Status:          "completed",
+		Output:          notice,
+	}
 }
 
 func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool {
@@ -558,6 +662,9 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 		return filtered
 	}
 	mentions := hostOpsMentionsFromMetadata(cmd.Metadata["aiops.hostops.mentions"])
+	if strings.TrimSpace(cmd.Metadata["aiops.hostops.mentions"]) != "" {
+		return s.confirmHostOpsMetadataMentions(ctx, mentions)
+	}
 	if len(mentions) == 0 {
 		if inputMentionStrictMode() {
 			return nil
@@ -572,6 +679,72 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 	}
 	resolved, _ := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, mentions)
 	return filterHostOpsRouteMentions(resolved)
+}
+
+func (s *defaultChatService) confirmHostOpsMetadataMentions(ctx context.Context, mentions []hostops.HostMention) []hostops.HostMention {
+	if len(mentions) == 0 {
+		return nil
+	}
+	if s == nil || s.hosts == nil {
+		return filterHostOpsMetadataWithoutRepository(mentions)
+	}
+	resolutionHints := make([]hostops.HostMention, 0, len(mentions))
+	originals := make([]hostops.HostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		hint := mention
+		hint.Resolved = false
+		if hint.Source == hostops.HostMentionSourceInventory && strings.TrimSpace(hint.HostID) != "" {
+			hint.Raw = "@" + strings.TrimSpace(hint.HostID)
+			hint.Address = ""
+			hint.DisplayName = ""
+		}
+		resolutionHints = append(resolutionHints, hint)
+		originals = append(originals, mention)
+	}
+	resolved, _ := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, resolutionHints)
+	confirmed := make([]hostops.HostMention, 0, len(resolved))
+	for index, mention := range resolved {
+		if !mention.Resolved || strings.TrimSpace(mention.HostID) == "" {
+			continue
+		}
+		if index < len(originals) {
+			mention.TokenID = firstNonEmptyString(strings.TrimSpace(originals[index].TokenID), mention.TokenID)
+			mention.Raw = firstNonEmptyString(strings.TrimSpace(originals[index].Raw), mention.Raw)
+			mention.SpanStart = firstNonZeroInt(originals[index].SpanStart, mention.SpanStart)
+			mention.SpanEnd = firstNonZeroInt(originals[index].SpanEnd, mention.SpanEnd)
+		}
+		confirmed = append(confirmed, mention)
+	}
+	return filterHostOpsRouteMentions(confirmed)
+}
+
+func filterHostOpsMetadataWithoutRepository(mentions []hostops.HostMention) []hostops.HostMention {
+	safe := make([]hostops.HostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		switch mention.Source {
+		case hostops.HostMentionSourceLocalAlias:
+			mention.HostID = serverLocalHostID
+			mention.Address = firstNonEmptyString(strings.TrimSpace(mention.Address), serverLocalHostID)
+			mention.DisplayName = firstNonEmptyString(strings.TrimSpace(mention.DisplayName), serverLocalHostID)
+			mention.Resolved = true
+			mention.Confidence = 1
+			safe = append(safe, mention)
+		case hostops.HostMentionSourceIPLiteral:
+			mention.HostID = ""
+			mention.Resolved = false
+			safe = append(safe, mention)
+		}
+	}
+	return filterHostOpsRouteMentions(safe)
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *defaultChatService) resolveSelectedHostContextID(ctx context.Context, candidate string) string {

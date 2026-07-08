@@ -347,6 +347,7 @@ func buildChatRuntimeTransportRoute(messageText string, metadata map[string]stri
 	applyUserEvidenceMetadata(req, evidence)
 	applyInputMentionDiagnosticValues(req, mentionSource, mentionValidation)
 	applyChatRuntimeRouteHostBinding(req, activeRoute, mentions)
+	applyWorkflowAgentRuntimeMetadata(req)
 
 	decision := hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Mentions: append([]hostops.HostMention(nil), mentions...), Reason: strings.Join(activeRoute.Reasons, "; ")}
 	_, addWorkflowRequest := parseAddWorkflowMention(messageText)

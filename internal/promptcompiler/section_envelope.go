@@ -96,7 +96,7 @@ func CompiledPromptSectionContent(compiled CompiledPrompt, sectionID string) str
 			return content
 		}
 		return strings.TrimSpace(compiled.Stable.System.Content)
-	case "profile.advisor", "profile.evidence_rca", "profile.host_worker", "profile.host_manager":
+	case "profile.advisor", "profile.evidence_rca", "profile.host_worker", "profile.host_manager", "profile.workflow_agent":
 		if content := strings.TrimSpace(compiled.Developer.Content); content != "" {
 			return content
 		}

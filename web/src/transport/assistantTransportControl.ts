@@ -58,12 +58,28 @@ export function parseAssistantTransportResumeState(text: string): AiopsTransport
     }
     const raw = trimmed.slice("aui-state:".length);
     const ops = JSON.parse(raw) as Array<{ type?: string; path?: unknown[]; value?: unknown }>;
-    const fullState = ops.find((op) => op?.type === "set" && Array.isArray(op.path) && op.path.length === 0)?.value;
+    const fullState = coerceLegacyResumeState(
+      ops.find((op) => op?.type === "set" && Array.isArray(op.path) && op.path.length === 0)?.value,
+    );
     if (isCurrentAiopsTransportState(fullState)) {
       return normalizeAiopsTransportState(fullState);
     }
   }
   return null;
+}
+
+function coerceLegacyResumeState(value: unknown) {
+  if (!isRecord(value)) {
+    return value;
+  }
+  const next = { ...value };
+  if (next.hostMissions === undefined) {
+    next.hostMissions = {};
+  }
+  if (next.childAgents === undefined) {
+    next.childAgents = {};
+  }
+  return next;
 }
 
 async function fetchAssistantTransport(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
@@ -72,4 +88,8 @@ async function fetchAssistantTransport(input: RequestInfo | URL, init: RequestIn
   } catch (error) {
     throw new Error(toUserFacingTransportErrorMessage(error));
   }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

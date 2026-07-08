@@ -56,9 +56,26 @@ describe("hostMentions", () => {
 
   it("builds serialized metadata for detected multi-host mentions", () => {
     const mentions = parseHostMentionCandidates("@1.1.1.1 和 @db-1 检查");
+    const metadata = buildHostMentionMetadata(mentions);
 
-    expect(buildHostMentionMetadata(mentions)).toEqual({
-      "aiops.hostops.mentions": JSON.stringify(mentions),
+    expect(JSON.parse(metadata["aiops.hostops.mentions"])).toEqual([
+        expect.objectContaining({
+          raw: "@1.1.1.1",
+          value: "1.1.1.1",
+          source: "ip_literal",
+          address: "1.1.1.1",
+          resolved: false,
+        }),
+        expect.objectContaining({
+          raw: "@db-1",
+          value: "db-1",
+          source: "hostname_literal",
+          address: "db-1",
+          resolved: false,
+        }),
+      ]);
+    expect(metadata).toEqual({
+      "aiops.hostops.mentions": metadata["aiops.hostops.mentions"],
       "aiops.hostops.clientDetectedMultiHost": "true",
     });
   });
@@ -78,5 +95,60 @@ describe("hostMentions", () => {
         hostId: "server-local",
       }),
     ]);
+  });
+
+  it("serializes selected inventory host metadata as resolved host mention", () => {
+    const mentions = parseHostMentionCandidates("@server-local 查看 CPU");
+    const selected = [
+      {
+        raw: "@server-local",
+        value: "server-local",
+        hostId: "server-local",
+        address: "server-local",
+        displayName: "server-local",
+        source: "inventory" as const,
+        resolved: true,
+        confidence: 1,
+      },
+    ];
+
+    expect(
+      JSON.parse(
+        buildHostMentionMetadata(mentions, selected)[
+          "aiops.hostops.mentions"
+        ],
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        raw: "@server-local",
+        value: "server-local",
+        hostId: "server-local",
+        address: "server-local",
+        displayName: "server-local",
+        source: "inventory",
+        resolved: true,
+      }),
+    ]);
+  });
+
+  it("normalizes explicit local aliases to server-local metadata", () => {
+    for (const raw of [
+      "@local",
+      "@server-local",
+      "@localhost",
+      "@127.0.0.1",
+    ]) {
+      const metadata = buildHostMentionMetadata(
+        parseHostMentionCandidates(`${raw} 查看 CPU`),
+      );
+      const [mention] = JSON.parse(metadata["aiops.hostops.mentions"]);
+      expect(mention).toEqual(
+        expect.objectContaining({
+          hostId: "server-local",
+          value: "server-local",
+          source: "local_alias",
+        }),
+      );
+    }
   });
 });

@@ -1,6 +1,7 @@
 import httpClient from "./httpClient";
 
 const RUNNER_STUDIO_API_PREFIX = "/api/runner-studio";
+const RUNNER_STUDIO_WORKFLOW_AI_PREFIX = `${RUNNER_STUDIO_API_PREFIX}/workflow-ai`;
 
 function encodePathSegment(value) {
   return encodeURIComponent(String(value));
@@ -108,6 +109,58 @@ export function createRunnerStudioClient(client = httpClient) {
     getRunnerStudioActionCatalog(params = {}) {
       return client.get(`${RUNNER_STUDIO_API_PREFIX}/actions${buildQuery(params)}`);
     },
+
+    createRunnerStudioWorkflowAiSession(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/sessions`, payload);
+    },
+
+    getRunnerStudioWorkflowAiSnapshot(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/snapshot`, payload);
+    },
+
+    proposeRunnerStudioWorkflowAiPlan(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/plan`, payload);
+    },
+
+    proposeRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/patch`, payload);
+    },
+
+    validateRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/validate`, payload);
+    },
+
+    previewRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/preview`, payload);
+    },
+
+    describeRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/describe`, payload);
+    },
+
+    detectRunnerStudioWorkflowAiPatchEffect(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/effect`, payload);
+    },
+
+    applyRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/apply`, payload);
+    },
+
+    undoRunnerStudioWorkflowAiPatch(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/undo`, payload);
+    },
+
+    proposeRunnerStudioWorkflowManualCandidate(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/manual-candidate`, payload);
+    },
+
+    proposeRunnerStudioWorkflowManualUpdate(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/manual-update`, payload);
+    },
+
+    createRunnerStudioWorkflowAiDraftFromPlan(payload = {}) {
+      return client.post(`${RUNNER_STUDIO_WORKFLOW_AI_PREFIX}/create-draft`, payload);
+    },
   };
 }
 
@@ -139,5 +192,31 @@ export const getRunnerStudioRunGraph = (...args) => runnerStudioClient.getRunner
 export const getRunnerStudioRunEventHistory = (...args) => runnerStudioClient.getRunnerStudioRunEventHistory(...args);
 export const cancelRunnerStudioRun = (...args) => runnerStudioClient.cancelRunnerStudioRun(...args);
 export const getRunnerStudioActionCatalog = (...args) => runnerStudioClient.getRunnerStudioActionCatalog(...args);
+export const createRunnerStudioWorkflowAiSession = (...args) =>
+  runnerStudioClient.createRunnerStudioWorkflowAiSession(...args);
+export const getRunnerStudioWorkflowAiSnapshot = (...args) =>
+  runnerStudioClient.getRunnerStudioWorkflowAiSnapshot(...args);
+export const proposeRunnerStudioWorkflowAiPlan = (...args) =>
+  runnerStudioClient.proposeRunnerStudioWorkflowAiPlan(...args);
+export const proposeRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.proposeRunnerStudioWorkflowAiPatch(...args);
+export const validateRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.validateRunnerStudioWorkflowAiPatch(...args);
+export const previewRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.previewRunnerStudioWorkflowAiPatch(...args);
+export const describeRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.describeRunnerStudioWorkflowAiPatch(...args);
+export const detectRunnerStudioWorkflowAiPatchEffect = (...args) =>
+  runnerStudioClient.detectRunnerStudioWorkflowAiPatchEffect(...args);
+export const applyRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.applyRunnerStudioWorkflowAiPatch(...args);
+export const undoRunnerStudioWorkflowAiPatch = (...args) =>
+  runnerStudioClient.undoRunnerStudioWorkflowAiPatch(...args);
+export const proposeRunnerStudioWorkflowManualCandidate = (...args) =>
+  runnerStudioClient.proposeRunnerStudioWorkflowManualCandidate(...args);
+export const proposeRunnerStudioWorkflowManualUpdate = (...args) =>
+  runnerStudioClient.proposeRunnerStudioWorkflowManualUpdate(...args);
+export const createRunnerStudioWorkflowAiDraftFromPlan = (...args) =>
+  runnerStudioClient.createRunnerStudioWorkflowAiDraftFromPlan(...args);
 
 export default runnerStudioClient;

@@ -228,6 +228,33 @@ func (r *Registry) RegisterServer(cfg ServerConfig) error {
 	return nil
 }
 
+func (r *Registry) RegisterRunnerCapability(tools []tooling.Tool) error {
+	if r == nil {
+		return fmt.Errorf("mcp: registry is required")
+	}
+	if err := r.RegisterServer(ServerConfig{
+		ID:                   "runner",
+		Name:                 "Runner Workflow Editor",
+		Transport:            "local",
+		Command:              []string{"runner-workflow-editor"},
+		Source:               "builtin",
+		CapabilityDomain:     "runner",
+		ResourceTypes:        []string{"workflow", "runner_workflow", "ops_manual_candidate"},
+		OperationKinds:       []string{"read", "proposal", "validate", "preview", "reviewed_mutation"},
+		DefaultLoadingPolicy: tooling.ToolLoadingPolicyMCP,
+		RiskLevel:            tooling.ToolRiskHigh,
+		OwnerSource:          "builtin",
+		ToolPack:             "workflow_editor",
+		PermissionScope:      "reviewed_mutation",
+		PromptBudgetClass:    "compact",
+		SchemaBudgetClass:    "on_demand",
+		DiscoveryTags:        []string{"runner", "workflow", "workflow_editor"},
+	}); err != nil {
+		return err
+	}
+	return r.OnServerConnected("runner", tools)
+}
+
 // SetServerDisabled marks a server as disabled or enabled without removing its config.
 func (r *Registry) SetServerDisabled(serverID string, disabled bool) {
 	serverID = strings.TrimSpace(serverID)

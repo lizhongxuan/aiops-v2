@@ -114,6 +114,8 @@ describe("AiopsComposer host mention fuzzy search", () => {
     ]);
     expect(container.textContent).not.toContain("@server-local");
     expect(container.textContent).not.toContain("@host-a");
+    expect(container.textContent).not.toContain("@add_workflow");
+    expect(container.textContent).not.toContain("add_workflow");
 
     await act(async () => {
       rootItems[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -444,6 +446,45 @@ describe("AiopsComposer host mention fuzzy search", () => {
       }),
     ]);
     expect(command.message.hostId).toBe("host-a");
+  });
+
+  it("sends hidden host metadata when selecting server-local from the host list", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "@");
+    await act(async () => {
+      Array.from(container.querySelectorAll('[data-testid="host-mention-suggestion-item"]'))
+        .find((item) => item.textContent?.includes("主机"))
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(input.value).toBe("@host-");
+
+    await act(async () => {
+      container
+        .querySelector('[data-testid="host-mention-suggestion-item"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await typeInComposer(input, `${input.value}查看 CPU 情况`);
+    await act(async () => {
+      container
+        .querySelector('[data-testid="omnibar-primary-action"]')
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(command.message.hostId).toBe("server-local");
+    expect(JSON.parse(command.message.metadata["aiops.hostops.mentions"])).toEqual([
+      expect.objectContaining({
+        raw: "@local",
+        value: "server-local",
+        hostId: "server-local",
+        address: "server-local",
+        displayName: "server-local",
+        source: "local_alias",
+        resolved: true,
+      }),
+    ]);
   });
 
   it("submits typed host mention before Chinese punctuation with host metadata", async () => {

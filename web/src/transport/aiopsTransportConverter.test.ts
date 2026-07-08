@@ -696,6 +696,43 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
+  it("passes workflow editor Agent-to-UI artifacts through assistant metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "workflow-result",
+          type: "workflow_patch_result",
+          titleZh: "Workflow Patch 结果",
+          status: "changed",
+          source: "workflow_editor",
+          inlineData: {
+            patchId: "patch-1",
+            effectStatus: "changed",
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+      agentUiArtifacts: [
+        expect.objectContaining({
+          id: "workflow-result",
+          type: "workflow_patch_result",
+          source: "workflow_editor",
+          inlineData: expect.objectContaining({
+            patchId: "patch-1",
+            effectStatus: "changed",
+          }),
+        }),
+      ],
+    });
+  });
+
   it("attaches context governance events to assistant message metadata", () => {
     const state = createState();
     state.turns["turn-1"] = {

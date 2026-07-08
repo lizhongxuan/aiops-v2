@@ -156,6 +156,28 @@ func TestRegistryServerManifestAppliesToDynamicToolDiscovery(t *testing.T) {
 	}
 }
 
+func TestRegistryRegistersRunnerCapabilityAsMCPWorkflowEditor(t *testing.T) {
+	r := NewRegistry()
+	if err := r.RegisterRunnerCapability([]tooling.Tool{mockTool{meta: tooling.ToolMetadata{Name: "workflow.get_snapshot", Pack: "workflow_editor"}}}); err != nil {
+		t.Fatalf("RegisterRunnerCapability() error = %v", err)
+	}
+	cfg, ok := r.GetServer("runner")
+	if !ok {
+		t.Fatal("runner server not registered")
+	}
+	if cfg.CapabilityDomain != "runner" || cfg.ToolPack != "workflow_editor" || cfg.Source != "builtin" {
+		t.Fatalf("runner config = %+v, want runner workflow_editor builtin capability", cfg)
+	}
+	tools := r.ListServerTools("runner")
+	if len(tools) != 1 {
+		t.Fatalf("runner tools = %d, want 1", len(tools))
+	}
+	meta := tools[0].Metadata()
+	if meta.MCPInfo.ServerID != "runner" || meta.Pack != "workflow_editor" {
+		t.Fatalf("runner tool metadata = %+v", meta)
+	}
+}
+
 func TestRegistryTracksServerInstructions(t *testing.T) {
 	r := NewRegistry()
 	if err := r.RegisterServer(ServerConfig{ID: "synthetic-docs", Name: "Synthetic Docs"}); err != nil {

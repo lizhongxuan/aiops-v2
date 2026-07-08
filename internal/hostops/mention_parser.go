@@ -46,12 +46,13 @@ func ParseHostMentions(input string) []HostMention {
 		source := HostMentionSourceHostnameLiteral
 		address := ""
 		display := token
-		if isIPLiteral(token) {
+		if isLocalAliasToken(token) {
+			source = HostMentionSourceLocalAlias
+			display = "server-local"
+			address = "server-local"
+		} else if isIPLiteral(token) {
 			source = HostMentionSourceIPLiteral
 			address = token
-		} else if isLocalAliasToken(token) {
-			source = HostMentionSourceLocalAlias
-			display = "local"
 		}
 		mentions = append(mentions, HostMention{
 			TokenID:     stableMentionTokenID(start, raw),
@@ -302,7 +303,12 @@ func isPlausibleHostToken(token string) bool {
 }
 
 func isLocalAliasToken(token string) bool {
-	return strings.EqualFold(strings.TrimSpace(token), "local")
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "local", "server-local", "localhost", "127.0.0.1", "::1", "[::1]":
+		return true
+	default:
+		return false
+	}
 }
 
 func isObservabilityMentionToken(token string) bool {

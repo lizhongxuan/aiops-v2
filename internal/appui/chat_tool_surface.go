@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	explicitOpsManualMentionPattern = regexp.MustCompile(`(?i)(^|[^\pL\pN_])@(ops_manuals|ops_manus)([^\pL\pN_]|$)`)
+	explicitOpsManualMentionPattern = regexp.MustCompile(`(?i)(^|[^\pL\pN_])@(ops_manual|ops_manuals)([^\pL\pN_]|$)`)
 	explicitOpsGraphMentionPattern  = regexp.MustCompile(`(?i)(^|[^\pL\pN_])@ops_graph([^\pL\pN_]|$)`)
 )
 
@@ -64,6 +64,7 @@ func applyChatRuntimeToolSurfaceMetadata(req *runtimekernel.TurnRequest, route C
 		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "host_ops")
 		applyHostOpsManagerRuntimeMetadata(req.Metadata)
 	}
+	applyWorkflowAgentRuntimeMetadata(req)
 }
 
 func applyWebSearchPolicyMetadata(metadata map[string]string, decision runtimekernel.WebSearchPolicyDecision) {
