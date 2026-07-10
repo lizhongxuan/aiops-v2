@@ -7,10 +7,26 @@ cd "${REPO_ROOT}"
 
 fail=0
 
+if [[ -n "${AIOPS_HARNESS_SCAN_ROOTS:-}" ]]; then
+  IFS=':' read -r -a scan_roots <<< "${AIOPS_HARNESS_SCAN_ROOTS}"
+else
+  scan_roots=("${REPO_ROOT}")
+fi
+
 run_rg() {
   local pattern="$1"
   shift
-  rg -n -P "$pattern" "$@" \
+
+  local -a scan_paths=()
+  local root
+  local path
+  for root in "${scan_roots[@]}"; do
+    for path in "$@"; do
+      scan_paths+=("${root%/}/${path}")
+    done
+  done
+
+  rg -n -P "$pattern" "${scan_paths[@]}" \
     --glob '!**/*_test.go' \
     --glob '!**/*.test.ts' \
     --glob '!**/*.test.tsx' \

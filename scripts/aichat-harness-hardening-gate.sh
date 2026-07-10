@@ -15,6 +15,7 @@ go test ./internal/appui ./internal/runtimekernel ./internal/resourcebinding -ru
 go test ./internal/eval -run 'Test.*Harness.*Golden' -count=1
 npm --prefix web run test -- src/transport/aiopsTransportConverter.test.ts src/chat/components/ProcessTranscript.test.tsx
 npm --prefix web run test -- src/transport/aiopsTransportRuntime.test.ts src/chat/inputMentions.test.ts src/chat/components/SpecialInputContextBar.test.tsx src/chat/components/HostMentionInlineOverlay.css.test.ts
+scripts/test-aiops-harness-contract-boundaries.sh
 scripts/check-aiops-harness-contract-boundaries.sh
 scripts/check-aiops-single-assistant-message.sh
 

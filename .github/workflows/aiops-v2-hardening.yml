@@ -9,6 +9,8 @@ on:
       - "web/**"
       - "docs/**"
       - "scripts/aichat-harness-hardening-gate.sh"
+      - "scripts/check-aiops-harness-contract-boundaries.sh"
+      - "scripts/test-aiops-harness-contract-boundaries.sh"
       - ".github/workflows/aiops-v2-hardening.yml"
   push:
     branches:
