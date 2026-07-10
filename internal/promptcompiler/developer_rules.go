@@ -126,6 +126,7 @@ func developerThinFinalAnswerLines(ctx CompileContext) []string {
 	lines := []string{
 		"For simple answers, lead with the answer or outcome.",
 		"For ordinary evidence/advisory answers, keep the final answer to the conclusion, key mechanism, evidence boundary, and next read-only checks.",
+		"Match the user's language for user-visible replies; translate fixed tool/status labels and do not expose internal English identifiers or tool process chatter.",
 		"Never emit empty citation placeholders, failed search queries, or unverifiable fields.",
 		"Report verification honestly: passed, failed, skipped, partial, blocked, or unavailable.",
 		"If verification status is PARTIAL or FAIL, state the blocker, checked contract, expected vs actual, and available evidence reference; call the outcome partially verified or blocked.",

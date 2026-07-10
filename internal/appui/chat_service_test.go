@@ -1043,6 +1043,231 @@ func TestChatService_SendMessageDoesNotMarkCorootRCAWithoutMention(t *testing.T)
 	}
 }
 
+func TestChatServiceCorootMentionPersistsForFollowupTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-coroot-followup", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-followup",
+		Content:   "@Coroot 查看有哪些异常",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-coroot","sigil":"@","display":"@Coroot","rawText":"@Coroot","kind":"capability","path":"capability://coroot","source":"selection","range":{"start":0,"end":7}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-followup",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("follow-up coroot allowed = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("follow-up route mode = %q, want %q; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "true" {
+		t.Fatalf("follow-up explicit RCA = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.mentions.observabilityProvider"]; got != "coroot" {
+		t.Fatalf("follow-up observability provider = %q, want coroot; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "special_input_memory" {
+		t.Fatalf("follow-up context source = %q, want special_input_memory; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceCorootMentionDoesNotPersistIntoGreetingTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-coroot-greeting", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-greeting",
+		Content:   "@Coroot 查看有哪些异常",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-coroot","sigil":"@","display":"@Coroot","rawText":"@Coroot","kind":"capability","path":"capability://coroot","source":"selection","range":{"start":0,"end":7}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-greeting",
+		Content:   "你好",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "false" {
+		t.Fatalf("greeting coroot allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteAdvisory) {
+		t.Fatalf("greeting route mode = %q, want %q; metadata=%#v", got, ChatRouteAdvisory, runReq.Metadata)
+	}
+	assertMetadataListNotContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListNotContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "false" {
+		t.Fatalf("greeting explicit RCA = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.mentions.observabilityProvider"]; got == "coroot" {
+		t.Fatalf("greeting observability provider = %q, want no coroot provider; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "" {
+		t.Fatalf("greeting context source = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.answer.smalltalkOnly"]; got != "true" {
+		t.Fatalf("greeting smalltalk metadata = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["answerStyle"]; got != "smalltalk" {
+		t.Fatalf("greeting answerStyle = %q, want smalltalk; metadata=%#v", got, runReq.Metadata)
+	}
+	if runReq.SpecialInputReadPlan != nil {
+		t.Fatalf("greeting SpecialInputReadPlan = %#v, want nil so Coroot memory is not injected into model input", runReq.SpecialInputReadPlan)
+	}
+}
+
+func TestChatServiceRawCorootMentionPersistsForFollowupTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-raw-coroot-followup", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-raw-coroot-followup",
+		Content:   "@coroot 查看有哪些异常",
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-raw-coroot-followup",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("follow-up coroot allowed = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("follow-up route mode = %q, want %q; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "special_input_memory" {
+		t.Fatalf("follow-up context source = %q, want special_input_memory; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceRestoresCorootContextFromLegacySessionHistory(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-coroot-legacy-history", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.Messages = append(session.Messages, runtimekernel.Message{
+		ID:      "msg-legacy-coroot",
+		Role:    "user",
+		Content: "@Coroot 查看有哪些异常",
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-legacy-history",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("coroot allowed = %q, want true from legacy session history; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("route mode = %q, want %q from legacy session history; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "session_history" {
+		t.Fatalf("context source = %q, want session_history; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestShouldActivatePriorCorootContextForInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "greeting", input: "你好", want: false},
+		{name: "thanks", input: "谢谢", want: false},
+		{name: "ack", input: "好的", want: false},
+		{name: "service entity", input: "aiops-host-agent", want: true},
+		{name: "incident followup", input: "继续分析 rabbitmq-server 的异常", want: true},
+		{name: "service question", input: "这个服务为什么一直重启", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldActivatePriorCorootContextForInput(tt.input); got != tt.want {
+				t.Fatalf("shouldActivatePriorCorootContextForInput(%q)=%v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func assertMetadataListContainsForTest(t *testing.T, raw, want string) {
+	t.Helper()
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		if strings.EqualFold(strings.TrimSpace(part), strings.TrimSpace(want)) {
+			return
+		}
+	}
+	t.Fatalf("metadata list %q does not contain %q", raw, want)
+}
+
+func assertMetadataListNotContainsForTest(t *testing.T, raw, want string) {
+	t.Helper()
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		if strings.EqualFold(strings.TrimSpace(part), strings.TrimSpace(want)) {
+			t.Fatalf("metadata list %q contains %q", raw, want)
+		}
+	}
+}
+
 func TestChatService_SendMessageDoesNotDefaultNewHostSessionToServerLocal(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
@@ -2000,6 +2225,39 @@ func TestChatServiceShortFollowupUsesConcisePromptProfile(t *testing.T) {
 	}
 	if runReq.Metadata["reasoningEffort"] != "low" || runReq.Metadata["answerStyle"] != "concise" {
 		t.Fatalf("prompt profile metadata = %#v, want low/concise", runReq.Metadata)
+	}
+}
+
+func TestChatServiceCompleteExplanationFollowupKeepsDetailedPromptProfile(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-followup-complete-profile", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.Messages = []runtimekernel.Message{
+		{ID: "msg-user-1", Role: "user", Content: "讲一下 Go 并发基础", Timestamp: time.Now().Add(-time.Minute)},
+		{ID: "msg-assistant-1", Role: "assistant", Content: "先解释了 goroutine 和 mutex。", Timestamp: time.Now().Add(-30 * time.Second)},
+	}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   session.ID,
+		SessionType: string(runtimekernel.SessionTypeWorkspace),
+		Content:     "继续追问的完整答案也要写出来，还缺 channel、map、slice 底层实现，线程安全和阻塞原理",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata[metadataTurnFollowup]; got != "true" {
+		t.Fatalf("followup metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata[metadataAnswerRequireCompleteFollowup]; got != "true" {
+		t.Fatalf("complete followup metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["reasoningEffort"]; got == "low" {
+		t.Fatalf("reasoningEffort = %q, want not lowered for complete followup; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["answerStyle"]; got == "concise" {
+		t.Fatalf("answerStyle = %q, want not concise for complete followup; metadata=%#v", got, runReq.Metadata)
 	}
 }
 

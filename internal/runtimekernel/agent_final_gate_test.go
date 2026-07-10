@@ -44,6 +44,41 @@ func TestBuildDeterministicIncompleteFinal(t *testing.T) {
 	}
 }
 
+func TestBuildDeterministicIncompleteFinalCompactsRawStructuredEvidenceAndTranslatesToolNames(t *testing.T) {
+	got := buildDeterministicIncompleteFinal(incompleteFinalInput{
+		ConfirmedFacts: []string{
+			`{"categoryCounts":{"application":25,"control-plane":14,"monitoring":10},"evidenceRefs":["ev-services"]}`,
+			`{"evidenceRefs":["ev-incidents"],"incidents":[{"application":"rabbitmq-server"}]}`,
+		},
+		MissingEvidence: []string{
+			"read_mcp_resource 未成功返回证据；不能当作已检查结果。",
+			"read_mcp_resource 未成功返回证据；不能当作已检查结果。",
+		},
+		ReadOnlyChecks: []string{
+			"重新读取或替代核对 read_mcp_resource 对应的只读证据。",
+		},
+	})
+
+	for _, want := range []string{
+		"Coroot 服务概览已返回结构化证据。",
+		"Coroot 异常事件已返回结构化证据。",
+		"读取 MCP 资源 未成功返回证据；不能当作已检查结果。",
+		"重新读取或替代核对 读取 MCP 资源 对应的只读证据。",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("incomplete final missing %q: %s", want, got)
+		}
+	}
+	for _, unwanted := range []string{`"categoryCounts"`, "read_mcp_resource"} {
+		if strings.Contains(got, unwanted) {
+			t.Fatalf("incomplete final exposed %q: %s", unwanted, got)
+		}
+	}
+	if count := strings.Count(got, "读取 MCP 资源 未成功返回证据"); count != 1 {
+		t.Fatalf("duplicate missing evidence count = %d, want 1: %s", count, got)
+	}
+}
+
 func TestEvaluateFinalMessageBoundaryConstrainDoesNotRequestRewriteForConfidenceOnly(t *testing.T) {
 	decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
 		Text:                   "基于当前证据，更可能是 timeline 分叉。",

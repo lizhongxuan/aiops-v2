@@ -63,6 +63,76 @@ func TestSanitizeFinalAssistantContentBlocksRawToolCallMarkupEvenWhenEvidenceAll
 	}
 }
 
+func TestFinalMessageHasProcessIntentBlocksLeakedContextArtifactChatter(t *testing.T) {
+	raw := `让我直接读取证据引用： greaseardereread_context_artifact with the evidence IDs:So let me try reading the evidence refs directly. I'll also try one more level of the spill chain. theringatherread_context_artifact with evidence IDs:Let me try reading the evidence refs directly. I can see from the initial summaries that there's some useful data already. Let me try one more level. theevidenceThere's useful summary data already. Let me also try to get the incidents more directly. read_context_artifact`
+
+	if !finalMessageHasProcessIntent(raw) {
+		t.Fatalf("finalMessageHasProcessIntent=false, want leaked context-artifact chatter blocked")
+	}
+
+	decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
+		Text:                raw,
+		FinishReason:        "stop",
+		PendingToolIntent:   finalMessageHasProcessIntent(raw),
+		FinalEvidenceAction: string(FinalEvidenceActionAllow),
+	})
+	if decision.Action != FinalMessageBoundaryBlock {
+		t.Fatalf("boundary action=%q, want block: %#v", decision.Action, decision)
+	}
+	if !containsString(decision.Reasons, "pending_tool_or_process_intent") {
+		t.Fatalf("boundary reasons=%v, want pending_tool_or_process_intent", decision.Reasons)
+	}
+}
+
+func TestFinalMessageHasProcessIntentBlocksRepeatedCorootRCAChatter(t *testing.T) {
+	raw := strings.Repeat("SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。", 8)
+
+	if !finalMessageHasProcessIntent(raw) {
+		t.Fatalf("finalMessageHasProcessIntent=false, want repeated Coroot RCA chatter blocked")
+	}
+
+	decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
+		Text:                raw,
+		FinishReason:        "stop",
+		PendingToolIntent:   finalMessageHasProcessIntent(raw),
+		FinalEvidenceAction: string(FinalEvidenceActionAllow),
+	})
+	if decision.Action != FinalMessageBoundaryBlock {
+		t.Fatalf("boundary action=%q, want block: %#v", decision.Action, decision)
+	}
+	if !containsString(decision.Reasons, "pending_tool_or_process_intent") {
+		t.Fatalf("boundary reasons=%v, want pending_tool_or_process_intent", decision.Reasons)
+	}
+}
+
+func TestSanitizeIncompleteFinalUserLineHidesLeakedContextArtifactChatter(t *testing.T) {
+	raw := `让我直接读取证据引用： read_context_artifact with the evidence IDs: Let me try reading the evidence refs directly.`
+	got := sanitizeIncompleteFinalUserLine(raw)
+
+	for _, forbidden := range []string{"read_context_artifact", "evidence IDs", "Let me try", "try reading"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized line leaked %q: %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "工具读取过程") {
+		t.Fatalf("sanitized line = %q, want user-visible tool-process fallback", got)
+	}
+}
+
+func TestSanitizeIncompleteFinalUserLineHidesRepeatedCorootRCAChatter(t *testing.T) {
+	raw := strings.Repeat("SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。", 4)
+	got := sanitizeIncompleteFinalUserLine(raw)
+
+	for _, forbidden := range []string{"SERVICE_NAME", "ERVICE_NAME", "rabbitmq-server。让我获取RCA上下文"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("sanitized line leaked %q: %s", forbidden, got)
+		}
+	}
+	if !strings.Contains(got, "工具读取过程") {
+		t.Fatalf("sanitized line = %q, want user-visible tool-process fallback", got)
+	}
+}
+
 func TestSynthesisOnlyPromptsForbidToolCallMarkup(t *testing.T) {
 	for _, prompt := range []string{synthesisOnlyPromptAsset(2), publicWebSynthesisOnlyPromptAsset(2)} {
 		for _, want := range []string{"不要输出 tool_calls", "DSML", "invoke"} {

@@ -1,9 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { AppShell } from "@/app/AppShell";
+import { AppShellChromeProvider, useRegisterAppShellWorkspace } from "@/app/AppShellChromeContext";
 import { AppRouter as RawAppRouter } from "@/router";
 
 const routedPaths = [
@@ -11,6 +13,10 @@ const routedPaths = [
   "/protocol",
   "/incidents",
   "/incidents/incident-1",
+  "/coroot",
+  "/coroot/config",
+  "/coroot/p/5hxbfx6p/applications",
+  "/coroot/p/5hxbfx6p/logs",
   "/erp",
   "/opsgraph",
   "/opsgraph/graphs",
@@ -24,6 +30,7 @@ const routedPaths = [
   "/settings",
   "/settings/llm",
   "/settings/runtime",
+  "/settings/coroot",
   "/settings/hosts",
   "/settings/ops-manuals",
   "/settings/experience-packs",
@@ -51,7 +58,9 @@ function createTestQueryClient() {
 function AppRouter() {
   return (
     <QueryClientProvider client={createTestQueryClient()}>
-      <RawAppRouter />
+      <AppShellChromeProvider>
+        <RawAppRouter />
+      </AppShellChromeProvider>
     </QueryClientProvider>
   );
 }
@@ -90,10 +99,116 @@ describe("AppRouter", () => {
         </MemoryRouter>,
       );
     });
+    await flushRouteWork();
 
-    expect(container.textContent).toContain("V2");
-    expect(container.textContent).toContain("AIOPS");
+    if (path.startsWith("/coroot/p/")) {
+      expect(container.textContent).toContain("返回 AIOps");
+    } else {
+      expect(container.textContent).toContain("V2");
+      expect(container.textContent).toContain("AIOPS");
+    }
     expect(container.textContent?.trim()).not.toBe("");
+  });
+
+  it("shows Coroot as a main navigation item", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/"]}>
+          <AppRouter />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain("Coroot");
+  });
+
+  it("moves global configuration links into the bottom settings menu", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/incidents"]}>
+          <AppRouter />
+        </MemoryRouter>,
+      );
+    });
+    await flushRouteWork();
+
+    const sidebar = container.querySelector('[data-testid="app-shell-sidebar"]');
+    const primaryNav = sidebar?.querySelector("nav");
+    expect(primaryNav?.textContent).not.toContain("LLM 配置");
+    expect(primaryNav?.textContent).not.toContain("运行时配置");
+
+    const settingsButton = container.querySelector('[data-testid="app-shell-settings-menu-button"]') as HTMLButtonElement | null;
+    expect(settingsButton).toBeTruthy();
+
+    await act(async () => {
+      settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const settingsMenu = container.querySelector('[data-testid="app-shell-settings-menu"]');
+    expect(settingsMenu?.textContent).toContain("LLM 配置");
+    expect(settingsMenu?.textContent).toContain("运行时配置");
+    expect(settingsMenu?.textContent).toContain("Coroot 监控");
+    expect(settingsMenu?.querySelector('a[href="/settings/llm"]')).toBeTruthy();
+    expect(settingsMenu?.querySelector('a[href="/settings/runtime"]')).toBeTruthy();
+    expect(settingsMenu?.querySelector('a[href="/settings/coroot"]')).toBeTruthy();
+  });
+
+  it("closes the bottom settings menu when clicking outside it", async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter initialEntries={["/capabilities"]}>
+          <AppRouter />
+        </MemoryRouter>,
+      );
+    });
+    await flushRouteWork();
+
+    const settingsButton = container.querySelector('[data-testid="app-shell-settings-menu-button"]') as HTMLButtonElement | null;
+    expect(settingsButton).toBeTruthy();
+
+    await act(async () => {
+      settingsButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(container.querySelector('[data-testid="app-shell-settings-menu"]')).toBeTruthy();
+
+    await act(async () => {
+      container.querySelector("main")?.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="app-shell-settings-menu"]')).toBeNull();
+  });
+
+  it("lets child routes register app shell workspace mode", async () => {
+    function WorkspaceChild() {
+      useRegisterAppShellWorkspace({
+        mode: "coroot",
+        sidebar: <div>返回 AIOps</div>,
+        hideHeader: true,
+        mainClassName: "overflow-hidden",
+      });
+      return <div>workspace</div>;
+    }
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={createTestQueryClient()}>
+          <AppShellChromeProvider>
+            <MemoryRouter initialEntries={["/workspace"]}>
+              <Routes>
+                <Route path="/" element={<AppShell />}>
+                  <Route path="/workspace" element={<WorkspaceChild />} />
+                </Route>
+              </Routes>
+            </MemoryRouter>
+          </AppShellChromeProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushRouteWork();
+
+    expect(container.querySelector('[data-testid="app-shell-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="app-shell-sidebar"]')?.textContent).toContain("返回 AIOps");
+    expect(container.querySelector("main")?.className).toContain("overflow-hidden");
   });
 
   it("redirects legacy hosts route to settings hosts", async () => {

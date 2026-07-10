@@ -317,10 +317,13 @@ func TestWorkflowAgentRuntimeMetadataRequiresExplicitDrawerFlag(t *testing.T) {
 	}
 }
 
-func TestBuildChatRuntimeRouteCorootMentionDoesNotBecomeHostOps(t *testing.T) {
+func TestBuildChatRuntimeRouteCorootMentionBecomesReadOnlyEvidenceRCA(t *testing.T) {
 	route := BuildChatRuntimeRoute("@Coroot 分析 order-api 延迟", nil, UserEvidenceExtraction{})
-	if route.Mode != ChatRouteAdvisory {
-		t.Fatalf("Mode = %q, want advisory without host mention", route.Mode)
+	if route.Mode != ChatRouteEvidenceRCA {
+		t.Fatalf("Mode = %q, want %q for Coroot evidence route", route.Mode, ChatRouteEvidenceRCA)
+	}
+	if route.AllowsExecCommand || route.RequiresHostBinding {
+		t.Fatalf("route = %#v, Coroot route should not become host-bound ops", route)
 	}
 	if !route.AllowsCorootRCA {
 		t.Fatalf("AllowsCorootRCA = false, want true")

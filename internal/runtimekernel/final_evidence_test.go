@@ -90,6 +90,60 @@ func TestBuildFinalEvidenceStateSkipsToolDiscoveryPayloads(t *testing.T) {
 	}
 }
 
+func TestBuildFinalEvidenceStateCompactsStructuredToolSummariesAndDeduplicatesFailures(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{
+				{ID: "call-services", Name: "coroot.list_services"},
+				{ID: "call-read-a", Name: "read_mcp_resource"},
+				{ID: "call-read-b", Name: "read_mcp_resource"},
+			},
+			ToolInvocations: []ToolInvocationState{
+				{
+					ToolCallID:  "call-read-a",
+					ToolName:    "read_mcp_resource",
+					Status:      ToolInvocationFailed,
+					FailureKind: string(toolfailure.KindToolBusinessError),
+				},
+				{
+					ToolCallID:  "call-read-b",
+					ToolName:    "read_mcp_resource",
+					Status:      ToolInvocationFailed,
+					FailureKind: string(toolfailure.KindToolBusinessError),
+				},
+			},
+			ToolResults: []ToolResult{
+				{
+					ToolCallID: "call-services",
+					Summary:    `{"categoryCounts":{"application":25,"control-plane":14,"monitoring":10},"evidenceRefs":["ev-services"]}`,
+				},
+			},
+		}},
+	}, nil)
+
+	if len(state.Checked) != 1 {
+		t.Fatalf("checked = %#v, want one readable Coroot summary", state.Checked)
+	}
+	if !strings.Contains(state.Checked[0].Summary, "Coroot 服务概览") {
+		t.Fatalf("checked summary = %q, want readable Coroot service summary", state.Checked[0].Summary)
+	}
+	if strings.Contains(state.Checked[0].Summary, `"categoryCounts"`) {
+		t.Fatalf("checked summary exposed raw JSON: %q", state.Checked[0].Summary)
+	}
+	if len(state.FailedTools) != 1 {
+		t.Fatalf("failed tools = %#v, want duplicate read failures collapsed", state.FailedTools)
+	}
+	if state.FailedTools[0].ToolName != "read_mcp_resource" {
+		t.Fatalf("failed tool = %#v, want original tool id preserved in state", state.FailedTools[0])
+	}
+	if !strings.Contains(state.FailedTools[0].Impact, "证据读取失败") {
+		t.Fatalf("failed impact = %q, want user-readable Chinese impact", state.FailedTools[0].Impact)
+	}
+	if strings.Contains(state.FailedTools[0].Impact, "required evidence") {
+		t.Fatalf("failed impact exposed internal English: %q", state.FailedTools[0].Impact)
+	}
+}
+
 func TestBuildFinalEvidenceStateSummarizesPublicWebEnvelope(t *testing.T) {
 	state := BuildFinalEvidenceState(&TurnSnapshot{
 		Iterations: []IterationState{{
@@ -107,6 +161,37 @@ func TestBuildFinalEvidenceStateSummarizesPublicWebEnvelope(t *testing.T) {
 	summary := state.Checked[0].Summary
 	if !strings.Contains(summary, "公开网页搜索已返回 1 个来源") || strings.Contains(summary, `"operation"`) {
 		t.Fatalf("summary = %q, want readable public web summary without raw envelope", summary)
+	}
+}
+
+func TestBuildFinalEvidenceStateSkipsCoveredReadReuseResults(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{
+				{ID: "call-list-all", Name: "coroot_list_services"},
+				{ID: "call-list-warning", Name: "coroot_list_services"},
+			},
+			ToolResults: []ToolResult{
+				{
+					ToolCallID: "call-list-all",
+					Content:    `{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"ok","statusCounts":{"warning":1}}`,
+				},
+				{
+					ToolCallID: "call-list-warning",
+					Content:    `{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"reused","skipReason":"covered_by_prior_broad_query","evidenceRefs":[]}`,
+					Display: &ToolDisplayPayload{
+						Type: "coroot.reuse",
+					},
+				},
+			},
+		}},
+	}, nil)
+
+	if len(state.Checked) != 1 {
+		t.Fatalf("checked evidence = %#v, want only real tool result", state.Checked)
+	}
+	if state.Checked[0].ToolCallID != "call-list-all" {
+		t.Fatalf("checked evidence call = %q, want call-list-all", state.Checked[0].ToolCallID)
 	}
 }
 

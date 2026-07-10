@@ -311,6 +311,25 @@ func TestBuiltinPluginSpecLayersCorootToolsIntoDeferredPacks(t *testing.T) {
 	}
 }
 
+func TestBuiltinPluginSpecMatchesBroadCorootAnomalyPrompt(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	registerCorootPluginForTest(t, mcpRegistry)
+	assembler := tooling.NewAssembler(tooling.NewRegistry(), mcpRegistry)
+	catalog := assembler.AssembleToolsWithOptions("workspace", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true})
+
+	matches := tooling.MatchToolPacksByMetadata(catalog, "@Coroot 查看有哪些异常")
+	packs := map[string]bool{}
+	for _, match := range matches {
+		packs[match.Pack] = true
+	}
+
+	for _, want := range []string{"mcp_dynamic_coroot", "coroot_incident"} {
+		if !packs[want] {
+			t.Fatalf("matched packs = %#v, want %s for broad Coroot anomaly prompt", matches, want)
+		}
+	}
+}
+
 func corootToolNames(tools []tooling.Tool) []string {
 	names := make([]string, 0, len(tools))
 	for _, tool := range tools {

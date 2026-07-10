@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/skills"
+	"aiops-v2/internal/tooling"
 )
 
 type MandatorySkillDecision struct {
@@ -139,6 +140,42 @@ func mandatorySkillRetryPrompt(decision MandatorySkillDecision) string {
 		strings.Join(decision.RequiredSkills, ", "),
 		strings.Join(decision.Reasons, ", "),
 	)
+}
+
+func mandatorySkillActivationSatisfiedByToolSurface(decision MandatorySkillDecision, tools []tooling.Tool) bool {
+	if decision.Action != "require_skill_read" || len(decision.RequiredSkills) == 0 {
+		return false
+	}
+	for _, skillName := range decision.RequiredSkills {
+		switch strings.ToLower(strings.TrimSpace(skillName)) {
+		case "coroot-evidence":
+			if !toolSurfaceHasCorootEvidenceTool(tools) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func toolSurfaceHasCorootEvidenceTool(tools []tooling.Tool) bool {
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if meta.Mutating || meta.RequiresApproval {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(meta.Name))
+		pack := strings.ToLower(strings.TrimSpace(meta.Pack))
+		domain := strings.ToLower(strings.TrimSpace(meta.Domain))
+		if domain == "coroot" || strings.HasPrefix(name, "coroot.") || strings.HasPrefix(pack, "coroot") || pack == "mcp_dynamic_coroot" {
+			return true
+		}
+	}
+	return false
 }
 
 func containsFoldToken(text, needle string) bool {

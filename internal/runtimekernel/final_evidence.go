@@ -417,6 +417,9 @@ func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 			if strings.TrimSpace(result.Error) != "" {
 				continue
 			}
+			if isCoveredReadReuseResult(result) {
+				continue
+			}
 			toolName := strings.TrimSpace(toolNames[result.ToolCallID])
 			summary := checkedEvidenceSummaryForToolResult(toolName, result)
 			if summary == "" {
@@ -456,6 +459,12 @@ func checkedEvidenceSummaryForToolResult(toolName string, result ToolResult) str
 	}
 	if looksLikeToolDiscoveryPayload(summary) || looksLikeToolDiscoveryPayload(result.Content) {
 		return ""
+	}
+	if structured := structuredEvidenceSummaryForUser(toolName, summary); structured != "" {
+		return structured
+	}
+	if structured := structuredEvidenceSummaryForUser(toolName, result.Content); structured != "" {
+		return structured
 	}
 	if containsInternalFinalFallbackText(summary) {
 		return ""
@@ -586,11 +595,19 @@ func failedToolImpactsFromSnapshot(snapshot *TurnSnapshot) []FailedToolImpact {
 		return nil
 	}
 	out := make([]FailedToolImpact, 0, len(summaries))
+	seen := map[string]bool{}
 	for _, summary := range summaries {
+		toolName := strings.TrimSpace(summary.Tool)
+		failureClass := strings.TrimSpace(summary.FailureClass)
+		key := toolName + "\x00" + failureClass
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
 		out = append(out, FailedToolImpact{
-			ToolName:     strings.TrimSpace(summary.Tool),
-			FailureClass: strings.TrimSpace(summary.FailureClass),
-			Impact:       "required evidence may be missing; do not use this failed tool as checked evidence",
+			ToolName:     toolName,
+			FailureClass: failureClass,
+			Impact:       "证据读取失败，不能作为已检查结果",
 		})
 	}
 	return out

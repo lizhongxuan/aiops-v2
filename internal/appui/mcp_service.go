@@ -214,7 +214,9 @@ func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error
 		return err
 	}
 	if record.Disabled {
-		_ = s.disconnectRuntime(ctx, record.Name)
+		if usesExternalMCPRuntime(record.Transport) {
+			_ = s.disconnectRuntime(ctx, record.Name)
+		}
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
@@ -230,6 +232,10 @@ func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error
 		_ = s.persist(record)
 		return err
 	}
+	if !usesExternalMCPRuntime(record.Transport) {
+		s.markRegistryRecordConnected(&record)
+		return s.persist(record)
+	}
 	s.setRegistryDisabled(record.Name, false)
 	if err := s.connectRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
@@ -240,11 +246,7 @@ func (s *defaultMCPService) applyRuntime(ctx context.Context, name string) error
 		_ = s.persist(record)
 		return err
 	}
-	record.Status = "connected"
-	record.Error = ""
-	s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
-	record.ToolCount = s.registryToolCount(record.Name)
-	record.ResourceCount = s.registryResourceCount(record.Name)
+	s.markRegistryRecordConnected(&record)
 	return s.persist(record)
 }
 
@@ -259,7 +261,9 @@ func (s *defaultMCPService) refreshAll(ctx context.Context) error {
 	for _, item := range items {
 		record := cloneMCPServerRecord(item)
 		if record.Disabled {
-			_ = s.disconnectRuntime(ctx, record.Name)
+			if usesExternalMCPRuntime(record.Transport) {
+				_ = s.disconnectRuntime(ctx, record.Name)
+			}
 			s.setRegistryDisabled(record.Name, true)
 			record.Status = "disconnected"
 			record.Error = ""
@@ -268,15 +272,14 @@ func (s *defaultMCPService) refreshAll(ctx context.Context) error {
 			record.Status = "error"
 			record.Error = redactedMCPError(err)
 			s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
+		} else if !usesExternalMCPRuntime(record.Transport) {
+			s.markRegistryRecordConnected(&record)
 		} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 			record.Status = "error"
 			record.Error = redactedMCPError(err)
 			s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 		} else {
-			s.setRegistryDisabled(record.Name, false)
-			record.Status = "connected"
-			record.Error = ""
-			s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
+			s.markRegistryRecordConnected(&record)
 		}
 		record.ToolCount = s.registryToolCount(record.Name)
 		record.ResourceCount = s.registryResourceCount(record.Name)
@@ -293,7 +296,9 @@ func (s *defaultMCPService) refreshOne(ctx context.Context, name string) error {
 		return err
 	}
 	if record.Disabled {
-		_ = s.disconnectRuntime(ctx, record.Name)
+		if usesExternalMCPRuntime(record.Transport) {
+			_ = s.disconnectRuntime(ctx, record.Name)
+		}
 		s.setRegistryDisabled(record.Name, true)
 		record.Status = "disconnected"
 		record.Error = ""
@@ -306,17 +311,14 @@ func (s *defaultMCPService) refreshOne(ctx context.Context, name string) error {
 		record.Status = "error"
 		record.Error = redactedMCPError(err)
 		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
+	} else if !usesExternalMCPRuntime(record.Transport) {
+		s.markRegistryRecordConnected(&record)
 	} else if err := s.refreshRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
 		record.Error = redactedMCPError(err)
 		s.setRegistryHealth(record.Name, mcp.HealthUnavailable, err, nil)
 	} else {
-		s.setRegistryDisabled(record.Name, false)
-		record.Status = "connected"
-		record.Error = ""
-		s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
-		record.ToolCount = s.registryToolCount(record.Name)
-		record.ResourceCount = s.registryResourceCount(record.Name)
+		s.markRegistryRecordConnected(&record)
 	}
 	return s.persist(record)
 }
@@ -328,7 +330,9 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 	}
 	record.Disabled = disabled
 	if disabled {
-		_ = s.disconnectRuntime(ctx, record.Name)
+		if usesExternalMCPRuntime(record.Transport) {
+			_ = s.disconnectRuntime(ctx, record.Name)
+		}
 		record.Status = "disconnected"
 		record.Error = ""
 		s.setRegistryHealth(record.Name, mcp.HealthDisabled, nil, nil)
@@ -344,6 +348,10 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 		_ = s.persist(record)
 		return err
 	}
+	if !usesExternalMCPRuntime(record.Transport) {
+		s.markRegistryRecordConnected(&record)
+		return s.persist(record)
+	}
 	s.setRegistryDisabled(record.Name, false)
 	if err := s.connectRuntime(ctx, record.Name); err != nil {
 		record.Status = "error"
@@ -354,11 +362,7 @@ func (s *defaultMCPService) setDisabled(ctx context.Context, name string, disabl
 		_ = s.persist(record)
 		return err
 	}
-	record.Status = "connected"
-	record.Error = ""
-	s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, []string{"tools"})
-	record.ToolCount = s.registryToolCount(record.Name)
-	record.ResourceCount = s.registryResourceCount(record.Name)
+	s.markRegistryRecordConnected(&record)
 	return s.persist(record)
 }
 
@@ -490,6 +494,18 @@ func (s *defaultMCPService) setRegistryHealth(name string, status mcp.HealthStat
 		}
 		registry.SetServerHealthSnapshot(snapshot)
 	}
+}
+
+func (s *defaultMCPService) markRegistryRecordConnected(record *store.MCPServerRecord) {
+	if record == nil {
+		return
+	}
+	s.setRegistryDisabled(record.Name, false)
+	record.Status = "connected"
+	record.Error = ""
+	record.ToolCount = s.registryToolCount(record.Name)
+	record.ResourceCount = s.registryResourceCount(record.Name)
+	s.setRegistryHealth(record.Name, mcp.HealthHealthy, nil, mcpCapabilitiesForCounts(record.ToolCount, record.ResourceCount))
 }
 
 func (s *defaultMCPService) connectRuntime(ctx context.Context, name string) error {
@@ -691,7 +707,15 @@ func healthForRegistry(registry *mcp.Registry, name string, disabled bool) mcp.H
 		return mcp.HealthSnapshot{ServerID: name, Status: mcp.HealthUnknown}
 	}
 	if snapshot, ok := registry.GetServerHealthSnapshot(name); ok {
+		if shouldTreatBuiltinRuntimeTransportErrorAsRegistered(registry, name, snapshot) {
+			if registered, ok := registeredBuiltinHealth(registry, name); ok {
+				return registered
+			}
+		}
 		return snapshot
+	}
+	if registered, ok := registeredBuiltinHealth(registry, name); ok {
+		return registered
 	}
 	return mcp.HealthSnapshot{ServerID: name, Status: mcp.HealthUnknown, TTLSeconds: int(mcp.DefaultHealthTTL.Seconds())}
 }
@@ -699,12 +723,16 @@ func healthForRegistry(registry *mcp.Registry, name string, disabled bool) mcp.H
 func mcpHealthViewFromServer(server MCPServerView, displayNames map[string]string) MCPHealthView {
 	health := server.Health
 	serverID := firstNonEmpty(strings.TrimSpace(health.ServerID), strings.TrimSpace(server.Name))
+	lastError := strings.TrimSpace(health.LastError)
+	if lastError == "" && healthAllowsRecordErrorFallback(health.Status) {
+		lastError = strings.TrimSpace(server.Error)
+	}
 	view := MCPHealthView{
 		ServerID:           serverID,
 		DisplayName:        firstNonEmpty(strings.TrimSpace(displayNames[serverID]), strings.TrimSpace(server.Name)),
 		Status:             runtimeHealthStatus(health.Status, server.Disabled),
 		LastCheckedAt:      isoStamp(health.LastCheckedAt),
-		LastError:          mcp.RedactHealthError(firstNonEmpty(health.LastError, server.Error)),
+		LastError:          mcp.RedactHealthError(lastError),
 		AvailableToolCount: server.ToolCount,
 		RetryAfterSeconds:  health.TTLSeconds,
 	}
@@ -712,6 +740,73 @@ func mcpHealthViewFromServer(server MCPServerView, displayNames map[string]strin
 		view.DisabledReason = "server_disabled"
 	}
 	return view
+}
+
+func healthAllowsRecordErrorFallback(status mcp.HealthStatus) bool {
+	switch status {
+	case mcp.HealthHealthy, mcp.HealthDegraded:
+		return false
+	default:
+		return true
+	}
+}
+
+func shouldTreatBuiltinRuntimeTransportErrorAsRegistered(registry *mcp.Registry, name string, snapshot mcp.HealthSnapshot) bool {
+	if snapshot.Status != mcp.HealthUnavailable {
+		return false
+	}
+	if !strings.Contains(strings.ToLower(snapshot.LastError), "unsupported transport") {
+		return false
+	}
+	cfg, ok := registry.GetServer(name)
+	return ok && !usesExternalMCPRuntime(cfg.Transport)
+}
+
+func registeredBuiltinHealth(registry *mcp.Registry, name string) (mcp.HealthSnapshot, bool) {
+	if registry == nil {
+		return mcp.HealthSnapshot{}, false
+	}
+	cfg, ok := registry.GetServer(name)
+	if !ok || usesExternalMCPRuntime(cfg.Transport) {
+		return mcp.HealthSnapshot{}, false
+	}
+	toolCount := len(registry.ListServerTools(name))
+	resourceCount := len(registry.ListResources(name))
+	if toolCount == 0 && resourceCount == 0 {
+		return mcp.HealthSnapshot{}, false
+	}
+	now := time.Now()
+	return mcp.HealthSnapshot{
+		ServerID:      name,
+		Status:        mcp.HealthHealthy,
+		LastCheckedAt: now,
+		LastSuccessAt: now,
+		TTLSeconds:    int(mcp.DefaultHealthTTL.Seconds()),
+		Capabilities:  mcpCapabilitiesForCounts(toolCount, resourceCount),
+	}, true
+}
+
+func usesExternalMCPRuntime(transport string) bool {
+	switch strings.ToLower(strings.TrimSpace(transport)) {
+	case "http", "stdio":
+		return true
+	default:
+		return false
+	}
+}
+
+func mcpCapabilitiesForCounts(toolCount, resourceCount int) []string {
+	capabilities := make([]string, 0, 2)
+	if toolCount > 0 {
+		capabilities = append(capabilities, "tools")
+	}
+	if resourceCount > 0 {
+		capabilities = append(capabilities, "resources")
+	}
+	if len(capabilities) == 0 {
+		capabilities = append(capabilities, "builtin")
+	}
+	return capabilities
 }
 
 func runtimeHealthStatus(status mcp.HealthStatus, disabled bool) string {

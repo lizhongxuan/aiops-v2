@@ -251,10 +251,12 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 
 	resourceOpts := []ResourceServerOption{}
+	var corootRepo appui.CorootConfigRepository
 	if provider, ok := s.ui.(interface {
 		CorootConfigRepository() appui.CorootConfigRepository
 	}); ok {
 		if repo := provider.CorootConfigRepository(); repo != nil {
+			corootRepo = repo
 			resourceOpts = append(resourceOpts, WithCorootConfigRepository(repo))
 		}
 	}
@@ -276,6 +278,12 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/turn/resume", s.handleResumeTurn)
 	s.mux.HandleFunc("/api/v1/turn/cancel", s.handleCancelTurn)
 	s.mux.Handle("/ws", s.appWebSocketHandler())
+
+	if corootRepo != nil {
+		gateway := newCorootUIGateway(corootRepo)
+		s.mux.Handle("/_coroot/", gateway)
+		s.mux.Handle("/_coroot", gateway)
+	}
 
 	if s.web != nil {
 		s.mux.Handle("/", s.web)

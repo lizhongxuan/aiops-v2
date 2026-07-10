@@ -206,6 +206,18 @@ func TestSemanticPromptProgressUpdatesAreScoped(t *testing.T) {
 	})
 }
 
+func TestSemanticPromptUserVisibleRepliesMatchUserLanguage(t *testing.T) {
+	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
+	if err != nil {
+		t.Fatalf("Compile failed: %v", err)
+	}
+	assertPromptContainsAll(t, "developer", compiled.Developer.Content, []string{
+		"Match the user's language",
+		"translate fixed tool/status labels",
+		"do not expose internal English identifiers",
+	})
+}
+
 func TestSemanticPromptKeepsRCAInFinalAnswerWithInlineSources(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "chat"})
 	if err != nil {

@@ -205,11 +205,70 @@ func TestTerminalAPI_CreateRejectsHostWithoutTerminalPermission(t *testing.T) {
 	if createResp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("POST status = %d, want 400", createResp.StatusCode)
 	}
-	var payload map[string]string
+	var payload struct {
+		Code  string `json:"code"`
+		Error string `json:"error"`
+	}
 	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
 		t.Fatalf("decode error response: %v", err)
 	}
-	if !strings.Contains(payload["error"], "terminal is not enabled") {
-		t.Fatalf("error = %q, want terminal permission message", payload["error"])
+	if payload.Code != "terminal_not_enabled" {
+		t.Fatalf("code = %q, want terminal_not_enabled", payload.Code)
+	}
+	if !strings.Contains(payload.Error, "terminal is not enabled") {
+		t.Fatalf("error = %q, want terminal permission message", payload.Error)
+	}
+}
+
+func TestTerminalAPI_CreateReturnsActionableGuidanceForMissingSSHSecret(t *testing.T) {
+	sessionMgr := runtimekernel.NewSessionManager()
+	terminalMgr := terminal.NewManager(terminal.WithCommandFactory(func(req terminal.CreateSessionRequest) (*exec.Cmd, error) {
+		return nil, fmt.Errorf("read ssh credential secret://hosts/remote/ssh-password: open .data/secrets/hosts/remote/ssh-password: no such file or directory")
+	}))
+	srv := NewHTTPServer(
+		appui.NewServices(sessionAPITestRuntime{}, sessionMgr, appui.WithTerminalManager(terminalMgr)),
+		WithTerminalManager(terminalMgr),
+	)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	createBody, _ := json.Marshal(map[string]any{"hostId": "remote"})
+	createResp, err := http.Post(ts.URL+"/api/v1/terminal/sessions", "application/json", bytes.NewReader(createBody))
+	if err != nil {
+		t.Fatalf("POST /api/v1/terminal/sessions error = %v", err)
+	}
+	defer createResp.Body.Close()
+
+	if createResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST status = %d, want 400", createResp.StatusCode)
+	}
+	var payload struct {
+		Code        string   `json:"code"`
+		Error       string   `json:"error"`
+		Message     string   `json:"message"`
+		Detail      string   `json:"detail"`
+		Diagnostics []string `json:"diagnostics"`
+		NextSteps   []string `json:"nextSteps"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if payload.Code != "ssh_credential_secret_missing" {
+		t.Fatalf("code = %q, want ssh_credential_secret_missing; payload = %+v", payload.Code, payload)
+	}
+	if !strings.Contains(payload.Message, "SSH 凭证文件缺失") {
+		t.Fatalf("message = %q, want user-facing credential message", payload.Message)
+	}
+	if !strings.Contains(payload.Detail, "read ssh credential") {
+		t.Fatalf("detail = %q, want raw diagnostic detail", payload.Detail)
+	}
+	if strings.Join(payload.Diagnostics, "\n") == "" || !strings.Contains(strings.Join(payload.Diagnostics, "\n"), "AIOPS_DATA_DIR") {
+		t.Fatalf("diagnostics = %+v, want AIOPS_DATA_DIR diagnostic hint", payload.Diagnostics)
+	}
+	if strings.Join(payload.NextSteps, "\n") == "" || !strings.Contains(strings.Join(payload.NextSteps, "\n"), "重新输入 SSH 密码") {
+		t.Fatalf("nextSteps = %+v, want re-enter password guidance", payload.NextSteps)
+	}
+	if payload.Error == "" {
+		t.Fatalf("error must remain populated for old clients")
 	}
 }

@@ -16,15 +16,18 @@ import (
 )
 
 type liveCorootConfig struct {
-	BaseURL string `json:"baseUrl"`
-	Token   string `json:"token"`
-	Project string `json:"project"`
-	Timeout string `json:"timeout"`
+	BaseURL         string `json:"baseUrl"`
+	ProductBasePath string `json:"productBasePath"`
+	Token           string `json:"token"`
+	Username        string `json:"username"`
+	Password        string `json:"password"`
+	Project         string `json:"project"`
+	Timeout         string `json:"timeout"`
 }
 
 func TestLiveCorootMCPTools(t *testing.T) {
 	cfg, client, timeout := newLiveCorootClient(t)
-	ctx, cancel := context.WithTimeout(context.Background(), timeout*2)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout*4)
 	defer cancel()
 	tools := corootToolsWithClient(client)
 
@@ -40,35 +43,90 @@ func TestLiveCorootMCPTools(t *testing.T) {
 	if incidentID != "" {
 		t.Logf("coroot live smoke target incident: %s", incidentID)
 	}
+	nodes := liveExecuteTool(t, ctx, tools, "coroot.nodes_overview", map[string]any{"project": projectArg})
+	nodeID := chooseLiveNodeID(nodes)
+	if nodeID != "" {
+		t.Logf("coroot live smoke target node: %s", nodeID)
+	}
+	dashboardID, panelID := chooseLiveDashboardCandidate(t, ctx, client, projectArg)
+	if dashboardID != "" {
+		t.Logf("coroot live smoke target dashboard: %s panel=%s", dashboardID, panelID)
+	}
+	integrations := liveExecuteTool(t, ctx, tools, "coroot.list_integrations", map[string]any{"project": projectArg})
+	integrationType := chooseLiveIntegrationType(integrations)
+	if integrationType != "" {
+		t.Logf("coroot live smoke target integration: %s", integrationType)
+	}
+	inspections := liveExecuteTool(t, ctx, tools, "coroot.list_inspections", map[string]any{"project": projectArg})
+	inspectionType := chooseLiveInspectionType(inspections)
+	if inspectionType != "" {
+		t.Logf("coroot live smoke target inspection: %s", inspectionType)
+	}
 
-	cases := []struct {
-		name string
-		args map[string]any
-	}{
+	cases := []liveSmokeCase{
 		{name: "coroot.list_services", args: map[string]any{"project": projectArg}},
+		{name: "coroot.health_check", args: map[string]any{}},
+		{name: "coroot.list_projects", args: map[string]any{}},
+		{name: "coroot.get_project_status", args: map[string]any{"project": projectArg}},
 		{name: "coroot.collect_rca_context", args: map[string]any{"project": projectArg, "service": service, "timeRange": "1h", "depth": 2, "limit": 10}},
 		{name: "coroot.service_metrics", args: map[string]any{"project": projectArg, "service": service, "timeRange": "1h", "metrics": []string{"latency", "errors", "throughput", "cpu", "memory"}}},
 		{name: "coroot.rca_report", args: map[string]any{"project": projectArg, "service": service}},
 		{name: "coroot.service_topology", args: map[string]any{"project": projectArg, "service": service, "depth": 2}},
+		{name: "coroot.nodes_overview", args: map[string]any{"project": projectArg}},
+		{name: "coroot.traces_overview", args: map[string]any{"project": projectArg}},
+		{name: "coroot.deployments_overview", args: map[string]any{"project": projectArg}},
+		{name: "coroot.risks_overview", args: map[string]any{"project": projectArg}},
+		{name: "coroot.application_logs", args: map[string]any{"project": projectArg, "service": service, "limit": 5}},
+		{name: "coroot.application_traces", args: map[string]any{"project": projectArg, "service": service, "limit": 5}},
+		{name: "coroot.application_profiling", args: map[string]any{"project": projectArg, "service": service, "limit": 5}},
 		{name: "coroot.alert_rules", args: map[string]any{"project": projectArg}},
 		{name: "coroot.incidents", args: map[string]any{"project": projectArg, "limit": 20, "showResolved": true}},
 		{name: "coroot.slo_status", args: map[string]any{"project": projectArg, "service": service}},
+		{name: "coroot.list_dashboards", args: map[string]any{"project": projectArg}},
+		{name: "coroot.list_integrations", args: map[string]any{"project": projectArg}},
+		{name: "coroot.list_inspections", args: map[string]any{"project": projectArg}},
+		{name: "coroot.get_application_categories", args: map[string]any{"project": projectArg}},
+		{name: "coroot.get_custom_applications", args: map[string]any{"project": projectArg}},
+	}
+	if nodeID != "" {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_node", args: map[string]any{"project": projectArg, "nodeId": nodeID}})
+	} else {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_node", skipReason: "no live node found in coroot.nodes_overview"})
 	}
 	if incidentID != "" {
-		cases = append(cases, struct {
-			name string
-			args map[string]any
-		}{name: "coroot.incident_timeline", args: map[string]any{"project": projectArg, "incidentId": incidentID}})
+		cases = append(cases, liveSmokeCase{name: "coroot.incident_timeline", args: map[string]any{"project": projectArg, "incidentId": incidentID}})
 	} else {
-		cases = append(cases, struct {
-			name string
-			args map[string]any
-		}{name: "coroot.incident_timeline", args: map[string]any{"project": projectArg, "incidentId": "__missing_live_incident__"}})
+		cases = append(cases, liveSmokeCase{name: "coroot.incident_timeline", skipReason: "no live incident found in coroot.incidents"})
 	}
+	if dashboardID != "" {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_dashboard", args: map[string]any{"project": projectArg, "dashboardId": dashboardID}})
+	} else {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_dashboard", skipReason: "no live dashboard found in coroot.list_dashboards"})
+	}
+	if dashboardID != "" && panelID != "" {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_panel_data", args: map[string]any{"project": projectArg, "dashboardId": dashboardID, "panelId": panelID}})
+	} else {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_panel_data", skipReason: "no live dashboard panel found in Coroot"})
+	}
+	if integrationType != "" {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_integration", args: map[string]any{"project": projectArg, "integrationType": integrationType}})
+	} else {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_integration", skipReason: "no live integration found in coroot.list_integrations"})
+	}
+	if inspectionType != "" {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_inspection_config", args: map[string]any{"project": projectArg, "service": service, "inspectionType": inspectionType}})
+	} else {
+		cases = append(cases, liveSmokeCase{name: "coroot.get_inspection_config", skipReason: "no live inspection found in coroot.list_inspections"})
+	}
+	assertLiveMatrixCoversAllCorootTools(t, tools, cases)
 
 	results := make([]liveSmokeResult, 0, len(cases))
 	for _, tc := range cases {
-		body := liveExecuteTool(t, ctx, tools, tc.name, tc.args)
+		if strings.TrimSpace(tc.skipReason) != "" {
+			results = append(results, liveSmokeResult{Tool: tc.name, Status: "skipped", ErrorBrief: tc.skipReason})
+			continue
+		}
+		body := liveTryExecuteTool(t, ctx, tools, tc.name, tc.args)
 		results = append(results, liveSmokeResult{
 			Tool:       tc.name,
 			Status:     stringField(body, "status"),
@@ -83,13 +141,166 @@ func TestLiveCorootMCPTools(t *testing.T) {
 	}
 	var failed []liveSmokeResult
 	for _, result := range results {
-		if result.Status != "ok" {
+		if result.Status != "ok" && result.Status != "skipped" {
 			failed = append(failed, result)
 		}
 	}
 	if len(failed) > 0 {
 		t.Fatalf("Coroot live MCP smoke failed for %d/%d tools: %#v", len(failed), len(results), failed)
 	}
+}
+
+type liveSmokeCase struct {
+	name       string
+	args       map[string]any
+	skipReason string
+}
+
+func assertLiveMatrixCoversAllCorootTools(t *testing.T, tools []tooling.Tool, cases []liveSmokeCase) {
+	t.Helper()
+	seen := map[string]int{}
+	for _, tc := range cases {
+		seen[tc.name]++
+	}
+	var missing []string
+	var duplicates []string
+	for name, count := range seen {
+		if count > 1 {
+			duplicates = append(duplicates, name)
+		}
+	}
+	for _, tool := range tools {
+		name := tool.Metadata().Name
+		if !strings.HasPrefix(name, "coroot.") {
+			continue
+		}
+		if seen[name] == 0 {
+			missing = append(missing, name)
+		}
+	}
+	sort.Strings(missing)
+	sort.Strings(duplicates)
+	if len(missing) > 0 || len(duplicates) > 0 {
+		t.Fatalf("live Coroot matrix coverage mismatch: missing=%v duplicates=%v", missing, duplicates)
+	}
+}
+
+func liveTryExecuteTool(t *testing.T, ctx context.Context, tools []tooling.Tool, name string, args map[string]any) map[string]any {
+	t.Helper()
+	tool := liveToolByName(t, tools, name)
+	data, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal args for %s: %v", name, err)
+	}
+	result, err := tool.Execute(ctx, data)
+	if err != nil {
+		return map[string]any{
+			"schemaVersion": corootSchemaVersion,
+			"tool":          name,
+			"status":        "execute_error",
+			"error":         map[string]any{"message": err.Error()},
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+		return map[string]any{
+			"schemaVersion": corootSchemaVersion,
+			"tool":          name,
+			"status":        "decode_error",
+			"error":         map[string]any{"message": err.Error()},
+		}
+	}
+	if name == "coroot.collect_rca_context" && body["status"] != "error" {
+		assertNoLiveUnavailableLimitations(t, body)
+		assertNoLiveUnknownDependencyStatuses(t, body)
+	}
+	return body
+}
+
+func chooseLiveNodeID(body map[string]any) string {
+	data, _ := body["data"].(map[string]any)
+	for _, raw := range anySlice(firstNonNil(data["nodes"], data["items"])) {
+		node, _ := raw.(map[string]any)
+		if id := firstNonBlank(stringField(node, "id"), stringField(node, "name")); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func chooseLiveDashboardCandidate(t *testing.T, ctx context.Context, client *Client, project string) (string, string) {
+	t.Helper()
+	raw, _, err := getCorootRaw(ctx, client, dashboardsPath(project), nil)
+	if err != nil {
+		t.Logf("unable to discover live dashboards: %v", err)
+		return "", ""
+	}
+	for _, dashboard := range objectArray(raw, "dashboards", "items") {
+		dashboardID := firstNonBlank(stringField(dashboard, "id"), stringField(dashboard, "key"), stringField(dashboard, "uid"))
+		if dashboardID == "" {
+			continue
+		}
+		panelID := firstLivePanelID(dashboard)
+		if panelID == "" {
+			if detail, _, err := getCorootRaw(ctx, client, dashboardPath(project, dashboardID), nil); err == nil {
+				panelID = firstLivePanelID(firstObject(detail))
+			}
+		}
+		return dashboardID, panelID
+	}
+	return "", ""
+}
+
+func firstLivePanelID(obj map[string]any) string {
+	if dashboard := objectField(obj, "dashboard"); len(dashboard) > 0 {
+		obj = dashboard
+	}
+	for _, panel := range objectSlice(firstNonNil(obj["panels"], obj["widgets"])) {
+		if id := firstNonBlank(stringField(panel, "id"), stringField(panel, "key"), stringField(panel, "uid")); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func chooseLiveIntegrationType(body map[string]any) string {
+	data, _ := body["data"].(map[string]any)
+	for _, raw := range anySlice(firstNonNil(data["integrations"], data["items"])) {
+		item, _ := raw.(map[string]any)
+		if value := firstNonBlank(stringField(item, "type"), stringField(item, "id"), stringField(item, "name")); value != "" {
+			return value
+		}
+	}
+	return firstNonBlankMapKey(data)
+}
+
+func chooseLiveInspectionType(body map[string]any) string {
+	data, _ := body["data"].(map[string]any)
+	for _, raw := range anySlice(firstNonNil(data["checks"], data["inspections"], data["items"])) {
+		item, _ := raw.(map[string]any)
+		if value := firstNonBlank(stringField(item, "id"), stringField(item, "type"), stringField(item, "name")); value != "" {
+			return value
+		}
+	}
+	return firstNonBlankMapKey(data)
+}
+
+func firstNonBlankMapKey(data map[string]any) string {
+	if len(data) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(data))
+	for key, value := range data {
+		if strings.TrimSpace(key) == "" || value == nil {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		return key
+	}
+	return ""
 }
 
 func TestLiveCorootRCAExternalDependencyDrilldown(t *testing.T) {
@@ -234,13 +445,19 @@ func newLiveCorootClient(t *testing.T) (liveCorootConfig, *Client, time.Duration
 		timeout = parsed
 	}
 	client, err := NewClient(ClientConfig{
-		BaseURL: cfg.BaseURL,
-		Token:   cfg.Token,
-		Project: cfg.Project,
-		Timeout: timeout,
+		BaseURL:         cfg.BaseURL,
+		ProductBasePath: cfg.ProductBasePath,
+		Token:           cfg.Token,
+		Project:         cfg.Project,
+		Timeout:         timeout,
 	})
 	if err != nil {
 		t.Fatalf("NewClient() error = %v", err)
+	}
+	if strings.TrimSpace(cfg.Username) != "" || strings.TrimSpace(cfg.Password) != "" {
+		if err := client.Login(context.Background(), cfg.Username, cfg.Password); err != nil {
+			t.Fatalf("Coroot live login failed: %v", err)
+		}
 	}
 	return cfg, client, timeout
 }
@@ -271,8 +488,23 @@ func loadLiveCorootConfig(t *testing.T) liveCorootConfig {
 	if project := strings.TrimSpace(os.Getenv("COROOT_LIVE_PROJECT")); project != "" {
 		cfg.Project = project
 	}
-	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.Project) == "" || strings.TrimSpace(cfg.Token) == "" {
-		t.Fatalf("Coroot live config requires baseUrl, project, and token")
+	if productBasePath := strings.TrimSpace(os.Getenv("COROOT_LIVE_PRODUCT_BASE_PATH")); productBasePath != "" {
+		cfg.ProductBasePath = productBasePath
+	}
+	if token := strings.TrimSpace(os.Getenv("COROOT_LIVE_TOKEN")); token != "" {
+		cfg.Token = token
+	}
+	if username := strings.TrimSpace(os.Getenv("COROOT_LIVE_USERNAME")); username != "" {
+		cfg.Username = username
+	}
+	if password := strings.TrimSpace(os.Getenv("COROOT_LIVE_PASSWORD")); password != "" {
+		cfg.Password = password
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" || strings.TrimSpace(cfg.Project) == "" {
+		t.Fatalf("Coroot live config requires baseUrl and project")
+	}
+	if strings.TrimSpace(cfg.Token) == "" && (strings.TrimSpace(cfg.Username) == "" || strings.TrimSpace(cfg.Password) == "") {
+		t.Fatalf("Coroot live config requires token or username/password")
 	}
 	return cfg
 }
@@ -309,6 +541,9 @@ func liveExecuteTool(t *testing.T, ctx context.Context, tools []tooling.Tool, na
 	var body map[string]any
 	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
 		t.Fatalf("decode %s content: %v\n%s", name, err, result.Content)
+	}
+	if body["status"] == "error" {
+		t.Fatalf("%s returned structured error: %s", name, result.Content)
 	}
 	if name == "coroot.collect_rca_context" {
 		assertNoLiveUnavailableLimitations(t, body)
@@ -371,16 +606,17 @@ func liveToolByName(t *testing.T, tools []tooling.Tool, name string) tooling.Too
 }
 
 func chooseLiveService(body map[string]any, preferred string) string {
-	services, _ := body["services"].([]any)
 	var candidates []string
-	for _, raw := range services {
-		item, _ := raw.(map[string]any)
-		id := stringField(item, "id")
-		name := stringField(item, "name")
-		if serviceMatches(id, preferred) || strings.EqualFold(name, preferred) {
-			return firstNonBlank(id, name)
+	for _, field := range []string{"services", "problemServices", "sampleServices"} {
+		for _, raw := range anySlice(body[field]) {
+			item, _ := raw.(map[string]any)
+			id := stringField(item, "id")
+			name := stringField(item, "name")
+			if serviceMatches(id, preferred) || strings.EqualFold(name, preferred) {
+				return firstNonBlank(id, name)
+			}
+			candidates = append(candidates, firstNonBlank(id, name))
 		}
-		candidates = append(candidates, firstNonBlank(id, name))
 	}
 	sort.Strings(candidates)
 	for _, candidate := range candidates {

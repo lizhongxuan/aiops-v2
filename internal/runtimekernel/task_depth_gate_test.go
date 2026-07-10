@@ -79,6 +79,47 @@ func TestApplyTurnPromptProfileMetadata(t *testing.T) {
 	}
 }
 
+func TestApplyTurnPromptProfileMetadataAddsCompleteFollowupPrompt(t *testing.T) {
+	ctx := applyTurnPromptProfileMetadata(emptyCompileContextForDepthTest(), map[string]string{
+		"aiops.answer.requireCompleteFollowup": "true",
+		"reasoningEffort":                      "medium",
+		"answerStyle":                          "complete_explanation",
+	})
+	if ctx.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %q, want medium", ctx.ReasoningEffort)
+	}
+	if ctx.AnswerStyle != "complete_explanation" {
+		t.Fatalf("AnswerStyle = %q, want complete_explanation", ctx.AnswerStyle)
+	}
+	if got := strings.Join(ctx.SkillPromptAssets, "\n"); !strings.Contains(got, "Complete follow-up answer") ||
+		!strings.Contains(got, "standalone answer") ||
+		!strings.Contains(got, "implementation details") ||
+		!strings.Contains(got, "thread-safety") ||
+		!strings.Contains(got, "blocking") {
+		t.Fatalf("complete followup prompt missing expected guidance:\n%s", got)
+	}
+}
+
+func TestApplyTurnPromptProfileMetadataAddsSmalltalkPrompt(t *testing.T) {
+	ctx := applyTurnPromptProfileMetadata(emptyCompileContextForDepthTest(), map[string]string{
+		"aiops.answer.smalltalkOnly": "true",
+		"reasoningEffort":            "low",
+		"answerStyle":                "smalltalk",
+	})
+	if ctx.ReasoningEffort != "low" {
+		t.Fatalf("ReasoningEffort = %q, want low", ctx.ReasoningEffort)
+	}
+	if ctx.AnswerStyle != "smalltalk" {
+		t.Fatalf("AnswerStyle = %q, want smalltalk", ctx.AnswerStyle)
+	}
+	got := strings.Join(ctx.SkillPromptAssets, "\n")
+	if !strings.Contains(got, "Small-talk turn") ||
+		!strings.Contains(got, "Do not continue a previous Coroot") ||
+		!strings.Contains(got, "Do not call tools") {
+		t.Fatalf("smalltalk prompt missing expected guidance:\n%s", got)
+	}
+}
+
 func TestApplyRuntimeStateMetadata(t *testing.T) {
 	ctx := applyRuntimeStateMetadata(
 		promptcompiler.CompileContext{VisibleToolFingerprint: "tools:abc"},

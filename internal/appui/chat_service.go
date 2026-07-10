@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"aiops-v2/internal/agentstate"
@@ -155,6 +156,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	mentions := s.hostOpsMentionsForCommand(ctx, cmd, content, &structuredMentions)
 	mentionSource, mentionValidation := mentionSourceForCommand(cmd, content, structuredMentions, mentions)
 	specialInputObservations := inputMentionsToSpecialInputObservations(structuredMentions)
+	specialInputObservations = appendRawCorootCapabilityObservation(content, structuredMentions, specialInputObservations)
 	specialInputIntent := specialInputIntentFromContent(content, specialInputObservations, cmd.Metadata, commandSession)
 	if commandSession != nil {
 		commandSession.SpecialInputMemory, _ = specialinputmemory.Consolidate(commandSession.SpecialInputMemory, specialinputmemory.ConsolidateInput{
@@ -181,12 +183,17 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 		}, opsRun), nil
 	}
 	specialInputReadPlan := buildSpecialInputReadPlan(ctx, commandSession, req.TurnID, cmd.ClientTurnID, s.hosts)
+	priorCorootContextActive := shouldActivatePriorCorootContextForInput(content)
+	specialInputReadPlan = specialInputReadPlanForCurrentTurn(specialInputReadPlan, priorCorootContextActive)
+	sessionCorootContext := sessionHasPriorCorootContext(commandSession) && priorCorootContextActive
 	route := BuildChatRuntimeRoute(content, mentions, evidence)
 	envelope := BuildEvidenceEnvelope(content, nil, nil)
 	intentFrame := BuildIntentFrame(content, envelope, nil)
 	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, route)
 	activeRoute, routingMode := selectActiveChatRuntimeRoute(route, intentRoute, intentFrame, s.intentFrameRoutingMode(ctx))
 	applyStructuredMentionRouteHints(&activeRoute, structuredMentions)
+	applySpecialInputCapabilityRouteHints(&activeRoute, specialInputReadPlan)
+	applySessionCorootContextRouteHints(&activeRoute, sessionCorootContext)
 	if selectedHostContextShouldUseHostBoundRoute(activeRoute, intentFrame, selectedHostID) {
 		activeRoute = promoteSelectedHostContextRoute(activeRoute, selectedHostID)
 		mentions = appendSelectedHostContextMention(mentions, selectedHostID)
@@ -209,6 +216,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	applySessionTargetRouteMetadata(&req, sessionTargetRoute)
 	applyChatRuntimeToolSurfaceMetadata(&req, activeRoute)
 	applySpecialInputReadPlanMetadata(&req, specialInputReadPlan)
+	applySessionCorootContextMetadata(&req, sessionCorootContext, specialInputReadPlan)
 	applyStructuredCapabilityMetadata(req.Metadata, structuredMentions)
 	applyInputMentionDiagnosticValues(&req, mentionSource, mentionValidation)
 	applyUserEvidenceMetadata(&req, evidence)
@@ -852,6 +860,41 @@ func specialInputIntentFromContent(input string, observations []specialinputmemo
 	return specialinputmemory.UserSpecialInputIntent{}
 }
 
+func appendRawCorootCapabilityObservation(input string, structured parsedInputMentions, observations []specialinputmemory.MentionObservation) []specialinputmemory.MentionObservation {
+	if structured.Present || !hasExplicitCorootMention(input) || specialInputObservationsContainCapability(observations, "coroot") {
+		return observations
+	}
+	return append(observations, corootCapabilityObservation("@coroot", specialinputmemory.SourceSystem))
+}
+
+func corootCapabilityObservation(raw string, source string) specialinputmemory.MentionObservation {
+	return specialinputmemory.MentionObservation{
+		Kind:           specialinputmemory.FactKindCapability,
+		CanonicalKey:   "capability:coroot",
+		Display:        "Coroot",
+		RawText:        strings.TrimSpace(raw),
+		Path:           "capability://coroot",
+		Source:         source,
+		TrustLevel:     specialinputmemory.TrustLevelServerConfirmed,
+		ResourceKind:   specialinputmemory.ResourceKindCapability,
+		ResourceID:     "coroot",
+		AllowedActions: []string{specialinputmemory.ActionInspect, specialinputmemory.ActionRead},
+	}
+}
+
+func specialInputObservationsContainCapability(observations []specialinputmemory.MentionObservation, capability string) bool {
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	for _, observation := range observations {
+		if strings.TrimSpace(observation.ResourceKind) != specialinputmemory.ResourceKindCapability {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(observation.ResourceID), capability) || strings.EqualFold(strings.TrimSpace(observation.CanonicalKey), "capability:"+capability) {
+			return true
+		}
+	}
+	return false
+}
+
 func specialInputConfirmAllowed(metadata map[string]string, targetKey string, session *runtimekernel.SessionState) bool {
 	if strings.EqualFold(strings.TrimSpace(metadata["aiops.specialInput.command"]), "confirm") {
 		return true
@@ -959,6 +1002,267 @@ func specialInputReadPlanShouldUseHostBoundRoute(route ChatRuntimeRoute, plan *s
 	return scope.Allows(specialinputmemory.ActionInspect) || scope.Allows(specialinputmemory.ActionRead) || scope.Allows(specialinputmemory.ActionExecLowRisk)
 }
 
+func applySpecialInputCapabilityRouteHints(route *ChatRuntimeRoute, plan *specialinputmemory.MemoryReadPlan) {
+	if route == nil || !specialInputReadPlanHasCapability(plan, "coroot") {
+		return
+	}
+	applyCorootCapabilityRouteHint(route, "special input capability: coroot")
+}
+
+func applySessionCorootContextRouteHints(route *ChatRuntimeRoute, enabled bool) {
+	if route == nil || !enabled {
+		return
+	}
+	applyCorootCapabilityRouteHint(route, "session history capability: coroot")
+}
+
+func shouldActivatePriorCorootContextForInput(input string) bool {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return false
+	}
+	if hasExplicitCorootMention(text) {
+		return true
+	}
+	if isPlainConversationalTurn(text) {
+		return false
+	}
+	if looksLikeCorootEntityReference(text) {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"异常", "告警", "报警", "事件", "问题", "错误", "报错", "失败", "不可用", "健康",
+		"重启", "根因", "排查", "分析", "监控", "指标", "日志", "链路", "拓扑", "依赖",
+		"服务", "应用", "实例", "节点", "继续", "incident", "alert", "warning", "error",
+		"failed", "failure", "restart", "unavailable", "unhealthy", "health", "service",
+		"application", "instance", "pod", "node", "metric", "log", "trace", "dependency",
+		"rca", "root cause",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	referential := containsAnyText(lower, "刚才", "上面", "前面", "这个", "那个", "它", "继续")
+	action := containsAnyText(lower, "看", "查", "分析", "排查", "为什么", "原因", "怎么", "如何", "what", "why", "check", "show", "analyze")
+	return referential && action
+}
+
+func isPlainConversationalTurn(input string) bool {
+	token := compactConversationalToken(input)
+	if token == "" {
+		return true
+	}
+	switch token {
+	case "你好", "您好", "哈喽", "嗨", "在吗", "谢谢", "感谢", "多谢", "好的", "好", "嗯", "嗯嗯", "ok", "okay", "hi", "hello", "thanks", "thankyou", "thx", "bye":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactConversationalToken(input string) string {
+	input = strings.ToLower(strings.TrimSpace(input))
+	var b strings.Builder
+	for _, r := range input {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func looksLikeCorootEntityReference(input string) bool {
+	token := strings.TrimSpace(input)
+	if token == "" || strings.ContainsAny(token, " \t\r\n，。！？；;?") {
+		return false
+	}
+	token = strings.TrimFunc(token, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSymbol(r)
+	})
+	if len([]rune(token)) < 3 || len([]rune(token)) > 96 {
+		return false
+	}
+	lower := strings.ToLower(token)
+	if containsAnyText(lower, "-", "_", ".", ":", "/") && containsASCIIAlnum(lower) {
+		return true
+	}
+	if containsASCIIAlpha(lower) && containsASCIIDigit(lower) {
+		return true
+	}
+	for _, marker := range []string{
+		"agent", "server", "service", "node", "pod", "gateway", "worker", "nginx", "redis",
+		"rabbitmq", "postgres", "mysql", "kafka", "web", "api", "mon",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsASCIIAlnum(input string) bool {
+	return containsASCIIAlpha(input) || containsASCIIDigit(input)
+}
+
+func containsASCIIAlpha(input string) bool {
+	for _, r := range input {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func containsASCIIDigit(input string) bool {
+	for _, r := range input {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyText(input string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(input, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func specialInputReadPlanForCurrentTurn(plan *specialinputmemory.MemoryReadPlan, corootActive bool) *specialinputmemory.MemoryReadPlan {
+	if plan == nil || corootActive || !specialInputReadPlanHasCapability(plan, "coroot") {
+		return plan
+	}
+	filtered := *plan
+	if filtered.ActiveExecutionScope != nil && corootGrantMatchesCapability(*filtered.ActiveExecutionScope, "coroot") {
+		filtered.ActiveExecutionScope = nil
+		filtered.ModelSummary = ""
+	}
+	filtered.VisibleFacts = filterCorootCapabilityFacts(filtered.VisibleFacts)
+	filtered.CandidateFacts = filterCorootCapabilityFacts(filtered.CandidateFacts)
+	filtered.SuspendedGrants = filterCorootCapabilityGrants(filtered.SuspendedGrants)
+	filtered.CandidateRoleBindings = filterCorootCapabilityRoleBindings(filtered.CandidateRoleBindings)
+	if specialinputmemory.MemoryReadPlanTraceEmpty(filtered) {
+		return nil
+	}
+	return &filtered
+}
+
+func filterCorootCapabilityFacts(facts []specialinputmemory.MentionFact) []specialinputmemory.MentionFact {
+	out := make([]specialinputmemory.MentionFact, 0, len(facts))
+	for _, fact := range facts {
+		if corootFactMatchesCapability(fact, "coroot") {
+			continue
+		}
+		out = append(out, fact)
+	}
+	return out
+}
+
+func filterCorootCapabilityGrants(grants []specialinputmemory.ExecutionScopeGrant) []specialinputmemory.ExecutionScopeGrant {
+	out := make([]specialinputmemory.ExecutionScopeGrant, 0, len(grants))
+	for _, grant := range grants {
+		if corootGrantMatchesCapability(grant, "coroot") {
+			continue
+		}
+		out = append(out, grant)
+	}
+	return out
+}
+
+func filterCorootCapabilityRoleBindings(bindings []specialinputmemory.MentionRoleBinding) []specialinputmemory.MentionRoleBinding {
+	out := make([]specialinputmemory.MentionRoleBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+			strings.EqualFold(strings.TrimSpace(binding.ResourceID), "coroot") {
+			continue
+		}
+		out = append(out, binding)
+	}
+	return out
+}
+
+func corootFactMatchesCapability(fact specialinputmemory.MentionFact, capability string) bool {
+	return strings.TrimSpace(fact.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		(strings.EqualFold(strings.TrimSpace(fact.ResourceID), capability) ||
+			strings.EqualFold(strings.TrimSpace(fact.CanonicalKey), "capability:"+capability))
+}
+
+func corootGrantMatchesCapability(grant specialinputmemory.ExecutionScopeGrant, capability string) bool {
+	return strings.TrimSpace(grant.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		(strings.EqualFold(strings.TrimSpace(grant.ResourceID), capability) ||
+			strings.EqualFold(strings.TrimSpace(grant.CanonicalKey), "capability:"+capability))
+}
+
+func specialInputReadPlanHasCapability(plan *specialinputmemory.MemoryReadPlan, capability string) bool {
+	if plan == nil {
+		return false
+	}
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	if capability == "" {
+		return false
+	}
+	if grant := plan.ActiveExecutionScope; grant != nil &&
+		strings.TrimSpace(grant.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		strings.EqualFold(strings.TrimSpace(grant.ResourceID), capability) &&
+		(grant.Allows(specialinputmemory.ActionInspect) || grant.Allows(specialinputmemory.ActionRead)) {
+		return true
+	}
+	for _, fact := range plan.VisibleFacts {
+		if strings.TrimSpace(fact.ResourceKind) != specialinputmemory.ResourceKindCapability {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fact.ResourceID), capability) || strings.EqualFold(strings.TrimSpace(fact.CanonicalKey), "capability:"+capability) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionHasPriorCorootContext(session *runtimekernel.SessionState) bool {
+	if session == nil {
+		return false
+	}
+	for i := len(session.Messages) - 1; i >= 0 && len(session.Messages)-i <= 80; i-- {
+		msg := session.Messages[i]
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "user") && hasExplicitCorootMention(msg.Content) {
+			return true
+		}
+		if corootContextMetadataAllowed(msg.Metadata) {
+			return true
+		}
+	}
+	if session.CurrentTurn != nil && corootContextMetadataAllowed(session.CurrentTurn.Metadata) {
+		return true
+	}
+	for i := len(session.TurnHistory) - 1; i >= 0 && len(session.TurnHistory)-i <= 30; i-- {
+		if corootContextMetadataAllowed(session.TurnHistory[i].Metadata) {
+			return true
+		}
+	}
+	return false
+}
+
+func corootContextMetadataAllowed(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"aiops.tool.corootRCAAllowed",
+		"aiops.route.allowsCorootRCA",
+		metadataCorootExplicitRCA,
+	} {
+		if strings.EqualFold(strings.TrimSpace(metadata[key]), "true") {
+			return true
+		}
+	}
+	return false
+}
+
 func promoteSpecialInputGrantRoute(route ChatRuntimeRoute, hostID string) ChatRuntimeRoute {
 	route.Mode = ChatRouteHostBoundOps
 	route.RequiresHostBinding = true
@@ -1015,6 +1319,23 @@ func applySpecialInputReadPlanMetadata(req *runtimekernel.TurnRequest, plan *spe
 	if len(plan.SuspendedGrants) > 0 {
 		req.Metadata["aiops.specialInput.readPlan.suspended"] = "true"
 	}
+	if specialInputReadPlanHasCapability(plan, "coroot") {
+		req.Metadata["aiops.coroot.contextSource"] = "special_input_memory"
+		setMetadataIfEmpty(req.Metadata, metadataCorootRCADisplayAllowed, "true")
+		setMetadataIfEmpty(req.Metadata, metadataObservabilityProvider, "coroot")
+	}
+}
+
+func applySessionCorootContextMetadata(req *runtimekernel.TurnRequest, enabled bool, plan *specialinputmemory.MemoryReadPlan) {
+	if req == nil || !enabled || specialInputReadPlanHasCapability(plan, "coroot") {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	req.Metadata["aiops.coroot.contextSource"] = "session_history"
+	setMetadataIfEmpty(req.Metadata, metadataCorootRCADisplayAllowed, "true")
+	setMetadataIfEmpty(req.Metadata, metadataObservabilityProvider, "coroot")
 }
 
 func appendSelectedHostContextMention(mentions []hostops.HostMention, selectedHostID string) []hostops.HostMention {
@@ -1077,8 +1398,7 @@ func applyStructuredMentionRouteHints(route *ChatRuntimeRoute, mentions parsedIn
 		return
 	}
 	if mentions.HasCapability("coroot") {
-		route.AllowsCorootRCA = true
-		route.Reasons = appendUniqueEvidenceString(route.Reasons, "structured capability: coroot")
+		applyCorootCapabilityRouteHint(route, "structured capability: coroot")
 	}
 }
 
@@ -1302,17 +1622,66 @@ func setMetadataIfEmpty(metadata map[string]string, key, value string) {
 }
 
 func applyFollowupPromptProfileMetadata(req *runtimekernel.TurnRequest, session *runtimekernel.SessionState, input string, evidence UserEvidenceExtraction) {
-	if req == nil || session == nil || !shortFollowupInput(input) || evidence.HasEvidence || !sessionHasExistingEvidenceContext(session) {
+	if req == nil {
 		return
 	}
 	if req.Metadata == nil {
 		req.Metadata = map[string]string{}
 	}
+	if isPlainConversationalTurn(input) {
+		setMetadataIfEmpty(req.Metadata, metadataAnswerSmalltalkOnly, "true")
+		setMetadataIfEmpty(req.Metadata, "reasoningEffort", "low")
+		setMetadataIfEmpty(req.Metadata, "answerStyle", "smalltalk")
+		return
+	}
+	if session == nil || !shortFollowupInput(input) || evidence.HasEvidence || !sessionHasExistingEvidenceContext(session) {
+		return
+	}
 	setMetadataIfEmpty(req.Metadata, metadataTurnFollowup, "true")
 	setMetadataIfEmpty(req.Metadata, metadataTurnHasExistingEvidence, "true")
 	setMetadataIfEmpty(req.Metadata, metadataTurnNoNewEvidence, "true")
+	if completeExplanationFollowupInput(input) {
+		setMetadataIfEmpty(req.Metadata, metadataAnswerRequireCompleteFollowup, "true")
+		setMetadataIfEmpty(req.Metadata, "reasoningEffort", "medium")
+		setMetadataIfEmpty(req.Metadata, "answerStyle", "complete_explanation")
+		return
+	}
 	setMetadataIfEmpty(req.Metadata, "reasoningEffort", "low")
 	setMetadataIfEmpty(req.Metadata, "answerStyle", "concise")
+}
+
+func completeExplanationFollowupInput(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	for _, signal := range []string{
+		"完整答案",
+		"完整回答",
+		"完整写出来",
+		"写完整",
+		"展开讲",
+		"详细讲",
+		"详细解释",
+		"底层实现",
+		"实现原理",
+		"线程安全",
+		"阻塞原理",
+	} {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	goInternalsTerms := 0
+	for _, term := range []string{"channel", "map", "slice"} {
+		if strings.Contains(lower, term) {
+			goInternalsTerms++
+		}
+	}
+	if goInternalsTerms >= 2 && (strings.Contains(lower, "底层") || strings.Contains(lower, "阻塞") || strings.Contains(lower, "线程")) {
+		return true
+	}
+	return false
 }
 
 func shortFollowupInput(input string) bool {

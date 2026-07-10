@@ -15,7 +15,10 @@ func ApplyTurnMetadataToAssembleOptions(opts AssembleOptions, metadata map[strin
 	opts.TenantID = firstMetadataString(metadata, "tenantId", "tenantID", "tenant_id")
 	opts.UserID = firstMetadataString(metadata, "userId", "userID", "user_id")
 	if opts.Profile == "" {
-		opts.Profile = firstMetadataString(metadata, "profile", "toolProfile", "mcpProfile")
+		// toolProfile is a chat route/tool-surface label such as chat_advisory,
+		// not an MCP server profile scope. Treating it as scope hides unscoped
+		// built-in MCP servers like Coroot from ordinary chat turns.
+		opts.Profile = firstMetadataString(metadata, "profile", "mcpProfile")
 	}
 	if webSearchPolicyDisabledForTurn(metadata) {
 		opts.EnabledPacks = removeMetadataListValue(opts.EnabledPacks, "public_web")
@@ -215,6 +218,9 @@ func ToolVisibilityDecisionForTurnMetadata(meta ToolMetadata, metadata map[strin
 	}
 	if defaultHiddenPublicWebAlias(meta, metadata) {
 		return turnMetadataHidden("public_web_alias_deferred")
+	}
+	if corootContextShouldHideGenericMCPResource(meta, metadata) {
+		return turnMetadataHidden("coroot_direct_tools_only")
 	}
 	if decision, ok := toolVisibilityDecisionFromIntentMetadata(meta, metadata); ok {
 		return decision
@@ -563,6 +569,43 @@ func corootExplicitlyRequested(meta ToolMetadata, metadata map[string]string) bo
 		metadataBool(metadata, "aiops.coroot.explicitRCA") ||
 		metadataBool(metadata, "aiops.tool.corootRCAAllowed") ||
 		turnMetadataExplicitlyEnablesTool(meta, metadata)
+}
+
+func corootContextShouldHideGenericMCPResource(meta ToolMetadata, metadata map[string]string) bool {
+	if !isGenericMCPResourceTool(meta) || !corootContextActive(metadata) {
+		return false
+	}
+	return !turnMetadataExplicitlyEnablesTool(meta, metadata)
+}
+
+func isGenericMCPResourceTool(meta ToolMetadata) bool {
+	switch strings.ToLower(strings.TrimSpace(meta.Name)) {
+	case "list_mcp_resources", "read_mcp_resource", "mcp.list_resources", "mcp.read_resource":
+		return true
+	default:
+		return false
+	}
+}
+
+func corootContextActive(metadata map[string]string) bool {
+	if metadataBool(metadata, "aiops.tool.corootRCAAllowed") ||
+		metadataBool(metadata, "aiops.route.allowsCorootRCA") ||
+		metadataBool(metadata, "aiops.coroot.explicitMention") ||
+		metadataBool(metadata, "aiops.coroot.explicitRCA") {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(firstMetadataString(metadata, "aiops.mentions.observabilityProvider")), "coroot") {
+		return true
+	}
+	if strings.TrimSpace(firstMetadataString(metadata, "aiops.coroot.contextSource")) != "" {
+		return true
+	}
+	for _, pack := range metadataListValue(metadata, "enableToolPack") {
+		if strings.Contains(strings.ToLower(strings.TrimSpace(pack)), "coroot") {
+			return true
+		}
+	}
+	return false
 }
 
 func isOpsGraphTool(meta ToolMetadata) bool {

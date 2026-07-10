@@ -28,6 +28,10 @@ func applyChatRuntimeToolSurfaceMetadata(req *runtimekernel.TurnRequest, route C
 	req.Metadata["aiops.tool.hostMutationAllowed"] = boolMetadataString(route.Mode == ChatRouteHostBoundOps)
 	req.Metadata["aiops.tool.corootRCAAllowed"] = boolMetadataString(route.AllowsCorootRCA)
 	applyCorootToolPackGateMetadata(req.Metadata, route.AllowsCorootRCA)
+	if route.AllowsCorootRCA {
+		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+		req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "coroot_rca")
+	}
 	if len(route.TargetRefs) > 0 {
 		req.Metadata["aiops.tool.targetRefs"] = strings.Join(routeTargetRefIDs(route.TargetRefs), ",")
 		req.Metadata["aiops.tool.targetCompatibility"] = "target_refs_available"

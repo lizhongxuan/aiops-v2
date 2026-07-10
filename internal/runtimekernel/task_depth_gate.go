@@ -11,6 +11,8 @@ import (
 )
 
 const prematureFinalGuardMetadataKey = "taskDepth.prematureFinalGuardTriggered"
+const completeFollowupMetadataKey = "aiops.answer.requireCompleteFollowup"
+const smalltalkOnlyMetadataKey = "aiops.answer.smalltalkOnly"
 
 type PlanRequirementDecision struct {
 	Required      bool     `json:"required"`
@@ -104,7 +106,38 @@ func applyTurnPromptProfileMetadata(ctx promptcompiler.CompileContext, metadata 
 	if style := firstMetadataValue(metadata, "answerStyle", "answer_style"); style != "" {
 		ctx.AnswerStyle = style
 	}
+	if metadataFlag(metadata, smalltalkOnlyMetadataKey) {
+		ctx.SkillPromptAssets = append(ctx.SkillPromptAssets, smalltalkOnlyPromptAsset())
+	}
+	if metadataFlag(metadata, completeFollowupMetadataKey) {
+		ctx.SkillPromptAssets = append(ctx.SkillPromptAssets, completeFollowupPromptAsset())
+	}
 	return ctx
+}
+
+func metadataFlag(metadata map[string]string, key string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(metadata[key]), "true")
+}
+
+func completeFollowupPromptAsset() string {
+	return strings.Join([]string{
+		"## Complete follow-up answer",
+		"The user is asking a follow-up that requests missing details or complete coverage. Answer as a complete standalone answer, not as a terse delta against the previous message.",
+		"Cover every subtopic the user explicitly named. For programming-language or runtime questions, include the relevant internal representation, implementation details, thread-safety or concurrency guarantees, and the mechanism that causes blocking, waiting, panic, or data races where applicable.",
+		"If the previous answer was incomplete, replace it with a complete answer instead of only saying what was missing.",
+	}, "\n")
+}
+
+func smalltalkOnlyPromptAsset() string {
+	return strings.Join([]string{
+		"## Small-talk turn",
+		"The current user input is conversational small talk, greeting, acknowledgement, or thanks.",
+		"Do not call tools or inspect monitoring data. Do not continue a previous Coroot or RCA investigation unless the current user input explicitly asks for it.",
+		"Reply briefly in the user's language. Do not proactively list Coroot, monitoring, terminal, or incident-analysis options.",
+	}, "\n")
 }
 
 func applyRuntimeStateMetadata(ctx promptcompiler.CompileContext, metadata map[string]string, session *SessionState, snapshot *TurnSnapshot) promptcompiler.CompileContext {

@@ -5,6 +5,7 @@ import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
 import {
   createAiopsTransportConverter,
   isAiopsTransportRunning,
+  orderedTransportTurnIds,
 } from "./aiopsTransportConverter";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
@@ -71,6 +72,38 @@ function createState(): AiopsTransportState {
 }
 
 describe("aiopsTransportConverter", () => {
+  it("renders turns chronologically even when transport order arrives out of order", () => {
+    const state = createState();
+    state.currentTurnId = "turn-new";
+    state.turns = {
+      "turn-new": {
+        id: "turn-new",
+        status: "completed",
+        startedAt: "2026-05-06T00:02:00Z",
+        user: { id: "user-new", text: "newest question", createdAt: "2026-05-06T00:02:00Z" },
+        final: { id: "final-new", text: "newest answer", status: "completed" },
+      },
+      "turn-old": {
+        id: "turn-old",
+        status: "completed",
+        startedAt: "2026-05-06T00:01:00Z",
+        user: { id: "user-old", text: "older question", createdAt: "2026-05-06T00:01:00Z" },
+        final: { id: "final-old", text: "older answer", status: "completed" },
+      },
+    };
+    state.turnOrder = ["turn-new", "turn-old"];
+
+    expect(orderedTransportTurnIds(state)).toEqual(["turn-old", "turn-new"]);
+
+    const result = createAiopsTransportConverter()(state, metadata());
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "user-old",
+      "turn-old:assistant",
+      "user-new",
+      "turn-new:assistant",
+    ]);
+  });
+
   it("maps ordered turns into assistant-ui thread messages without parsing markdown", () => {
     const state = createState();
     const converter = createAiopsTransportConverter();

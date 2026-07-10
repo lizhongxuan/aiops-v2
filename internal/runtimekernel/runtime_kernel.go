@@ -1517,6 +1517,7 @@ func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest
 	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
 	compileCtx = applyDepthProfileToCompileContext(compileCtx, depthProfile, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
 	compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
+	compileCtx = k.appendContextArtifactToolsForExternalRefs(compileCtx, session, nil)
 	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 	compileCtx = appendSkillActivationContext(compileCtx, session)
 	compileCtx = appendMCPInstructionContext(compileCtx, session)
@@ -1704,6 +1705,71 @@ func (k *RuntimeKernel) contextArtifactToolsForMetadata(metadata map[string]stri
 		return nil
 	}
 	return k.contextArtifactTools()
+}
+
+func (k *RuntimeKernel) appendContextArtifactToolsForExternalRefs(ctx promptcompiler.CompileContext, session *SessionState, snapshot *TurnSnapshot) promptcompiler.CompileContext {
+	if !hasReadableContextArtifactReference(session, snapshot) {
+		return ctx
+	}
+	ctx.AssembledTools = appendContextArtifactTools(ctx.AssembledTools, k.contextArtifactTools()...)
+	return ctx
+}
+
+func hasReadableContextArtifactReference(session *SessionState, snapshot *TurnSnapshot) bool {
+	if snapshotHasReadableContextArtifactReference(snapshot) {
+		return true
+	}
+	if session == nil {
+		return false
+	}
+	for _, ref := range session.ExternalReferences {
+		if externalReferenceReadableByContextArtifact(ref) {
+			return true
+		}
+	}
+	if snapshotHasReadableContextArtifactReference(session.CurrentTurn) {
+		return true
+	}
+	for i := len(session.TurnHistory) - 1; i >= 0 && len(session.TurnHistory)-i <= 8; i-- {
+		if snapshotHasReadableContextArtifactReference(&session.TurnHistory[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasReadableContextArtifactReference(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, ref := range snapshot.ExternalReferences {
+		if externalReferenceReadableByContextArtifact(ref) {
+			return true
+		}
+	}
+	for _, iteration := range snapshot.Iterations {
+		for _, ref := range iteration.ExternalReferences {
+			if externalReferenceReadableByContextArtifact(ref) {
+				return true
+			}
+		}
+		for _, result := range iteration.ToolResults {
+			for _, ref := range result.ExternalReferences {
+				if externalReferenceReadableByContextArtifact(ref) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func externalReferenceReadableByContextArtifact(ref ExternalReference) bool {
+	uri := strings.TrimSpace(ref.URI)
+	if uri == "" {
+		return false
+	}
+	return strings.HasPrefix(uri, "store://tool-spills/") || strings.HasPrefix(uri, "store://artifacts/")
 }
 
 func contextArtifactToolsEnabled(metadata map[string]string) bool {
@@ -2015,6 +2081,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
 		compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
 		compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
+		compileCtx = k.appendContextArtifactToolsForExternalRefs(compileCtx, session, snapshot)
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 		compileCtx = appendSkillActivationContext(compileCtx, session)
 		compileCtx = appendMCPInstructionContext(compileCtx, session)
@@ -2539,7 +2606,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 			}
 			mandatorySkillDecision := EvaluateMandatorySkillActivation(k.mandatorySkillDefinitionsForInput(req.Input), req.Input, assistantContent, session.SkillActivation)
-			if mandatorySkillDecision.Action == "require_skill_read" {
+			if mandatorySkillDecision.Action == "require_skill_read" && !mandatorySkillActivationSatisfiedByToolSurface(mandatorySkillDecision, compileCtx.AssembledTools) {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
@@ -2911,6 +2978,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					// Fall through to the sequential path so this call gets a
 					// structured budget result instead of silently disappearing.
 				} else {
+					batch = broadenCoveredReadBatch(dispatchTools, batch)
 					toolItemIDs := make([]string, len(batch))
 					for j, batchCall := range batch {
 						toolItemIDs[j] = appendToolCallState(batchCall)
@@ -2923,19 +2991,52 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					k.persistTurnSnapshot(session, snapshot)
 
 					results := make([]DispatchResult, len(batch))
-					var wg sync.WaitGroup
+					dispatchBatch := make([]struct {
+						index int
+						call  ToolCall
+					}, 0, len(batch))
+					deferredReuses := make([]coveredReadBatchReuse, 0)
 					for j, batchCall := range batch {
+						if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, batchCall); ok {
+							results[j] = reused
+							continue
+						}
+						if priorIndex, ok := coveredReadReusePriorIndex(dispatchTools, batch[:j], batchCall); ok {
+							deferredReuses = append(deferredReuses, coveredReadBatchReuse{index: j, priorIndex: priorIndex})
+							continue
+						}
+						dispatchBatch = append(dispatchBatch, struct {
+							index int
+							call  ToolCall
+						}{index: j, call: batchCall})
+					}
+					var wg sync.WaitGroup
+					for _, task := range dispatchBatch {
 						wg.Add(1)
 						go func(index int, call ToolCall) {
 							defer wg.Done()
 							dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 							results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
-						}(j, batchCall)
+						}(task.index, task.call)
 					}
 					wg.Wait()
-					toolDispatches += countToolCallsTowardBudget(batch)
-					publicWebDispatches += countPublicWebToolCalls(dispatchTools, batch)
-					publicWebQueries += countPublicWebQueriesForToolCalls(dispatchTools, batch)
+					dispatchedBatchCalls := make([]ToolCall, 0, len(dispatchBatch))
+					for _, task := range dispatchBatch {
+						dispatchedBatchCalls = append(dispatchedBatchCalls, task.call)
+					}
+					for _, deferred := range deferredReuses {
+						if reused, ok := coveredReadReuseFromBatchResult(dispatchTools, batch, results, deferred); ok {
+							results[deferred.index] = reused
+							continue
+						}
+						fallbackCall := batch[deferred.index]
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+						results[deferred.index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, fallbackCall, req.SessionType, req.Mode, turnSpanID)
+						dispatchedBatchCalls = append(dispatchedBatchCalls, fallbackCall)
+					}
+					toolDispatches += countToolCallsTowardBudget(dispatchedBatchCalls)
+					publicWebDispatches += countPublicWebToolCalls(dispatchTools, dispatchedBatchCalls)
+					publicWebQueries += countPublicWebQueriesForToolCalls(dispatchTools, dispatchedBatchCalls)
 
 					for j, batchCall := range batch {
 						blocked, err := processDispatchResult(batchCall, toolItemIDs[j], results[j])
@@ -2963,6 +3064,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			} else if countsTowardToolBudget(tc) && toolDispatches >= defaultMaxToolDispatchesPerTurn {
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
+			} else if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, tc); ok {
+				dispatchResult = reused
 			} else {
 				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
@@ -3283,7 +3386,8 @@ func toolReferenceSummaryForFinalPrompt(result ToolResult) string {
 	if len(result.References) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(result.References))
+	webParts := make([]string, 0, len(result.References))
+	resourceParts := make([]string, 0, len(result.References))
 	for _, ref := range result.References {
 		uri := strings.TrimSpace(ref.URI)
 		if uri == "" {
@@ -3293,15 +3397,27 @@ func toolReferenceSummaryForFinalPrompt(result ToolResult) string {
 		if title == "" {
 			title = uri
 		}
-		parts = append(parts, fmt.Sprintf("[参考: %s](%s)", title, uri))
-		if len(parts) >= 4 {
+		part := fmt.Sprintf("[参考: %s](%s)", title, uri)
+		if strings.HasPrefix(strings.ToLower(uri), "http://") || strings.HasPrefix(strings.ToLower(uri), "https://") {
+			webParts = append(webParts, part)
+		} else {
+			resourceParts = append(resourceParts, part)
+		}
+		if len(webParts)+len(resourceParts) >= 4 {
 			break
 		}
 	}
-	if len(parts) == 0 {
+	if len(webParts) == 0 && len(resourceParts) == 0 {
 		return ""
 	}
-	return "网页来源: " + strings.Join(parts, "; ")
+	lines := make([]string, 0, 2)
+	if len(webParts) > 0 {
+		lines = append(lines, "网页来源: "+strings.Join(webParts, "; "))
+	}
+	if len(resourceParts) > 0 {
+		lines = append(lines, "工具证据引用: "+strings.Join(resourceParts, "; "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 type finalPromptWebSource struct {
@@ -4666,8 +4782,11 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 		markToolInvocationRunning(snapshot, tc.ID)
 		k.persistTurnSnapshot(session, snapshot)
 
-		dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
-		dispatchResult := dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
+		dispatchResult, reused := maybeReuseCoveredReadResult(snapshot, compileCtx.AssembledTools, tc)
+		if !reused {
+			dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+			dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
+		}
 		if dispatchResult.ToolCallID == "" {
 			dispatchResult.ToolCallID = tc.ID
 		}

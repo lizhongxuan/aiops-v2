@@ -120,6 +120,49 @@ rg -n "JSON\\.parse\\(|markdown heading|summary.*steps.*actions" web/src
 - 不要把临时特殊处理直接塞进 `eino_kernel.go` / `RunTurn`。
 - 如果现有接口无法支撑改动，必须先停下来讨论设计，再修改接口或新增代码。
 
+### AI 生成代码与 Agent Harness 变更控制
+
+以下规则适用于 AI 或人工对 agent runtime、prompt、tool surface、policy、approval、context、final、transport 和 eval 的修改。
+
+#### 修改前必须建立行为契约
+
+- 在修改代码前，必须先写清：用户可见现象、确认后的根因、生产调用链、权威事实源、必须保持不变的行为、失败测试和验收命令。推断必须标记为推断，不能把猜测直接实现成补丁。
+- 默认先复现并新增一个能在修复前失败的回归测试。无法稳定复现时，只允许增加不改变行为的 trace、diagnostic 或 fixture；不得直接修改业务语义。
+- 必须区分生产路径、trace、projection、fixture 和 test helper。trace 或 projection 只能描述生产事实，不能反向成为 runtime 决策来源；test helper 不得复制一套与生产不同的 turn loop、tool dispatch 或 finalization。
+- 每次只修一个行为类别。不得把 prompt 调整、runtime 重构、tool 接入、UI 改版和无关清理混在同一个修改中。
+
+#### 变更预算与停止条件
+
+- 非机械性修改默认不得超过 5 个生产文件，生产代码增删总量不得超过 500 行。超过预算时必须停止实现，先写设计方案和分阶段实施清单，并获得确认。
+- 已超过 800 行的高频核心文件不得继续承载新的独立职责。必须先用生产路径测试锁住行为，再按 owner 边界机械拆分；拆分阶段不得同时改变业务行为。
+- 不得顺手修改任务范围外的代码、测试基线、文案、依赖或格式。发现相邻问题时记录为独立任务，不在当前补丁中扩张。
+- 同一现象经过两次定向修补仍复发、修改需要跨越三个以上 runtime 层、或无法指出唯一 owner 时，必须停止补丁式修复，回到接口/契约设计。
+- 如果目标文件存在无法确认来源的未提交修改且与本次任务重叠，必须停止并先说明冲突，不能覆盖或重写用户已有改动。
+
+#### Harness 权威事实源
+
+- Turn 级不变量必须由 typed `TurnContext` / `TurnAssembly` 表达：intent、target、agent/profile、permission envelope、approval policy、context policy、capability envelope、loop policy 和 final contract。不得仅通过 `map[string]string` 或 prompt 文本传递关键控制语义。
+- 每次模型采样必须有不可变的 typed `StepContext`：精确 model input、prompt fingerprint、model-visible tools、dispatchable tools、permission/tool policy hash 和 provider request snapshot。
+- `AgentAssemblySnapshot`、`HarnessTurnTrace`、Prompt Trace 和 UI projection 必须从实际 Turn/Step 控制对象派生。禁止先在多处完成决策，再为 trace 拼装一个看似一致的快照。
+- 模型可见工具和 runtime 可执行工具必须属于同一个 step tool surface。Dispatcher 必须校验 step fingerprint、target binding、permission snapshot 和 approval/action token；不在当前 step 中的调用一律 fail closed。
+- 新增关键控制字段时必须先进入 typed contract 或集中定义的 metadata schema，并明确单一 writer、合法 reader、生命周期和默认值。禁止在多个目录散落新的 `"aiops.*"` 字符串字面量。
+- `FinalContract.status`、evidence、approval、performed actions、post-check 和 limitations 必须由结构化 runtime 状态计算；不得从 assistant 文本关键词反推完成、验证、失败或审批状态。
+
+#### 测试与回归要求
+
+- 所有 agent 行为修改必须有生产 `RunTurn` 或公开 HTTP/AssistantTransport 入口的集成测试；只有 helper/unit test 不能作为完成依据。
+- 回归测试必须经历 red -> green。必要时临时撤销修复确认测试确实失败，再恢复修复；不能用“新增测试当前是绿的”代替回归证明。
+- 不得为了让修改通过而删除、跳过、放宽既有断言，或直接更新 golden/snapshot。确需改变契约或用户可见行为时，必须先说明旧行为、新行为和兼容影响，并单独审查 baseline diff。
+- 涉及 route/tool/approval/final/transport 的修改至少验证一条完整故事链：`ChatCommand -> appui admission -> RuntimeKernel -> ToolDispatcher/checkpoint -> FinalContract -> AiopsTransportState`。
+- 涉及 UI 的修改必须保留 fixture-driven screenshot snapshot；涉及 prompt、tool surface 或 policy 的高风险修改必须运行 P0 eval、baseline comparison 和多次重复测试。真实 provider 不可用时必须明确报告未验证项，不能用 mock 结果冒充真实模型结论。
+- 每个生产重大 bug 都必须同时留下：最小回归用例、对应 harness/story case、`fixbug.md` 事实记录和可复制的验证命令。
+
+#### AI 交付证据
+
+- AI 完成修改时必须报告：根因证据、实际修改文件、变更行数、失败测试、通过测试、未运行测试、剩余风险、生产链路验证结果和 `git diff` 范围。
+- “测试通过”只能指本轮实际运行且退出码为 0 的命令；不得把局部测试描述成全量测试，不得用静态检查代替运行时、浏览器或真实 provider 验证。
+- 没有失败复现、没有生产路径测试、超过变更预算、或存在未解释的 baseline/snapshot 漂移时，不得声称任务已完成。
+
 ### 重大 Bug 修复记录
 
 - 修复重大 bug 时，必须在同一次修改中追加维护 `fixbug.md`；如果文件不存在，先创建该文件。

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -6,6 +7,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShellChromeProvider } from "@/app/AppShellChromeContext";
 import { AppRouter } from "@/router";
 import { shouldUseExperiencePackFixtureFallback } from "./ExperiencePacksPage";
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
 
 const statePayload = {
   hosts: [{ id: "server-local", name: "server-local", status: "online" }],
@@ -287,6 +297,29 @@ const runtimeSettingsPayload = {
   restartRequiredKeys: [],
 };
 
+const corootConfigPayload = {
+  configured: true,
+  baseUrl: "http://172.18.13.11:8000",
+  project: "5hxbfx6p",
+  authMode: "session_passthrough",
+  tokenConfigured: false,
+  username: "admin",
+  passwordConfigured: true,
+  entryPath: "/coroot/p/5hxbfx6p/applications",
+};
+
+const mcpHealthPayload = {
+  items: [
+    {
+      serverId: "coroot",
+      displayName: "Coroot",
+      status: "healthy",
+      availableToolCount: 29,
+      lastCheckedAt: "2026-07-09T01:00:00Z",
+    },
+  ],
+};
+
 const skillPayload = {
   items: [
     {
@@ -441,6 +474,18 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
         ? runtimeSettingsPayload
         : runtimeSettingsPayload,
     );
+  if (url.endsWith("/api/v1/coroot/config")) {
+    return jsonResponse(init?.method === "POST" ? { ...corootConfigPayload, configured: true } : corootConfigPayload);
+  }
+  if (url.endsWith("/api/v1/coroot/test-connection")) {
+    return jsonResponse({ ok: true, message: "Coroot 网关已响应。", latencyMs: 12, project: "5hxbfx6p" });
+  }
+  if (url.endsWith("/api/v2/runtime/mcp-health/coroot/refresh")) {
+    return jsonResponse(mcpHealthPayload.items[0]);
+  }
+  if (url.endsWith("/api/v2/runtime/mcp-health")) {
+    return jsonResponse(mcpHealthPayload);
+  }
   if (url.endsWith("/api/v1/agent-skills")) return jsonResponse(skillPayload);
   if (url.includes("/api/v1/agent-skills/"))
     return jsonResponse({
@@ -470,11 +515,12 @@ function mockFetch(input: RequestInfo | URL, init?: RequestInit) {
 }
 
 async function flush() {
-  await act(async () => {
-    for (let index = 0; index < 5; index += 1) {
+  for (let index = 0; index < 5; index += 1) {
+    await act(async () => {
       await Promise.resolve();
-    }
-  });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
 }
 
 function requestBodyFromCall(call: unknown[]) {
@@ -514,11 +560,13 @@ describe("React settings pages", () => {
   async function renderPath(path: string) {
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={[path]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
+        <QueryClientProvider client={createTestQueryClient()}>
+          <AppShellChromeProvider>
+            <MemoryRouter initialEntries={[path]}>
+              <AppRouter />
+            </MemoryRouter>
+          </AppShellChromeProvider>
+        </QueryClientProvider>,
       );
     });
     await flush();
@@ -559,6 +607,7 @@ describe("React settings pages", () => {
     ["/settings", "设置"],
     ["/settings/llm", "LLM 配置"],
     ["/settings/runtime", "Agent Runtime"],
+    ["/settings/coroot", "Coroot 监控配置"],
     ["/settings/hosts", "env=prod"],
     ["/settings/ops-manuals", "Redis 内存压力排障"],
     ["/settings/experience-packs", "旧入口已迁移到运维手册"],
@@ -587,6 +636,37 @@ describe("React settings pages", () => {
     expect(container.querySelector('a[href="/settings/skills"]')).toBeNull();
     expect(container.querySelector('a[href="/settings/mcp"]')).toBeNull();
     expect(container.querySelector('a[href="/capability-center"]')).toBeNull();
+  });
+
+  it("renders Coroot monitoring settings in the default app sidebar with AI Chat MCP status", async () => {
+    await renderPath("/settings/coroot");
+
+    const sidebar = container.querySelector('[data-testid="app-shell-sidebar"]');
+    expect(sidebar?.textContent).toContain("V2");
+    expect(sidebar?.textContent).toContain("AIOPS");
+    expect(sidebar?.textContent).toContain("AI 对话");
+    expect(sidebar?.textContent).toContain("Case 工作台");
+    expect(sidebar?.textContent).toContain("Coroot");
+    expect(sidebar?.textContent).toContain("监控视图");
+    expect(sidebar?.textContent).toContain("配置");
+    expect(sidebar?.textContent).not.toContain("地址与凭证");
+    expect(sidebar?.textContent).not.toContain("AI Chat 可见");
+
+    expect(container.textContent).toContain("Coroot 监控配置");
+    expect(container.textContent).toContain("Base URL");
+    expect(container.textContent).not.toContain("例如 http://172.18.13.11:8000/coroot");
+    expect(inputInField(container, "Base URL")?.value).toBe("http://172.18.13.11:8000");
+    expect(inputInField(container, "Project ID")?.value).toBe("5hxbfx6p");
+    expect(inputInField(container, "AI Chat Web Session / API 凭证")?.placeholder).toContain("coroot_session");
+    expect(inputInField(container, "Coroot Web 用户名")?.value).toBe("admin");
+    expect(inputInField(container, "Coroot Web 密码")?.placeholder).toContain("已配置");
+    expect(container.textContent).toContain("AI Chat 在服务端读取证据");
+    expect(container.textContent).toContain("AI Chat 可见的 Coroot MCP");
+    expect(container.textContent).toContain("healthy");
+    expect(container.textContent).toContain("29");
+    expect(container.textContent).toContain("Web 登录");
+    expect(container.textContent).toContain("configured");
+    expect(container.textContent).toContain("不会自动拿 iframe cookie");
   });
 
   it("renders Agent Profile Effective Capabilities preview with source and disabled reasons", async () => {

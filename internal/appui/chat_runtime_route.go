@@ -87,7 +87,26 @@ func BuildChatRuntimeRouteWithEnvironment(input string, mentions []hostops.HostM
 		route.EnvironmentReadOnlyReason = environment.ReadOnlyReason
 		route.Reasons = appendUniqueEvidenceString(route.Reasons, "environment target conflict")
 	}
+	if route.AllowsCorootRCA {
+		applyCorootCapabilityRouteHint(&route, "explicit capability: coroot")
+	}
 	return route
+}
+
+func applyCorootCapabilityRouteHint(route *ChatRuntimeRoute, reason string) {
+	if route == nil {
+		return
+	}
+	route.AllowsCorootRCA = true
+	if route.Mode == "" || route.Mode == ChatRouteAdvisory {
+		route.Mode = ChatRouteEvidenceRCA
+	}
+	if strings.TrimSpace(reason) != "" {
+		route.Reasons = appendUniqueEvidenceString(route.Reasons, reason)
+	}
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
 }
 
 func BuildChatRuntimeRouteFromIntentFrame(frame runtimecontract.IntentFrame, existing ChatRuntimeRoute) ChatRuntimeRoute {

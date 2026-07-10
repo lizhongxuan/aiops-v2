@@ -302,6 +302,58 @@ func TestMCPServiceRuntimeHealthUsesSharedViewModel(t *testing.T) {
 	}
 }
 
+func TestMCPServiceSkipsExternalRuntimeForBuiltinCoroot(t *testing.T) {
+	repo := &mcpRepoStub{items: []store.MCPServerRecord{{
+		Name:      "coroot",
+		Transport: "builtin",
+		Status:    "error",
+		Error:     `mcp runtime: unsupported transport "builtin" for "coroot"`,
+	}}}
+	registry := mcp.NewRegistry()
+	if err := registry.RegisterServer(mcp.ServerConfig{ID: "coroot", Name: "Coroot", Transport: "builtin", Source: "builtin"}); err != nil {
+		t.Fatalf("RegisterServer() error = %v", err)
+	}
+	if err := registry.OnServerConnected("coroot", []tooling.Tool{
+		&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "coroot.list_applications", Description: "applications"}},
+	}); err != nil {
+		t.Fatalf("OnServerConnected() error = %v", err)
+	}
+	registry.SetServerHealthSnapshot(mcp.HealthSnapshot{
+		ServerID:      "coroot",
+		Status:        mcp.HealthUnavailable,
+		LastCheckedAt: time.Unix(100, 0),
+		LastError:     `mcp runtime: unsupported transport "builtin" for "coroot"`,
+		TTLSeconds:    30,
+	})
+	runtime := &mcpRuntimeStub{
+		registry:   registry,
+		refreshErr: fmt.Errorf(`mcp runtime: unsupported transport "builtin" for "coroot"`),
+	}
+	svc := NewMCPServiceWithRuntime(repo, registry, runtime)
+
+	refreshed, err := svc.Act(context.Background(), "coroot", "refresh")
+	if err != nil {
+		t.Fatalf("Act(refresh) error = %v", err)
+	}
+	if len(runtime.refreshed) != 0 || len(runtime.connected) != 0 {
+		t.Fatalf("runtime calls = connected %#v refreshed %#v, want none for builtin", runtime.connected, runtime.refreshed)
+	}
+	item := findMCPItem(refreshed.Items, "coroot")
+	if item == nil {
+		t.Fatalf("coroot item not found: %+v", refreshed.Items)
+	}
+	if item.Status != "connected" || item.Error != "" || item.Health.Status != mcp.HealthHealthy || item.Health.LastError != "" || item.ToolCount != 1 {
+		t.Fatalf("coroot item = %+v, want connected healthy builtin tool surface", item)
+	}
+	health, err := svc.HealthOne(context.Background(), "coroot")
+	if err != nil {
+		t.Fatalf("HealthOne() error = %v", err)
+	}
+	if health.Status != "healthy" || health.LastError != "" || health.AvailableToolCount != 1 {
+		t.Fatalf("HealthOne() = %+v, want healthy without stale transport error", health)
+	}
+}
+
 func TestMCPServiceRefreshRecordsUnavailableHealth(t *testing.T) {
 	repo := &mcpRepoStub{items: []store.MCPServerRecord{{
 		Name:      "synthetic_obs",

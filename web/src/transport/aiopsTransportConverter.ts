@@ -43,7 +43,7 @@ export function isAiopsTransportRunning(state: AiopsTransportState) {
 }
 
 function orderedTurnMessages(state: AiopsTransportState) {
-  return state.turnOrder.flatMap((turnId) => {
+  return orderedTransportTurnIds(state).flatMap((turnId) => {
     const turn = state.turns[turnId];
     if (!turn) {
       return [];
@@ -59,6 +59,37 @@ function orderedTurnMessages(state: AiopsTransportState) {
     }
     return messages;
   });
+}
+
+export function orderedTransportTurnIds(state: AiopsTransportState) {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const turnId of state.turnOrder || []) {
+    if (state.turns[turnId] && !seen.has(turnId)) {
+      seen.add(turnId);
+      ids.push(turnId);
+    }
+  }
+  for (const turnId of Object.keys(state.turns || {})) {
+    if (!seen.has(turnId)) {
+      seen.add(turnId);
+      ids.push(turnId);
+    }
+  }
+  return ids.sort((left, right) => compareTransportTurns(state.turns[left], state.turns[right], left, right));
+}
+
+function compareTransportTurns(left: AiopsTransportTurn | undefined, right: AiopsTransportTurn | undefined, leftId: string, rightId: string) {
+  const leftTime = transportTurnSortTime(left);
+  const rightTime = transportTurnSortTime(right);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function transportTurnSortTime(turn?: AiopsTransportTurn) {
+  return parseDate(turn?.startedAt || turn?.user?.createdAt || turn?.updatedAt || turn?.completedAt).getTime();
 }
 
 function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {

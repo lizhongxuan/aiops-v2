@@ -1448,6 +1448,73 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).toContain("整理最终回答 456ms");
   });
 
+  it("hides final generation duration while the turn is still running", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-coroot",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="working"
+          finalText="正在流式生成最终回答。"
+          finalDurationMs={6200}
+          renderFinalText={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("处理中");
+    expect(container.textContent).not.toContain("整理最终回答");
+  });
+
+  it("hides internal Coroot reuse tool results from the transcript", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-coroot-broad",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+      }),
+      makeBlock({
+        id: "tool-coroot-reused",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+        inputSummary: '{"status":"warning"}',
+        outputPreview: '{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"reused","skipReason":"covered_by_prior_broad_query"}',
+      }),
+      makeBlock({
+        id: "tool-coroot-incidents",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_incidents",
+        text: "coroot_incidents",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+
+    await expandProcessTranscript();
+
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-broad"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-reused"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-incidents"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("covered_by_prior_broad_query");
+    expect(container.textContent).not.toContain('{"status":"warning"}');
+  });
+
   it("formats long elapsed times with hours minutes and seconds", async () => {
     const process = [
       makeBlock({

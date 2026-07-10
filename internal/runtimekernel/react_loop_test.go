@@ -3540,6 +3540,77 @@ func TestRunTurn_LargeToolResultIsSummarizedAndSpilled(t *testing.T) {
 	}
 }
 
+func TestRunTurn_SpilledToolResultEnablesContextArtifactReader(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{
+				{
+					ID:   "call-coroot-large",
+					Type: "function",
+					Function: schema.FunctionCall{
+						Name:      "coroot_list_services",
+						Arguments: `{}`,
+					},
+				},
+			}),
+			schema.AssistantMessage("services reviewed", nil),
+		},
+	}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "coroot_list_services",
+			Description: "List services",
+			ResultBudget: tooling.ResultBudget{
+				MaxInlineResultBytes: 48,
+				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
+				SummarizeLargeResult: true,
+			},
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeWorkspace)},
+			Modes:        []string{string(ModeChat)},
+		},
+		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: `{"problemServices":[{"name":"rabbitmq-server","status":"warning"}],"statusCounts":{"warning":15},"payload":"` + strings.Repeat("x", 512) + `"}`}, nil
+		},
+	}
+
+	spillRepo := newMemoryToolResultSpillRepo()
+	registry := tooling.NewRegistry()
+	if err := registry.Register(toolDef); err != nil {
+		t.Fatalf("Register tool failed: %v", err)
+	}
+	compiler := newRecordingCompiler()
+	kernel, _ := newKernelForLoopTests(t, &testMockToolAssemblySource{registry: registry}, compiler, model)
+	kernel.spillRepo = spillRepo
+
+	if _, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-spill-context-artifact",
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		TurnID:      "turn-spill-context-artifact",
+		Input:       "@Coroot 查看有哪些异常",
+		Metadata: map[string]string{
+			"aiops.coroot.explicitRCA": "true",
+		},
+	}); err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if len(compiler.contexts) < 2 {
+		t.Fatalf("compiler contexts = %d, want at least 2", len(compiler.contexts))
+	}
+	if !contextArtifactTestHasTool(compiler.contexts[1].AssembledTools, "read_context_artifact") {
+		t.Fatalf("second compile tools missing read_context_artifact: %v", contextArtifactTestToolNames(compiler.contexts[1].AssembledTools))
+	}
+	secondPromptAssets := strings.Join(compiler.contexts[1].SkillPromptAssets, "\n")
+	if strings.Contains(secondPromptAssets, "网页来源:") && strings.Contains(secondPromptAssets, "store://tool-spills/") {
+		t.Fatalf("local tool spill should not be described as web source:\n%s", secondPromptAssets)
+	}
+	if !strings.Contains(secondPromptAssets, "工具证据引用:") {
+		t.Fatalf("second prompt missing tool evidence reference label:\n%s", secondPromptAssets)
+	}
+}
+
 func TestRunTurn_MediumToolResultKeepsSummaryOnlyAndSpillsFullContent(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

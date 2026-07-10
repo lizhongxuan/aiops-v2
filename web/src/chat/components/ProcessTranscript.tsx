@@ -120,9 +120,9 @@ export function ProcessTranscript({
   const renderedFinalText = explicitFinalText.trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const finalGenerationLabel = formatFinalGenerationDuration(finalDurationMs);
-  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const live = running || waiting;
+  const finalGenerationLabel = live ? "" : formatFinalGenerationDuration(finalDurationMs);
+  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [open, setOpen] = useState(live);
@@ -335,6 +335,9 @@ function shouldShowInTranscript(block: AiopsProcessBlock) {
   if (block.kind === "approval") {
     return Boolean(text || block.approvalId || block.targetSummary || block.riskSummary || block.expectedEffect);
   }
+  if (isCorootInternalReuseBlock(block)) {
+    return false;
+  }
   if (isRuntimeInternalGateText(text)) {
     return false;
   }
@@ -348,6 +351,15 @@ function shouldShowInTranscript(block: AiopsProcessBlock) {
     return false;
   }
   return true;
+}
+
+function isCorootInternalReuseBlock(block: AiopsProcessBlock) {
+  const source = (block.source || block.displayKind || "").toLowerCase();
+  if (!source.includes("coroot")) {
+    return false;
+  }
+  return [block.text, block.outputPreview, block.inputSummary, block.displayKind]
+    .some((value) => (value || "").toLowerCase().includes("covered_by_prior_broad_query"));
 }
 
 function isRuntimeInternalGateText(text: string) {

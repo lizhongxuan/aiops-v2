@@ -15,7 +15,6 @@ import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
 import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
-import { SpecialInputContextBar } from "./SpecialInputContextBar";
 
 type AssistantMessageMeta = {
   process?: AiopsProcessBlock[];
@@ -39,18 +38,24 @@ type AssistantMessageMeta = {
 
 export function AiopsThread() {
   const state = useAssistantTransportState() as AiopsTransportState;
-  const commands = useAiopsTransportCommands();
   const surfaces = Object.values(state.mcpSurfaces || {});
   const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
+  const lastAutoScrollTurnRef = useRef("");
   const scrollSignature = useMemo(() => aiopsThreadScrollSignature(state), [state]);
 
   useLayoutEffect(() => {
     const viewport = viewportRef.current;
-    if (!viewport || !stickToBottomRef.current) {
+    const currentTurnId = state.currentTurnId || "";
+    const forceForNewTurn = currentTurnId !== "" && currentTurnId !== lastAutoScrollTurnRef.current;
+    lastAutoScrollTurnRef.current = currentTurnId;
+    if (!viewport || (!stickToBottomRef.current && !forceForNewTurn)) {
       return undefined;
+    }
+    if (forceForNewTurn) {
+      stickToBottomRef.current = true;
     }
     let cancelled = false;
     const scroll = () => {
@@ -108,19 +113,6 @@ export function AiopsThread() {
               )}
             </div>
           </ThreadPrimitive.Empty>
-          <SpecialInputContextBar
-            context={state.specialInputContext}
-            onClear={() => commands.specialInputClear({
-              resourceKind: state.specialInputContext?.activeGrant?.resourceKind,
-              resourceId: state.specialInputContext?.activeGrant?.resourceId,
-              canonicalKey: state.specialInputContext?.activeGrant?.canonicalKey,
-            })}
-            onConfirm={() => commands.specialInputConfirm({
-              resourceKind: state.specialInputContext?.candidateFacts?.[0]?.resourceKind,
-              resourceId: state.specialInputContext?.candidateFacts?.[0]?.resourceId,
-              canonicalKey: state.specialInputContext?.candidateFacts?.[0]?.canonicalKey,
-            })}
-          />
           <div className="flex flex-1 flex-col gap-6 empty:hidden">
             <ThreadPrimitive.Messages
               components={{
@@ -425,9 +417,9 @@ export function assistantMessageRenderedFinalText(
   meta: Pick<AssistantMessageMeta, "finalText">,
 ) {
   if (typeof meta.finalText === "string") {
-    return meta.finalText;
+    return sanitizeAssistantDisplayText(meta.finalText);
   }
-  return messageText(content);
+  return sanitizeAssistantDisplayText(messageText(content));
 }
 
 type FinalContractSummaryInput = Pick<
@@ -478,9 +470,9 @@ export function finalContractSummaryView(meta: FinalContractSummaryInput): Final
   const contract = meta.finalContract || {};
   const status = normalizeFinalStatus(contract.status || meta.finalStatus);
   const checkedEvidenceRefs = stringList(contract.checkedEvidenceRefs);
-  const uncheckedRequirements = stringList(contract.uncheckedRequirements);
+  const uncheckedRequirements = userVisibleStringList(contract.uncheckedRequirements);
   const failedToolImpacts = failedToolImpactList(contract.failedToolImpacts);
-  const limitations = stringList(contract.limitations);
+  const limitations = userVisibleStringList(contract.limitations);
   const confidence = String(contract.confidence || meta.finalConfidence || "").trim();
 
   if (
@@ -611,23 +603,185 @@ function finalConfidenceLabel(confidence: string) {
   }
 }
 
+const knownDiagnosticReplacements = [
+  {
+    old: "required evidence may be missing; do not use this failed tool as checked evidence",
+    value: "证据读取失败，不能作为已检查结果",
+  },
+  { old: "read_context_artifact", value: "读取上下文证据" },
+  { old: "read_mcp_resource", value: "读取 MCP 资源" },
+  { old: "list_mcp_resources", value: "列出 MCP 资源" },
+  { old: "coroot.collect_rca_context", value: "Coroot 根因分析上下文" },
+  { old: "coroot_collect_rca_context", value: "Coroot 根因分析上下文" },
+  { old: "coroot.list_services", value: "Coroot 服务列表" },
+  { old: "coroot_list_services", value: "Coroot 服务列表" },
+  { old: "coroot.incidents", value: "Coroot 异常事件" },
+  { old: "coroot_incidents", value: "Coroot 异常事件" },
+  { old: "tool_business_error", value: "工具执行失败" },
+] as const;
+
+const leakedToolProcessTextMessage = "已读取工具证据，但模型返回的是工具读取过程，未形成可直接展示的中文结论。";
+
+function sanitizeAssistantDisplayText(text: string) {
+  if (!text) {
+    return text;
+  }
+  if (looksLikeLeakedToolProcessText(text)) {
+    return leakedToolProcessTextMessage;
+  }
+  const seenLines = new Set<string>();
+  let inFence = false;
+  const lines = text.split(/\r?\n/).flatMap((line) => {
+    if (line.trimStart().startsWith("```")) {
+      inFence = !inFence;
+      return [line];
+    }
+    if (inFence) {
+      return [line];
+    }
+    const structuredLine = readableStructuredEvidenceLine(line);
+    const nextLine = structuredLine || humanizeUserVisibleDiagnostic(line);
+    if (!nextLine.trim()) {
+      return [nextLine];
+    }
+    const duplicateKey = nextLine.trim();
+    if (seenLines.has(duplicateKey)) {
+      return [];
+    }
+    seenLines.add(duplicateKey);
+    return [nextLine];
+  });
+  return lines.join("\n").trim();
+}
+
+function looksLikeLeakedToolProcessText(text: string) {
+  const lower = text.trim().toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  if ((lower.includes("service_name=") || lower.includes("ervice_name=")) && (lower.includes("rca上下文") || lower.includes("让我获取") || lower.includes("let me get"))) {
+    return true;
+  }
+  if ((lower.match(/让我获取rca上下文/g) ?? []).length >= 2 || (lower.match(/rca上下文/g) ?? []).length >= 5) {
+    return true;
+  }
+  if (lower.includes("read_context_artifact")) {
+    const linkedMarkers = [
+      "evidence ids",
+      "evidence id",
+      "evidence refs",
+      "evidence ref",
+      "证据引用",
+      "let me",
+      "try reading",
+      "reading the evidence",
+      "spill chain",
+      "store://tool-spills",
+    ];
+    if (linkedMarkers.some((marker) => lower.includes(marker))) {
+      return true;
+    }
+  }
+  const processMarkers = [
+    "let me try reading",
+    "try reading the evidence",
+    "reading the evidence refs",
+    "evidence ids",
+    "evidence refs",
+    "one more level of the spill chain",
+    "store://tool-spills",
+  ];
+  return processMarkers.filter((marker) => lower.includes(marker)).length >= 2;
+}
+
+function readableStructuredEvidenceLine(line: string) {
+  const match = line.match(/^(\s*(?:(?:[-*•])|\d+\.)\s*)([{[].*)$/);
+  if (!match) {
+    return null;
+  }
+  const label = structuredEvidenceLabel(match[2]);
+  if (!label) {
+    return null;
+  }
+  return `${match[1]}${label}已返回结构化证据。`;
+}
+
+function structuredEvidenceLabel(raw: string) {
+  const text = raw.trim();
+  if (!text.startsWith("{") && !text.startsWith("[")) {
+    return null;
+  }
+  if (text.includes('"categoryCounts"')) {
+    return "Coroot 服务概览";
+  }
+  if (text.includes('"incidents"')) {
+    return "Coroot 异常事件";
+  }
+  if (text.includes('"abnormalServices"') || text.includes('"service"')) {
+    return "Coroot 服务证据";
+  }
+  if (text.includes('"evidenceRefs"')) {
+    return "结构化证据";
+  }
+  return null;
+}
+
+function humanizeKnownToolName(value: string) {
+  let out = value;
+  for (const replacement of knownDiagnosticReplacements) {
+    if (replacement.old.includes(".") || replacement.old.includes("_")) {
+      out = out.split(replacement.old).join(replacement.value);
+    }
+  }
+  return out;
+}
+
+function humanizeUserVisibleDiagnostic(value: string) {
+  let out = value;
+  for (const replacement of knownDiagnosticReplacements) {
+    out = out.split(replacement.old).join(replacement.value);
+  }
+  out = out.replace(/(读取 MCP 资源|列出 MCP 资源|Coroot [^:：\n]+):\s*/g, "$1：");
+  return out;
+}
+
 function stringList(value: unknown) {
   return Array.isArray(value)
     ? value.map((item) => String(item || "").trim()).filter(Boolean)
     : [];
 }
 
+function userVisibleStringList(value: unknown) {
+  return uniqueStringList(stringList(value).map(humanizeUserVisibleDiagnostic));
+}
+
 function failedToolImpactList(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.flatMap((item) => {
+  return uniqueStringList(value.flatMap((item) => {
     if (!item || typeof item !== "object") {
       return [];
     }
     const record = item as Record<string, unknown>;
-    const name = String(record.toolName || record.toolCallId || "工具").trim();
-    const detail = String(record.impact || record.failureClass || "影响未知").trim();
-    return name || detail ? [`${name}: ${detail}`] : [];
-  });
+    const rawName = String(record.toolName || record.toolCallId || "工具").trim();
+    const name = humanizeKnownToolName(rawName);
+    const detail = humanizeUserVisibleDiagnostic(String(record.impact || record.failureClass || "影响未知").trim());
+    const separator = name !== rawName ? "：" : ": ";
+    return name || detail ? [`${name}${separator}${detail}`] : [];
+  }));
+}
+
+function uniqueStringList(values: string[]) {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) {
+      continue;
+    }
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }

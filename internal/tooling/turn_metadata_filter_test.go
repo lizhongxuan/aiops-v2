@@ -431,6 +431,40 @@ func TestTurnMetadataAllowsCorootReadOnlyEvidenceWhenExplicitMentioned(t *testin
 	}
 }
 
+func TestTurnMetadataFilterCorootContextUsesDirectToolsInsteadOfGenericMCPResources(t *testing.T) {
+	registry := NewRegistry()
+	for _, meta := range []ToolMetadata{
+		{Name: "list_mcp_resources", AlwaysLoad: true, Layer: ToolLayerCore, Pack: "mcp_resource"},
+		{Name: "read_mcp_resource", AlwaysLoad: true, Layer: ToolLayerCore, Pack: "mcp_resource"},
+		{Name: "coroot.list_services", Domain: "coroot", Layer: ToolLayerMCP, Pack: "mcp_dynamic_coroot", IsMCP: true},
+		{Name: "coroot.incidents", Domain: "coroot", Layer: ToolLayerMCP, Pack: "mcp_dynamic_coroot", IsMCP: true},
+	} {
+		if err := registry.Register(&StaticTool{Meta: meta}); err != nil {
+			t.Fatalf("Register(%s) error = %v", meta.Name, err)
+		}
+	}
+
+	tools := registry.CompileContextWithMetadata("workspace", "chat", map[string]string{
+		"aiops.route.mode":              "evidence_rca",
+		"aiops.tool.execCommandAllowed": "false",
+		"aiops.target.binding":          "none",
+		"aiops.tool.corootRCAAllowed":   "true",
+		"aiops.route.allowsCorootRCA":   "true",
+		"enableToolPack":                "mcp_dynamic_coroot,coroot_rca",
+	})
+	names := toolNamesForTurnMetadataTest(tools)
+	for _, want := range []string{"coroot.list_services", "coroot.incidents"} {
+		if !containsStringForTurnMetadataTest(names, want) {
+			t.Fatalf("assembled tools = %v, missing direct Coroot tool %s", names, want)
+		}
+	}
+	for _, forbidden := range []string{"list_mcp_resources", "read_mcp_resource"} {
+		if containsStringForTurnMetadataTest(names, forbidden) {
+			t.Fatalf("assembled tools = %v, should not include generic MCP resource tool %s in Coroot context", names, forbidden)
+		}
+	}
+}
+
 func TestTurnMetadataAllowsCorootRCAWhenExplicitMentioned(t *testing.T) {
 	metadata := map[string]string{"aiops.tool.corootRCAAllowed": "true"}
 	meta := ToolMetadata{Name: "coroot.collect_rca_context", Domain: "coroot", Pack: "coroot_rca"}
