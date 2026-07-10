@@ -55,7 +55,7 @@ describe("PostRunSuggestions", () => {
     expect(container.textContent).not.toContain("生成 Case");
   });
 
-  it("renders suggested post-run actions and reuses existing archive APIs", async () => {
+  it("deduplicates saved-record suggestions and reuses existing archive APIs", async () => {
     vi.mocked(archiveOpsRunCase).mockResolvedValue({ case: { id: "case-1" } });
     vi.mocked(createOpsRunRunRecord).mockResolvedValue({ id: "record-1" });
     vi.mocked(createOpsRunExperienceCandidates).mockResolvedValue({
@@ -79,7 +79,7 @@ describe("PostRunSuggestions", () => {
       root.render(<OpsRunSummaryCard state={state} />);
     });
 
-    expect(buttonByText("生成 Run Record")).toBeTruthy();
+    expect(buttonByText("生成 Run Record")).toBeUndefined();
     expect(buttonByText("生成处理记录")).toBeTruthy();
     expect(buttonByText("生成经验候选")).toBeTruthy();
     expect(buttonByText("生成 Case")).toBeTruthy();

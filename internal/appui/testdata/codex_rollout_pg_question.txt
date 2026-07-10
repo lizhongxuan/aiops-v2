@@ -1,0 +1,85 @@
+我用pgbackrest对主机做了几次备份,然后选择某个的备份记录恢复了主机A,现在想把主机A加入主机C的pg_mon中,并且把主机B当做从节点加入集群,为什么从节点执行命令 pg_autoctl create postgres  xxxxx 加入集群后,timeline比主机A还要高,导致他们无法不同,这是为什么? 有什么原因会导致?
+
+---
+以下是仅做参考:
+##PG从节点添加monitor进集群过程:
+
+一.确保monitor已经drop所有节点
+1.1 monitor节点切换到postgres用户:
+sudo su - postgres
+
+1.2 查看集群状态命令:
+pg_autoctl show state
+
+1.3 如果有节点,则删除:
+pg_autoctl drop node --hostname {{节点IP}}  --pgport {{pg端口}} --force
+[例如pg_autoctl drop node --hostname 192.0.2.127  --pgport 5432 --force]
+
+二.查看主节点状态
+2.1 查看pg日志是否还在恢复中
+- 恢复中日志,有“restored log file xxxx”字段
+- 恢复完成日志,有"archive recovery complete”字段
+- 如果日志有其他错误,请先解决具体错误后再进行下一步
+— 例如PG日志:
+{{
+2025-03-10 14:23:10.371 CST [4142958] DETAIL: The failed archive command was: /var/postgresql/soft/pg15.6/bin/pgbackrest --stanza=paf archive-push pg_wal/00000007000000000000000E ERROR: [045]: WAL file '00000007000000000000000E' already exists in the repo1 archive with a different checksum
+2025-03-10 14:23:11.953 CST [4142958] LOG: archive command failed with exit code 45 2025-03-10 14:23:11.953 CST [4142958] DETAIL: The failed archive command was: /var/postgresql/soft/pg15.6/bin/pgbackrest --stanza=paf archive-push pg_wal/00000007000000000000000E
+2025-03-10 14:23:11.953 CST [4142958] WARNING: archiving write-ahead log file "pg_wal/00000007000000000000000E" failed too many times, will try again later 2025-03-10 14:24:11.999 CST [4142958] WARNING: removed orphan archive status file "pg_wal/archive_status/00000007000000000000000E.ready”
+}}
+现有文件已存在于 repo1 存档中，但具有不同的校验和;出现原因是用pg_ctl启动后,生成新的wal:”00000007000000000000000E”;后面用systemctl启动时,会通过archive command执行存档,但发现与旧wal:”00000007000000000000000”的校验和是不一致的.
+处理方法是将,恢复后的pg新的wal删除,路径:{{PG_DATA}}/recovery/repos/archive/paf/15-1/*
+
+2.2 恢复后看,运行状态
+- 恢复后,pg默认是用pg_ctl启动,可直接执行第3步
+- 若pg是用systemctl启动,则需要停止后,再执行第3步
+
+三.主节点连接monitor
+3.1 在主节点上切换到postgres用户
+sudo su - postgres
+
+3.2 清除pg_autoctl缓存文件 [查看: pg_autoctl show file]
+rm -rf ~/.config/pg_autoctl
+rm -rf ~/.local/share/pg_autoctl
+
+3.3 主节点连接:
+pg_autoctl create postgres --hostname {{主节点IP}}  --auth trust --no-ssl --monitor 'postgres://autoctl_node@{{moniror_ip}}:{{moniror_port}}/pg_auto_failover?sslmode=prefer'
+[例如pg_autoctl create postgres --hostname 192.0.2.74  --auth trust --no-ssl --monitor 'postgres://autoctl_node@192.0.2.91:5433/pg_auto_failover?sslmode=prefer' ]
+
+3.4 切换到root重启主节点pg
+systemctl restart postgresql
+
+3.5 从monitor的postgres用户查看状态是否正常: pg_autoctl show state
+
+四.从节点连接monitor
+4.1 从monitor上查看状态[pg_autoctl show state],确保主节点已经正常连接
+如:
+[postgres@host82 ~]$ pg_autoctl show state
+   Name |  Node |       Host:Port |         TLI: LSN |   Connection |      Reported State |      Assigned State
+--------+-------+-----------------+------------------+--------------+---------------------+--------------------
+node_16 |    16 | 192.0.2.76:5432 | 15: 12C/1BE4AB8 |   read-write |              single |              single
+
+4.2 确保从节点pg进程没有启动,且pg_data已经清空
+
+4.3 从节点上切换到postgres用户
+
+4.4 清除pg_autoctl缓存文件 [查看: pg_autoctl show file]
+如rm -rf /home/postgres/.config /home/postgres/.local /tmp/pg_autoctl
+
+rm -rf ~/.config/pg_autoctl
+rm -rf ~/.local/share/pg_autoctl
+
+4.5 从节点上连接monitor
+pg_autoctl create postgres --hostname {{从节点IP}}  --auth trust --no-ssl --monitor 'postgres://autoctl_node@{{moniror_ip}}:{{moniror_port}}/pg_auto_failover?sslmode=prefer' --replication-quorum false
+[例如pg_autoctl create postgres --hostname 192.0.2.92  --auth trust --no-ssl --monitor 'postgres://autoctl_node@192.0.2.91:5433/pg_auto_failover?sslmode=prefer' --replication-quorum false]
+
+4.6 切换到root重启从节点pg
+systemctl restart postgresql
+
+————————————————
+备注:
+1. 连接monitor失败后,重新连接monitor之前,都要确保从monitor drop掉节点,pg节点上确保pg_autoctl缓存被删除后,再重新连接monitor
+
+2.主节点连接monitor报错:
+09:55:48 6329 INFO Initialising postgres as a primary
+09:55:48 6329 ERROR Failed to create user "postgres"[25006]: ERROR: cannot execute CREATE ROLE in a read-only
+一般是因为主节点还没恢复完成,确保pg正在运行[pg_ctl start]; 通过查看pg日志,恢复完成的日志有"archive recovery complete”字段

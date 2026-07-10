@@ -44,3 +44,12 @@
 - 修复方式：收紧 `finalContractSummaryView` 显示条件，`unknown` 且没有用户可行动细节时返回 `null`，保留 `verified` 证据数量、`tool_unavailable`、`needs_evidence`、limitations 等有用户价值的结构化状态；新增单测和 Playwright screenshot 覆盖该 UI 边界。
 - 验证结果：已运行 `npm --prefix web test -- --run AiopsThread aiopsTransportConverter`、`npm --prefix web run test:ui -- react-shell-snapshot.spec.js --project=chromium -g "final contract summary"`、`npm --prefix web run typecheck`、`npm --prefix web run build`，均通过；内置浏览器刷新 `http://127.0.0.1:18080/` 后未发现“未确认”或“置信度低”误显示，控制台无 error。
 - 风险与后续：只隐藏无用户可行动细节的 `unknown` 内部校准摘要，不影响有证据、有工具限制或有未完成检查的 final contract 卡片；后续如果需要解释置信度，应设计显式的帮助入口或 Prompt Trace debug 入口，而不是让模型猜测前端 metadata。
+
+## 2026-07-10 13:30 - 隔离 Worktree 与 CI 基线不可重复
+
+- 修复时间：2026-07-10 13:30
+- Bug 现象：从当前提交创建隔离 worktree 后，`go test ./...` 因 `cmd/ai-server` 缘故无法编译，AppUI 路由回归测试依赖本机被忽略的 Playwright 输出文件；Web 全量测试另有 26 个陈旧断言失败，导致同一提交在原 checkout 与干净 worktree 中结果不一致。
+- 根因：用户级全局 ignore 的 `ai-server` 规则误隐藏了 `cmd/ai-server/ssh_command_runner.go`，实际运行依赖没有进入 Git；AppUI 测试直接读取 `output/playwright` 调试产物；部分 Web 测试未跟随 QueryClient provider、Host 简化字段、Transport 可见状态、归档动作去重和页面内确认对话框的现行契约更新。
+- 修复方式：把实际运行依赖的 SSH runner 源码纳入分支；将 PG rollout 输入迁移到不含凭证的 `internal/appui/testdata`；只更新陈旧测试夹具和断言，不修改对应生产行为，也不恢复已删除的旧字段、`window.confirm` 或重复归档按钮。
+- 验证结果：已运行 `go test ./...`，全部 Go 包通过；已运行 `npm --prefix web test -- --run`，123 个测试文件、895 个测试全部通过；已运行 `npm --prefix web run build`，构建成功。定向 red-green 证据分别覆盖缺失 runner、不可移植 fixture、QueryClient provider 和 6 个陈旧 UI 断言。
+- 风险与后续：SSH runner 仍保留原 checkout 的既有行为，本次只解决源码未被追踪的问题；用户级全局 ignore 规则仍存在，提交时需要对该文件使用精确强制暂存。Web 测试仍输出 jsdom Canvas 非致命警告，依赖审计仍有既有告警，均未在本次基线修复中扩张处理。

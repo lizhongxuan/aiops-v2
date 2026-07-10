@@ -2,6 +2,7 @@ package appui
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 )
 
 func TestCodexRolloutPGQuestionDoesNotEnterCorootWithoutMention(t *testing.T) {
-	raw, err := os.ReadFile("../../output/playwright/codex-rollout-compare-inapp/submitted-prompt.txt")
+	raw, err := os.ReadFile(filepath.Join("testdata", "codex_rollout_pg_question.txt"))
 	if err != nil {
 		t.Fatalf("read rollout prompt: %v", err)
 	}

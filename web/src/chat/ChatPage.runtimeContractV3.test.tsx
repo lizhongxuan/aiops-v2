@@ -106,6 +106,10 @@ describe("ChatPage runtime contract V3", () => {
     for (const marker of REQUIRED_RUNTIME_CONTRACT_V3_MARKERS) {
       expect(text).toContain(marker);
     }
+    expect(text).toContain("Cancel the current operation.");
+    expect(text).toContain("请求已取消");
+    expect(text).toContain("Try a conflicting service mutation.");
+    expect(text).toContain("执行失败");
 
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
@@ -140,8 +144,6 @@ const REQUIRED_RUNTIME_CONTRACT_V3_MARKERS = [
   "multi-host child agent timeline marker",
   "context compacted marker",
   "pending input accepted / steer marker",
-  "turn cancelled / aborted tool marker",
-  "resource lock conflict marker",
 ];
 
 async function expandProcessTranscripts(container: HTMLElement) {
