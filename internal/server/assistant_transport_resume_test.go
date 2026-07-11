@@ -102,6 +102,53 @@ func TestAssistantTransportResumeRunningTurnStreamsCurrentAndFutureState(t *test
 	}
 }
 
+func TestAssistantTransportResumeStreamReportsSnapshotPublishFailure(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-resume-snapshot-failure", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-resume-snapshot-failure",
+		SessionID:   session.ID,
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-resume-failure", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "inspect service"}, CreatedAt: now},
+			assistantMessageFinalItemForServerTest("final-resume-failure", agentstate.ItemStatusRunning, "partial", now),
+		},
+	}
+	sessions.Update(session)
+
+	server := NewHTTPServer(appui.NewServices(&assistantTransportAPITestRuntime{sessions: sessions}, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/resume", "application/json", bytes.NewReader(assistantTransportResumePayload(t, session.ID, session.ID)))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/resume error = %v", err)
+	}
+	defer resp.Body.Close()
+	// http.Post returns only after the resume handler has written and flushed its
+	// initial state, so this update deterministically fails a live polling stream.
+	updated := sessions.Get(session.ID)
+	updated.CurrentTurn.AgentItems[1].Payload.Data = json.RawMessage(`{"unterminated":`)
+	sessions.Update(updated)
+	raw, _ := io.ReadAll(resp.Body)
+	text := string(raw)
+	for _, want := range []string{
+		`"path":["status"],"value":"failed"`,
+		`"path":["lastError"]`,
+		`3:"publish session snapshot`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("response = %q, want explicit snapshot failure marker %q", text, want)
+		}
+	}
+}
+
 func TestAssistantTransportResumeProjectsCorootChartArtifact(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-coroot-chart-resume", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)

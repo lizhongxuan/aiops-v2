@@ -22,6 +22,10 @@ func (s *HTTPServer) handleAssistantTransportResume(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "assistant transport session source is not configured"})
 		return
 	}
+	if err := assistantTransportRequireSessionSnapshotSource(source); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
 
 	req, err := decodeAssistantTransportRequest(r.Body)
 	if err != nil {
@@ -36,7 +40,13 @@ func (s *HTTPServer) handleAssistantTransportResume(w http.ResponseWriter, r *ht
 	encoder := newAssistantTransportStreamEncoder(w)
 	projector := appui.NewTransportProjector()
 	initial := assistantTransportInitialState(req)
-	session := assistantTransportResolveResumeSession(source, initial)
+	session, resolveErr := assistantTransportResolveResumeSession(source, initial)
+	if resolveErr != nil {
+		current := assistantTransportFailedResumeState(initial, resolveErr)
+		_ = encoder.WriteStateOps(assistantTransportFullStateOps(current))
+		_ = encoder.WriteError(current.LastError)
+		return
+	}
 	current, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(initial), session, projector, source)
 	if err != nil {
 		current = assistantTransportFailedResumeState(initial, err)
@@ -50,36 +60,51 @@ func (s *HTTPServer) handleAssistantTransportResume(w http.ResponseWriter, r *ht
 	if session == nil || assistantTransportSessionTurnIsTerminal(session) || session.CurrentTurn == nil {
 		return
 	}
-	if _, err := s.streamAssistantTransportState(r.Context(), encoder, source, projector, s.ui.ChatService(), current); err != nil && !errors.Is(err, context.Canceled) {
+	if streamed, err := s.streamAssistantTransportState(r.Context(), encoder, source, projector, s.ui.ChatService(), current); err != nil && !errors.Is(err, context.Canceled) {
+		failed := assistantTransportFailedResumeState(streamed, err)
+		_ = encoder.WriteStateOps(assistantTransportDiffStateOps(streamed, failed))
+		_ = encoder.WriteError(failed.LastError)
 		return
 	}
 }
 
-func assistantTransportResolveResumeSession(source appui.SessionSource, state appui.AiopsTransportState) *runtimekernel.SessionState {
+func assistantTransportResolveResumeSession(source appui.SessionSource, state appui.AiopsTransportState) (*runtimekernel.SessionState, error) {
 	if source == nil {
-		return nil
+		return nil, errors.New("assistant transport session source is not configured")
 	}
 	if sessionID := strings.TrimSpace(state.SessionID); sessionID != "" {
-		if session := source.Get(sessionID); session != nil {
-			return session
+		session, err := assistantTransportGetSessionSnapshot(source, sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if session != nil {
+			return session, nil
 		}
 	}
 	if threadID := strings.TrimSpace(state.ThreadID); threadID != "" {
-		if session := source.Get(threadID); session != nil {
-			return session
+		session, err := assistantTransportGetSessionSnapshot(source, threadID)
+		if err != nil {
+			return nil, err
+		}
+		if session != nil {
+			return session, nil
 		}
 	}
 	if turnID := strings.TrimSpace(state.CurrentTurnID); turnID != "" {
-		for _, session := range source.List() {
+		sessions, err := assistantTransportListSessionSnapshots(source)
+		if err != nil {
+			return nil, err
+		}
+		for _, session := range sessions {
 			if session == nil || session.CurrentTurn == nil {
 				continue
 			}
 			if strings.TrimSpace(session.CurrentTurn.ID) == turnID {
-				return session
+				return session, nil
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 func assistantTransportFullStateOps(state appui.AiopsTransportState) []assistantTransportStreamStateOp {

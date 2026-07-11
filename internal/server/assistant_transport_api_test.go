@@ -205,6 +205,22 @@ type assistantTransportAPITestRuntime struct {
 	runCh    chan runtimekernel.TurnRequest
 }
 
+type assistantTransportSessionSourceWithoutSnapshots struct {
+	manager *runtimekernel.SessionManager
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) Get(id string) *runtimekernel.SessionState {
+	return s.manager.Get(id)
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) GetLatest() *runtimekernel.SessionState {
+	return s.manager.GetLatest()
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) List() []*runtimekernel.SessionState {
+	return s.manager.List()
+}
+
 func waitForAssistantTransportRunTurn(t *testing.T, runtime *assistantTransportAPITestRuntime) runtimekernel.TurnRequest {
 	t.Helper()
 	if runtime.runCh == nil {
@@ -476,6 +492,30 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
+	}
+}
+
+func TestAssistantTransportAPIRejectsSessionSourceWithoutSnapshots(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, assistantTransportSessionSourceWithoutSnapshots{manager: sessions}))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-no-snapshots", "inspect service")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s, want 503", resp.StatusCode, body)
+	}
+	select {
+	case req := <-runtime.runCh:
+		t.Fatalf("runtime started without snapshot capability: %+v", req)
+	default:
 	}
 }
 
