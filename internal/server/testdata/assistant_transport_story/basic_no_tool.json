@@ -1,0 +1,48 @@
+{
+  "name": "basic_no_tool",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "client-message-basic-no-tool",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Give the deterministic story answer without using tools."
+        }
+      ],
+      "metadata": {
+        "clientTurnId": "client-turn-basic-no-tool"
+      }
+    }
+  },
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "content": "Deterministic story answer."
+    }
+  ],
+  "toolOutcomes": [],
+  "want": {
+    "turnStatus": "completed",
+    "messages": [
+      {
+        "phase": "final_answer",
+        "text": "Deterministic story answer."
+      }
+    ],
+    "tools": [],
+    "approvals": [],
+    "evidence": [],
+    "traceHashes": {
+      "compilerVersion": "prompt-fingerprint-v1",
+      "developerHash": "3f6fa374f89ad85e9b368384cbf25c6d907e242f89ff1bd0c5ff765435a782d2",
+      "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+      "runtimePolicyHash": "ee392a526726c5c2a7381675533d04746402443b7c95ffa38fa5ad48de37ffd4",
+      "stableHash": "63dbe06e0fcbb7d0ae8712cbb1de02f2e169427c6998aaea6452f5f2a9a52d0e",
+      "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+      "toolRegistryHash": "6c366e807e217f185e2c45e4ccce0e107892391f59d993a412618423b55f4983",
+      "version": "prompt-fingerprint-v1"
+    }
+  }
+}

@@ -10,6 +10,7 @@ go test ./internal/runtimekernel/state -count=1
 go test ./internal/runtimekernel -run 'TestAIChatHarnessGoldenCases|Test.*HarnessContract|Test.*FinalContract|Test.*FinalEvidence|Test.*RollbackContract|TestRawToolCallsFromAssistantText|Test.*SessionTarget' -count=1
 go test ./internal/agentassembly ./internal/tooling -run 'Test.*ToolSurface.*|Test.*HiddenReason' -count=1
 go test ./internal/appui -run 'TestTransportProjector|TestApprovalService|TestAgentEventProjector' -count=1
+go test ./internal/server -run 'TestAssistantTransport|TestAssistantTransportStories' -count=1
 go test ./internal/specialinputmemory -count=1
 go test ./internal/appui ./internal/runtimekernel ./internal/resourcebinding -run 'SpecialInput|MemoryReadPlan|ExecutionScope|RoleBinding|TransportCommandsSpecialInput|Correction|Forget|Confirm|Conflict' -count=1
 go test ./internal/eval -run 'Test.*Harness.*Golden' -count=1
