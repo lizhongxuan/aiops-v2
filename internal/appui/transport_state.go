@@ -1,6 +1,7 @@
 package appui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,6 +10,8 @@ import (
 )
 
 const AiopsTransportSchemaVersion = "aiops.transport.v2"
+
+const AiopsTransportAgentItemSchemaVersion = "aiops.transport.agent-item.v1"
 
 type AiopsTransportStatus string
 
@@ -118,18 +121,49 @@ type AiopsTransportOpsRun struct {
 }
 
 type AiopsTransportTurn struct {
-	ID                string                          `json:"id"`
-	User              *AiopsTransportMessage          `json:"user,omitempty"`
-	Intent            *AiopsTransportIntent           `json:"intent,omitempty"`
-	Process           []AiopsProcessBlock             `json:"process,omitempty"`
-	Timeline          []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
-	ContextGovernance []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
-	AgentUIArtifacts  []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
-	Final             *AiopsTransportFinal            `json:"final,omitempty"`
-	Status            AiopsTransportTurnStatus        `json:"status"`
-	StartedAt         string                          `json:"startedAt,omitempty"`
-	CompletedAt       string                          `json:"completedAt,omitempty"`
-	UpdatedAt         string                          `json:"updatedAt,omitempty"`
+	ID                      string                          `json:"id"`
+	ClientTurnID            string                          `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                          `json:"clientMessageId,omitempty"`
+	AgentItems              []AiopsTransportAgentItem       `json:"agentItems,omitempty"`
+	AgentItemsTruncated     bool                            `json:"agentItemsTruncated,omitempty"`
+	AgentItemsOriginalCount int                             `json:"agentItemsOriginalCount,omitempty"`
+	AgentItemsOriginalBytes int64                           `json:"agentItemsOriginalBytes,omitempty"`
+	AgentItemsHash          string                          `json:"agentItemsHash,omitempty"`
+	AgentItemsRef           string                          `json:"agentItemsRef,omitempty"`
+	User                    *AiopsTransportMessage          `json:"user,omitempty"`
+	Intent                  *AiopsTransportIntent           `json:"intent,omitempty"`
+	Process                 []AiopsProcessBlock             `json:"process,omitempty"`
+	Timeline                []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
+	ContextGovernance       []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
+	AgentUIArtifacts        []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
+	Final                   *AiopsTransportFinal            `json:"final,omitempty"`
+	Status                  AiopsTransportTurnStatus        `json:"status"`
+	StartedAt               string                          `json:"startedAt,omitempty"`
+	CompletedAt             string                          `json:"completedAt,omitempty"`
+	UpdatedAt               string                          `json:"updatedAt,omitempty"`
+}
+
+// AiopsTransportAgentItem is the versioned, privacy-bounded wire form of a
+// canonical runtime TurnItem. It deliberately does not expose agentstate's
+// open-ended JSON schema directly.
+type AiopsTransportAgentItem struct {
+	SchemaVersion string                         `json:"schemaVersion"`
+	ID            string                         `json:"id"`
+	Type          string                         `json:"type"`
+	Status        string                         `json:"status"`
+	Payload       AiopsTransportAgentItemPayload `json:"payload,omitempty"`
+	CreatedAt     string                         `json:"createdAt,omitempty"`
+	UpdatedAt     string                         `json:"updatedAt,omitempty"`
+	Truncated     bool                           `json:"truncated,omitempty"`
+	OriginalBytes int64                          `json:"originalBytes,omitempty"`
+	ContentHash   string                         `json:"contentHash,omitempty"`
+	Ref           string                         `json:"ref,omitempty"`
+}
+
+type AiopsTransportAgentItemPayload struct {
+	Kind    string          `json:"kind,omitempty"`
+	Summary string          `json:"summary,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 type AiopsTransportTimelineItem struct {

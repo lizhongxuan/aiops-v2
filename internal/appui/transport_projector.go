@@ -40,8 +40,18 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	if projectedTurn.ID == "" {
 		projectedTurn.ID = turnID
 	}
+	projectedTurn.ClientTurnID = turn.ClientTurnID
+	projectedTurn.ClientMessageID = turn.ClientMessageID
+	agentItems := projectTransportAgentItems(turn.AgentItems)
+	projectedTurn.AgentItems = agentItems.Items
+	projectedTurn.AgentItemsTruncated = agentItems.Truncated
+	projectedTurn.AgentItemsOriginalCount = agentItems.OriginalCount
+	projectedTurn.AgentItemsOriginalBytes = agentItems.OriginalBytes
+	projectedTurn.AgentItemsHash = agentItems.Hash
+	projectedTurn.AgentItemsRef = agentItems.Ref
+	projectionItems := redactTransportProjectionTurnItems(turn.AgentItems)
 	projectedTurn.Process = nil
-	projectedTurn.Timeline = projectTurnTimeline(turn.AgentItems)
+	projectedTurn.Timeline = projectTurnTimeline(projectionItems)
 	projectedTurn.ContextGovernance = projectContextGovernanceEvents(turn.ContextGovernanceEvents)
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
 	projectedTurn.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), projectedTurn.UpdatedAt)
@@ -58,7 +68,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
 	resultPreviews := transportToolResultPreviews(turn)
 	resultPayloads := transportToolResultJSONPayloads(turn)
-	for _, item := range turn.AgentItems {
+	for _, item := range projectionItems {
 		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads, turn.Metadata)
 	}
 	if turn.Lifecycle.IsTerminal() {
@@ -1422,14 +1432,14 @@ func upsertTransportProcessBlock(blocks []AiopsProcessBlock, block AiopsProcessB
 }
 
 func sanitizeTransportProcessBlock(block AiopsProcessBlock) (AiopsProcessBlock, bool) {
-	block.Text = sanitizeUserVisibleProcessText(block.Text)
-	block.Command = sanitizeUserVisibleProcessText(block.Command)
-	block.InputSummary = sanitizeUserVisibleProcessText(block.InputSummary)
-	block.OutputPreview = sanitizeUserVisibleProcessText(block.OutputPreview)
+	block.Text = sanitizeUserVisibleProcessText(redactTransportAgentText(block.Text))
+	block.Command = sanitizeUserVisibleProcessText(redactTransportAgentText(block.Command))
+	block.InputSummary = sanitizeUserVisibleProcessText(redactTransportAgentText(block.InputSummary))
+	block.OutputPreview = sanitizeUserVisibleProcessText(redactTransportAgentText(block.OutputPreview))
 	for i := range block.Steps {
-		block.Steps[i].Text = sanitizeUserVisibleProcessText(block.Steps[i].Text)
-		block.Steps[i].Title = sanitizeUserVisibleProcessText(block.Steps[i].Title)
-		block.Steps[i].Summary = sanitizeUserVisibleProcessText(block.Steps[i].Summary)
+		block.Steps[i].Text = sanitizeUserVisibleProcessText(redactTransportAgentText(block.Steps[i].Text))
+		block.Steps[i].Title = sanitizeUserVisibleProcessText(redactTransportAgentText(block.Steps[i].Title))
+		block.Steps[i].Summary = sanitizeUserVisibleProcessText(redactTransportAgentText(block.Steps[i].Summary))
 	}
 	if block.Text == "" &&
 		block.Command == "" &&
