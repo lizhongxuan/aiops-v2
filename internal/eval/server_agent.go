@@ -49,19 +49,7 @@ func (a ServerAgent) Run(ctx context.Context, c Case) (RunOutput, error) {
 	}
 	turnID := defaultServerEvalID(cfg, c)
 	messageID := turnID + "-message"
-	resp, err := postServerChatMessage(runCtx, client, cfg, c, turnID, messageID)
-	if err != nil {
-		return RunOutput{}, err
-	}
-	state, err := pollServerState(runCtx, client, cfg, resp)
-	if err != nil {
-		return RunOutput{}, err
-	}
-	output := runOutputFromServerState(state, resp)
-	if errMsg := serverRunError(state, resp, output); errMsg != "" {
-		return output, fmt.Errorf("%s", errMsg)
-	}
-	return output, nil
+	return runServerAssistantTransportAgent(runCtx, client, cfg, c, turnID, messageID)
 }
 
 func normalizeServerAgentConfig(cfg ServerAgentConfig) ServerAgentConfig {
