@@ -54,6 +54,8 @@ type TransportUserMessage struct {
 
 type TransportAddMessageCommand struct {
 	SessionID       string
+	SessionType     string
+	Mode            string
 	ThreadID        string
 	ParentID        string
 	SourceID        string
@@ -266,6 +268,8 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 	}
 	resp, err := h.chat.SendMessage(ctx, ChatCommand{
 		SessionID:       strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
+		SessionType:     strings.TrimSpace(command.SessionType),
+		Mode:            strings.TrimSpace(command.Mode),
 		Content:         messageText,
 		HostID:          hostID,
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),

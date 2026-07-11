@@ -227,6 +227,53 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	}
 }
 
+func TestTransportCommandsAddMessagePassesRuntimeControlsAndClientIDs(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-controls", TurnID: "turn-controls", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-controls")
+
+	_, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type: TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{
+			SessionType:     "workspace",
+			Mode:            "plan",
+			ClientMessageID: "client-message-controls",
+			ClientTurnID:    "client-turn-controls",
+			Message:         TransportUserMessage{Text: "inspect runtime controls"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.SessionType != "workspace" || chat.sendCmd.Mode != "plan" {
+		t.Fatalf("SendMessage runtime controls = %q/%q, want workspace/plan", chat.sendCmd.SessionType, chat.sendCmd.Mode)
+	}
+	if chat.sendCmd.ClientMessageID != "client-message-controls" || chat.sendCmd.ClientTurnID != "client-turn-controls" {
+		t.Fatalf("SendMessage client ids = %q/%q", chat.sendCmd.ClientMessageID, chat.sendCmd.ClientTurnID)
+	}
+}
+
+func TestTransportCommandsAddMessageLeavesMissingRuntimeControlsEmpty(t *testing.T) {
+	chat := &transportCommandChatServiceStub{
+		sendRes: TurnResponse{SessionID: "sess-defaults", TurnID: "turn-defaults", Status: "accepted"},
+	}
+	handler := NewTransportCommandHandler(chat, nil, nil, nil)
+	state := NewAiopsTransportState("", "thread-defaults")
+
+	_, _, err := handler.Apply(context.Background(), state, TransportCommand{
+		Type:       TransportCommandTypeAddMessage,
+		AddMessage: &TransportAddMessageCommand{Message: TransportUserMessage{Text: "use defaults"}},
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if chat.sendCmd.SessionType != "" || chat.sendCmd.Mode != "" || chat.sendCmd.ClientMessageID != "" || chat.sendCmd.ClientTurnID != "" {
+		t.Fatalf("missing controls were synthesized: %+v", chat.sendCmd)
+	}
+}
+
 func TestTransportCommandsSpecialInputClearCallsChatServiceAndClearsContext(t *testing.T) {
 	chat := &transportCommandChatServiceStub{
 		sendRes: TurnResponse{SessionID: "sess-special", TurnID: "turn-clear", Status: "completed"},

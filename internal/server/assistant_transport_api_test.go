@@ -479,6 +479,127 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 }
 
+func TestAssistantTransportAPIRuntimeControlsAndClientIDsReachTurnRequest(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportRuntimeControlPayload(t,
+		map[string]any{"sessionType": "host", "mode": "execute"},
+		map[string]any{
+			"id":       "client-message-controls",
+			"role":     "user",
+			"metadata": map[string]string{"clientTurnId": "client-turn-controls"},
+			"content":  []map[string]any{{"type": "text", "text": "@local inspect runtime controls"}},
+		},
+	)
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeHost || runReq.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("TurnRequest runtime controls = %q/%q, want host/execute", runReq.SessionType, runReq.Mode)
+	}
+	if runReq.ClientMessageID != "client-message-controls" || runReq.ClientTurnID != "client-turn-controls" {
+		t.Fatalf("TurnRequest client ids = %q/%q", runReq.ClientMessageID, runReq.ClientTurnID)
+	}
+}
+
+func TestAssistantTransportAPIMissingRuntimeControlsUseExistingDefaults(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportRuntimeControlPayload(t, nil, map[string]any{
+		"role":    "user",
+		"content": []map[string]any{{"type": "text", "text": "use existing defaults"}},
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace || runReq.Mode != runtimekernel.ModeChat {
+		t.Fatalf("TurnRequest defaults = %q/%q, want workspace/chat", runReq.SessionType, runReq.Mode)
+	}
+	if runReq.ClientMessageID != "" || runReq.ClientTurnID != "" {
+		t.Fatalf("missing client ids were synthesized: %q/%q", runReq.ClientMessageID, runReq.ClientTurnID)
+	}
+}
+
+func TestAssistantTransportAPIRejectsInvalidRuntimeControlConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{name: "unknown session type", config: map[string]any{"sessionType": "tenant"}},
+		{name: "non-string session type", config: map[string]any{"sessionType": 7}},
+		{name: "unknown mode", config: map[string]any{"mode": "destroy"}},
+		{name: "non-string mode", config: map[string]any{"mode": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := runtimekernel.NewSessionManager()
+			runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+			server := NewHTTPServer(appui.NewServices(runtime, sessions))
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+
+			payload := assistantTransportRuntimeControlPayload(t, tt.config, map[string]any{
+				"role":    "user",
+				"content": []map[string]any{{"type": "text", "text": "reject invalid config"}},
+			})
+			resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+			if err != nil {
+				t.Fatalf("POST AssistantTransport: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d body=%s, want 400", resp.StatusCode, body)
+			}
+			select {
+			case req := <-runtime.runCh:
+				t.Fatalf("runtime started for invalid config: %+v", req)
+			default:
+			}
+		})
+	}
+}
+
+func assistantTransportRuntimeControlPayload(t *testing.T, config map[string]any, message map[string]any) []byte {
+	t.Helper()
+	body := map[string]any{
+		"state": map[string]any{
+			"schemaVersion": "aiops.transport.v2", "sessionId": "", "threadId": "thread-controls", "status": "idle",
+			"turns": map[string]any{}, "turnOrder": []any{}, "pendingApprovals": map[string]any{},
+			"mcpSurfaces": map[string]any{}, "artifacts": map[string]any{}, "runtimeLiveness": map[string]any{},
+			"seq": 0, "updatedAt": time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		"threadId": "thread-controls",
+		"commands": []map[string]any{{"type": "add-message", "message": message}},
+	}
+	if config != nil {
+		body["config"] = config
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal AssistantTransport payload: %v", err)
+	}
+	return payload
+}
+
 func TestAssistantTransportAPIStopReturnsReprojectedCanceledProcess(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-stop-reproject", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)

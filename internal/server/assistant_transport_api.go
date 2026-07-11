@@ -670,16 +670,24 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 		if err != nil {
 			return appui.TransportCommand{}, err
 		}
+		sessionType, mode, err := assistantTransportRuntimeControls(req.Config)
+		if err != nil {
+			return appui.TransportCommand{}, err
+		}
 		return appui.TransportCommand{
 			Type: appui.TransportCommandTypeAddMessage,
 			AddMessage: &appui.TransportAddMessageCommand{
-				SessionID: state.SessionID,
-				ThreadID:  strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)),
-				ParentID:  strings.TrimSpace(req.ParentID),
-				SourceID:  sourceID,
-				HostID:    strings.TrimSpace(hostID),
-				Message:   appui.TransportUserMessage{Text: text},
-				Metadata:  metadata,
+				SessionID:       state.SessionID,
+				SessionType:     sessionType,
+				Mode:            mode,
+				ThreadID:        strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)),
+				ParentID:        strings.TrimSpace(req.ParentID),
+				SourceID:        sourceID,
+				HostID:          strings.TrimSpace(hostID),
+				ClientMessageID: sourceID,
+				ClientTurnID:    strings.TrimSpace(metadata["clientTurnId"]),
+				Message:         appui.TransportUserMessage{Text: text},
+				Metadata:        metadata,
 			},
 		}, nil
 	case *assistantTransportRetryCommand:
@@ -784,6 +792,36 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 	default:
 		return appui.TransportCommand{}, errors.New("assistant transport command is not supported")
 	}
+}
+
+func assistantTransportRuntimeControls(config map[string]any) (string, string, error) {
+	sessionType, err := assistantTransportRuntimeControl(config, "sessionType")
+	if err != nil {
+		return "", "", err
+	}
+	mode, err := assistantTransportRuntimeControl(config, "mode")
+	if err != nil {
+		return "", "", err
+	}
+	if sessionType != "" && sessionType != string(runtimekernel.SessionTypeHost) && sessionType != string(runtimekernel.SessionTypeWorkspace) {
+		return "", "", fmt.Errorf("assistant transport config sessionType %q is invalid", sessionType)
+	}
+	if mode != "" && mode != string(runtimekernel.ModeChat) && mode != string(runtimekernel.ModeInspect) && mode != string(runtimekernel.ModePlan) && mode != string(runtimekernel.ModeExecute) {
+		return "", "", fmt.Errorf("assistant transport config mode %q is invalid", mode)
+	}
+	return sessionType, mode, nil
+}
+
+func assistantTransportRuntimeControl(config map[string]any, key string) (string, error) {
+	value, ok := config[key]
+	if !ok {
+		return "", nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("assistant transport config %s must be a string", key)
+	}
+	return strings.TrimSpace(text), nil
 }
 
 func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID string, hostID string, metadata map[string]string, err error) {
