@@ -8,14 +8,17 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/tool"
@@ -36,6 +39,11 @@ type assistantTransportStoryResult struct {
 	TraceRef        string
 	RawTransport    string
 }
+
+const (
+	assistantTransportStoryRequestTimeout = 5 * time.Second
+	assistantTransportStoryClientTimeout  = 6 * time.Second
+)
 
 func loadAssistantTransportStories(t *testing.T) []assistantTransportStory {
 	t.Helper()
@@ -142,39 +150,25 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 
 	httpServer := httptest.NewServer(NewHTTPServer(appui.NewServices(kernel, sessions)).Handler())
 	defer httpServer.Close()
-	resp, err := http.Post(httpServer.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	ctx, cancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
+	defer cancel()
+	result, err := executeAssistantTransportStoryHTTP(
+		ctx,
+		&http.Client{Timeout: assistantTransportStoryClientTimeout},
+		httpServer.URL,
+		initial,
+		payload,
+		sessions,
+	)
 	if err != nil {
-		t.Fatalf("story %q POST /api/v1/assistant/transport: %v", story.Name, err)
+		failAssistantTransportStory(t, story, result, "AssistantTransport request failed: %v", err)
+		return result
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("story %q read transport response: %v", story.Name, err)
+	if err := provider.assertExhausted(); err != nil {
+		failAssistantTransportStory(t, story, result, "deterministic provider script mismatch: %v", err)
+		return result
 	}
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("story %q transport status=%d body=%s", story.Name, resp.StatusCode, raw)
-	}
-
-	state := replayAssistantTransportStoryState(t, initial, raw)
-	session := sessions.Get(state.SessionID)
-	if session == nil {
-		t.Fatalf("story %q runtime session %q not found; transport=%s", story.Name, state.SessionID, raw)
-	}
-	snapshot := session.CurrentTurn
-	if snapshot == nil && len(session.TurnHistory) > 0 {
-		snapshot = &session.TurnHistory[len(session.TurnHistory)-1]
-	}
-	traceRef := ""
-	if snapshot != nil && len(snapshot.Iterations) > 0 {
-		traceRef = snapshot.Iterations[len(snapshot.Iterations)-1].ModelInputTraceFile
-	}
-	return assistantTransportStoryResult{
-		State:           state,
-		NormalizedState: normalizeAssistantTransportStoryState(t, state),
-		Snapshot:        snapshot,
-		TraceRef:        traceRef,
-		RawTransport:    string(raw),
-	}
+	return result
 }
 
 func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, result assistantTransportStoryResult) {
@@ -302,116 +296,322 @@ func normalizeStoryAssert(assertion *storyTransportAssert) {
 	sort.Strings(assertion.Evidence)
 }
 
-func replayAssistantTransportStoryState(t *testing.T, initial appui.AiopsTransportState, raw []byte) appui.AiopsTransportState {
-	t.Helper()
-	base, err := json.Marshal(initial)
+func executeAssistantTransportStoryHTTP(
+	ctx context.Context,
+	client *http.Client,
+	baseURL string,
+	initial appui.AiopsTransportState,
+	payload []byte,
+	sessions *runtimekernel.SessionManager,
+) (assistantTransportStoryResult, error) {
+	stateValue, err := assistantTransportStoryStateValue(initial)
 	if err != nil {
-		t.Fatalf("marshal initial transport state: %v", err)
+		return assistantTransportStoryResult{}, fmt.Errorf("encode initial transport state: %w", err)
 	}
-	var state map[string]any
-	if err := json.Unmarshal(base, &state); err != nil {
-		t.Fatalf("decode initial transport state: %v", err)
+	var raw bytes.Buffer
+	capture := func(cause error) (assistantTransportStoryResult, error) {
+		result, captureErr := captureAssistantTransportStoryResult(initial, stateValue, sessions, raw.String())
+		if captureErr != nil {
+			return result, fmt.Errorf("%w (capture partial story result: %v)", cause, captureErr)
+		}
+		return result, cause
 	}
-	scanner := bufio.NewScanner(bytes.NewReader(raw))
-	for scanner.Scan() {
-		line := scanner.Text()
-		if !strings.HasPrefix(line, "aui-state:") {
-			continue
-		}
-		var ops []struct {
-			Type  string `json:"type"`
-			Path  []any  `json:"path"`
-			Value any    `json:"value"`
-		}
-		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "aui-state:")), &ops); err != nil {
-			t.Fatalf("decode AssistantTransport state ops: %v\nline=%s", err, line)
-		}
-		for _, op := range ops {
-			applyAssistantTransportStoryOp(t, state, op.Type, op.Path, op.Value)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		t.Fatalf("scan AssistantTransport response: %v", err)
-	}
-	encoded, err := json.Marshal(state)
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(baseURL, "/")+"/api/v1/assistant/transport", bytes.NewReader(payload))
 	if err != nil {
-		t.Fatalf("marshal replayed transport state: %v", err)
+		return capture(fmt.Errorf("build AssistantTransport request: %w", err))
 	}
-	var result appui.AiopsTransportState
-	if err := json.Unmarshal(encoded, &result); err != nil {
-		t.Fatalf("decode replayed transport state: %v\nstate=%s", err, encoded)
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/plain")
+	response, err := client.Do(request)
+	if err != nil {
+		return capture(fmt.Errorf("POST /api/v1/assistant/transport: %w", err))
 	}
-	return result
+	defer response.Body.Close()
+
+	reader := bufio.NewReader(response.Body)
+	for {
+		line, readErr := reader.ReadString('\n')
+		if line != "" {
+			raw.WriteString(line)
+			if strings.HasPrefix(strings.TrimSpace(line), "aui-state:") {
+				next, applyErr := applyAssistantTransportStoryFrame(stateValue, line)
+				if applyErr != nil {
+					return capture(fmt.Errorf("apply AssistantTransport state frame: %w", applyErr))
+				}
+				stateValue = next
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return capture(fmt.Errorf("read AssistantTransport response: %w", readErr))
+		}
+	}
+	result, captureErr := captureAssistantTransportStoryResult(initial, stateValue, sessions, raw.String())
+	if captureErr != nil {
+		return result, fmt.Errorf("capture AssistantTransport result: %w", captureErr)
+	}
+	if response.StatusCode != http.StatusOK {
+		return result, fmt.Errorf("AssistantTransport status=%d body=%s", response.StatusCode, raw.String())
+	}
+	return result, nil
 }
 
-func applyAssistantTransportStoryOp(t *testing.T, root map[string]any, opType string, path []any, value any) {
-	t.Helper()
-	if len(path) == 0 {
-		t.Fatalf("AssistantTransport story op has empty path")
-	}
-	current := root
-	for _, rawPart := range path[:len(path)-1] {
-		part := fmt.Sprint(rawPart)
-		next, ok := current[part].(map[string]any)
-		if !ok {
-			next = map[string]any{}
-			current[part] = next
-		}
-		current = next
-	}
-	last := fmt.Sprint(path[len(path)-1])
-	switch opType {
-	case assistantTransportStreamOpSet:
-		current[last] = value
-	case assistantTransportStreamOpAppendText:
-		prefix, _ := current[last].(string)
-		current[last] = prefix + fmt.Sprint(value)
-	default:
-		t.Fatalf("unsupported AssistantTransport story op %q", opType)
-	}
-}
-
-func normalizeAssistantTransportStoryState(t *testing.T, state appui.AiopsTransportState) map[string]any {
-	t.Helper()
+func assistantTransportStoryStateValue(state appui.AiopsTransportState) (any, error) {
 	raw, err := json.Marshal(state)
 	if err != nil {
-		t.Fatalf("marshal story state for normalization: %v", err)
+		return nil, err
+	}
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func applyAssistantTransportStoryFrame(state any, line string) (any, error) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "aui-state:") {
+		return state, nil
+	}
+	var ops []struct {
+		Type  string          `json:"type"`
+		Path  json.RawMessage `json:"path"`
+		Value any             `json:"value"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "aui-state:")), &ops); err != nil {
+		return state, fmt.Errorf("decode state ops: %w", err)
+	}
+	next := state
+	for index, op := range ops {
+		if len(op.Path) == 0 || bytes.Equal(bytes.TrimSpace(op.Path), []byte("null")) {
+			return state, fmt.Errorf("op[%d]: path is required and must be an array", index)
+		}
+		var path []any
+		if err := json.Unmarshal(op.Path, &path); err != nil {
+			return state, fmt.Errorf("op[%d]: decode path: %w", index, err)
+		}
+		updated, err := applyAssistantTransportStoryOpValue(next, op.Type, path, op.Value)
+		if err != nil {
+			return state, fmt.Errorf("op[%d]: %w", index, err)
+		}
+		next = updated
+	}
+	return next, nil
+}
+
+func applyAssistantTransportStoryOpValue(state any, opType string, path []any, value any) (any, error) {
+	var updater func(any) (any, error)
+	switch opType {
+	case assistantTransportStreamOpSet:
+		updater = func(any) (any, error) { return value, nil }
+	case assistantTransportStreamOpAppendText:
+		appendValue, ok := value.(string)
+		if !ok {
+			return state, fmt.Errorf("append-text value must be string, got %T", value)
+		}
+		updater = func(current any) (any, error) {
+			text, ok := current.(string)
+			if !ok {
+				return nil, fmt.Errorf("expected string at path %v, got %T", path, current)
+			}
+			return text + appendValue, nil
+		}
+	default:
+		return state, fmt.Errorf("invalid operation type %q", opType)
+	}
+	return updateAssistantTransportStoryPath(state, path, updater)
+}
+
+func updateAssistantTransportStoryPath(state any, path []any, updater func(any) (any, error)) (any, error) {
+	if len(path) == 0 {
+		return updater(state)
+	}
+	if state == nil {
+		state = map[string]any{}
+	}
+	switch current := state.(type) {
+	case map[string]any:
+		key, ok := path[0].(string)
+		if !ok {
+			return state, fmt.Errorf("expected object key at path %v, got %T", path, path[0])
+		}
+		child, err := updateAssistantTransportStoryPath(current[key], path[1:], updater)
+		if err != nil {
+			return state, err
+		}
+		next := make(map[string]any, len(current)+1)
+		for existingKey, existingValue := range current {
+			next[existingKey] = existingValue
+		}
+		next[key] = child
+		return next, nil
+	case []any:
+		index, err := assistantTransportStoryArrayIndex(path[0])
+		if err != nil {
+			return state, fmt.Errorf("path %v: %w", path, err)
+		}
+		if index < 0 || index > len(current) {
+			return state, fmt.Errorf("array index %d out of bounds for length %d", index, len(current))
+		}
+		next := append([]any(nil), current...)
+		if index == len(next) {
+			next = append(next, nil)
+		}
+		child, err := updateAssistantTransportStoryPath(next[index], path[1:], updater)
+		if err != nil {
+			return state, err
+		}
+		next[index] = child
+		return next, nil
+	default:
+		return state, fmt.Errorf("invalid intermediate %T at path %v", state, path)
+	}
+}
+
+func assistantTransportStoryArrayIndex(value any) (int, error) {
+	switch typed := value.(type) {
+	case int:
+		return typed, nil
+	case float64:
+		if math.IsNaN(typed) || math.IsInf(typed, 0) || math.Trunc(typed) != typed || typed > float64(math.MaxInt) || typed < float64(math.MinInt) {
+			return 0, fmt.Errorf("expected integer array index, got %v", typed)
+		}
+		return int(typed), nil
+	case string:
+		index, err := strconv.Atoi(typed)
+		if err != nil {
+			return 0, fmt.Errorf("expected array index, got %q", typed)
+		}
+		return index, nil
+	default:
+		return 0, fmt.Errorf("expected array index, got %T", value)
+	}
+}
+
+func captureAssistantTransportStoryResult(initial appui.AiopsTransportState, stateValue any, sessions *runtimekernel.SessionManager, raw string) (assistantTransportStoryResult, error) {
+	encoded, err := json.Marshal(stateValue)
+	if err != nil {
+		return assistantTransportStoryResult{RawTransport: raw}, err
+	}
+	var state appui.AiopsTransportState
+	if err := json.Unmarshal(encoded, &state); err != nil {
+		return assistantTransportStoryResult{RawTransport: raw}, err
+	}
+	if state.SessionID == "" {
+		state.SessionID = initial.SessionID
+	}
+	snapshot := latestAssistantTransportStorySnapshot(sessions, state.SessionID)
+	traceRef := ""
+	if snapshot != nil && len(snapshot.Iterations) > 0 {
+		traceRef = snapshot.Iterations[len(snapshot.Iterations)-1].ModelInputTraceFile
+	}
+	normalized, err := normalizedAssistantTransportStoryState(state)
+	if err != nil {
+		return assistantTransportStoryResult{State: state, Snapshot: snapshot, TraceRef: traceRef, RawTransport: raw}, err
+	}
+	return assistantTransportStoryResult{
+		State:           state,
+		NormalizedState: normalized,
+		Snapshot:        snapshot,
+		TraceRef:        traceRef,
+		RawTransport:    raw,
+	}, nil
+}
+
+func latestAssistantTransportStorySnapshot(sessions *runtimekernel.SessionManager, sessionID string) *runtimekernel.TurnSnapshot {
+	if sessions == nil {
+		return nil
+	}
+	session := sessions.Get(sessionID)
+	if session == nil {
+		return nil
+	}
+	if session.CurrentTurn != nil {
+		return session.CurrentTurn
+	}
+	if len(session.TurnHistory) > 0 {
+		return &session.TurnHistory[len(session.TurnHistory)-1]
+	}
+	return nil
+}
+
+func normalizedAssistantTransportStoryState(state appui.AiopsTransportState) (map[string]any, error) {
+	raw, err := json.Marshal(state)
+	if err != nil {
+		return nil, err
 	}
 	var normalized map[string]any
 	if err := json.Unmarshal(raw, &normalized); err != nil {
-		t.Fatalf("decode story state for normalization: %v", err)
+		return nil, err
 	}
-	turnID := state.CurrentTurnID
-	normalizeStoryJSON(normalized, turnID)
-	if turns, ok := normalized["turns"].(map[string]any); ok && turnID != "" {
-		if turn, exists := turns[turnID]; exists {
-			delete(turns, turnID)
-			turns["<turn-id>"] = turn
-		}
-	}
-	return normalized
+	normalizeAssistantTransportStoryJSON(normalized, state.CurrentTurnID)
+	return normalized, nil
 }
 
-func normalizeStoryJSON(value any, turnID string) {
+func normalizeAssistantTransportStoryJSON(state map[string]any, turnID string) {
+	if state == nil {
+		return
+	}
+	if state["updatedAt"] != nil && state["updatedAt"] != "" {
+		state["updatedAt"] = "<timestamp>"
+	}
+	if state["currentTurnId"] == turnID && turnID != "" {
+		state["currentTurnId"] = "<turn-id>"
+	}
+	if order, ok := state["turnOrder"].([]any); ok {
+		for index, value := range order {
+			if value == turnID && turnID != "" {
+				order[index] = "<turn-id>"
+			}
+		}
+	}
+	turns, ok := state["turns"].(map[string]any)
+	if !ok || turnID == "" {
+		return
+	}
+	turn, exists := turns[turnID]
+	if !exists {
+		return
+	}
+	normalizeAssistantTransportStoryTurnJSON(turn, turnID)
+	delete(turns, turnID)
+	turns["<turn-id>"] = turn
+}
+
+func normalizeAssistantTransportStoryTurnJSON(value any, turnID string) {
 	switch typed := value.(type) {
 	case map[string]any:
 		for key, child := range typed {
+			if isProtectedAssistantTransportStoryFact(key) {
+				continue
+			}
 			if isStoryTimestampKey(key) && child != "" {
 				typed[key] = "<timestamp>"
 				continue
 			}
-			if text, ok := child.(string); ok && turnID != "" && key != "toolCallId" && key != "approvalId" {
-				typed[key] = strings.ReplaceAll(text, turnID, "<turn-id>")
+			if (key == "id" || key == "turnId") && turnID != "" {
+				if text, ok := child.(string); ok {
+					typed[key] = strings.ReplaceAll(text, turnID, "<turn-id>")
+				}
 			}
-			normalizeStoryJSON(typed[key], turnID)
+			normalizeAssistantTransportStoryTurnJSON(typed[key], turnID)
 		}
 	case []any:
 		for index := range typed {
-			if text, ok := typed[index].(string); ok && turnID != "" {
-				typed[index] = strings.ReplaceAll(text, turnID, "<turn-id>")
-			}
-			normalizeStoryJSON(typed[index], turnID)
+			normalizeAssistantTransportStoryTurnJSON(typed[index], turnID)
 		}
+	}
+}
+
+func isProtectedAssistantTransportStoryFact(key string) bool {
+	switch key {
+	case "toolCallId", "toolCallIds", "approvalId", "evidenceRefs", "checkedEvidenceRefs", "payload", "metadata", "inlineData", "externalReferences", "rawRef":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -426,10 +626,15 @@ func isStoryTimestampKey(key string) bool {
 
 func failAssistantTransportStory(t *testing.T, story assistantTransportStory, result assistantTransportStoryResult, format string, args ...any) {
 	t.Helper()
+	cause := fmt.Errorf(format, args...)
+	t.Fatal(formatAssistantTransportStoryFailure(story, result, cause))
+}
+
+func formatAssistantTransportStoryFailure(story assistantTransportStory, result assistantTransportStoryResult, cause error) string {
 	command, _ := json.MarshalIndent(story.Command, "", "  ")
 	state, _ := json.MarshalIndent(result.NormalizedState, "", "  ")
 	snapshot, _ := json.MarshalIndent(result.Snapshot, "", "  ")
-	t.Fatalf(format+"\ncommand=%s\nlatest transport state=%s\nturn snapshot=%s\ntrace ref=%s\nraw transport=%s", append(args, command, state, snapshot, result.TraceRef, result.RawTransport)...)
+	return fmt.Sprintf("%v\ncommand=%s\nlatest transport state=%s\nturn snapshot=%s\ntrace ref=%s\nraw transport=%s", cause, command, state, snapshot, result.TraceRef, result.RawTransport)
 }
 
 type storyProvider struct {
@@ -476,6 +681,15 @@ func (p *storyProvider) next() (*schema.Message, error) {
 	response := p.responses[0]
 	p.responses = p.responses[1:]
 	return response, nil
+}
+
+func (p *storyProvider) assertExhausted() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.responses) != 0 {
+		return fmt.Errorf("%d scripted provider response(s) were not consumed", len(p.responses))
+	}
+	return nil
 }
 
 type storyProviderConfigResolver struct{}
