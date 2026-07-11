@@ -85,6 +85,40 @@ func TestHarnessContractGoldenCasesDeclareTraceExpectations(t *testing.T) {
 	}
 }
 
+func TestHarnessServerAgentUsesAssistantTransportFactsOnly(t *testing.T) {
+	paths := []string{"server_agent.go", "server_agent_transport.go"}
+	var source strings.Builder
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read %s: %v", path, err)
+		}
+		source.Write(data)
+	}
+	text := source.String()
+	for _, required := range []string{
+		"/api/v1/assistant/transport",
+		"appui.AiopsTransportState",
+		"serverTransportSettled",
+		"RuntimeLiveness",
+		"PendingApprovals",
+	} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("server eval source missing AssistantTransport contract %q", required)
+		}
+	}
+	for _, forbidden := range []string{
+		"serverStateSnapshot",
+		"serverChatResponse",
+		"/api/v1/" + "state",
+		"/api/v1/" + "chat/message",
+	} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("server eval source retains legacy dependency %q", forbidden)
+		}
+	}
+}
+
 func loadHarnessGoldenCasesForEvalTest(t *testing.T, dir string) map[string]harnessGoldenCase {
 	t.Helper()
 	entries, err := os.ReadDir(dir)
