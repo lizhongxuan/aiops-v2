@@ -68,11 +68,15 @@ legal_root="${FIXTURE_ROOT}/legal"
 markdown_root="${FIXTURE_ROOT}/markdown-verified"
 dispatcher_root="${FIXTURE_ROOT}/dispatcher-bypass"
 approval_root="${FIXTURE_ROOT}/approval-rerun"
+multi_bad_root="${FIXTURE_ROOT}/multi-root-bypass"
+multi_missing_root="${FIXTURE_ROOT}/multi-root-missing-scan-surface"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
 create_fixture "${dispatcher_root}"
 create_fixture "${approval_root}"
+create_fixture "${multi_bad_root}"
+mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
 	'export function projectFinal(finalText: string) {' \
@@ -84,6 +88,12 @@ printf '%s\n' \
 	'func bypassDispatcher() {' \
 	'  toolRegistry.Execute()' \
 	'}' >"${dispatcher_root}/internal/runtimekernel/direct_tool.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func bypassDispatcherAcrossRoots() {' \
+	'  toolRegistry.Execute()' \
+	'}' >"${multi_bad_root}/internal/runtimekernel/direct_tool.go"
 
 printf '%s\n' \
 	'package appui' \
@@ -101,6 +111,11 @@ expect_rejected \
 expect_rejected \
 	"direct tool execution bypass" \
 	"${dispatcher_root}" \
+	"direct tool execution bypassing ToolDispatcher" \
+	"runtimekernel dispatcher"
+expect_rejected \
+	"scan error cannot mask direct tool bypass" \
+	"${multi_bad_root}:${multi_missing_root}" \
 	"direct tool execution bypassing ToolDispatcher" \
 	"runtimekernel dispatcher"
 expect_rejected \

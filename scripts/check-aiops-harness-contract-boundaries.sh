@@ -42,12 +42,30 @@ check_absent() {
   shift 3
 
   local matches
-  if matches="$(run_rg "$pattern" "$@" 2>/dev/null)"; then
-    echo "ERROR: forbidden harness boundary pattern found: ${name}" >&2
-    echo "owner: ${owner}" >&2
-    echo "${matches}" >&2
-    fail=1
+  local rc
+  if matches="$(run_rg "$pattern" "$@" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
   fi
+
+  case "${rc}" in
+    0)
+      echo "ERROR: forbidden harness boundary pattern found: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "${matches}" >&2
+      fail=1
+      ;;
+    1)
+      ;;
+    *)
+      echo "ERROR: harness boundary scan failed: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "rg exit code: ${rc}" >&2
+      echo "${matches}" >&2
+      fail=1
+      ;;
+  esac
 }
 
 check_required() {
@@ -56,12 +74,31 @@ check_required() {
   local pattern="$3"
   shift 3
 
-  if ! run_rg "$pattern" "$@" >/dev/null 2>&1; then
-    echo "ERROR: required harness boundary pattern missing: ${name}" >&2
-    echo "owner: ${owner}" >&2
-    echo "searched: $*" >&2
-    fail=1
+  local matches
+  local rc
+  if matches="$(run_rg "$pattern" "$@" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
   fi
+
+  case "${rc}" in
+    0)
+      ;;
+    1)
+      echo "ERROR: required harness boundary pattern missing: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "searched: $*" >&2
+      fail=1
+      ;;
+    *)
+      echo "ERROR: harness boundary scan failed: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "rg exit code: ${rc}" >&2
+      echo "${matches}" >&2
+      fail=1
+      ;;
+  esac
 }
 
 check_absent \
