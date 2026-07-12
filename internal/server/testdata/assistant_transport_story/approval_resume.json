@@ -154,8 +154,8 @@
     },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
-      "status": "verified",
-      "confidence": "high",
+      "status": "needs_evidence",
+      "confidence": "medium",
       "checkedEvidenceRefs": [
         "call_restart",
         "call_status"
@@ -209,7 +209,7 @@
         "evidence",
         "final_response"
       ],
-      "finalStatus": "verified",
+      "finalStatus": "needs_evidence",
       "pendingApprovalCount": 0,
       "turnCount": 1
     },
