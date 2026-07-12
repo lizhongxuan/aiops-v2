@@ -99,7 +99,7 @@
     "target": {"binding": "host", "hostId": "host-a", "resourceRefs": ["host:host-a"]},
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
-      "status": "partial",
+      "status": "needs_evidence",
       "confidence": "low",
       "checkedEvidenceRefs": ["call_prechange"],
       "uncheckedRequirements": [],
@@ -120,7 +120,7 @@
       "processKinds": ["assistant", "tool", "assistant", "tool", "approval", "assistant", "tool"],
       "processStatuses": ["completed", "completed", "completed", "failed", "completed", "completed", "failed"],
       "timelineTypes": ["user_message", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "tool_call", "approval_requested", "approval_decided", "tool_result", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "evidence", "final_response"],
-      "finalStatus": "partial",
+      "finalStatus": "needs_evidence",
       "pendingApprovalCount": 0,
       "turnCount": 1
     },
