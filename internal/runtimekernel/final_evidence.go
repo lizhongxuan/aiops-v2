@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"aiops-v2/internal/agentstate"
 )
 
 const (
@@ -21,6 +23,10 @@ type FinalEvidenceState struct {
 	Checked            []CheckedEvidence  `json:"checked,omitempty"`
 	NotChecked         []NotCheckedItem   `json:"notChecked,omitempty"`
 	FailedTools        []FailedToolImpact `json:"failedTools,omitempty"`
+	ApprovedActions    []string           `json:"approvedActions,omitempty"`
+	PerformedActions   []string           `json:"performedActions,omitempty"`
+	PostChecks         []string           `json:"postChecks,omitempty"`
+	RequiredPostChecks []string           `json:"requiredPostChecks,omitempty"`
 	Confidence         string             `json:"confidence"`
 	ExecCommandAllowed bool               `json:"execCommandAllowed"`
 	TargetBound        bool               `json:"targetBound"`
@@ -59,8 +65,11 @@ type FinalEvidenceVerification struct {
 
 func BuildFinalEvidenceState(snapshot *TurnSnapshot, session *SessionState) FinalEvidenceState {
 	state := FinalEvidenceState{
-		Checked:     checkedEvidenceFromSnapshot(snapshot),
-		FailedTools: failedToolImpactsFromSnapshot(snapshot),
+		Checked:            checkedEvidenceFromSnapshot(snapshot),
+		FailedTools:        failedToolImpactsFromSnapshot(snapshot),
+		ApprovedActions:    approvedActionsFromSnapshot(snapshot),
+		PerformedActions:   performedActionsFromSnapshot(snapshot),
+		RequiredPostChecks: requiredMutationPostChecksFromSnapshot(snapshot),
 	}
 	state.Checked = append(userProvidedEvidenceFromSnapshot(snapshot), state.Checked...)
 	if session != nil {
@@ -71,6 +80,71 @@ func BuildFinalEvidenceState(snapshot *TurnSnapshot, session *SessionState) Fina
 	state.MutationIntentWithoutTarget = finalEvidenceMutationIntentWithoutTarget(snapshot, session, state)
 	state.Confidence = inferFinalEvidenceConfidence(state)
 	return state
+}
+
+func approvedActionsFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var actions []string
+	for _, item := range snapshot.AgentItems {
+		if item.Type != agentstate.TurnItemTypeApprovalDecided || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		var data approvalAgentItemData
+		if json.Unmarshal(item.Payload.Data, &data) != nil || data.Status != "approved" {
+			continue
+		}
+		if ref := finalActionRef(data.ToolName, data.ToolCallID); ref != "" {
+			actions = append(actions, ref)
+		}
+	}
+	return uniqueSortedHarnessStrings(actions)
+}
+
+func performedActionsFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var actions []string
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if !invocation.Mutating || invocation.Status != ToolInvocationCompleted {
+				continue
+			}
+			if ref := finalActionRef(invocation.ToolName, invocation.ToolCallID); ref != "" {
+				actions = append(actions, ref)
+			}
+		}
+	}
+	return uniqueSortedHarnessStrings(actions)
+}
+
+func requiredMutationPostChecksFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var refs []string
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if invocation.Mutating {
+				refs = append(refs, invocation.RequiredPostCheckRefs...)
+			}
+		}
+	}
+	return uniqueSortedHarnessStrings(refs)
+}
+
+func finalActionRef(toolName, toolCallID string) string {
+	toolName = strings.TrimSpace(toolName)
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolName == "" {
+		return toolCallID
+	}
+	if toolCallID == "" {
+		return toolName
+	}
+	return toolName + "#" + toolCallID
 }
 
 func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceVerification {

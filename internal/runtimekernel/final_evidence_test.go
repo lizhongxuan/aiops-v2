@@ -144,6 +144,38 @@ func TestBuildFinalEvidenceStateCompactsStructuredToolSummariesAndDeduplicatesFa
 	}
 }
 
+func TestBuildFinalEvidenceStateKeepsRequiredPostCheckWithoutClaimingUnknownMutationPerformed(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolInvocations: []ToolInvocationState{{
+				ToolCallID:            "call-unknown",
+				ToolName:              "restart_service",
+				Mutating:              true,
+				Status:                ToolInvocationFailed,
+				FailureKind:           string(toolfailure.KindSideEffectUnknown),
+				RequiredPostCheckRefs: []string{"systemctl is-active demo.service"},
+			}},
+		}},
+	}, nil)
+
+	if len(state.PerformedActions) != 0 {
+		t.Fatalf("performed actions = %#v, must not claim side-effect-unknown mutation performed", state.PerformedActions)
+	}
+	if len(state.PostChecks) != 0 {
+		t.Fatalf("completed post checks = %#v, side-effect-unknown must not claim verification completed", state.PostChecks)
+	}
+	if !containsString(state.RequiredPostChecks, "systemctl is-active demo.service") {
+		t.Fatalf("required post checks = %#v, want required reconciliation check", state.RequiredPostChecks)
+	}
+	contract := BuildFinalContract("执行状态未知，需要先完成核验。", FinalEvidenceVerification{
+		Action: FinalEvidenceActionDowngrade,
+		State:  state,
+	})
+	if len(contract.PerformedActions) != 0 || len(contract.PostChecks) != 0 || !containsString(contract.RequiredPostChecks, "systemctl is-active demo.service") {
+		t.Fatalf("final contract mutation facts = %#v, want post-check without performed action", contract)
+	}
+}
+
 func TestBuildFinalEvidenceStateSummarizesPublicWebEnvelope(t *testing.T) {
 	state := BuildFinalEvidenceState(&TurnSnapshot{
 		Iterations: []IterationState{{

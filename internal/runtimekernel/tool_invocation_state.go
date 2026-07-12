@@ -47,6 +47,7 @@ type ToolInvocationState struct {
 	Status                 ToolInvocationStatus `json:"status"`
 	FailureKind            string               `json:"failureKind,omitempty"`
 	Mutating               bool                 `json:"mutating,omitempty"`
+	RequiredPostCheckRefs  []string             `json:"requiredPostCheckRefs,omitempty"`
 	StartedAt              time.Time            `json:"startedAt,omitempty"`
 	UpdatedAt              time.Time            `json:"updatedAt,omitempty"`
 	CompletedAt            *time.Time           `json:"completedAt,omitempty"`
@@ -88,6 +89,7 @@ func queueToolInvocation(snapshot *TurnSnapshot, iteration int, tc ToolCall, met
 		ToolSurfaceFingerprint: firstNonEmpty(iter.ToolSurfaceFingerprint, snapshot.StableToolFingerprint),
 		Status:                 ToolInvocationQueued,
 		Mutating:               meta.EffectiveGovernance(0).Mutating,
+		RequiredPostCheckRefs:  uniqueSortedHarnessStrings(meta.Idempotency.PostCheckRefs),
 		StartedAt:              now,
 		UpdatedAt:              now,
 	})

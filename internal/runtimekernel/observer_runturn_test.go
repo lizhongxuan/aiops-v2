@@ -158,9 +158,10 @@ func TestResumeTurnRestoresObservedTurnTraceContext(t *testing.T) {
 	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: "sess-resume-trace",
-		TurnID:    "turn-resume-trace",
-		Decision:  "approved",
+		SessionID:  "sess-resume-trace",
+		TurnID:     "turn-resume-trace",
+		ApprovalID: session.PendingApprovals[0].ID,
+		Decision:   "approved",
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn failed: %v", err)

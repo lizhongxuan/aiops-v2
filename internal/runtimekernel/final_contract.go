@@ -29,6 +29,7 @@ type FinalContract struct {
 	ApprovedActions       []string            `json:"approvedActions,omitempty"`
 	PerformedActions      []string            `json:"performedActions,omitempty"`
 	PostChecks            []string            `json:"postChecks,omitempty"`
+	RequiredPostChecks    []string            `json:"requiredPostChecks,omitempty"`
 	Limitations           []string            `json:"limitations,omitempty"`
 }
 
@@ -46,6 +47,10 @@ func BuildFinalContract(answer string, verification FinalEvidenceVerification) F
 		CheckedEvidenceRefs:   checkedEvidenceRefs(state.Checked),
 		UncheckedRequirements: uncheckedRequirementRefs(state.NotChecked),
 		FailedToolImpacts:     append([]FailedToolImpact(nil), state.FailedTools...),
+		ApprovedActions:       append([]string(nil), state.ApprovedActions...),
+		PerformedActions:      append([]string(nil), state.PerformedActions...),
+		PostChecks:            append([]string(nil), state.PostChecks...),
+		RequiredPostChecks:    append([]string(nil), state.RequiredPostChecks...),
 		Limitations:           finalContractLimitations(verification),
 	}
 }

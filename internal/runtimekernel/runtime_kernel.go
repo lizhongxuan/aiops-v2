@@ -912,11 +912,17 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}
+	decisionApproval, err := exactApprovalForResumeDecision(session, snapshot, req)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	snapshot.Metadata = mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata)
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
-	if planApproval := pendingApprovalByID(session, snapshot, req.ApprovalID); planApproval.Source == PlanModeEntryApprovalSource || planApproval.Source == PlanExitApprovalSource {
+	if planApproval := decisionApproval; planApproval.Source == PlanModeEntryApprovalSource || planApproval.Source == PlanExitApprovalSource {
+		appendApprovalRequestedAgentItem(snapshot, planApproval)
+		k.persistTurnSnapshot(session, snapshot)
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
 		now := time.Now()
 		var err error
@@ -945,7 +951,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		}
 		session.PendingApprovals = removePendingApproval(session.PendingApprovals, planApproval.ID)
 		k.persistTurnSnapshot(session, snapshot)
-		k.emitApprovalDecided(session, snapshot, planApproval.ID, approvedResumeDecisionLabel(req.Decision), map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)], now)
+		k.emitApprovalDecided(session, snapshot, planApproval, approvedResumeDecisionLabel(req.Decision), map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)], now)
 		return TurnResult{
 			SessionType:     session.Type,
 			Mode:            session.Mode,
@@ -958,13 +964,13 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	}
 	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
 		now := time.Now()
-		approval := pendingApprovalByID(session, snapshot, req.ApprovalID)
+		approval := decisionApproval
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
 		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, req.Decision, "denied", now)
+		k.emitApprovalDecided(session, snapshot, approval, req.Decision, "denied", now)
 		return k.completeDeniedApprovalTurn(session, snapshot, approval, decisionReason, now)
 	}
-	if approval := pendingApprovalByID(session, snapshot, req.ApprovalID); isApprovedResumeDecision(req.Decision) {
+	if approval := decisionApproval; isApprovedResumeDecision(req.Decision) {
 		if driftPayload, drifted := approvalFingerprintDriftPayload(approval, snapshot, req); drifted {
 			now := time.Now()
 			approval.Reason = driftPayload
@@ -1039,7 +1045,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if isSessionApprovalResumeDecision(req.Decision) {
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
 		}
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
+		k.emitApprovalDecided(session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
 		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot)
 		if err != nil {
 			return TurnResult{}, err
@@ -1107,16 +1113,21 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	}, nil
 }
 
-func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approvalID, decision, status string, at time.Time) {
-	if k == nil || k.projector == nil || session == nil || snapshot == nil {
+func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) {
+	if k == nil || session == nil || snapshot == nil {
 		return
 	}
 	if at.IsZero() {
 		at = time.Now()
 	}
-	approval := pendingApprovalByID(session, snapshot, approvalID)
-	id := strings.TrimSpace(firstNonEmpty(approvalID, approval.ID, currentBlockedID(snapshot)))
+	id := strings.TrimSpace(approval.ID)
 	if id == "" {
+		return
+	}
+	approval.ID = id
+	appendApprovalDecidedAgentItem(snapshot, approval, decision, status)
+	k.persistTurnSnapshot(session, snapshot)
+	if k.projector == nil {
 		return
 	}
 	payload, _ := json.Marshal(map[string]any{
@@ -1134,6 +1145,31 @@ func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *Tur
 		Timestamp: at,
 		Payload:   payload,
 	})
+}
+
+func exactApprovalForResumeDecision(session *SessionState, snapshot *TurnSnapshot, req ResumeRequest) (PendingApproval, error) {
+	if strings.TrimSpace(req.Decision) == "" {
+		if snapshot != nil && snapshot.ResumeState == TurnResumeStatePendingApproval {
+			return PendingApproval{}, fmt.Errorf("approval decision is required to resume pending approval for turn %q", req.TurnID)
+		}
+		return PendingApproval{}, nil
+	}
+	approvalID := strings.TrimSpace(req.ApprovalID)
+	if approvalID == "" {
+		return PendingApproval{}, fmt.Errorf("approval id is required for decision %q", req.Decision)
+	}
+	approval := pendingApprovalByID(session, snapshot, approvalID)
+	if approval.ID != approvalID {
+		return PendingApproval{}, fmt.Errorf("approval %q is not pending for turn %q", approvalID, req.TurnID)
+	}
+	if approval.Source == PlanModeEntryApprovalSource || approval.Source == PlanExitApprovalSource {
+		return approval, nil
+	}
+	toolCall, ok := pendingToolCall(snapshot)
+	if !ok || strings.TrimSpace(approval.ToolCallID) == "" || approval.ToolCallID != toolCall.ID {
+		return PendingApproval{}, fmt.Errorf("approval %q does not match pending tool call", approvalID)
+	}
+	return approval, nil
 }
 
 func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approvalID string) PendingApproval {
@@ -5898,6 +5934,7 @@ func (k *RuntimeKernel) persistTurnSnapshot(session *SessionState, snapshot *Tur
 	if session == nil || snapshot == nil {
 		return
 	}
+	syncPendingApprovalAgentItems(snapshot)
 	session.CurrentTurn = snapshot
 	syncActiveTurnState(session, snapshot)
 	upsertTurnHistory(&session.TurnHistory, *snapshot)

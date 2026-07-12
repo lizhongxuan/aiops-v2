@@ -163,9 +163,10 @@ func TestRunTurnApprovalResumeRecordsApprovalAndToolOwnerWriteTrace(t *testing.T
 	assertOwnerWriteTrace(t, session.CurrentTurn.OwnerWriteTraces, OwnerWriteApprovalLedger, OwnerPendingApproval, OwnerWriteOutcomeAccepted)
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: "sess-approval-owner",
-		TurnID:    "turn-approval-owner",
-		Decision:  "approved",
+		SessionID:  "sess-approval-owner",
+		TurnID:     "turn-approval-owner",
+		ApprovalID: session.PendingApprovals[0].ID,
+		Decision:   "approved",
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn() error = %v", err)

@@ -2623,12 +2623,37 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	var executed int
 	toolDef := &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:        "write_file",
-			Description: "Write a file",
+			Name:             "write_file",
+			Description:      "Write a file",
+			Mutating:         true,
+			RequiresApproval: true,
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType:  "synthetic_file",
+				ResourceID:    "/tmp/demo",
+				OperationKind: "write",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy:      tooling.ToolIdempotencyStrategyArgumentsHash,
+				PostCheckRefs: []string{"verify checksum /tmp/demo", "stat /tmp/demo", "verify checksum /tmp/demo"},
+			},
 		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
 			Modes:        []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return false },
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			return tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval,
+				Reason: "write requires approval",
+				Approval: &tooling.PermissionApprovalPayload{
+					Risk:           string(tooling.ToolRiskHigh),
+					Source:         "test_policy",
+					ExpectedEffect: "write /tmp/demo",
+					Rollback:       "remove /tmp/demo",
+					Validation:     "stat /tmp/demo",
+				},
+			}
 		},
 		ExecuteFunc: func(_ context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			executed++
@@ -2636,13 +2661,19 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 		},
 	}
 
-	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
 	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-approval",
 		SessionType: SessionTypeHost,
 		Mode:        ModeExecute,
 		TurnID:      "turn-approval",
 		Input:       "write the file",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present":    "true",
+			"aiops.userEvidence.kinds":      "pre_change_snapshot",
+			"aiops.userEvidence.signals":    "file_absent",
+			"aiops.userEvidence.rawExcerpt": "/tmp/demo absent before write",
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)
@@ -2676,6 +2707,21 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if pendingApproval.IterationID == "" || len(pendingApproval.ApprovalOptions) == 0 {
 		t.Fatalf("pending approval ledger fields = %#v, want iteration id and approval options", pendingApproval)
 	}
+	requested := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeApprovalRequested)
+	if requested.ID == "" || requested.Status != agentstate.ItemStatusPending {
+		t.Fatalf("approval requested item = %#v, want canonical pending item", requested)
+	}
+	var requestedFacts struct {
+		ApprovalID string `json:"approvalId"`
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+	}
+	if err := json.Unmarshal(requested.Payload.Data, &requestedFacts); err != nil {
+		t.Fatalf("decode approval requested facts: %v; raw=%s", err, string(requested.Payload.Data))
+	}
+	if requestedFacts.ApprovalID != pendingApproval.ID || requestedFacts.ToolCallID != "call-approval" || requestedFacts.ToolName != "write_file" {
+		t.Fatalf("approval requested facts = %#v, want approval/tool correlation", requestedFacts)
+	}
 	emitter, ok := kernel.projector.(*testMockEventEmitter)
 	if !ok {
 		t.Fatal("expected testMockEventEmitter projector")
@@ -2692,9 +2738,10 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: "sess-approval",
-		TurnID:    "turn-approval",
-		Decision:  "approved",
+		SessionID:  "sess-approval",
+		TurnID:     "turn-approval",
+		ApprovalID: pendingApproval.ID,
+		Decision:   "approved",
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn failed: %v", err)
@@ -2740,6 +2787,174 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 	if len(session.PendingApprovals) != 0 {
 		t.Fatalf("pending approvals after resume = %d, want 0", len(session.PendingApprovals))
+	}
+	decided := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeApprovalDecided)
+	if decided.ID == "" || decided.Status != agentstate.ItemStatusCompleted {
+		t.Fatalf("approval decided item = %#v, want canonical completed item", decided)
+	}
+	var decidedFacts struct {
+		ApprovalID string `json:"approvalId"`
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+		Decision   string `json:"decision"`
+		Status     string `json:"status"`
+	}
+	if err := json.Unmarshal(decided.Payload.Data, &decidedFacts); err != nil {
+		t.Fatalf("decode approval decided facts: %v; raw=%s", err, string(decided.Payload.Data))
+	}
+	if decidedFacts.ApprovalID != pendingApproval.ID || decidedFacts.ToolCallID != "call-approval" || decidedFacts.ToolName != "write_file" || decidedFacts.Decision != "approved" || decidedFacts.Status != "approved" {
+		t.Fatalf("approval decided facts = %#v, want approved decision linked to request", decidedFacts)
+	}
+	var finalPayload struct {
+		FinalContract FinalContract `json:"finalContract"`
+	}
+	for i := len(session.CurrentTurn.AgentItems) - 1; i >= 0; i-- {
+		item := session.CurrentTurn.AgentItems[i]
+		if item.Type != agentstate.TurnItemTypeAssistantMessage || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		if json.Unmarshal(item.Payload.Data, &finalPayload) == nil && finalPayload.FinalContract.SchemaVersion != "" {
+			break
+		}
+	}
+	if finalPayload.FinalContract.SchemaVersion == "" {
+		t.Fatalf("agent items = %#v, want completed assistant message final contract", session.CurrentTurn.AgentItems)
+	}
+	if !containsString(finalPayload.FinalContract.ApprovedActions, "write_file#call-approval") {
+		t.Fatalf("approved actions = %#v, want canonical write_file approval", finalPayload.FinalContract.ApprovedActions)
+	}
+	if !containsString(finalPayload.FinalContract.PerformedActions, "write_file#call-approval") {
+		t.Fatalf("performed actions = %#v, want completed mutating invocation", finalPayload.FinalContract.PerformedActions)
+	}
+	if len(finalPayload.FinalContract.PostChecks) != 0 {
+		t.Fatalf("completed post checks = %#v, declared checks must not be reported as completed", finalPayload.FinalContract.PostChecks)
+	}
+	if len(finalPayload.FinalContract.RequiredPostChecks) != 2 || finalPayload.FinalContract.RequiredPostChecks[0] != "stat /tmp/demo" || finalPayload.FinalContract.RequiredPostChecks[1] != "verify checksum /tmp/demo" {
+		t.Fatalf("required post checks = %#v, want stable sorted unique mutation post-check contract", finalPayload.FinalContract.RequiredPostChecks)
+	}
+}
+
+func TestResumeTurn_RejectsWrongApprovalIDBeforeExecutingPendingTool(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-wrong-approval",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "write_file",
+				Arguments: `{"path":"/tmp/wrong-approval","content":"no"}`,
+			},
+		}}),
+		schema.AssistantMessage("write completed", nil),
+	}}
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "write_file", Description: "Write a file"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "unexpected execution"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-wrong-approval",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-wrong-approval",
+		Input:       "write the file",
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn = %#v, %v, want blocked approval", blocked, err)
+	}
+	session := kernel.sessions.Get("sess-wrong-approval")
+	if session == nil || session.CurrentTurn == nil || len(session.PendingApprovals) != 1 {
+		t.Fatalf("blocked session = %#v, want one pending approval", session)
+	}
+	generatedApprovalID := session.PendingApprovals[0].ID
+
+	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:  session.ID,
+		TurnID:     session.CurrentTurn.ID,
+		ApprovalID: generatedApprovalID + "-wrong",
+		Decision:   "approved",
+	})
+	if err == nil {
+		t.Fatal("ResumeTurn wrong approval id error = nil, want fail-closed error")
+	}
+	if executed != 0 {
+		t.Fatalf("wrong approval id executed tool %d time(s), want zero", executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if session.CurrentTurn.Lifecycle != TurnLifecycleSuspended || len(session.PendingApprovals) != 1 || session.PendingApprovals[0].ID != generatedApprovalID {
+		t.Fatalf("session after wrong approval = %#v, want original suspended approval unchanged", session)
+	}
+	if hasAgentItemType(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeApprovalDecided) {
+		t.Fatalf("agent items = %#v, wrong approval id must not record a decision", session.CurrentTurn.AgentItems)
+	}
+	facts := BuildFinalEvidenceState(session.CurrentTurn, session)
+	if len(facts.PerformedActions) != 0 {
+		t.Fatalf("performed actions = %#v, wrong approval id must not perform mutation", facts.PerformedActions)
+	}
+}
+
+func TestResumeTurn_RejectsEmptyDecisionForPendingApproval(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-empty-decision",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "write_file",
+				Arguments: `{"path":"/tmp/empty-decision","content":"no"}`,
+			},
+		}}),
+		schema.AssistantMessage("write completed", nil),
+	}}
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "write_file", Description: "Write a file"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeExecute)},
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: "unexpected execution"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, policyengine.NewDefaultModePolicies())
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-empty-decision",
+		SessionType: SessionTypeHost,
+		Mode:        ModeExecute,
+		TurnID:      "turn-empty-decision",
+		Input:       "write the file",
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn = %#v, %v, want blocked approval", blocked, err)
+	}
+	session := kernel.sessions.Get("sess-empty-decision")
+	if session == nil || session.CurrentTurn == nil || len(session.PendingApprovals) != 1 {
+		t.Fatalf("blocked session = %#v, want one pending approval", session)
+	}
+	approvalID := session.PendingApprovals[0].ID
+
+	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:  session.ID,
+		TurnID:     session.CurrentTurn.ID,
+		ApprovalID: approvalID,
+	})
+	if err == nil {
+		t.Fatal("ResumeTurn empty decision error = nil, want fail-closed error")
+	}
+	if executed != 0 {
+		t.Fatalf("empty decision executed tool %d time(s), want zero", executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if session.CurrentTurn.Lifecycle != TurnLifecycleSuspended || len(session.PendingApprovals) != 1 || hasAgentItemType(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeApprovalDecided) {
+		t.Fatalf("session after empty decision = %#v, want original pending approval with no decision", session)
 	}
 }
 
@@ -2852,6 +3067,19 @@ func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 			SessionTypes: []string{string(SessionTypeHost)},
 			Modes:        []string{string(ModeExecute)},
 		},
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			return tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval,
+				Reason: "test approval",
+				Approval: &tooling.PermissionApprovalPayload{
+					Risk:           string(tooling.ToolRiskHigh),
+					Source:         "test_policy",
+					ExpectedEffect: "read Docker version",
+					Rollback:       "no mutation; no rollback required",
+					Validation:     "docker --version",
+				},
+			}
+		},
 		ExecuteFunc: func(_ context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
 			return tooling.ToolResult{Content: "Docker version 26.1.3"}, nil
 		},
@@ -2862,6 +3090,7 @@ func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 	}
 	compiler := newRecordingCompiler()
 	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, compiler, model)
+	kernel.policy.ModePolicy = map[policyengine.Mode]policyengine.ModePolicy{}
 
 	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-resume-host-meta",
@@ -2871,11 +3100,15 @@ func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 		HostID:      "remote-linux-01",
 		Input:       "检查 Docker",
 		Metadata: map[string]string{
-			"aiops.host.metadataAvailable": "true",
-			"aiops.host.id":                "remote-linux-01",
-			"aiops.host.os":                "linux",
-			"aiops.host.arch":              "amd64",
-			"aiops.host.transport":         "agent_http",
+			"aiops.host.metadataAvailable":  "true",
+			"aiops.host.id":                 "remote-linux-01",
+			"aiops.host.os":                 "linux",
+			"aiops.host.arch":               "amd64",
+			"aiops.host.transport":          "agent_http",
+			"aiops.userEvidence.present":    "true",
+			"aiops.userEvidence.kinds":      "pre_change_snapshot",
+			"aiops.userEvidence.signals":    "docker_version_requested",
+			"aiops.userEvidence.rawExcerpt": "target host identity confirmed",
 		},
 	})
 	if err != nil {
@@ -2890,11 +3123,15 @@ func TestResumeTurn_PreservesHostMetadataForToolAssembly(t *testing.T) {
 	if desc := compilerToolDescription(compiler.contexts[0], "exec_command"); !strings.Contains(desc, "os=linux") || strings.Contains(desc, "Host OS: darwin") {
 		t.Fatalf("initial exec_command description = %q, want linux target metadata", desc)
 	}
+	resumeSession := kernel.sessions.Get("sess-resume-host-meta")
+	if resumeSession == nil || len(resumeSession.PendingApprovals) != 1 {
+		t.Fatalf("resume host session = %#v, want one pending approval", resumeSession)
+	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID:  "sess-resume-host-meta",
 		TurnID:     "turn-resume-host-meta",
-		ApprovalID: "approval-test",
+		ApprovalID: resumeSession.PendingApprovals[0].ID,
 		Decision:   "approved",
 		Metadata:   map[string]string{"approval.reason": "test approval"},
 	})
@@ -2994,6 +3231,11 @@ func TestResumeTurn_ClearsPendingApprovalBeforeApprovedToolCompletes(t *testing.
 	if blocked.Status != "blocked" {
 		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
 	}
+	blockedSession := kernel.sessions.Get("sess-clear-approval")
+	if blockedSession == nil || len(blockedSession.PendingApprovals) != 1 {
+		t.Fatalf("blocked session = %#v, want one pending approval", blockedSession)
+	}
+	approvalID := blockedSession.PendingApprovals[0].ID
 
 	done := make(chan struct{})
 	var resumed TurnResult
@@ -3001,9 +3243,10 @@ func TestResumeTurn_ClearsPendingApprovalBeforeApprovedToolCompletes(t *testing.
 	go func() {
 		defer close(done)
 		resumed, resumeErr = kernel.ResumeTurn(context.Background(), ResumeRequest{
-			SessionID: "sess-clear-approval",
-			TurnID:    "turn-clear-approval",
-			Decision:  "approved",
+			SessionID:  "sess-clear-approval",
+			TurnID:     "turn-clear-approval",
+			ApprovalID: approvalID,
+			Decision:   "approved",
 		})
 	}()
 
@@ -3106,11 +3349,16 @@ func TestResumeTurn_DrainsRemainingToolCallsBeforeNextModelRequest(t *testing.T)
 	if blocked.Status != "blocked" {
 		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
 	}
+	multiToolSession := kernel.sessions.Get("sess-multi-tool-approval")
+	if multiToolSession == nil || len(multiToolSession.PendingApprovals) != 1 {
+		t.Fatalf("multi-tool session = %#v, want one pending approval", multiToolSession)
+	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: "sess-multi-tool-approval",
-		TurnID:    "turn-multi-tool-approval",
-		Decision:  "approved",
+		SessionID:  "sess-multi-tool-approval",
+		TurnID:     "turn-multi-tool-approval",
+		ApprovalID: multiToolSession.PendingApprovals[0].ID,
+		Decision:   "approved",
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn failed: %v", err)
@@ -3182,11 +3430,16 @@ func TestResumeTurn_FeedsApprovedToolFailureBackToModel(t *testing.T) {
 	if blocked.Status != "blocked" {
 		t.Fatalf("blocked status = %q, want blocked", blocked.Status)
 	}
+	failureSession := kernel.sessions.Get("sess-approved-failure")
+	if failureSession == nil || len(failureSession.PendingApprovals) != 1 {
+		t.Fatalf("approved failure session = %#v, want one pending approval", failureSession)
+	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: "sess-approved-failure",
-		TurnID:    "turn-approved-failure",
-		Decision:  "approved",
+		SessionID:  "sess-approved-failure",
+		TurnID:     "turn-approved-failure",
+		ApprovalID: failureSession.PendingApprovals[0].ID,
+		Decision:   "approved",
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn failed: %v", err)
