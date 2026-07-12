@@ -2,8 +2,12 @@ package eval
 
 import (
 	"encoding/json"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -86,36 +90,98 @@ func TestHarnessContractGoldenCasesDeclareTraceExpectations(t *testing.T) {
 }
 
 func TestHarnessServerAgentUsesAssistantTransportFactsOnly(t *testing.T) {
-	paths := []string{"server_agent.go", "server_agent_transport.go"}
-	var source strings.Builder
+	paths, err := filepath.Glob("*.go")
+	if err != nil {
+		t.Fatalf("glob internal/eval Go source: %v", err)
+	}
 	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
+			continue
+		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)
 		}
-		source.Write(data)
+		text := string(data)
+		for _, forbidden := range []string{"serverStateSnapshot", "serverChatResponse"} {
+			if strings.Contains(text, forbidden) {
+				t.Fatalf("%s retains legacy symbol %q", path, forbidden)
+			}
+		}
+		for _, value := range evalGoStringConstants(t, path) {
+			for _, forbidden := range []string{"/api/v1/state", "/api/v1/chat/message"} {
+				if strings.Contains(value, forbidden) {
+					t.Fatalf("%s retains legacy endpoint constant %q", path, value)
+				}
+			}
+		}
 	}
-	text := source.String()
+	transport, err := os.ReadFile("server_agent_transport.go")
+	if err != nil {
+		t.Fatalf("read server_agent_transport.go: %v", err)
+	}
 	for _, required := range []string{
-		"/api/v1/assistant/transport",
-		"appui.AiopsTransportState",
-		"serverTransportSettled",
-		"RuntimeLiveness",
-		"PendingApprovals",
+		"/api/v1/assistant/transport", "appui.AiopsTransportState", "serverTransportSettled", "RuntimeLiveness", "PendingApprovals",
 	} {
-		if !strings.Contains(text, required) {
+		if !strings.Contains(string(transport), required) {
 			t.Fatalf("server eval source missing AssistantTransport contract %q", required)
 		}
 	}
-	for _, forbidden := range []string{
-		"serverStateSnapshot",
-		"serverChatResponse",
-		"/api/v1/" + "state",
-		"/api/v1/" + "chat/message",
-	} {
-		if strings.Contains(text, forbidden) {
-			t.Fatalf("server eval source retains legacy dependency %q", forbidden)
+}
+
+func TestEvalGoStringConstantDetectsConcatenatedLegacyEndpoints(t *testing.T) {
+	tests := map[string]string{
+		`"/api/v1/" + "state"`:               "/api/v1/state",
+		`("/api/v1/" + "chat/") + "message"`: "/api/v1/chat/message",
+	}
+	for source, want := range tests {
+		expression, err := parser.ParseExpr(source)
+		if err != nil {
+			t.Fatalf("parse %s: %v", source, err)
 		}
+		if got, ok := evalGoStringConstant(expression); !ok || got != want {
+			t.Fatalf("evalGoStringConstant(%s) = %q, %v; want %q, true", source, got, ok, want)
+		}
+	}
+}
+
+func evalGoStringConstants(t *testing.T, path string) []string {
+	t.Helper()
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, 0)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+	values := []string{}
+	ast.Inspect(parsed, func(node ast.Node) bool {
+		if expression, ok := node.(ast.Expr); ok {
+			if value, ok := evalGoStringConstant(expression); ok {
+				values = append(values, value)
+			}
+		}
+		return true
+	})
+	return values
+}
+
+func evalGoStringConstant(expression ast.Expr) (string, bool) {
+	switch value := expression.(type) {
+	case *ast.BasicLit:
+		if value.Kind != token.STRING {
+			return "", false
+		}
+		decoded, err := strconv.Unquote(value.Value)
+		return decoded, err == nil
+	case *ast.BinaryExpr:
+		if value.Op != token.ADD {
+			return "", false
+		}
+		left, leftOK := evalGoStringConstant(value.X)
+		right, rightOK := evalGoStringConstant(value.Y)
+		return left + right, leftOK && rightOK
+	case *ast.ParenExpr:
+		return evalGoStringConstant(value.X)
+	default:
+		return "", false
 	}
 }
 

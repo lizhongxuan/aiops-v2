@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/agentui"
 	"aiops-v2/internal/appui"
 )
@@ -53,11 +55,14 @@ func runServerAssistantTransportAgent(ctx context.Context, client *http.Client, 
 	if err != nil {
 		return RunOutput{}, err
 	}
-	turnID, turn, err := serverTransportTargetTurn(state, messageID)
+	turnID, turn, err := serverTransportTargetTurn(state, clientTurnID, messageID)
 	if err != nil {
 		return RunOutput{}, err
 	}
-	output := serverTransportRunOutput(turnID, turn)
+	output, err := serverTransportRunOutput(state.SessionID, turnID, turn)
+	if err != nil {
+		return RunOutput{}, err
+	}
 	if !serverTransportSettled(state, turnID, turn) {
 		return output, fmt.Errorf("AssistantTransport stream ended before target turn %s reached a typed terminal state", turnID)
 	}
@@ -68,7 +73,7 @@ func runServerAssistantTransportAgent(ctx context.Context, client *http.Client, 
 }
 
 func serverTransportRequestForCase(initial appui.AiopsTransportState, cfg ServerAgentConfig, c Case, clientTurnID, messageID string) serverTransportRequest {
-	metadata := map[string]string{"eval.caseId": c.ID, "eval.category": c.Category, "eval.clientTurnId": clientTurnID}
+	metadata := map[string]string{"eval.caseId": c.ID, "eval.category": c.Category, "clientTurnId": clientTurnID}
 	if value := strings.TrimSpace(c.Priority); value != "" {
 		metadata["eval.priority"] = normalizePriority(value)
 	}
@@ -282,18 +287,26 @@ func serverTransportArrayIndex(value any) (int, error) {
 	return 0, fmt.Errorf("array index must be integer, got %T", value)
 }
 
-func serverTransportTargetTurn(state appui.AiopsTransportState, messageID string) (string, appui.AiopsTransportTurn, error) {
+func serverTransportTargetTurn(state appui.AiopsTransportState, clientTurnID, messageID string) (string, appui.AiopsTransportTurn, error) {
+	clientTurnID = strings.TrimSpace(clientTurnID)
+	messageID = strings.TrimSpace(messageID)
+	if clientTurnID == "" || messageID == "" {
+		return "", appui.AiopsTransportTurn{}, errors.New("AssistantTransport target correlation requires clientTurnId and clientMessageId")
+	}
+	matches := make([]string, 0, 1)
 	for id, turn := range state.Turns {
-		if turn.User != nil && strings.TrimSpace(turn.User.ID) == strings.TrimSpace(messageID) {
-			return id, turn, nil
+		if strings.TrimSpace(turn.ClientTurnID) == clientTurnID && strings.TrimSpace(turn.ClientMessageID) == messageID {
+			matches = append(matches, id)
 		}
 	}
-	if id := strings.TrimSpace(state.CurrentTurnID); id != "" {
-		if turn, ok := state.Turns[id]; ok {
-			return id, turn, nil
-		}
+	if len(matches) == 1 {
+		id := matches[0]
+		return id, state.Turns[id], nil
 	}
-	return "", appui.AiopsTransportTurn{}, errors.New("AssistantTransport response missing target turn facts")
+	if len(matches) > 1 {
+		return "", appui.AiopsTransportTurn{}, fmt.Errorf("AssistantTransport target correlation is ambiguous for clientTurnId %q and clientMessageId %q", clientTurnID, messageID)
+	}
+	return "", appui.AiopsTransportTurn{}, fmt.Errorf("AssistantTransport response missing exact target correlation for clientTurnId %q and clientMessageId %q", clientTurnID, messageID)
 }
 
 func serverTransportSettled(state appui.AiopsTransportState, turnID string, turn appui.AiopsTransportTurn) bool {
@@ -335,119 +348,117 @@ func serverTransportHasActiveTool(blocks []appui.AiopsProcessBlock) bool {
 	return false
 }
 
-func serverTransportRunOutput(turnID string, turn appui.AiopsTransportTurn) RunOutput {
-	events := make([]agentui.AgentEvent, 0, len(turn.Process)+1)
-	calls, seen := []ToolCall{}, map[string]bool{}
-	for index, block := range turn.Process {
-		payload, _ := json.Marshal(map[string]any{"displayKind": block.DisplayKind, "text": block.Text, "toolCallId": block.ToolCallID, "toolName": block.Source, "inputSummary": block.InputSummary, "outputSummary": block.OutputPreview})
-		events = append(events, agentui.AgentEvent{EventID: firstNonEmpty(block.ID, fmt.Sprintf("transport-%d", index)), Seq: int64(index + 1), TurnID: turnID, Kind: serverTransportEventKind(block.Kind), Phase: serverTransportEventPhase(block.Status), Status: serverTransportEventStatus(block.Status), Visibility: agentui.AgentEventVisibilityPrimary, Source: agentui.AgentEventSourceProjection, Payload: payload})
-		if name := strings.TrimSpace(block.Source); name != "" {
-			id := firstNonEmpty(block.ToolCallID, block.ID, name)
-			if !seen[id] {
-				seen[id], calls = true, append(calls, ToolCall{ID: id, Name: name})
-			}
+func serverTransportRunOutput(sessionID, turnID string, turn appui.AiopsTransportTurn) (RunOutput, error) {
+	items, err := serverTransportTurnItems(turn)
+	if err != nil {
+		return RunOutput{}, err
+	}
+	calls := make([]ToolCall, 0)
+	seenCallIDs := map[string]bool{}
+	for index, item := range items {
+		if item.Type != agentstate.TurnItemTypeToolCall {
+			continue
 		}
+		call, err := serverTransportToolCall(item)
+		if err != nil {
+			return RunOutput{}, fmt.Errorf("agentItems[%d]: %w", index, err)
+		}
+		if seenCallIDs[call.ID] {
+			return RunOutput{}, fmt.Errorf("agentItems[%d]: duplicate tool call id %q", index, call.ID)
+		}
+		seenCallIDs[call.ID] = true
+		calls = append(calls, call)
 	}
 	answer := ""
 	if turn.Final != nil {
 		answer = firstNonEmpty(turn.Final.AnswerText, turn.Final.Text)
-		payload, _ := json.Marshal(map[string]any{"displayKind": "assistant.message", "phase": "final_answer", "streamState": "complete", "text": turn.Final.Text, "answerText": turn.Final.AnswerText, "status": turn.Final.Status})
-		events = append(events, agentui.AgentEvent{EventID: firstNonEmpty(turn.Final.ID, turnID+":final"), Seq: int64(len(events) + 1), TurnID: turnID, Kind: agentui.AgentEventAssistant, Phase: serverTransportTurnPhase(turn.Status), Status: serverTransportTurnStatus(turn.Status), Visibility: agentui.AgentEventVisibilityPrimary, Source: agentui.AgentEventSourceProjection, Payload: payload})
 	}
-	return RunOutput{Answer: answer, Events: events, ToolCalls: calls, TurnItems: serverTurnItems(events)}
+	events := agentui.ProjectTurnItemsToAgentEvents(sessionID, turnID, items, 0)
+	return RunOutput{Answer: answer, Events: events, ToolCalls: calls, TurnItems: items}, nil
 }
 
-func serverTransportEventKind(kind appui.AiopsTransportProcessKind) agentui.AgentEventKind {
-	switch kind {
-	case appui.AiopsTransportProcessKindPlan:
-		return agentui.AgentEventPlan
-	case appui.AiopsTransportProcessKindApproval:
-		return agentui.AgentEventApproval
-	case appui.AiopsTransportProcessKindEvidence:
-		return agentui.AgentEventEvidence
-	case appui.AiopsTransportProcessKindAssistant, appui.AiopsTransportProcessKindReasoning:
-		return agentui.AgentEventAssistant
-	case appui.AiopsTransportProcessKindSystem:
-		return agentui.AgentEventSystem
+func serverTransportTurnItems(turn appui.AiopsTransportTurn) ([]agentstate.TurnItem, error) {
+	if turn.AgentItemsTruncated {
+		return nil, fmt.Errorf("AssistantTransport canonical agent items truncated: originalCount=%d originalBytes=%d hash=%q ref=%q", turn.AgentItemsOriginalCount, turn.AgentItemsOriginalBytes, turn.AgentItemsHash, turn.AgentItemsRef)
 	}
-	return agentui.AgentEventTool
+	items := make([]agentstate.TurnItem, 0, len(turn.AgentItems))
+	seen := map[string]bool{}
+	for index, wire := range turn.AgentItems {
+		if wire.SchemaVersion != appui.AiopsTransportAgentItemSchemaVersion {
+			return nil, fmt.Errorf("agentItems[%d] schemaVersion = %q, want %q", index, wire.SchemaVersion, appui.AiopsTransportAgentItemSchemaVersion)
+		}
+		if wire.Truncated {
+			return nil, fmt.Errorf("agentItems[%d] %q is truncated: originalBytes=%d hash=%q ref=%q", index, wire.ID, wire.OriginalBytes, wire.ContentHash, wire.Ref)
+		}
+		createdAt, err := serverTransportTime(wire.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("agentItems[%d] createdAt: %w", index, err)
+		}
+		updatedAt, err := serverTransportTime(wire.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("agentItems[%d] updatedAt: %w", index, err)
+		}
+		item := agentstate.TurnItem{
+			ID: wire.ID, Type: agentstate.TurnItemType(wire.Type), Status: agentstate.ItemStatus(wire.Status),
+			Payload:   agentstate.PayloadEnvelope{Kind: wire.Payload.Kind, Summary: wire.Payload.Summary, Data: append(json.RawMessage(nil), wire.Payload.Data...)},
+			CreatedAt: createdAt, UpdatedAt: updatedAt,
+		}
+		if err := item.Validate(); err != nil {
+			return nil, fmt.Errorf("agentItems[%d]: %w", index, err)
+		}
+		if seen[item.ID] {
+			return nil, fmt.Errorf("agentItems[%d]: duplicate item id %q", index, item.ID)
+		}
+		seen[item.ID] = true
+		items = append(items, item)
+	}
+	return items, nil
 }
 
-func serverTransportEventStatus(status appui.AiopsTransportProcessStatus) agentui.AgentEventStatus {
-	switch status {
-	case appui.AiopsTransportProcessStatusQueued:
-		return agentui.AgentEventStatusQueued
-	case appui.AiopsTransportProcessStatusRunning:
-		return agentui.AgentEventStatusRunning
-	case appui.AiopsTransportProcessStatusFailed:
-		return agentui.AgentEventStatusFailed
-	case appui.AiopsTransportProcessStatusBlocked:
-		return agentui.AgentEventStatusBlocked
-	case appui.AiopsTransportProcessStatusRejected:
-		return agentui.AgentEventStatusCanceled
+func serverTransportTime(value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, nil
 	}
-	return agentui.AgentEventStatusCompleted
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid RFC3339 timestamp %q: %w", value, err)
+	}
+	return parsed, nil
 }
 
-func serverTransportEventPhase(status appui.AiopsTransportProcessStatus) agentui.AgentEventPhase {
-	switch status {
-	case appui.AiopsTransportProcessStatusQueued, appui.AiopsTransportProcessStatusRunning:
-		return agentui.AgentEventPhaseStarted
-	case appui.AiopsTransportProcessStatusFailed:
-		return agentui.AgentEventPhaseFailed
-	case appui.AiopsTransportProcessStatusBlocked:
-		return agentui.AgentEventPhaseBlocked
-	case appui.AiopsTransportProcessStatusRejected:
-		return agentui.AgentEventPhaseCanceled
+func serverTransportToolCall(item agentstate.TurnItem) (ToolCall, error) {
+	var payload struct {
+		ID         string          `json:"id"`
+		ToolCallID string          `json:"toolCallId"`
+		Name       string          `json:"name"`
+		ToolName   string          `json:"toolName"`
+		Arguments  json.RawMessage `json:"arguments"`
 	}
-	return agentui.AgentEventPhaseCompleted
-}
-
-func serverTransportTurnStatus(status appui.AiopsTransportTurnStatus) agentui.AgentEventStatus {
-	switch status {
-	case appui.AiopsTransportTurnStatusFailed:
-		return agentui.AgentEventStatusFailed
-	case appui.AiopsTransportTurnStatusCanceled:
-		return agentui.AgentEventStatusCanceled
-	case appui.AiopsTransportTurnStatusBlocked:
-		return agentui.AgentEventStatusBlocked
+	if len(item.Payload.Data) == 0 {
+		return ToolCall{}, errors.New("tool_call payload.data is required")
 	}
-	return agentui.AgentEventStatusCompleted
-}
-
-func serverTransportTurnPhase(status appui.AiopsTransportTurnStatus) agentui.AgentEventPhase {
-	switch status {
-	case appui.AiopsTransportTurnStatusFailed:
-		return agentui.AgentEventPhaseFailed
-	case appui.AiopsTransportTurnStatusCanceled:
-		return agentui.AgentEventPhaseCanceled
-	case appui.AiopsTransportTurnStatusBlocked:
-		return agentui.AgentEventPhaseBlocked
+	if err := json.Unmarshal(item.Payload.Data, &payload); err != nil {
+		return ToolCall{}, fmt.Errorf("decode tool_call payload.data: %w", err)
 	}
-	return agentui.AgentEventPhaseCompleted
+	name := firstNonEmpty(payload.ToolName, payload.Name)
+	if strings.TrimSpace(name) == "" {
+		return ToolCall{}, errors.New("tool_call payload requires toolName or name")
+	}
+	return ToolCall{
+		ID: firstNonEmpty(payload.ID, payload.ToolCallID, item.ID), Name: name,
+		Arguments: append(json.RawMessage(nil), payload.Arguments...),
+	}, nil
 }
 
 func serverTransportRunError(state appui.AiopsTransportState, turn appui.AiopsTransportTurn) string {
 	if state.Status == appui.AiopsTransportStatusFailed || turn.Status == appui.AiopsTransportTurnStatusFailed {
-		return firstNonEmpty(state.LastError, serverTransportFailedProcess(turn.Process), "server turn failed")
+		return firstNonEmpty(state.LastError, "server turn failed")
 	}
 	if state.Status == appui.AiopsTransportStatusCanceled || turn.Status == appui.AiopsTransportTurnStatusCanceled {
 		return "server turn canceled"
 	}
 	if state.Status == appui.AiopsTransportStatusBlocked || turn.Status == appui.AiopsTransportTurnStatusBlocked {
 		return "server turn blocked on a typed pending approval or user input"
-	}
-	if turn.Final == nil || strings.TrimSpace(firstNonEmpty(turn.Final.AnswerText, turn.Final.Text)) == "" {
-		return "server turn completed without typed final facts"
-	}
-	return ""
-}
-
-func serverTransportFailedProcess(blocks []appui.AiopsProcessBlock) string {
-	for _, block := range blocks {
-		if block.Status == appui.AiopsTransportProcessStatusFailed {
-			return firstNonEmpty(block.OutputPreview, block.Text, block.Source)
-		}
 	}
 	return ""
 }

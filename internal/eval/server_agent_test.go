@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -131,18 +132,31 @@ func TestServerAgentRunUsesAssistantTransportAndRejectsLegacyStateDependency(t *
 		if message.Metadata["eval.caseId"] != "server-case" || message.Metadata["eval.rootCauseCategory"] != "tool" {
 			t.Fatalf("metadata = %#v", message.Metadata)
 		}
+		clientTurnID := message.Metadata["clientTurnId"]
+		if clientTurnID == "" {
+			t.Fatalf("metadata missing server-recognized clientTurnId: %#v", message.Metadata)
+		}
 		writer := newServerTransportTestWriter(w)
 		writeServerTransportTestOps(t, writer,
 			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-server"),
 			serverTransportTestOp("set", []any{"status"}, "working"),
 			serverTransportTestOp("set", []any{"runtimeLiveness", "activeTurns", "turn-server"}, true),
 			serverTransportTestOp("set", []any{"turns", "turn-server"}, map[string]any{
-				"id":     "turn-server",
-				"status": "working",
-				"user":   map[string]any{"id": message.ID, "text": "inspect payment-api"},
+				"id": "turn-server", "clientTurnId": clientTurnID, "clientMessageId": message.ID,
+				"status": "working", "user": map[string]any{"id": message.ID, "text": "inspect payment-api"},
+				"agentItems": []map[string]any{
+					transportAgentItem("model-1", "model_call", "completed", "model response", map[string]any{
+						"promptFingerprint": map[string]any{"stableHash": "stable-hash", "developerHash": "developer-hash"},
+					}),
+					transportAgentItem("tool-call-1", "tool_call", "completed", "read app.log", map[string]any{
+						"id": "call-1", "toolName": "read_file", "arguments": map[string]any{"path": "app.log"},
+					}),
+					transportAgentItem("approval-1", "approval", "completed", "approved", map[string]any{"approvalId": "approval-1", "decision": "approved"}),
+					transportAgentItem("evidence-1", "evidence", "completed", "log evidence", map[string]any{"evidenceId": "evidence-1", "source": "app.log"}),
+				},
 				"process": []map[string]any{{
-					"id": "tool-call-1", "kind": "file", "status": "completed", "text": "read app.log",
-					"source": "read_file", "toolCallId": "call-1", "inputSummary": "app.log",
+					"id": "display-only", "kind": "file", "status": "completed", "text": "presentation only",
+					"source": "must_not_become_tool", "toolCallId": "process-call",
 				}},
 				"final": map[string]any{"id": "final-1", "text": "payment-api ", "answerText": "payment-api is healthy", "status": "completed"},
 			}),
@@ -174,6 +188,23 @@ func TestServerAgentRunUsesAssistantTransportAndRejectsLegacyStateDependency(t *
 	if len(output.ToolCalls) != 1 || output.ToolCalls[0].Name != "read_file" || output.ToolCalls[0].ID != "call-1" {
 		t.Fatalf("tool calls = %#v", output.ToolCalls)
 	}
+	if string(output.ToolCalls[0].Arguments) != `{"path":"app.log"}` {
+		t.Fatalf("tool arguments = %s", output.ToolCalls[0].Arguments)
+	}
+	if len(output.TurnItems) != 4 {
+		t.Fatalf("turn items = %#v, want canonical transport items", output.TurnItems)
+	}
+	score := ScoreCase(Case{ID: "server-case", Category: "server"}, output)
+	if len(score.PromptFingerprints) != 1 || score.PromptFingerprints[0]["developerHash"] != "developer-hash" {
+		t.Fatalf("prompt fingerprints = %#v", score.PromptFingerprints)
+	}
+	if output.TurnItems[2].Type != agentstate.TurnItemTypeApproval || output.TurnItems[3].Type != agentstate.TurnItemTypeEvidence {
+		t.Fatalf("approval/evidence items not preserved: %#v", output.TurnItems)
+	}
+	wantEvents := agentui.ProjectTurnItemsToAgentEvents("eval-server-run-server-case", "turn-server", output.TurnItems, 0)
+	if !reflect.DeepEqual(output.Events, wantEvents) {
+		t.Fatalf("events are not canonical projection:\n got %#v\nwant %#v", output.Events, wantEvents)
+	}
 }
 
 func TestServerAgentAssistantTransportAccumulatorFailsClosed(t *testing.T) {
@@ -201,8 +232,8 @@ func TestServerAgentAssistantTransportAccumulatorFailsClosed(t *testing.T) {
 
 func TestServerAgentAssistantTransportUsesTypedStatusNotFinalMarkdown(t *testing.T) {
 	answer := "# FAILED\nPending approval mentioned only in prose."
-	server := newServerTransportStateServer(t, func(messageID string) []map[string]any {
-		return completedServerTransportOps("turn-typed", messageID, answer)
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		return completedServerTransportOps("turn-typed", clientTurnID, messageID, answer)
 	})
 	defer server.Close()
 	output, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
@@ -214,13 +245,15 @@ func TestServerAgentAssistantTransportUsesTypedStatusNotFinalMarkdown(t *testing
 }
 
 func TestServerAgentAssistantTransportReturnsTypedFailureDetail(t *testing.T) {
-	server := newServerTransportStateServer(t, func(messageID string) []map[string]any {
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
 		return []map[string]any{
 			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-failed"),
 			serverTransportTestOp("set", []any{"turns", "turn-failed"}, map[string]any{
-				"id": "turn-failed", "status": "failed", "user": map[string]any{"id": messageID, "text": "hello"},
-				"process": []map[string]any{{"id": "failure-1", "kind": "system", "status": "failed", "text": "request failed"}},
-				"final":   map[string]any{"id": "final-failed", "text": "failure summary", "status": "failed"},
+				"id": "turn-failed", "clientTurnId": clientTurnID, "clientMessageId": messageID,
+				"status": "failed", "user": map[string]any{"id": messageID, "text": "hello"},
+				"agentItems": []map[string]any{transportAgentItem("failure-1", "error", "failed", "request failed", nil)},
+				"process":    []map[string]any{{"id": "failure-1", "kind": "system", "status": "failed", "text": "request failed"}},
+				"final":      map[string]any{"id": "final-failed", "text": "failure summary", "status": "failed"},
 			}),
 			serverTransportTestOp("set", []any{"lastError"}, "model config missing"),
 			serverTransportTestOp("set", []any{"status"}, "failed"),
@@ -233,14 +266,14 @@ func TestServerAgentAssistantTransportReturnsTypedFailureDetail(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "model config missing") {
 		t.Fatalf("error = %v, want typed lastError", err)
 	}
-	if len(output.Events) != 2 || len(output.TurnItems) != 1 {
+	if len(output.Events) != 1 || len(output.TurnItems) != 1 {
 		t.Fatalf("output should retain typed failed-turn facts: %#v", output)
 	}
 }
 
 func TestServerAgentAssistantTransportRejectsTerminalTurnWithActiveToolFacts(t *testing.T) {
-	server := newServerTransportStateServer(t, func(messageID string) []map[string]any {
-		return append(completedServerTransportOps("turn-active", messageID, "typed final"),
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		return append(completedServerTransportOps("turn-active", clientTurnID, messageID, "typed final"),
 			serverTransportTestOp("set", []any{"runtimeLiveness", "activeCommandStreams", "call-active"}, true))
 	})
 	defer server.Close()
@@ -249,6 +282,133 @@ func TestServerAgentAssistantTransportRejectsTerminalTurnWithActiveToolFacts(t *
 	)
 	if err == nil || !strings.Contains(err.Error(), "typed terminal state") {
 		t.Fatalf("error = %v, want active tool facts to prevent completion", err)
+	}
+}
+
+func TestServerAgentAssistantTransportRejectsCurrentTurnFallback(t *testing.T) {
+	state := appui.NewAiopsTransportState("session-1", "thread-1")
+	state.CurrentTurnID = "unrelated-turn"
+	state.Turns["unrelated-turn"] = appui.AiopsTransportTurn{
+		ID: "unrelated-turn", Status: appui.AiopsTransportTurnStatusCompleted,
+		User: &appui.AiopsTransportMessage{ID: "different-message", Text: "stale"},
+	}
+	if turnID, _, err := serverTransportTargetTurn(state, "target-client-turn", "target-message"); err == nil {
+		t.Fatalf("target correlation accepted CurrentTurnID fallback %q", turnID)
+	}
+}
+
+func TestServerAgentAssistantTransportRejectsAmbiguousMessageCorrelation(t *testing.T) {
+	state := appui.NewAiopsTransportState("session-1", "thread-1")
+	for _, turnID := range []string{"turn-a", "turn-b"} {
+		state.Turns[turnID] = appui.AiopsTransportTurn{
+			ID: turnID, ClientTurnID: "same-client-turn", ClientMessageID: "same-message", Status: appui.AiopsTransportTurnStatusCompleted,
+			User: &appui.AiopsTransportMessage{ID: "same-message", Text: "duplicate"},
+		}
+	}
+	if turnID, _, err := serverTransportTargetTurn(state, "same-client-turn", "same-message"); err == nil {
+		t.Fatalf("target correlation accepted ambiguous turn %q", turnID)
+	}
+}
+
+func TestServerAgentAssistantTransportCompletedWithoutFinalTextIsNotRunError(t *testing.T) {
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		return []map[string]any{
+			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-empty-final"),
+			serverTransportTestOp("set", []any{"turns", "turn-empty-final"}, map[string]any{
+				"id": "turn-empty-final", "clientTurnId": clientTurnID, "clientMessageId": messageID, "status": "completed",
+				"user":  map[string]any{"id": messageID, "text": "hello"},
+				"final": map[string]any{"id": "final-empty", "text": "", "answerText": "", "status": "completed"},
+			}),
+			serverTransportTestOp("set", []any{"status"}, "idle"),
+		}
+	})
+	defer server.Close()
+	output, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
+		context.Background(), Case{ID: "empty-final", Category: "server", Input: "hello"},
+	)
+	if err != nil {
+		t.Fatalf("typed completed turn returned text-derived run error: %v", err)
+	}
+	if output.Answer != "" {
+		t.Fatalf("answer = %q, want empty output fact", output.Answer)
+	}
+}
+
+func TestServerAgentAssistantTransportRejectsTruncatedCanonicalFacts(t *testing.T) {
+	tests := []struct {
+		name       string
+		turnFields map[string]any
+	}{
+		{name: "turn envelope", turnFields: map[string]any{
+			"agentItemsTruncated": true, "agentItemsOriginalCount": 12, "agentItemsHash": "sha256:turn",
+		}},
+		{name: "agent item", turnFields: map[string]any{
+			"agentItems": []map[string]any{{
+				"schemaVersion": appui.AiopsTransportAgentItemSchemaVersion,
+				"id":            "tool-1", "type": "tool_call", "status": "completed", "truncated": true,
+				"contentHash": "sha256:item", "payload": map[string]any{"summary": "bounded"},
+			}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+				turn := map[string]any{
+					"id": "turn-truncated", "clientTurnId": clientTurnID, "clientMessageId": messageID,
+					"status": "completed", "final": map[string]any{"id": "final-1", "status": "completed"},
+				}
+				for key, value := range tt.turnFields {
+					turn[key] = value
+				}
+				return []map[string]any{
+					serverTransportTestOp("set", []any{"currentTurnId"}, "turn-truncated"),
+					serverTransportTestOp("set", []any{"turns", "turn-truncated"}, turn),
+					serverTransportTestOp("set", []any{"status"}, "idle"),
+				}
+			})
+			defer server.Close()
+			_, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
+				context.Background(), Case{ID: "truncated", Category: "server", Input: "hello"},
+			)
+			if err == nil || !strings.Contains(strings.ToLower(err.Error()), "truncated") {
+				t.Fatalf("error = %v, want fail-closed truncation error", err)
+			}
+		})
+	}
+}
+
+func TestServerAgentAssistantTransportCompletionReadsPendingAndLivenessFacts(t *testing.T) {
+	baseState := appui.NewAiopsTransportState("session-1", "thread-1")
+	baseState.Status = appui.AiopsTransportStatusIdle
+	baseTurn := appui.AiopsTransportTurn{ID: "turn-1", Status: appui.AiopsTransportTurnStatusCompleted}
+	tests := []struct {
+		name   string
+		mutate func(*appui.AiopsTransportState, *appui.AiopsTransportTurn)
+	}{
+		{name: "pending approval", mutate: func(state *appui.AiopsTransportState, _ *appui.AiopsTransportTurn) {
+			state.PendingApprovals["approval-1"] = appui.AiopsTransportApproval{ID: "approval-1", TurnID: "turn-1"}
+		}},
+		{name: "runtime pending approval", mutate: func(state *appui.AiopsTransportState, _ *appui.AiopsTransportTurn) {
+			state.RuntimeLiveness.PendingApprovals["approval-1"] = true
+		}},
+		{name: "active turn", mutate: func(state *appui.AiopsTransportState, _ *appui.AiopsTransportTurn) {
+			state.RuntimeLiveness.ActiveTurns["turn-1"] = true
+		}},
+		{name: "active command stream", mutate: func(state *appui.AiopsTransportState, _ *appui.AiopsTransportTurn) {
+			state.RuntimeLiveness.ActiveCommandStreams["call-1"] = true
+		}},
+		{name: "running typed tool", mutate: func(_ *appui.AiopsTransportState, turn *appui.AiopsTransportTurn) {
+			turn.Process = []appui.AiopsProcessBlock{{ID: "call-1", Kind: appui.AiopsTransportProcessKindTool, Status: appui.AiopsTransportProcessStatusRunning}}
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state, turn := baseState, baseTurn
+			tt.mutate(&state, &turn)
+			if serverTransportSettled(state, "turn-1", turn) {
+				t.Fatal("completion ignored typed pending/liveness fact")
+			}
+		})
 	}
 }
 
@@ -261,7 +421,7 @@ func decodeServerTransportTestRequest(t *testing.T, r *http.Request) serverTrans
 	return request
 }
 
-func newServerTransportStateServer(t *testing.T, ops func(string) []map[string]any) *httptest.Server {
+func newServerTransportStateServer(t *testing.T, ops func(string, string) []map[string]any) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != serverAssistantTransportPath {
@@ -269,20 +429,35 @@ func newServerTransportStateServer(t *testing.T, ops func(string) []map[string]a
 			return
 		}
 		request := decodeServerTransportTestRequest(t, r)
+		message := request.Commands[0].Message
 		writer := newServerTransportTestWriter(w)
-		writeServerTransportTestOps(t, writer, ops(request.Commands[0].Message.ID)...)
+		writeServerTransportTestOps(t, writer, ops(message.Metadata["clientTurnId"], message.ID)...)
 		flushServerTransportTestWriter(t, writer)
 	}))
 }
 
-func completedServerTransportOps(turnID, messageID, answer string) []map[string]any {
+func completedServerTransportOps(turnID, clientTurnID, messageID, answer string) []map[string]any {
 	return []map[string]any{
 		serverTransportTestOp("set", []any{"currentTurnId"}, turnID),
 		serverTransportTestOp("set", []any{"turns", turnID}, map[string]any{
-			"id": turnID, "status": "completed", "user": map[string]any{"id": messageID, "text": "hello"},
-			"final": map[string]any{"id": turnID + ":final", "text": answer, "answerText": answer, "status": "completed"},
+			"id": turnID, "clientTurnId": clientTurnID, "clientMessageId": messageID,
+			"status": "completed", "user": map[string]any{"id": messageID, "text": "hello"},
+			"agentItems": []map[string]any{},
+			"final":      map[string]any{"id": turnID + ":final", "text": answer, "answerText": answer, "status": "completed"},
 		}),
 		serverTransportTestOp("set", []any{"status"}, "idle"),
+	}
+}
+
+func transportAgentItem(id, itemType, status, summary string, data map[string]any) map[string]any {
+	payload := map[string]any{"summary": summary}
+	if data != nil {
+		payload["data"] = data
+	}
+	return map[string]any{
+		"schemaVersion": appui.AiopsTransportAgentItemSchemaVersion,
+		"id":            id, "type": itemType, "status": status, "payload": payload,
+		"createdAt": "2026-07-12T01:02:03Z", "updatedAt": "2026-07-12T01:02:04Z",
 	}
 }
 
