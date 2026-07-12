@@ -176,6 +176,27 @@ func TestBuildFinalEvidenceStateKeepsRequiredPostCheckWithoutClaimingUnknownMuta
 	}
 }
 
+func TestBuildFinalEvidenceStateDescribesTypedPartialAggregateWithoutClaimingReadFailure(t *testing.T) {
+	state := BuildFinalEvidenceState(&TurnSnapshot{
+		Iterations: []IterationState{{
+			ToolInvocations: []ToolInvocationState{{
+				ToolCallID:  "call-wait-hosts",
+				ToolName:    "wait_host_agents",
+				Status:      ToolInvocationPartial,
+				FailureKind: "partial_result",
+			}},
+		}},
+	}, nil)
+
+	if len(state.FailedTools) != 1 {
+		t.Fatalf("failed tools = %#v, want one typed partial aggregate impact", state.FailedTools)
+	}
+	impact := state.FailedTools[0]
+	if impact.FailureClass != "partial_result" || impact.Impact != "部分子任务未完成，聚合结果不完整" {
+		t.Fatalf("partial aggregate impact = %#v, want user-facing incomplete aggregation semantics", impact)
+	}
+}
+
 func TestBuildFinalEvidenceStateSummarizesPublicWebEnvelope(t *testing.T) {
 	state := BuildFinalEvidenceState(&TurnSnapshot{
 		Iterations: []IterationState{{

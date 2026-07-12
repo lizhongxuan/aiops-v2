@@ -678,10 +678,14 @@ func failedToolImpactsFromSnapshot(snapshot *TurnSnapshot) []FailedToolImpact {
 			continue
 		}
 		seen[key] = true
+		impact := "证据读取失败，不能作为已检查结果"
+		if failureClass == "partial_result" {
+			impact = "部分子任务未完成，聚合结果不完整"
+		}
 		out = append(out, FailedToolImpact{
 			ToolName:     toolName,
 			FailureClass: failureClass,
-			Impact:       "证据读取失败，不能作为已检查结果",
+			Impact:       impact,
 		})
 	}
 	return out
