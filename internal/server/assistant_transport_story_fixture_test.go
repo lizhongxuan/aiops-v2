@@ -24,12 +24,16 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentmgr"
+	"aiops-v2/internal/agentruntime"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/store"
 	"aiops-v2/internal/tooling"
 )
 
@@ -37,8 +41,25 @@ type assistantTransportStoryResult struct {
 	State           appui.AiopsTransportState
 	NormalizedState map[string]any
 	Snapshot        *runtimekernel.TurnSnapshot
+	HostManager     *storyHostManagerProof
 	TraceRef        string
 	RawTransport    string
+}
+
+type storyHostManagerProof struct {
+	MissionID string
+	Children  map[string]storyHostChildProof
+}
+
+type storyHostChildProof struct {
+	ChildAgentID      string
+	HostID            string
+	StoreStatus       string
+	ManagerStatus     string
+	SessionID         string
+	LastOutputPreview string
+	Error             string
+	BoundWorker       bool
 }
 
 const (
@@ -85,6 +106,8 @@ func loadAssistantTransportStories(t *testing.T) []assistantTransportStory {
 func runAssistantTransportStory(t *testing.T, story assistantTransportStory) assistantTransportStoryResult {
 	t.Helper()
 
+	sessionID := "story-session-" + storySlug(story.Name)
+	threadID := "story-thread-" + storySlug(story.Name)
 	registry := tooling.NewRegistry()
 	toolControls := newStoryToolControls(story.ToolOutcomes)
 	for _, outcome := range story.ToolOutcomes {
@@ -155,12 +178,15 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 	provider := newStoryProvider(t, story.ProviderResponses)
 	router := modelrouter.NewRouter("story", map[string]modelrouter.ChatModel{"story": provider}, nil)
 	router.SetProviderConfigResolver(storyProviderConfigResolver{maxContextTokens: story.MaxContextTokens})
+	compiler := promptcompiler.NewCompiler()
+	policy := &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies(), CompletionPolicy: &policyengine.DefaultCompletionEvaluator{}}
+	hostManagerRuntime := configureStoryHostManager(t, story, sessionID, threadID, registry, provider, router, compiler, policy)
 	sessions := runtimekernel.NewSessionManager()
 	traceRoot := t.TempDir()
 	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{
 		ToolSource:  storyToolSource{registry: registry},
-		Compiler:    promptcompiler.NewCompiler(),
-		Policy:      &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies(), CompletionPolicy: &policyengine.DefaultCompletionEvaluator{}},
+		Compiler:    compiler,
+		Policy:      policy,
 		Projector:   storyEventEmitter{},
 		ModelRouter: router,
 		Sessions:    sessions,
@@ -169,8 +195,6 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 		},
 	})
 
-	sessionID := "story-session-" + storySlug(story.Name)
-	threadID := "story-thread-" + storySlug(story.Name)
 	if strings.TrimSpace(story.SessionType) != "" || strings.TrimSpace(story.Mode) != "" || story.ContextMaxTokens > 0 || len(story.SeedMessages) > 0 {
 		sessionType := runtimekernel.SessionType(firstStoryValue(story.SessionType, string(runtimekernel.SessionTypeWorkspace)))
 		mode := runtimekernel.Mode(firstStoryValue(story.Mode, string(runtimekernel.ModeChat)))
@@ -189,14 +213,249 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 	}
 	initial := appui.NewAiopsTransportState(sessionID, threadID)
 	initial.UpdatedAt = "2000-01-01T00:00:00Z"
-	httpServer := httptest.NewServer(NewHTTPServer(appui.NewServices(kernel, sessions)).Handler())
+	servicesOptions := []appui.ServicesOption{}
+	if hostManagerRuntime != nil {
+		servicesOptions = append(servicesOptions,
+			appui.WithHostRepository(hostManagerRuntime.hosts),
+			appui.WithHostOpsService(hostManagerRuntime.service),
+		)
+	}
+	httpServer := httptest.NewServer(NewHTTPServer(appui.NewServices(kernel, sessions, servicesOptions...)).Handler())
 	defer httpServer.Close()
 	result := runAssistantTransportStoryRequests(t, story, httpServer.URL, initial, threadID, sessions, toolControls)
+	if hostManagerRuntime != nil {
+		result.HostManager = hostManagerRuntime.proof(t)
+	}
 	if err := provider.assertExhausted(); err != nil {
 		failAssistantTransportStory(t, story, result, "deterministic provider script mismatch: %v", err)
 		return result
 	}
 	return result
+}
+
+type storyHostManagerRuntime struct {
+	missionID string
+	store     *hostops.InMemoryMissionStore
+	manager   *agentmgr.AgentManager
+	hosts     *storyHostRepository
+	service   appui.HostOpsService
+}
+
+func configureStoryHostManager(
+	t *testing.T,
+	story assistantTransportStory,
+	sessionID string,
+	threadID string,
+	registry *tooling.Registry,
+	provider *storyProvider,
+	router *modelrouter.Router,
+	compiler promptcompiler.Compiler,
+	policy *policyengine.Engine,
+) *storyHostManagerRuntime {
+	t.Helper()
+	if story.HostManager == nil {
+		return nil
+	}
+	missionID := strings.TrimSpace(story.HostManager.MissionID)
+	if missionID == "" || len(story.HostManager.Children) < 2 {
+		t.Fatalf("story %q hostManager requires missionId and at least two children", story.Name)
+	}
+
+	missionStore := hostops.NewInMemoryMissionStore()
+	transcripts := hostops.NewInMemoryTranscriptStore()
+	hostRecords := make([]store.HostRecord, 0, len(story.HostManager.Children))
+	mentions := make([]hostops.HostMention, 0, len(story.HostManager.Children))
+	scenarios := make(map[string]storyHostChildScenario, len(story.HostManager.Children))
+	for index, scenario := range story.HostManager.Children {
+		hostID := strings.TrimSpace(scenario.HostID)
+		if hostID == "" {
+			t.Fatalf("story %q hostManager child[%d] requires hostId", story.Name, index)
+		}
+		if _, duplicate := scenarios[hostID]; duplicate {
+			t.Fatalf("story %q hostManager repeats hostId %q", story.Name, hostID)
+		}
+		scenario.HostID = hostID
+		scenarios[hostID] = scenario
+		address := fmt.Sprintf("192.0.2.%d", index+10)
+		hostRecords = append(hostRecords, store.HostRecord{ID: hostID, Name: hostID, Address: address, Status: "online", Executable: true})
+		mentions = append(mentions, hostops.HostMention{
+			TokenID:     fmt.Sprintf("story-host-%d", index+1),
+			Raw:         "@" + hostID,
+			HostID:      hostID,
+			Address:     address,
+			DisplayName: hostID,
+			Source:      hostops.HostMentionSourceInventory,
+			Resolved:    true,
+			Confidence:  1,
+		})
+	}
+
+	mission := hostops.HostOperationMission{
+		ID:             missionID,
+		SessionID:      sessionID,
+		ThreadID:       threadID,
+		UserTurnID:     "story-user-turn",
+		ManagerAgentID: "story-host-manager",
+		Status:         hostops.HostMissionStatusRunning,
+		PlanRequired:   true,
+		PlanAccepted:   true,
+		Mentions:       mentions,
+	}
+	plan, err := hostops.BuildPlanForMission(mission)
+	if err != nil {
+		t.Fatalf("story %q build host manager plan: %v", story.Name, err)
+	}
+	plan.Status = hostops.PlanStatusAccepted
+	acceptedAt := time.Unix(1, 0).UTC()
+	plan.AcceptedAt = &acceptedAt
+	mission.Plan = plan
+	if err := missionStore.SaveMission(context.Background(), mission); err != nil {
+		t.Fatalf("story %q seed host manager mission: %v", story.Name, err)
+	}
+
+	childRunner := storyHostChildRunner{scenarios: scenarios}
+	factory := agentmgr.NewAgentFactory(registry, compiler, router, policy)
+	manager := agentmgr.NewAgentManager(factory, childRunner, nil)
+	adapter := agentmgr.NewKernelAdapter(manager, factory).WithHostOpsSinks(missionStore, transcripts)
+	orchestrator := hostops.NewOrchestrator(missionStore, transcripts, adapter)
+	for _, managerTool := range hostops.NewManagerTools(orchestrator) {
+		if err := registry.Register(managerTool); err != nil {
+			t.Fatalf("story %q register real host manager tool %q: %v", story.Name, managerTool.Metadata().Name, err)
+		}
+	}
+
+	provider.beforeResponse = func(ctx context.Context, responseIndex int) error {
+		if responseIndex != 1 {
+			return nil
+		}
+		return waitForStoryHostChildren(ctx, missionStore, missionID, len(scenarios))
+	}
+	return &storyHostManagerRuntime{
+		missionID: missionID,
+		store:     missionStore,
+		manager:   manager,
+		hosts:     newStoryHostRepository(hostRecords),
+		service:   appui.NewHostOpsService(missionStore, transcripts, orchestrator),
+	}
+}
+
+type storyHostChildRunner struct {
+	scenarios map[string]storyHostChildScenario
+}
+
+func (r storyHostChildRunner) Run(_ context.Context, config agentruntime.Config) (string, error) {
+	hostID := strings.TrimSpace(config.RuntimeHostID())
+	scenario, ok := r.scenarios[hostID]
+	if !ok {
+		return "", fmt.Errorf("story host child runner has no scenario for bound host %q", hostID)
+	}
+	if scenario.Error != "" {
+		return scenario.Output, errors.New(scenario.Error)
+	}
+	return scenario.Output, nil
+}
+
+func waitForStoryHostChildren(ctx context.Context, missionStore hostops.MissionStore, missionID string, want int) error {
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		children, err := missionStore.ListChildAgents(ctx, missionID)
+		if err != nil {
+			return err
+		}
+		terminal := 0
+		for _, child := range children {
+			switch child.Status {
+			case hostops.HostChildAgentStatusCompleted, hostops.HostChildAgentStatusFailed, hostops.HostChildAgentStatusCancelled:
+				terminal++
+			}
+		}
+		if len(children) == want && terminal == want {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for %d real host children to finish: %w", want, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *storyHostManagerRuntime) proof(t *testing.T) *storyHostManagerProof {
+	t.Helper()
+	children, err := r.store.ListChildAgents(context.Background(), r.missionID)
+	if err != nil {
+		t.Fatalf("list story host children: %v", err)
+	}
+	proof := &storyHostManagerProof{MissionID: r.missionID, Children: make(map[string]storyHostChildProof, len(children))}
+	for _, child := range children {
+		childProof := storyHostChildProof{
+			ChildAgentID:      child.ID,
+			HostID:            child.HostID,
+			StoreStatus:       string(child.Status),
+			SessionID:         child.SessionID,
+			LastOutputPreview: child.LastOutputPreview,
+			Error:             child.Error,
+		}
+		if instance := r.manager.GetInstance(child.ID); instance != nil {
+			childProof.ManagerStatus = string(instance.Status)
+			childProof.BoundWorker = instance.Kind == agentmgr.AgentKindWorker && instance.HostID == child.HostID && instance.SessionID == child.SessionID
+		}
+		proof.Children[child.HostID] = childProof
+	}
+	return proof
+}
+
+type storyHostRepository struct {
+	mu      sync.RWMutex
+	records map[string]store.HostRecord
+}
+
+func newStoryHostRepository(records []store.HostRecord) *storyHostRepository {
+	repo := &storyHostRepository{records: make(map[string]store.HostRecord, len(records))}
+	for _, record := range records {
+		repo.records[record.ID] = record
+	}
+	return repo
+}
+
+func (r *storyHostRepository) GetHost(id string) (*store.HostRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	record, ok := r.records[strings.TrimSpace(id)]
+	if !ok {
+		return nil, fmt.Errorf("host %q not found", id)
+	}
+	copy := record
+	return &copy, nil
+}
+
+func (r *storyHostRepository) ListHosts() ([]store.HostRecord, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	records := make([]store.HostRecord, 0, len(r.records))
+	for _, record := range r.records {
+		records = append(records, record)
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
+	return records, nil
+}
+
+func (r *storyHostRepository) SaveHost(host *store.HostRecord) error {
+	if host == nil || strings.TrimSpace(host.ID) == "" {
+		return errors.New("host id is required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.records[host.ID] = *host
+	return nil
+}
+
+func (r *storyHostRepository) DeleteHost(id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.records, strings.TrimSpace(id))
+	return nil
 }
 
 func storyTransportRequests(story assistantTransportStory) []storyTransportRequest {
@@ -343,8 +602,62 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	if !bytes.Equal(gotJSON, wantJSON) {
 		failAssistantTransportStory(t, story, result, "assertion mismatch\nwant=%s\n got=%s", wantJSON, gotJSON)
 	}
+	assertStoryHostManagerLifecycle(t, story, result)
 	if result.TraceRef == "" {
 		failAssistantTransportStory(t, story, result, "model input trace ref is missing")
+	}
+}
+
+func assertStoryHostManagerLifecycle(t *testing.T, story assistantTransportStory, result assistantTransportStoryResult) {
+	t.Helper()
+	if story.HostManager == nil {
+		return
+	}
+	proof := result.HostManager
+	if proof == nil || proof.MissionID != story.HostManager.MissionID {
+		failAssistantTransportStory(t, story, result, "real host manager proof = %#v, want mission %q", proof, story.HostManager.MissionID)
+	}
+	if len(proof.Children) != len(story.HostManager.Children) || len(proof.Children) < 2 {
+		failAssistantTransportStory(t, story, result, "real host manager children = %#v, want %d", proof.Children, len(story.HostManager.Children))
+	}
+	completed := 0
+	failed := 0
+	for _, scenario := range story.HostManager.Children {
+		child, ok := proof.Children[scenario.HostID]
+		if !ok {
+			failAssistantTransportStory(t, story, result, "real host manager child for %q is missing: %#v", scenario.HostID, proof.Children)
+		}
+		wantStatus := string(hostops.HostChildAgentStatusCompleted)
+		if strings.TrimSpace(scenario.Error) != "" {
+			wantStatus = string(hostops.HostChildAgentStatusFailed)
+			failed++
+		} else {
+			completed++
+		}
+		if child.HostID != scenario.HostID || !child.BoundWorker || child.SessionID == "" || child.StoreStatus != wantStatus || child.ManagerStatus != wantStatus {
+			failAssistantTransportStory(t, story, result, "real host child proof for %q = %#v, want bound worker with terminal %q manager/store state", scenario.HostID, child, wantStatus)
+		}
+		if scenario.Error != "" && child.Error != scenario.Error {
+			failAssistantTransportStory(t, story, result, "real host child %q error = %q, want %q", scenario.HostID, child.Error, scenario.Error)
+		}
+		if scenario.Output != "" && child.LastOutputPreview != scenario.Output {
+			failAssistantTransportStory(t, story, result, "real host child %q output = %q, want %q", scenario.HostID, child.LastOutputPreview, scenario.Output)
+		}
+		transportChild, ok := result.State.ChildAgents[child.ChildAgentID]
+		if !ok || transportChild.HostID != scenario.HostID || transportChild.Status != wantStatus || transportChild.MissionID != proof.MissionID {
+			failAssistantTransportStory(t, story, result, "transport child for %q = %#v present=%v, want visible terminal child", scenario.HostID, transportChild, ok)
+		}
+	}
+	mission, ok := result.State.HostMissions[proof.MissionID]
+	if !ok || len(mission.ChildAgentIDs) < len(proof.Children) || mission.Status != "failed" {
+		failAssistantTransportStory(t, story, result, "transport host mission %q = %#v present=%v, want all child IDs and typed mixed-result failure visible", proof.MissionID, mission, ok)
+	}
+	if completed == 0 || failed == 0 {
+		failAssistantTransportStory(t, story, result, "host manager aggregation completed=%d failed=%d, want mixed terminal child results before synthesis", completed, failed)
+	}
+	turn := result.State.Turns[result.State.CurrentTurnID]
+	if turn.Final == nil || turn.Final.Status != appui.AiopsTransportFinalStatusPartial {
+		failAssistantTransportStory(t, story, result, "host manager final = %#v, want partial from typed aggregate child outcome", turn.Final)
 	}
 }
 
@@ -1048,8 +1361,10 @@ func formatAssistantTransportStoryFailure(story assistantTransportStory, result 
 }
 
 type storyProvider struct {
-	mu        sync.Mutex
-	responses []*schema.Message
+	mu             sync.Mutex
+	responses      []*schema.Message
+	served         int
+	beforeResponse func(context.Context, int) error
 }
 
 func newStoryProvider(t *testing.T, fixtures []storyProviderResponse) *storyProvider {
@@ -1068,12 +1383,12 @@ func newStoryProvider(t *testing.T, fixtures []storyProviderResponse) *storyProv
 	return &storyProvider{responses: responses}
 }
 
-func (p *storyProvider) Generate(context.Context, []*schema.Message, ...model.Option) (*schema.Message, error) {
-	return p.next()
+func (p *storyProvider) Generate(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return p.next(ctx)
 }
 
-func (p *storyProvider) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
-	message, err := p.next()
+func (p *storyProvider) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	message, err := p.next(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -1082,7 +1397,16 @@ func (p *storyProvider) Stream(context.Context, []*schema.Message, ...model.Opti
 
 func (p *storyProvider) BindTools([]*schema.ToolInfo) error { return nil }
 
-func (p *storyProvider) next() (*schema.Message, error) {
+func (p *storyProvider) next(ctx context.Context) (*schema.Message, error) {
+	p.mu.Lock()
+	responseIndex := p.served
+	beforeResponse := p.beforeResponse
+	p.mu.Unlock()
+	if beforeResponse != nil {
+		if err := beforeResponse(ctx, responseIndex); err != nil {
+			return nil, err
+		}
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if len(p.responses) == 0 {
@@ -1090,6 +1414,7 @@ func (p *storyProvider) next() (*schema.Message, error) {
 	}
 	response := p.responses[0]
 	p.responses = p.responses[1:]
+	p.served++
 	return response, nil
 }
 

@@ -25,12 +25,24 @@ type assistantTransportStory struct {
 	Requests          []storyTransportRequest `json:"requests,omitempty"`
 	ProviderResponses []storyProviderResponse `json:"providerResponses"`
 	ToolOutcomes      []storyToolOutcome      `json:"toolOutcomes"`
+	HostManager       *storyHostManager       `json:"hostManager,omitempty"`
 	MaxContextTokens  int                     `json:"maxContextTokens,omitempty"`
 	SessionType       string                  `json:"sessionType,omitempty"`
 	Mode              string                  `json:"mode,omitempty"`
 	ContextMaxTokens  int                     `json:"contextMaxTokens,omitempty"`
 	SeedMessages      []string                `json:"seedMessages,omitempty"`
 	Want              storyTransportAssert    `json:"want"`
+}
+
+type storyHostManager struct {
+	MissionID string                   `json:"missionId"`
+	Children  []storyHostChildScenario `json:"children"`
+}
+
+type storyHostChildScenario struct {
+	HostID string `json:"hostId"`
+	Output string `json:"output,omitempty"`
+	Error  string `json:"error,omitempty"`
 }
 
 type storyTransportRequest struct {
@@ -265,11 +277,15 @@ func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
 	multi := stories["multi_host_manager"]
 	hosts := map[string]bool{}
 	toolCalls := 0
+	spawnCalls := 0
 	waitCalls := 0
 	for _, response := range multi.ProviderResponses {
 		for _, call := range response.ToolCalls {
 			toolCalls++
-			if call.Name == "wait_host_tasks" {
+			if call.Name == "spawn_host_agent" {
+				spawnCalls++
+			}
+			if call.Name == "wait_host_agents" {
 				waitCalls++
 			}
 			var arguments map[string]any
@@ -277,12 +293,50 @@ func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
 				if hostID := strings.TrimSpace(fmt.Sprint(arguments["hostId"])); hostID != "" {
 					hosts[hostID] = true
 				}
+				if assignments, ok := arguments["assignments"].([]any); ok {
+					for _, raw := range assignments {
+						assignment, _ := raw.(map[string]any)
+						if hostID := strings.TrimSpace(fmt.Sprint(assignment["hostId"])); hostID != "" {
+							hosts[hostID] = true
+						}
+					}
+				}
 			}
 		}
 	}
-	if toolCalls < 3 || len(hosts) < 2 || waitCalls == 0 || len(multi.ProviderResponses) < 3 || len(multi.Want.ActualTools) < 3 {
-		t.Errorf("multi_host_manager must dispatch two real host-scoped calls, observe a wait/partial aggregation tool in a later model iteration, and assert all runtime results")
+	if multi.HostManager == nil || strings.TrimSpace(multi.HostManager.MissionID) == "" || len(multi.HostManager.Children) < 2 {
+		t.Errorf("multi_host_manager must configure at least two children on the real hostops/AgentManager lifecycle")
 	}
+	if len(multi.ToolOutcomes) != 0 {
+		t.Errorf("multi_host_manager must not use synthetic toolOutcomes: %#v", multi.ToolOutcomes)
+	}
+	for _, forbidden := range []string{"inspect_host_a", "inspect_host_b", "wait_host_tasks"} {
+		if storyUsesTool(multi, forbidden) {
+			t.Errorf("multi_host_manager must not use semantic-shell tool %q", forbidden)
+		}
+	}
+	if toolCalls < 2 || spawnCalls != 1 || len(hosts) < 2 || waitCalls == 0 || len(multi.ProviderResponses) < 3 || len(multi.Want.ActualTools) < 2 {
+		t.Errorf("multi_host_manager must call production spawn_host_agent then wait_host_agents before synthesis for at least two hosts")
+	}
+	if multi.Want.Target.Binding != "multi_host" {
+		t.Errorf("multi_host_manager target binding = %q, want multi_host", multi.Want.Target.Binding)
+	}
+}
+
+func storyUsesTool(story assistantTransportStory, name string) bool {
+	for _, response := range story.ProviderResponses {
+		for _, call := range response.ToolCalls {
+			if call.Name == name {
+				return true
+			}
+		}
+	}
+	for _, outcome := range story.ToolOutcomes {
+		if outcome.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAssistantTransportStoryRunnerUsesCanonicalLifecycleAndEvidenceFactsOnly(t *testing.T) {
