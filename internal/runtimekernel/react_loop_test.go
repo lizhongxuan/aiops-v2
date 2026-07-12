@@ -2958,6 +2958,133 @@ func TestResumeTurn_RejectsEmptyDecisionForPendingApproval(t *testing.T) {
 	}
 }
 
+func TestExactApprovalForResumeDecisionAcceptsMatchingPendingEvidence(t *testing.T) {
+	snapshot := &TurnSnapshot{
+		ID:          "turn-pending-evidence",
+		ResumeState: TurnResumeStatePendingEvidence,
+		PendingEvidence: []PendingEvidence{{
+			ID:         "evidence-1",
+			TurnID:     "turn-pending-evidence",
+			ToolName:   "exec_command",
+			ToolCallID: "call-evidence",
+		}},
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{{ID: "call-evidence", Name: "exec_command"}},
+		}},
+	}
+	session := &SessionState{ID: "sess-pending-evidence", PendingEvidence: append([]PendingEvidence(nil), snapshot.PendingEvidence...)}
+
+	decision, err := exactApprovalForResumeDecision(session, snapshot, ResumeRequest{
+		SessionID:   session.ID,
+		TurnID:      snapshot.ID,
+		ApprovalID:  "evidence-1",
+		ResumeState: TurnResumeStatePendingEvidence,
+		Decision:    "approved",
+	})
+	if err != nil {
+		t.Fatalf("matching pending evidence decision rejected: %v", err)
+	}
+	if decision.ID != "evidence-1" || decision.Source != "pending_evidence" || decision.ToolCallID != "call-evidence" {
+		t.Fatalf("decision target = %#v, want exact pending evidence correlation", decision)
+	}
+}
+
+func TestExactApprovalForResumeDecisionRejectsWrongPendingEvidenceID(t *testing.T) {
+	snapshot := &TurnSnapshot{
+		ID:          "turn-pending-evidence-wrong",
+		ResumeState: TurnResumeStatePendingEvidence,
+		PendingEvidence: []PendingEvidence{{
+			ID:         "evidence-real",
+			TurnID:     "turn-pending-evidence-wrong",
+			ToolName:   "exec_command",
+			ToolCallID: "call-evidence-wrong",
+		}},
+		Iterations: []IterationState{{
+			ToolCalls: []ToolCall{{ID: "call-evidence-wrong", Name: "exec_command"}},
+		}},
+	}
+
+	_, err := exactApprovalForResumeDecision(&SessionState{ID: "sess-pending-evidence-wrong"}, snapshot, ResumeRequest{
+		SessionID:   "sess-pending-evidence-wrong",
+		TurnID:      snapshot.ID,
+		ApprovalID:  "evidence-stale",
+		ResumeState: TurnResumeStatePendingEvidence,
+		Decision:    "approved",
+	})
+	if err == nil {
+		t.Fatal("wrong pending evidence id error = nil, want fail-closed error")
+	}
+}
+
+func TestRunTurnResumesMatchingPendingEvidenceDecisionThroughRuntime(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-runtime-evidence",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "inspect_runtime_evidence",
+				Arguments: `{"scope":"service"}`,
+			},
+		}}),
+		schema.AssistantMessage("补充证据已接受，检查完成。", nil),
+	}}
+	permissionChecks := 0
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "inspect_runtime_evidence", Description: "Inspect runtime evidence"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			permissionChecks++
+			if permissionChecks == 1 {
+				return tooling.PermissionDecision{Action: tooling.PermissionActionNeedEvidence, Reason: "operator evidence acceptance required"}
+			}
+			return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{Content: `{"status":"healthy"}`}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-runtime-evidence",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-runtime-evidence",
+		Input:       "inspect service health",
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn = %#v, %v, want pending evidence block", blocked, err)
+	}
+	session := kernel.sessions.Get("sess-runtime-evidence")
+	if session == nil || session.CurrentTurn == nil || len(session.PendingEvidence) != 1 {
+		t.Fatalf("blocked session = %#v, want one pending evidence item", session)
+	}
+	evidenceID := session.PendingEvidence[0].ID
+
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID:   session.ID,
+		TurnID:      session.CurrentTurn.ID,
+		ApprovalID:  evidenceID,
+		ResumeState: TurnResumeStatePendingEvidence,
+		Decision:    "approved",
+	})
+	if err != nil {
+		t.Fatalf("ResumeTurn pending evidence: %v", err)
+	}
+	if resumed.Status != "completed" || executed != 1 {
+		t.Fatalf("ResumeTurn = %#v, executed=%d, want completed execution", resumed, executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if len(session.PendingEvidence) != 0 || session.CurrentTurn.ResumeState != TurnResumeStateNone || session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
+		t.Fatalf("resumed session = %#v, want completed turn with no pending evidence", session)
+	}
+}
+
 func TestResumeTurnApprovalFingerprintDriftRequiresReapproval(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

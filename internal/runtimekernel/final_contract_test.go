@@ -24,6 +24,37 @@ func TestBuildFinalContractStatusVocabulary(t *testing.T) {
 			wantChecked: []string{"call-uptime"},
 		},
 		{
+			name:   "needs evidence while declared post checks remain outstanding",
+			answer: "变更已经执行，服务当前可访问。",
+			verification: FinalEvidenceVerification{
+				Action:     FinalEvidenceActionAllow,
+				Confidence: FinalEvidenceConfidenceHigh,
+				State: FinalEvidenceState{
+					Checked:            []CheckedEvidence{{ToolCallID: "call-precheck", ToolName: "exec_command", Summary: "pre-change service state"}},
+					PerformedActions:   []string{"restart_service#call-restart"},
+					RequiredPostChecks: []string{"service_health"},
+				},
+			},
+			wantStatus:  FinalContractStatusNeedsEvidence,
+			wantChecked: []string{"call-precheck"},
+		},
+		{
+			name:   "verified after every declared post check is completed",
+			answer: "变更和后置校验均已完成。",
+			verification: FinalEvidenceVerification{
+				Action:     FinalEvidenceActionAllow,
+				Confidence: FinalEvidenceConfidenceHigh,
+				State: FinalEvidenceState{
+					Checked:            []CheckedEvidence{{ToolCallID: "call-health", ToolName: "exec_command", Summary: "service healthy"}},
+					PerformedActions:   []string{"restart_service#call-restart"},
+					PostChecks:         []string{"service_health"},
+					RequiredPostChecks: []string{"service_health"},
+				},
+			},
+			wantStatus:  FinalContractStatusVerified,
+			wantChecked: []string{"call-health"},
+		},
+		{
 			name:   "partial with useful evidence and generic failed tool",
 			answer: "已检查部分证据，但指标工具超时，结论需要降级。",
 			verification: FinalEvidenceVerification{
@@ -103,6 +134,9 @@ func TestBuildFinalContractStatusVocabulary(t *testing.T) {
 			}
 			if contract.AnswerText != tt.answer {
 				t.Fatalf("answerText = %q, want original answer", contract.AnswerText)
+			}
+			if tt.name == "needs evidence while declared post checks remain outstanding" && contract.Confidence != FinalEvidenceConfidenceMedium {
+				t.Fatalf("confidence = %q, want capped %q while post checks remain", contract.Confidence, FinalEvidenceConfidenceMedium)
 			}
 			for _, want := range tt.wantChecked {
 				if !containsString(contract.CheckedEvidenceRefs, want) {

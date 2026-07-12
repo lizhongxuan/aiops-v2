@@ -1148,6 +1148,42 @@ func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *Tur
 }
 
 func exactApprovalForResumeDecision(session *SessionState, snapshot *TurnSnapshot, req ResumeRequest) (PendingApproval, error) {
+	if snapshot != nil && snapshot.ResumeState == TurnResumeStatePendingEvidence {
+		if req.ResumeState != "" && req.ResumeState != TurnResumeStatePendingEvidence {
+			return PendingApproval{}, fmt.Errorf("turn %q requires pending evidence resume", req.TurnID)
+		}
+		if strings.TrimSpace(req.Decision) == "" {
+			return PendingApproval{}, nil
+		}
+		evidenceID := strings.TrimSpace(req.ApprovalID)
+		if evidenceID == "" {
+			return PendingApproval{}, fmt.Errorf("evidence id is required for decision %q", req.Decision)
+		}
+		evidence := pendingEvidenceByID(session, snapshot, evidenceID)
+		if evidence.ID != evidenceID {
+			return PendingApproval{}, fmt.Errorf("evidence %q is not pending for turn %q", evidenceID, req.TurnID)
+		}
+		toolCall, ok := pendingToolCall(snapshot)
+		if !ok || strings.TrimSpace(evidence.ToolCallID) == "" || evidence.ToolCallID != toolCall.ID {
+			return PendingApproval{}, fmt.Errorf("evidence %q does not match pending tool call", evidenceID)
+		}
+		return PendingApproval{
+			ID:         evidence.ID,
+			SessionID:  evidence.SessionID,
+			TurnID:     evidence.TurnID,
+			Iteration:  evidence.Iteration,
+			ToolName:   evidence.ToolName,
+			ToolCallID: evidence.ToolCallID,
+			Reason:     evidence.Reason,
+			Source:     "pending_evidence",
+			Status:     evidence.Status,
+			CreatedAt:  evidence.CreatedAt,
+			UpdatedAt:  evidence.UpdatedAt,
+		}, nil
+	}
+	if req.ResumeState == TurnResumeStatePendingEvidence {
+		return PendingApproval{}, fmt.Errorf("turn %q is not pending evidence", req.TurnID)
+	}
 	if strings.TrimSpace(req.Decision) == "" {
 		if snapshot != nil && snapshot.ResumeState == TurnResumeStatePendingApproval {
 			return PendingApproval{}, fmt.Errorf("approval decision is required to resume pending approval for turn %q", req.TurnID)
@@ -1170,6 +1206,25 @@ func exactApprovalForResumeDecision(session *SessionState, snapshot *TurnSnapsho
 		return PendingApproval{}, fmt.Errorf("approval %q does not match pending tool call", approvalID)
 	}
 	return approval, nil
+}
+
+func pendingEvidenceByID(session *SessionState, snapshot *TurnSnapshot, evidenceID string) PendingEvidence {
+	target := strings.TrimSpace(evidenceID)
+	if snapshot != nil {
+		for _, evidence := range snapshot.PendingEvidence {
+			if target == "" || evidence.ID == target {
+				return evidence
+			}
+		}
+	}
+	if session != nil {
+		for _, evidence := range session.PendingEvidence {
+			if target == "" || evidence.ID == target {
+				return evidence
+			}
+		}
+	}
+	return PendingEvidence{}
 }
 
 func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approvalID string) PendingApproval {

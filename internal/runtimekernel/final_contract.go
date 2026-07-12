@@ -39,6 +39,17 @@ func BuildFinalContract(answer string, verification FinalEvidenceVerification) F
 	if strings.TrimSpace(confidence) != "" {
 		confidence = normalizeFinalEvidenceConfidence(confidence)
 	}
+	if len(outstandingRequiredPostChecks(state)) > 0 {
+		cap := FinalEvidenceConfidenceMedium
+		if len(state.Checked) == 0 {
+			cap = FinalEvidenceConfidenceLow
+		}
+		if strings.TrimSpace(confidence) == "" {
+			confidence = cap
+		} else {
+			confidence = minFinalEvidenceConfidence(confidence, cap)
+		}
+	}
 	return FinalContract{
 		SchemaVersion:         FinalContractSchemaVersion,
 		Status:                classifyFinalContractStatus(answer, verification),
@@ -95,14 +106,14 @@ func classifyFinalContractStatus(answer string, verification FinalEvidenceVerifi
 		if state.MutationIntentWithoutTarget || finalEvidenceHasReason(verification, "mutation_intent_requires_explicit_target_binding") {
 			return FinalContractStatusBlocked
 		}
-		if len(state.NotChecked) > 0 ||
+		if len(state.NotChecked) > 0 || len(outstandingRequiredPostChecks(state)) > 0 ||
 			finalEvidenceHasReason(verification, "checked_claim_without_checked_evidence") ||
 			finalEvidenceHasReason(verification, "not_checked_item_requires_lower_confidence") {
 			return FinalContractStatusNeedsEvidence
 		}
 		return FinalContractStatusBlocked
 	case FinalEvidenceActionDowngrade:
-		if len(state.NotChecked) > 0 ||
+		if len(state.NotChecked) > 0 || len(outstandingRequiredPostChecks(state)) > 0 ||
 			finalEvidenceHasReason(verification, "checked_claim_without_checked_evidence") ||
 			(len(state.Checked) == 0 && finalAnswerClaimsChecked(answer)) {
 			return FinalContractStatusNeedsEvidence
@@ -112,6 +123,9 @@ func classifyFinalContractStatus(answer string, verification FinalEvidenceVerifi
 		}
 		return FinalContractStatusPartial
 	case FinalEvidenceActionAllow:
+		if len(outstandingRequiredPostChecks(state)) > 0 {
+			return FinalContractStatusNeedsEvidence
+		}
 		if finalEvidenceHasReason(verification, "partial_mutation") {
 			return FinalContractStatusPartial
 		}
@@ -123,6 +137,22 @@ func classifyFinalContractStatus(answer string, verification FinalEvidenceVerifi
 		}
 	}
 	return FinalContractStatusUnknown
+}
+
+func outstandingRequiredPostChecks(state FinalEvidenceState) []string {
+	completed := make(map[string]bool, len(state.PostChecks))
+	for _, check := range state.PostChecks {
+		if normalized := strings.TrimSpace(check); normalized != "" {
+			completed[normalized] = true
+		}
+	}
+	out := make([]string, 0, len(state.RequiredPostChecks))
+	for _, check := range uniqueSortedHarnessStrings(state.RequiredPostChecks) {
+		if !completed[check] {
+			out = append(out, check)
+		}
+	}
+	return out
 }
 
 func finalContractHasApprovalDenied(answer string, verification FinalEvidenceVerification) bool {

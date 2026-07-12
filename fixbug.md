@@ -62,3 +62,12 @@
 - 修复方式：保留 RuntimeKernel 为 turn lifecycle 唯一 writer；由 `SessionManager` 在 session 创建、repository hydrate 和每次 `Update` 时 deep-clone 并原子发布只读 snapshot，删除 session 时同步清理；clone 失败会清除旧 snapshot 并记录显式 publish error，禁止继续返回可能仍为 running 的陈旧状态。AssistantTransport 的 command reprojection、streaming、resume、主 turn 和 host-child fingerprint/projection 全部改读 published snapshot并传播读取错误；入口遇到不支持 snapshot capability 的 session source 立即返回 503，不启动 runtime；故事 runner 的诊断读取也对 publish error 明确失败。
 - 验证结果：确定性 RED 证明 published snapshot 缺失、repository hydrate 不发布快照、无效 `json.RawMessage` clone 失败时会遗留旧 snapshot；public HTTP RED 证明缺少 snapshot capability 时旧入口不会立即 503。实现后运行 session snapshot、公开 AssistantTransport API 和 14 个 story 的 race 与 focused 非 race 测试，均通过且无 race；无 snapshot capability 的请求返回 503 且 runtime 未启动，clone 失败不返回旧 snapshot。
 - 风险与后续：deep-clone 在 session publish checkpoint 增加与 session 大小相关的序列化成本，需要继续观察超长会话；`GetSnapshot` 的只读约束由 API 契约保证，调用方不得修改返回对象。AssistantTransport 已不再使用共享 working pointer，其他仍直接调用 `SessionSource.Get` 的非 transport 读路径可在后续 race audit 中单独治理。
+
+## 2026-07-12 12:30 - 未完成后置校验误标 verified 与证据恢复被审批校验拒绝
+
+- 修复时间：2026-07-12 12:30
+- Bug 现象：变更动作只声明 `requiredPostChecks`、尚未产生 completed `postChecks` 时，FinalContract 仍可能输出 `verified/high`；同时 AppUI 对 `pending_evidence` 的“接受并继续”会携带 evidence ID 与 `Decision=approved`，Runtime 却只在 `PendingApprovals` 中查找该 ID，导致恢复在执行前失败。
+- 根因：`classifyFinalContractStatus` 与置信度计算没有比较 required/completed post-check 集合；`ResumeTurn` 无条件复用普通 approval 的精确匹配函数，没有为 `TurnResumeStatePendingEvidence` 建立独立、fail-closed 的 evidence ID + toolCall ID 绑定。
+- 修复方式：集中计算 outstanding required post-check；只要仍有未完成项，FinalContract 降为 `needs_evidence`，置信度最高为 medium，所有声明项完成后才允许 `verified`。证据恢复按 snapshot resume state 分流，精确校验 evidence ID、turn 与 pending toolCall，错误或陈旧 ID 继续 fail closed；普通 approval 的原有精确匹配保持不变。
+- 验证结果：RED 已复现 `verified/high` 与 `approval "evidence-1" is not pending`；实现后运行 `go test ./internal/runtimekernel -count=1`、相关 race 测试和公开 `RunTurn -> pending evidence -> ResumeTurn -> ToolDispatcher -> FinalContract` 回归链均通过。AssistantTransport `approval_resume` story 的受控 baseline 由 `verified/high` 更新为 `needs_evidence/medium`，且 required/completed post-check 仍分别投影。
+- 风险与后续：当前 `PostChecks` 的 completed 事实仍必须由真实验证执行写入，不能把模型文本或声明本身当作完成；后续新增 verifier 时必须复用同一 typed 集合语义并补充 AssistantTransport 故事。

@@ -719,7 +719,7 @@ func inferFinalEvidenceConfidence(state FinalEvidenceState) string {
 	if len(state.Checked) == 0 {
 		return FinalEvidenceConfidenceLow
 	}
-	if len(state.FailedTools) > 0 || len(state.NotChecked) > 0 {
+	if len(state.FailedTools) > 0 || len(state.NotChecked) > 0 || len(outstandingRequiredPostChecks(state)) > 0 {
 		return FinalEvidenceConfidenceMedium
 	}
 	return FinalEvidenceConfidenceHigh
