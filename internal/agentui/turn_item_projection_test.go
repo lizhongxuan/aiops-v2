@@ -235,6 +235,49 @@ func TestProjectTurnItemsToAgentEventsProjectsApprovalFields(t *testing.T) {
 	}
 }
 
+func TestProjectTurnItemsToAgentEventsProjectsCanonicalApprovalLifecycle(t *testing.T) {
+	items := []agentstate.TurnItem{
+		{
+			ID:     "approval-requested-1",
+			Type:   agentstate.TurnItemTypeApprovalRequested,
+			Status: agentstate.ItemStatusPending,
+			Payload: agentstate.PayloadEnvelope{
+				Summary: "approval requested",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","toolCallId":"call-1","toolName":"restart_service","status":"pending"}`),
+			},
+		},
+		{
+			ID:     "approval-decided-1",
+			Type:   agentstate.TurnItemTypeApprovalDecided,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Summary: "approved",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","toolCallId":"call-1","toolName":"restart_service","decision":"approved","status":"approved"}`),
+			},
+		},
+	}
+
+	events := ProjectTurnItemsToAgentEvents("session-1", "turn-1", items, 0)
+	if len(events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(events))
+	}
+	requested := events[0]
+	if requested.Kind != AgentEventApproval || requested.Phase != AgentEventPhaseRequested || requested.Status != AgentEventStatusQueued || requested.Visibility != AgentEventVisibilityPrimary {
+		t.Fatalf("requested event = %#v, want approval/requested/queued/primary", requested)
+	}
+	decided := events[1]
+	if decided.Kind != AgentEventApproval || decided.Phase != AgentEventPhaseResolved || decided.Status != AgentEventStatusCompleted || decided.Visibility != AgentEventVisibilityPrimary {
+		t.Fatalf("decided event = %#v, want approval/resolved/completed/primary", decided)
+	}
+	var payload ApprovalPayload
+	if err := json.Unmarshal(decided.Payload, &payload); err != nil {
+		t.Fatalf("decided payload decode failed: %v", err)
+	}
+	if payload.ApprovalID != "approval-1" || payload.Decision != "approved" {
+		t.Fatalf("decided payload = %#v, want canonical approval identity and decision", payload)
+	}
+}
+
 func TestProjectTurnItemsToAgentEventsProjectsEvidenceFields(t *testing.T) {
 	data := json.RawMessage(`{
 		"id":"metric-1",

@@ -72,7 +72,7 @@ func eventKindForTurnItem(typ agentstate.TurnItemType) AgentEventKind {
 		return AgentEventTool
 	case agentstate.TurnItemTypePlan:
 		return AgentEventPlan
-	case agentstate.TurnItemTypeApproval:
+	case agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeApprovalRequested, agentstate.TurnItemTypeApprovalDecided:
 		return AgentEventApproval
 	case agentstate.TurnItemTypeEvidence:
 		return AgentEventEvidence
@@ -106,8 +106,10 @@ func eventPhaseForTurnItem(typ agentstate.TurnItemType, status agentstate.ItemSt
 		return AgentEventPhaseCompleted
 	case agentstate.TurnItemTypePlan:
 		return AgentEventPhaseUpdated
-	case agentstate.TurnItemTypeApproval:
+	case agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeApprovalRequested:
 		return AgentEventPhaseRequested
+	case agentstate.TurnItemTypeApprovalDecided:
+		return AgentEventPhaseResolved
 	case agentstate.TurnItemTypeEvidence:
 		return AgentEventPhaseCompleted
 	default:
@@ -139,7 +141,7 @@ func eventStatusForTurnItem(status agentstate.ItemStatus) AgentEventStatus {
 
 func eventVisibilityForTurnItem(typ agentstate.TurnItemType) AgentEventVisibility {
 	switch typ {
-	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypePlan, agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeAssistantMessage:
+	case agentstate.TurnItemTypeToolCall, agentstate.TurnItemTypeToolResult, agentstate.TurnItemTypePlan, agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeApprovalRequested, agentstate.TurnItemTypeApprovalDecided, agentstate.TurnItemTypeAssistantMessage:
 		return AgentEventVisibilityPrimary
 	default:
 		return AgentEventVisibilityDebug
@@ -167,7 +169,7 @@ func payloadForTurnItem(item agentstate.TurnItem) json.RawMessage {
 		payload = assistantPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypePlan:
 		payload = planPayloadFromTurnItem(item)
-	case agentstate.TurnItemTypeApproval:
+	case agentstate.TurnItemTypeApproval, agentstate.TurnItemTypeApprovalRequested, agentstate.TurnItemTypeApprovalDecided:
 		payload = approvalPayloadFromTurnItem(item)
 	case agentstate.TurnItemTypeEvidence:
 		payload = evidencePayloadFromTurnItem(item)
