@@ -1,0 +1,120 @@
+{
+  "name": "multi_host_manager",
+  "sessionType": "workspace",
+  "mode": "execute",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-multi-host",
+      "role": "user",
+      "parts": [{"type": "text", "text": "@host-a @host-b 比较网络情况"}],
+      "metadata": {
+        "enableTool": "inspect_host_a,inspect_host_b,wait_host_tasks",
+        "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}},{\"version\":1,\"tokenId\":\"mention-host-b\",\"sigil\":\"@\",\"display\":\"@host-b\",\"rawText\":\"@host-b\",\"kind\":\"host\",\"path\":\"host://host-b\",\"source\":\"selection\",\"range\":{\"start\":8,\"end\":15},\"payload\":{\"hostId\":\"host-b\"}}]}"
+      }
+    }
+  },
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {"id": "call_host_a", "name": "inspect_host_a", "arguments": {"hostId": "host-a", "check": "network"}},
+        {"id": "call_host_b", "name": "inspect_host_b", "arguments": {"hostId": "host-b", "check": "network"}}
+      ]
+    },
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {"id": "call_wait", "name": "wait_host_tasks", "arguments": {"taskIds": ["call_host_a", "call_host_b"]}}
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "host-a 网络检查成功；host-b 检查超时。当前仅有部分结果，需要稍后重试 host-b。"
+    }
+  ],
+  "toolOutcomes": [
+    {
+      "name": "inspect_host_a",
+      "description": "Inspect network state on host-a.",
+      "permissionScope": "read",
+      "inputSchema": {"type": "object", "required": ["hostId", "check"], "properties": {"hostId": {"type": "string"}, "check": {"type": "string"}}},
+      "content": "{\"hostId\":\"host-a\",\"status\":\"reachable\",\"evidenceRefs\":[\"evidence-host-a\"]}"
+    },
+    {
+      "name": "inspect_host_b",
+      "description": "Inspect network state on host-b.",
+      "permissionScope": "read",
+      "inputSchema": {"type": "object", "required": ["hostId", "check"], "properties": {"hostId": {"type": "string"}, "check": {"type": "string"}}},
+      "error": "timeout waiting for host-b"
+    },
+    {
+      "name": "wait_host_tasks",
+      "description": "Wait for host task aggregation and return partial results.",
+      "permissionScope": "read",
+      "inputSchema": {"type": "object", "required": ["taskIds"], "properties": {"taskIds": {"type": "array", "items": {"type": "string"}}}},
+      "content": "{\"status\":\"partial\",\"completed\":[\"call_host_a\"],\"failed\":[\"call_host_b\"],\"evidenceRefs\":[\"evidence-partial-aggregate\"]}"
+    }
+  ],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {"phase": "commentary", "text": "我会先用 inspect_host_a 核对关键信息，再整理回答。"},
+      {"phase": "commentary", "text": "我会先用 wait_host_tasks 核对关键信息，再整理回答。"},
+      {"phase": "final_answer", "text": "host-a 网络检查成功；host-b 检查超时。当前仅有部分结果，需要稍后重试 host-b。"}
+    ],
+    "modelVisibleTools": ["inspect_host_a", "inspect_host_b", "wait_host_tasks"],
+    "actualTools": [
+      {"id": "call_host_a", "name": "inspect_host_a", "status": "completed"},
+      {"id": "call_host_b", "name": "inspect_host_b", "status": "failed", "failureKind": "timeout"},
+      {"id": "call_wait", "name": "wait_host_tasks", "status": "completed"}
+    ],
+    "approvalLifecycle": [],
+    "target": {"binding": "none", "resourceRefs": ["host:host-a", "host:host-b"]},
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "partial",
+      "confidence": "medium",
+      "checkedEvidenceRefs": ["call_host_a", "call_wait"],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [
+        {"toolName": "inspect_host_b", "failureClass": "timeout", "impact": "证据读取失败，不能作为已检查结果"}
+      ],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "requiredPostChecks": [],
+      "limitations": ["inspect_host_b:timeout"]
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": ["assistant", "tool", "tool", "assistant", "tool"],
+      "processStatuses": ["completed", "completed", "failed", "completed", "completed"],
+      "timelineTypes": ["user_message", "model_call", "assistant_message", "tool_call", "tool_result", "tool_call", "tool_result", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "final_response"],
+      "finalStatus": "partial",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": ["evidence-host-a", "evidence-partial-aggregate"],
+    "traceHashes": {
+      "promptFingerprint": {
+        "compilerVersion": "prompt-fingerprint-v1",
+        "developerHash": "ff3f65d43c157a1da9a9993905fa687d2be99699ffbc29f59c770df9ea50dfb0",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "runtimePolicyHash": "1c3ca8a5a998699f40693b51d70d2c867693d845effbe0ba694f012635ff50f4",
+        "stableHash": "61aeccc00f24d391fdce900714bd3e4da30ed51e6a4dcce04fd3663e1029aeec",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "f7878477bef05e91de10860948f0949ba42cfbf074504cbf34d8d1b62fd61930",
+        "version": "prompt-fingerprint-v1"
+      },
+      "stablePromptHash": "61aeccc00f24d391fdce900714bd3e4da30ed51e6a4dcce04fd3663e1029aeec",
+      "stableToolFingerprint": "c982da1f2948be6ef72089c40dccaf000e53c9e55909de4cdf2b15a81f86467e",
+      "toolSurfaceFingerprints": ["c982da1f2948be6ef72089c40dccaf000e53c9e55909de4cdf2b15a81f86467e"],
+      "toolPolicyHashes": ["54d2971c33ea29e6c54c3be9db8167f56f66fd9a1ceed6ca1997cb1100962a69"],
+      "governanceSnapshot": ""
+    }
+  }
+}

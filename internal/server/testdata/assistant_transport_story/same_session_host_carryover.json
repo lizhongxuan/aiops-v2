@@ -1,0 +1,183 @@
+{
+  "name": "same_session_host_carryover",
+  "sessionType": "host",
+  "mode": "inspect",
+  "requests": [
+    {
+      "command": {
+        "type": "add-message",
+        "message": {
+          "id": "msg-select-host",
+          "role": "user",
+          "hostId": "host-kme",
+          "parts": [
+            {
+              "type": "text",
+              "text": "你好"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "command": {
+        "type": "add-message",
+        "message": {
+          "id": "msg-carryover",
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "继续检查 agent 端口，不重复选择主机"
+            }
+          ],
+          "metadata": {
+            "enableTool": "read_agent_status"
+          }
+        }
+      }
+    }
+  ],
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "content": "你好。"
+    },
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "id": "call_carryover",
+          "name": "read_agent_status",
+          "arguments": {
+            "service": "aiops-host-agent"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "已沿用本会话主机绑定检查 agent，服务 active。"
+    },
+    {
+      "role": "assistant",
+      "content": "已沿用本会话主机绑定检查 agent，服务 active。"
+    }
+  ],
+  "toolOutcomes": [
+    {
+      "name": "read_agent_status",
+      "description": "Read selected host agent status.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "content": "{\"status\":\"active\",\"hostId\":\"host-kme\",\"evidenceRefs\":[\"evidence-host-kme\"]}"
+    }
+  ],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "commentary",
+        "text": "我会先用 read_agent_status 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "final_answer",
+        "text": "已沿用本会话主机绑定检查 agent，服务 active。"
+      }
+    ],
+    "modelVisibleTools": [
+      "read_agent_status"
+    ],
+    "actualTools": [
+      {
+        "id": "call_carryover",
+        "name": "read_agent_status",
+        "status": "completed"
+      }
+    ],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "host",
+      "hostId": "host-kme",
+      "resourceRefs": []
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "verified",
+      "confidence": "high",
+      "checkedEvidenceRefs": [
+        "call_carryover"
+      ],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "limitations": []
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [
+        "assistant",
+        "tool"
+      ],
+      "processStatuses": [
+        "completed",
+        "completed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "final_response"
+      ],
+      "finalStatus": "verified",
+      "pendingApprovalCount": 0,
+      "turnCount": 2
+    },
+    "evidence": [
+      "evidence-host-kme"
+    ],
+    "traceHashes": {
+      "promptFingerprint": {
+        "compilerVersion": "prompt-fingerprint-v1",
+        "developerHash": "bb0bc35c86d3cd10bda4ee007af1c1cf7238cfebf8e708e3f67b9e833e09a03f",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "runtimePolicyHash": "76d2027054e12af208735304df5c3c826208a68f800d836ab6c6c54ea5c43693",
+        "stableHash": "185ef9ab9c2da36dc6457df20be7ac79d6a33f5c71ff42eddc13514f3b6e2674",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "1e19c3f968b12a28fa9184e95918933028196c5608bf8a8eda5cece826bf37de",
+        "version": "prompt-fingerprint-v1"
+      },
+      "stablePromptHash": "185ef9ab9c2da36dc6457df20be7ac79d6a33f5c71ff42eddc13514f3b6e2674",
+      "stableToolFingerprint": "19d755f4d6bb87717d48792168825d026b06ff735c816ac40e0235bfa557a041",
+      "toolSurfaceFingerprints": [
+        "19d755f4d6bb87717d48792168825d026b06ff735c816ac40e0235bfa557a041"
+      ],
+      "toolPolicyHashes": [
+        "f6b1c7166c102073458e2d886105d3d823b21088a2296c5714d2e64c46382d82"
+      ],
+      "governanceSnapshot": ""
+    }
+  }
+}

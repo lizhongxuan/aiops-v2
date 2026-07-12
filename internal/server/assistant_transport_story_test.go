@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -19,9 +22,21 @@ import (
 type assistantTransportStory struct {
 	Name              string                  `json:"name"`
 	Command           map[string]any          `json:"command"`
+	Requests          []storyTransportRequest `json:"requests,omitempty"`
 	ProviderResponses []storyProviderResponse `json:"providerResponses"`
 	ToolOutcomes      []storyToolOutcome      `json:"toolOutcomes"`
+	MaxContextTokens  int                     `json:"maxContextTokens,omitempty"`
+	SessionType       string                  `json:"sessionType,omitempty"`
+	Mode              string                  `json:"mode,omitempty"`
+	ContextMaxTokens  int                     `json:"contextMaxTokens,omitempty"`
+	SeedMessages      []string                `json:"seedMessages,omitempty"`
 	Want              storyTransportAssert    `json:"want"`
+}
+
+type storyTransportRequest struct {
+	Command     map[string]any `json:"command"`
+	Concurrent  bool           `json:"concurrent,omitempty"`
+	WaitForTool string         `json:"waitForTool,omitempty"`
 }
 
 type storyProviderResponse struct {
@@ -37,22 +52,41 @@ type storyToolCall struct {
 }
 
 type storyToolOutcome struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	InputSchema json.RawMessage `json:"inputSchema,omitempty"`
-	Content     string          `json:"content,omitempty"`
-	Error       string          `json:"error,omitempty"`
-	Risk        string          `json:"risk,omitempty"`
-	Mutating    bool            `json:"mutating,omitempty"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description,omitempty"`
+	InputSchema         json.RawMessage    `json:"inputSchema,omitempty"`
+	Content             string             `json:"content,omitempty"`
+	Error               string             `json:"error,omitempty"`
+	Risk                string             `json:"risk,omitempty"`
+	Mutating            bool               `json:"mutating,omitempty"`
+	Approval            *storyToolApproval `json:"approval,omitempty"`
+	PostChecks          []string           `json:"postChecks,omitempty"`
+	PermissionScope     string             `json:"permissionScope,omitempty"`
+	BlockUntilCancelled bool               `json:"blockUntilCancelled,omitempty"`
+}
+
+type storyToolApproval struct {
+	Reason         string `json:"reason,omitempty"`
+	Risk           string `json:"risk,omitempty"`
+	Source         string `json:"source,omitempty"`
+	ExpectedEffect string `json:"expectedEffect,omitempty"`
+	Rollback       string `json:"rollback,omitempty"`
+	Validation     string `json:"validation,omitempty"`
 }
 
 type storyTransportAssert struct {
-	TurnStatus  string            `json:"turnStatus"`
-	Messages    []storyMessage    `json:"messages"`
-	Tools       []storyToolAssert `json:"tools"`
-	Approvals   []string          `json:"approvals"`
-	Evidence    []string          `json:"evidence"`
-	TraceHashes map[string]string `json:"traceHashes"`
+	TurnStatus          string                   `json:"turnStatus"`
+	Lifecycle           string                   `json:"lifecycle"`
+	Messages            []storyMessage           `json:"messages"`
+	ModelVisibleTools   []string                 `json:"modelVisibleTools"`
+	ActualTools         []storyToolAssert        `json:"actualTools"`
+	ApprovalLifecycle   []string                 `json:"approvalLifecycle"`
+	Target              storyTargetAssert        `json:"target"`
+	FinalFacts          storyFinalFacts          `json:"finalFacts"`
+	TransportProjection storyTransportProjection `json:"transportProjection"`
+	Evidence            []string                 `json:"evidence"`
+	TraceHashes         storyTraceHashes         `json:"traceHashes"`
+	ContextFacts        *storyContextFacts       `json:"contextFacts,omitempty"`
 }
 
 type storyMessage struct {
@@ -61,9 +95,56 @@ type storyMessage struct {
 }
 
 type storyToolAssert struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Status string `json:"status"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Status      string `json:"status"`
+	FailureKind string `json:"failureKind,omitempty"`
+}
+
+type storyTargetAssert struct {
+	Binding      string   `json:"binding"`
+	HostID       string   `json:"hostId,omitempty"`
+	ResourceRefs []string `json:"resourceRefs"`
+}
+
+type storyFinalFacts struct {
+	SchemaVersion         string                                 `json:"schemaVersion,omitempty"`
+	Status                string                                 `json:"status,omitempty"`
+	Confidence            string                                 `json:"confidence,omitempty"`
+	CheckedEvidenceRefs   []string                               `json:"checkedEvidenceRefs"`
+	UncheckedRequirements []string                               `json:"uncheckedRequirements"`
+	FailedToolImpacts     []appui.AiopsTransportFailedToolImpact `json:"failedToolImpacts"`
+	ApprovedActions       []string                               `json:"approvedActions"`
+	PerformedActions      []string                               `json:"performedActions"`
+	PostChecks            []string                               `json:"postChecks"`
+	RequiredPostChecks    []string                               `json:"requiredPostChecks"`
+	Limitations           []string                               `json:"limitations"`
+}
+
+type storyTransportProjection struct {
+	SchemaVersion        string   `json:"schemaVersion"`
+	StateStatus          string   `json:"stateStatus"`
+	TurnStatus           string   `json:"turnStatus"`
+	ProcessKinds         []string `json:"processKinds"`
+	ProcessStatuses      []string `json:"processStatuses"`
+	TimelineTypes        []string `json:"timelineTypes"`
+	FinalStatus          string   `json:"finalStatus,omitempty"`
+	PendingApprovalCount int      `json:"pendingApprovalCount"`
+	TurnCount            int      `json:"turnCount"`
+}
+
+type storyTraceHashes struct {
+	PromptFingerprint       map[string]string `json:"promptFingerprint"`
+	StablePromptHash        string            `json:"stablePromptHash"`
+	StableToolFingerprint   string            `json:"stableToolFingerprint"`
+	ToolSurfaceFingerprints []string          `json:"toolSurfaceFingerprints"`
+	ToolPolicyHashes        []string          `json:"toolPolicyHashes"`
+	GovernanceSnapshot      string            `json:"governanceSnapshot"`
+}
+
+type storyContextFacts struct {
+	CompactedSegmentCount int      `json:"compactedSegmentCount"`
+	GovernanceKinds       []string `json:"governanceKinds"`
 }
 
 func TestAssistantTransportStories(t *testing.T) {
@@ -73,6 +154,159 @@ func TestAssistantTransportStories(t *testing.T) {
 			result := runAssistantTransportStory(t, story)
 			assertAssistantTransportStory(t, story, result)
 		})
+	}
+}
+
+func TestAssistantTransportStoryCorpusCoversP0Contract(t *testing.T) {
+	requiredNames := []string{
+		"approval_denied",
+		"approval_resume",
+		"basic_no_tool",
+		"cancelled_running_tool",
+		"context_compaction_resume",
+		"evidence_rca_no_exec",
+		"invalid_arguments",
+		"multi_host_manager",
+		"mutation_missing_rollback",
+		"mutation_missing_target",
+		"partial_mutation_postcheck_failed",
+		"same_session_host_carryover",
+		"single_readonly_tool",
+		"tool_not_found",
+	}
+	requiredWantFields := []string{
+		"turnStatus",
+		"modelVisibleTools",
+		"actualTools",
+		"approvalLifecycle",
+		"target",
+		"finalFacts",
+		"transportProjection",
+		"traceHashes",
+	}
+
+	dir := filepath.Join("testdata", "assistant_transport_story")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("read story corpus: %v", err)
+	}
+	seen := make(map[string]bool, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+		if err != nil {
+			t.Fatalf("read %s: %v", entry.Name(), err)
+		}
+		var fixture map[string]any
+		if err := json.Unmarshal(raw, &fixture); err != nil {
+			t.Fatalf("decode %s: %v", entry.Name(), err)
+		}
+		name, _ := fixture["name"].(string)
+		seen[name] = true
+		want, _ := fixture["want"].(map[string]any)
+		for _, field := range requiredWantFields {
+			if _, ok := want[field]; !ok {
+				t.Errorf("story %q want.%s is required", name, field)
+			}
+		}
+		traceHashes, _ := want["traceHashes"].(map[string]any)
+		promptHashes, _ := traceHashes["promptFingerprint"].(map[string]any)
+		for _, hash := range []string{"compilerVersion", "developerHash", "protocolStateHash", "runtimePolicyHash", "stableHash", "systemHash", "toolRegistryHash", "version"} {
+			if strings.TrimSpace(fmt.Sprint(promptHashes[hash])) == "" {
+				t.Errorf("story %q want.traceHashes.promptFingerprint.%s is required", name, hash)
+			}
+		}
+		for _, hash := range []string{"stablePromptHash", "stableToolFingerprint"} {
+			if strings.TrimSpace(fmt.Sprint(traceHashes[hash])) == "" {
+				t.Errorf("story %q want.traceHashes.%s is required", name, hash)
+			}
+		}
+		for _, hashes := range []string{"toolSurfaceFingerprints", "toolPolicyHashes"} {
+			values, _ := traceHashes[hashes].([]any)
+			if len(values) == 0 {
+				t.Errorf("story %q want.traceHashes.%s must be non-empty", name, hashes)
+			}
+		}
+		if _, ok := traceHashes["governanceSnapshot"]; !ok {
+			t.Errorf("story %q want.traceHashes.governanceSnapshot is required", name)
+		}
+	}
+	for _, name := range requiredNames {
+		if !seen[name] {
+			t.Errorf("required P0 story %q is missing", name)
+		}
+	}
+}
+
+func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
+	stories := map[string]assistantTransportStory{}
+	for _, story := range loadAssistantTransportStories(t) {
+		stories[story.Name] = story
+	}
+
+	approval := stories["approval_resume"]
+	if len(approval.Want.FinalFacts.ApprovedActions) == 0 || len(approval.Want.FinalFacts.PerformedActions) == 0 || len(approval.Want.FinalFacts.RequiredPostChecks) == 0 {
+		t.Errorf("approval_resume must assert non-empty approvedActions, performedActions, and requiredPostChecks from runtime final facts: %#v", approval.Want.FinalFacts)
+	}
+
+	partial := stories["partial_mutation_postcheck_failed"]
+	partialMutation := false
+	for _, outcome := range partial.ToolOutcomes {
+		if outcome.Mutating && outcome.Approval != nil && len(outcome.PostChecks) > 0 {
+			partialMutation = true
+		}
+	}
+	if !partialMutation || len(partial.Want.ActualTools) < 2 || len(partial.Want.FinalFacts.FailedToolImpacts) == 0 || len(partial.Want.FinalFacts.RequiredPostChecks) == 0 {
+		t.Errorf("partial_mutation_postcheck_failed must exercise an approved mutating tool and assert actual failure/post-check facts")
+	}
+
+	multi := stories["multi_host_manager"]
+	hosts := map[string]bool{}
+	toolCalls := 0
+	waitCalls := 0
+	for _, response := range multi.ProviderResponses {
+		for _, call := range response.ToolCalls {
+			toolCalls++
+			if call.Name == "wait_host_tasks" {
+				waitCalls++
+			}
+			var arguments map[string]any
+			if json.Unmarshal(call.Arguments, &arguments) == nil {
+				if hostID := strings.TrimSpace(fmt.Sprint(arguments["hostId"])); hostID != "" {
+					hosts[hostID] = true
+				}
+			}
+		}
+	}
+	if toolCalls < 3 || len(hosts) < 2 || waitCalls == 0 || len(multi.ProviderResponses) < 3 || len(multi.Want.ActualTools) < 3 {
+		t.Errorf("multi_host_manager must dispatch two real host-scoped calls, observe a wait/partial aggregation tool in a later model iteration, and assert all runtime results")
+	}
+}
+
+func TestAssistantTransportStoryRunnerUsesCanonicalLifecycleAndEvidenceFactsOnly(t *testing.T) {
+	raw, err := os.ReadFile("assistant_transport_story_fixture_test.go")
+	if err != nil {
+		t.Fatalf("read story runner: %v", err)
+	}
+	source := string(raw)
+	for _, forbidden := range []string{"observeStoryApprovalDecision("} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("story runner must not synthesize lifecycle from outgoing command: found %q", forbidden)
+		}
+	}
+	evidenceStart := strings.Index(source, "func projectStoryEvidence(")
+	if evidenceStart < 0 {
+		t.Fatal("projectStoryEvidence source start is missing")
+	}
+	evidenceEnd := strings.Index(source[evidenceStart:], "\nfunc projectStoryTraceHashes(")
+	if evidenceEnd < 0 {
+		t.Fatal("projectStoryEvidence source boundaries are missing")
+	}
+	evidenceSource := source[evidenceStart : evidenceStart+evidenceEnd]
+	if strings.Contains(evidenceSource, "Final.CheckedEvidenceRefs") {
+		t.Error("story evidence projection must not self-prove from final checkedEvidenceRefs")
 	}
 }
 

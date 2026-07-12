@@ -24,6 +24,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
@@ -66,8 +67,8 @@ func loadAssistantTransportStories(t *testing.T) []assistantTransportStory {
 		if err := json.Unmarshal(raw, &story); err != nil {
 			t.Fatalf("decode assistant transport story %s: %v", path, err)
 		}
-		if strings.TrimSpace(story.Name) == "" || strings.TrimSpace(fmt.Sprint(story.Command["type"])) == "" {
-			t.Fatalf("assistant transport story %s must define name and command.type", path)
+		if strings.TrimSpace(story.Name) == "" || len(storyTransportRequests(story)) == 0 {
+			t.Fatalf("assistant transport story %s must define name and at least one request command", path)
 		}
 		if len(story.ProviderResponses) == 0 {
 			t.Fatalf("assistant transport story %s must define providerResponses", path)
@@ -85,6 +86,7 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 	t.Helper()
 
 	registry := tooling.NewRegistry()
+	toolControls := newStoryToolControls(story.ToolOutcomes)
 	for _, outcome := range story.ToolOutcomes {
 		outcome := outcome
 		if strings.TrimSpace(outcome.Name) == "" {
@@ -96,22 +98,54 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 		}
 		toolDef := &tooling.StaticTool{
 			Meta: tooling.ToolMetadata{
-				Name:        outcome.Name,
-				Description: firstStoryValue(outcome.Description, "deterministic story tool "+outcome.Name),
-				Origin:      tooling.ToolOriginBuiltin,
-				Layer:       tooling.ToolLayerCore,
-				AlwaysLoad:  true,
-				RiskLevel:   tooling.ToolRiskLevel(firstStoryValue(outcome.Risk, string(tooling.ToolRiskLow))),
-				Mutating:    outcome.Mutating,
+				Name:             outcome.Name,
+				Description:      firstStoryValue(outcome.Description, "deterministic story tool "+outcome.Name),
+				Origin:           tooling.ToolOriginBuiltin,
+				Layer:            tooling.ToolLayerCore,
+				AlwaysLoad:       true,
+				RiskLevel:        tooling.ToolRiskLevel(firstStoryValue(outcome.Risk, string(tooling.ToolRiskLow))),
+				Mutating:         outcome.Mutating,
+				RequiresApproval: outcome.Approval != nil,
+				Discovery:        tooling.ToolDiscoveryMetadata{PermissionScope: outcome.PermissionScope},
 			},
 			InputSchemaData: schemaData,
 			ReadOnlyFunc:    func(json.RawMessage) bool { return !outcome.Mutating },
-			ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+				if outcome.Approval == nil {
+					return tooling.PermissionDecision{Action: tooling.PermissionActionAllow}
+				}
+				return tooling.PermissionDecision{
+					Action: tooling.PermissionActionNeedApproval,
+					Reason: firstStoryValue(outcome.Approval.Reason, "story approval required"),
+					Approval: &tooling.PermissionApprovalPayload{
+						Reason:         firstStoryValue(outcome.Approval.Reason, "story approval required"),
+						Risk:           firstStoryValue(outcome.Approval.Risk, outcome.Risk, string(tooling.ToolRiskHigh)),
+						Source:         firstStoryValue(outcome.Approval.Source, "assistant_transport_story"),
+						ExpectedEffect: outcome.Approval.ExpectedEffect,
+						Rollback:       outcome.Approval.Rollback,
+						Validation:     outcome.Approval.Validation,
+					},
+				}
+			},
+			ExecuteFunc: func(ctx context.Context, _ json.RawMessage) (tooling.ToolResult, error) {
+				toolControls.markStarted(outcome.Name)
+				if outcome.BlockUntilCancelled {
+					<-ctx.Done()
+					return tooling.ToolResult{Error: ctx.Err().Error()}, ctx.Err()
+				}
 				if outcome.Error != "" {
 					return tooling.ToolResult{Error: outcome.Error}, errors.New(outcome.Error)
 				}
 				return tooling.ToolResult{Content: outcome.Content}, nil
 			},
+		}
+		if outcome.Mutating {
+			toolDef.Meta.Layer = tooling.ToolLayerMutation
+			toolDef.Meta.ResourceLocks = []tooling.ToolResourceLockKey{{ResourceType: "story_resource", ResourceID: storySlug(outcome.Name), OperationKind: "mutation"}}
+			toolDef.Meta.Idempotency = tooling.ToolIdempotencyMetadata{Strategy: tooling.ToolIdempotencyStrategyArgumentsHash, PostCheckRefs: append([]string(nil), outcome.PostChecks...)}
+		}
+		if outcome.Approval != nil {
+			toolDef.Meta.Discovery.PermissionScope = "argument_scoped"
 		}
 		if err := registry.Register(toolDef); err != nil {
 			t.Fatalf("register story tool %q: %v", outcome.Name, err)
@@ -120,7 +154,7 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 
 	provider := newStoryProvider(t, story.ProviderResponses)
 	router := modelrouter.NewRouter("story", map[string]modelrouter.ChatModel{"story": provider}, nil)
-	router.SetProviderConfigResolver(storyProviderConfigResolver{})
+	router.SetProviderConfigResolver(storyProviderConfigResolver{maxContextTokens: story.MaxContextTokens})
 	sessions := runtimekernel.NewSessionManager()
 	traceRoot := t.TempDir()
 	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{
@@ -137,38 +171,139 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 
 	sessionID := "story-session-" + storySlug(story.Name)
 	threadID := "story-thread-" + storySlug(story.Name)
+	if strings.TrimSpace(story.SessionType) != "" || strings.TrimSpace(story.Mode) != "" || story.ContextMaxTokens > 0 || len(story.SeedMessages) > 0 {
+		sessionType := runtimekernel.SessionType(firstStoryValue(story.SessionType, string(runtimekernel.SessionTypeWorkspace)))
+		mode := runtimekernel.Mode(firstStoryValue(story.Mode, string(runtimekernel.ModeChat)))
+		session := sessions.GetOrCreate(sessionID, sessionType, mode)
+		if story.ContextMaxTokens > 0 {
+			session.Context.MaxTokens = story.ContextMaxTokens
+		}
+		for index, content := range story.SeedMessages {
+			role := "user"
+			if index%2 == 1 {
+				role = "assistant"
+			}
+			session.Messages = append(session.Messages, runtimekernel.Message{ID: fmt.Sprintf("seed-%d", index), Role: role, Content: content, Timestamp: time.Unix(int64(index+1), 0).UTC()})
+		}
+		sessions.Update(session)
+	}
 	initial := appui.NewAiopsTransportState(sessionID, threadID)
 	initial.UpdatedAt = "2000-01-01T00:00:00Z"
-	payload, err := json.Marshal(map[string]any{
-		"state":    initial,
-		"threadId": threadID,
-		"commands": []map[string]any{story.Command},
-	})
-	if err != nil {
-		t.Fatalf("story %q marshal request: %v", story.Name, err)
-	}
-
 	httpServer := httptest.NewServer(NewHTTPServer(appui.NewServices(kernel, sessions)).Handler())
 	defer httpServer.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
-	defer cancel()
-	result, err := executeAssistantTransportStoryHTTP(
-		ctx,
-		&http.Client{Timeout: assistantTransportStoryClientTimeout},
-		httpServer.URL,
-		initial,
-		payload,
-		sessions,
-	)
-	if err != nil {
-		failAssistantTransportStory(t, story, result, "AssistantTransport request failed: %v", err)
-		return result
-	}
+	result := runAssistantTransportStoryRequests(t, story, httpServer.URL, initial, threadID, sessions, toolControls)
 	if err := provider.assertExhausted(); err != nil {
 		failAssistantTransportStory(t, story, result, "deterministic provider script mismatch: %v", err)
 		return result
 	}
 	return result
+}
+
+func storyTransportRequests(story assistantTransportStory) []storyTransportRequest {
+	if len(story.Requests) > 0 {
+		return append([]storyTransportRequest(nil), story.Requests...)
+	}
+	if len(story.Command) > 0 {
+		return []storyTransportRequest{{Command: story.Command}}
+	}
+	return nil
+}
+
+type storyAsyncHTTPResult struct {
+	result assistantTransportStoryResult
+	err    error
+}
+
+func runAssistantTransportStoryRequests(t *testing.T, story assistantTransportStory, baseURL string, initial appui.AiopsTransportState, threadID string, sessions *runtimekernel.SessionManager, controls *storyToolControls) assistantTransportStoryResult {
+	t.Helper()
+	state := initial
+	combined := assistantTransportStoryResult{State: initial}
+	client := &http.Client{Timeout: assistantTransportStoryClientTimeout}
+	var pending <-chan storyAsyncHTTPResult
+	for _, request := range storyTransportRequests(story) {
+		command := resolveStoryTransportCommand(t, request.Command, state, sessions)
+		requestState := hydrateStoryTransportState(t, state, sessions)
+		payload, err := json.Marshal(map[string]any{"state": requestState, "threadId": threadID, "commands": []map[string]any{command}})
+		if err != nil {
+			failAssistantTransportStory(t, story, combined, "marshal request: %v", err)
+		}
+		if request.Concurrent {
+			ch := make(chan storyAsyncHTTPResult, 1)
+			go func(requestState appui.AiopsTransportState, payload []byte) {
+				ctx, cancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
+				defer cancel()
+				result, err := executeAssistantTransportStoryHTTP(ctx, client, baseURL, requestState, payload, sessions)
+				ch <- storyAsyncHTTPResult{result: result, err: err}
+			}(requestState, payload)
+			pending = ch
+			controls.waitStarted(t, request.WaitForTool)
+			continue
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
+		stepResult, requestErr := executeAssistantTransportStoryHTTP(ctx, client, baseURL, requestState, payload, sessions)
+		cancel()
+		if requestErr != nil {
+			failAssistantTransportStory(t, story, stepResult, "AssistantTransport request failed: %v", requestErr)
+		}
+		for refreshAttempt := 0; refreshAttempt < 3 && storyResultNeedsProjectionRefresh(stepResult); refreshAttempt++ {
+			refreshPayload, marshalErr := json.Marshal(map[string]any{"state": stepResult.State, "threadId": threadID, "commands": []map[string]any{}})
+			if marshalErr != nil {
+				failAssistantTransportStory(t, story, stepResult, "marshal projection refresh: %v", marshalErr)
+			}
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
+			refreshed, refreshErr := executeAssistantTransportStoryHTTP(refreshCtx, client, baseURL, stepResult.State, refreshPayload, sessions)
+			refreshCancel()
+			if refreshErr != nil {
+				failAssistantTransportStory(t, story, refreshed, "AssistantTransport projection refresh failed: %v", refreshErr)
+			}
+			refreshed.RawTransport = stepResult.RawTransport + refreshed.RawTransport
+			stepResult = refreshed
+		}
+		combined = mergeStoryTransportResult(combined, stepResult)
+		state = stepResult.State
+	}
+	if pending != nil {
+		async := <-pending
+		if async.err != nil {
+			failAssistantTransportStory(t, story, async.result, "concurrent AssistantTransport request failed: %v", async.err)
+		}
+		combined.RawTransport = async.result.RawTransport + combined.RawTransport
+	}
+	return combined
+}
+
+func storyResultNeedsProjectionRefresh(result assistantTransportStoryResult) bool {
+	if result.Snapshot == nil || strings.TrimSpace(result.Snapshot.FinalOutput) == "" {
+		return false
+	}
+	turn := result.State.Turns[result.State.CurrentTurnID]
+	if turn.Final == nil {
+		return true
+	}
+	snapshotHasFinalResponse := false
+	for _, item := range result.Snapshot.AgentItems {
+		if string(item.Type) == "final_response" {
+			snapshotHasFinalResponse = true
+			break
+		}
+	}
+	if !snapshotHasFinalResponse {
+		return false
+	}
+	for _, item := range turn.Timeline {
+		if item.Type == "final_response" {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeStoryTransportResult(acc, next assistantTransportStoryResult) assistantTransportStoryResult {
+	raw := acc.RawTransport + next.RawTransport
+	acc = next
+	acc.RawTransport = raw
+	return acc
 }
 
 func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, result assistantTransportStoryResult) {
@@ -180,13 +315,25 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	if !ok {
 		failAssistantTransportStory(t, story, result, "current transport turn %q is missing", result.State.CurrentTurnID)
 	}
+	approvalLifecycle, approvalErr := projectStoryApprovalLifecycle(result.Snapshot)
+	if approvalErr != nil {
+		failAssistantTransportStory(t, story, result, "canonical approval lifecycle is invalid: %v", approvalErr)
+	}
 	got := storyTransportAssert{
-		TurnStatus:  string(turn.Status),
-		Messages:    projectStoryMessages(turn),
-		Tools:       projectStoryTools(turn),
-		Approvals:   projectStoryApprovals(result.State, turn),
-		Evidence:    projectStoryEvidence(turn),
-		TraceHashes: projectStoryTraceHashes(result.Snapshot),
+		TurnStatus:          string(turn.Status),
+		Lifecycle:           string(result.Snapshot.Lifecycle),
+		Messages:            projectStoryMessages(turn),
+		ModelVisibleTools:   projectStoryModelVisibleTools(result.Snapshot),
+		ActualTools:         projectStoryActualTools(result.Snapshot),
+		ApprovalLifecycle:   approvalLifecycle,
+		Target:              projectStoryTarget(result.Snapshot),
+		FinalFacts:          projectStoryFinalFacts(turn),
+		TransportProjection: projectStoryTransportProjection(result.State, turn),
+		Evidence:            projectStoryEvidence(result.Snapshot),
+		TraceHashes:         projectStoryTraceHashes(result.Snapshot),
+	}
+	if story.Want.ContextFacts != nil {
+		got.ContextFacts = projectStoryContextFacts(result.Snapshot)
 	}
 	normalizeStoryAssert(&got)
 	want := story.Want
@@ -201,78 +348,282 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	}
 }
 
+func projectStoryContextFacts(snapshot *runtimekernel.TurnSnapshot) *storyContextFacts {
+	facts := &storyContextFacts{GovernanceKinds: []string{}}
+	if snapshot == nil {
+		return facts
+	}
+	facts.CompactedSegmentCount = len(snapshot.CompactedSegments)
+	for _, event := range snapshot.ContextGovernanceEvents {
+		facts.GovernanceKinds = append(facts.GovernanceKinds, string(event.Layer)+":"+event.Kind)
+	}
+	sort.Strings(facts.GovernanceKinds)
+	return facts
+}
+
 func projectStoryMessages(turn appui.AiopsTransportTurn) []storyMessage {
 	messages := make([]storyMessage, 0, len(turn.Process)+1)
 	for _, block := range turn.Process {
 		if block.Kind == appui.AiopsTransportProcessKindAssistant && strings.TrimSpace(block.Text) != "" {
-			messages = append(messages, storyMessage{Phase: firstStoryValue(block.Phase, "commentary"), Text: block.Text})
+			messages = append(messages, storyMessage{Phase: firstStoryValue(block.Phase, "commentary"), Text: normalizeStoryMessageText(block.Text)})
 		}
 	}
 	if turn.Final != nil && strings.TrimSpace(turn.Final.Text) != "" {
-		messages = append(messages, storyMessage{Phase: "final_answer", Text: turn.Final.Text})
+		messages = append(messages, storyMessage{Phase: "final_answer", Text: normalizeStoryMessageText(turn.Final.Text)})
 	}
 	return messages
 }
 
-func projectStoryTools(turn appui.AiopsTransportTurn) []storyToolAssert {
-	tools := make([]storyToolAssert, 0)
-	for _, block := range turn.Process {
-		if block.ToolCallID == "" {
-			continue
+func normalizeStoryMessageText(value string) string {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "{") {
+		return value
+	}
+	var payload map[string]any
+	if json.Unmarshal([]byte(value), &payload) != nil {
+		return value
+	}
+	if _, ok := payload["approvalId"]; ok {
+		payload["approvalId"] = "<approval-id>"
+	}
+	var encoded bytes.Buffer
+	encoder := json.NewEncoder(&encoded)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(payload); err != nil {
+		return value
+	}
+	return strings.TrimSpace(encoded.String())
+}
+
+func projectStoryModelVisibleTools(snapshot *runtimekernel.TurnSnapshot) []string {
+	seen := map[string]bool{}
+	if snapshot != nil {
+		for _, iteration := range snapshot.Iterations {
+			for _, name := range iteration.VisibleTools {
+				if strings.TrimSpace(name) != "" {
+					seen[name] = true
+				}
+			}
 		}
-		tools = append(tools, storyToolAssert{ID: block.ToolCallID, Name: block.Source, Status: string(block.Status)})
+	}
+	return sortedStoryKeys(seen)
+}
+
+func projectStoryActualTools(snapshot *runtimekernel.TurnSnapshot) []storyToolAssert {
+	tools := make([]storyToolAssert, 0)
+	if snapshot == nil {
+		return tools
+	}
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			tools = append(tools, storyToolAssert{
+				ID:          invocation.ToolCallID,
+				Name:        invocation.ToolName,
+				Status:      string(invocation.Status),
+				FailureKind: invocation.FailureKind,
+			})
+		}
 	}
 	return tools
 }
 
-func projectStoryApprovals(state appui.AiopsTransportState, turn appui.AiopsTransportTurn) []string {
-	seen := map[string]bool{}
-	for id := range state.PendingApprovals {
-		if id != "" {
-			seen[id] = true
-		}
+func projectStoryApprovalLifecycle(snapshot *runtimekernel.TurnSnapshot) ([]string, error) {
+	if snapshot == nil {
+		return []string{}, nil
 	}
-	for _, block := range turn.Process {
-		if block.ApprovalID != "" {
-			seen[block.ApprovalID] = true
-		}
+	type approvalFact struct {
+		ApprovalID string `json:"approvalId"`
+		ToolCallID string `json:"toolCallId"`
+		ToolName   string `json:"toolName"`
+		Status     string `json:"status"`
 	}
-	return sortedStoryKeys(seen)
-}
-
-func projectStoryEvidence(turn appui.AiopsTransportTurn) []string {
-	seen := map[string]bool{}
-	for _, block := range turn.Process {
-		for _, ref := range block.EvidenceRefs {
-			if ref != "" {
-				seen[ref] = true
+	requested := map[string]approvalFact{}
+	approvedCalls := map[string]string{}
+	lifecycle := make([]string, 0)
+	appendFact := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		for _, existing := range lifecycle {
+			if existing == value {
+				return
 			}
 		}
-		if block.Kind == appui.AiopsTransportProcessKindEvidence && block.RawRef != "" {
-			seen[block.RawRef] = true
+		lifecycle = append(lifecycle, value)
+	}
+	for _, item := range snapshot.AgentItems {
+		if item.Type != agentstate.TurnItemTypeApprovalRequested && item.Type != agentstate.TurnItemTypeApprovalDecided {
+			continue
 		}
+		var fact approvalFact
+		if err := json.Unmarshal(item.Payload.Data, &fact); err != nil {
+			return nil, fmt.Errorf("decode %s item %q: %w", item.Type, item.ID, err)
+		}
+		fact.ApprovalID = strings.TrimSpace(fact.ApprovalID)
+		fact.ToolCallID = strings.TrimSpace(fact.ToolCallID)
+		fact.ToolName = strings.TrimSpace(fact.ToolName)
+		fact.Status = strings.ToLower(strings.TrimSpace(fact.Status))
+		if fact.ApprovalID == "" || fact.ToolCallID == "" || fact.ToolName == "" {
+			return nil, fmt.Errorf("%s item %q lacks approval/tool correlation: %#v", item.Type, item.ID, fact)
+		}
+		switch item.Type {
+		case agentstate.TurnItemTypeApprovalRequested:
+			requested[fact.ApprovalID] = fact
+			appendFact(fact.ToolName + ":requested")
+		case agentstate.TurnItemTypeApprovalDecided:
+			request, ok := requested[fact.ApprovalID]
+			if !ok {
+				return nil, fmt.Errorf("approval_decided item %q has no matching approval_requested item for %q", item.ID, fact.ApprovalID)
+			}
+			if request.ToolCallID != fact.ToolCallID || request.ToolName != fact.ToolName {
+				return nil, fmt.Errorf("approval %q correlation changed: requested=%s#%s decided=%s#%s", fact.ApprovalID, request.ToolName, request.ToolCallID, fact.ToolName, fact.ToolCallID)
+			}
+			if fact.Status != "approved" && fact.Status != "denied" {
+				return nil, fmt.Errorf("approval_decided item %q has unsupported status %q", item.ID, fact.Status)
+			}
+			appendFact(fact.ToolName + ":" + fact.Status)
+			if fact.Status == "approved" {
+				approvedCalls[fact.ToolCallID] = fact.ToolName
+			}
+		}
+	}
+	for _, evidence := range snapshot.PendingEvidence {
+		if toolName := strings.TrimSpace(evidence.ToolName); toolName != "" {
+			appendFact(toolName + ":evidence_required")
+		}
+	}
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if invocation.Status == runtimekernel.ToolInvocationCompleted && approvedCalls[invocation.ToolCallID] == invocation.ToolName {
+				appendFact(invocation.ToolName + ":executed")
+			}
+		}
+	}
+	return lifecycle, nil
+}
+
+func projectStoryTarget(snapshot *runtimekernel.TurnSnapshot) storyTargetAssert {
+	target := storyTargetAssert{Binding: "none", ResourceRefs: []string{}}
+	if snapshot == nil {
+		return target
+	}
+	target.Binding = firstStoryValue(snapshot.Metadata["aiops.target.binding"], "none")
+	target.HostID = firstStoryValue(snapshot.Metadata["aiops.target.hostId"], snapshot.Metadata["aiops.target.selectedHostId"], snapshot.Metadata["hostId"])
+	for _, value := range strings.Split(snapshot.Metadata["aiops.target.refs"], ",") {
+		if value = strings.TrimSpace(value); value != "" {
+			target.ResourceRefs = append(target.ResourceRefs, value)
+		}
+	}
+	sort.Strings(target.ResourceRefs)
+	return target
+}
+
+func projectStoryFinalFacts(turn appui.AiopsTransportTurn) storyFinalFacts {
+	facts := storyFinalFacts{}
+	if turn.Final != nil {
+		facts.SchemaVersion = turn.Final.SchemaVersion
+		facts.Status = string(turn.Final.Status)
+		facts.Confidence = turn.Final.Confidence
+		facts.CheckedEvidenceRefs = append([]string(nil), turn.Final.CheckedEvidenceRefs...)
+		facts.UncheckedRequirements = append([]string(nil), turn.Final.UncheckedRequirements...)
+		facts.FailedToolImpacts = append([]appui.AiopsTransportFailedToolImpact(nil), turn.Final.FailedToolImpacts...)
+		facts.ApprovedActions = append([]string(nil), turn.Final.ApprovedActions...)
+		facts.PerformedActions = append([]string(nil), turn.Final.PerformedActions...)
+		facts.PostChecks = append([]string(nil), turn.Final.PostChecks...)
+		facts.RequiredPostChecks = append([]string(nil), turn.Final.RequiredPostChecks...)
+		facts.Limitations = append([]string(nil), turn.Final.Limitations...)
+	}
+	normalizeStoryFinalFacts(&facts)
+	return facts
+}
+
+func projectStoryTransportProjection(state appui.AiopsTransportState, turn appui.AiopsTransportTurn) storyTransportProjection {
+	projection := storyTransportProjection{
+		SchemaVersion:        state.SchemaVersion,
+		StateStatus:          string(state.Status),
+		TurnStatus:           string(turn.Status),
+		ProcessKinds:         []string{},
+		ProcessStatuses:      []string{},
+		TimelineTypes:        []string{},
+		PendingApprovalCount: len(state.PendingApprovals),
+		TurnCount:            len(state.TurnOrder),
+	}
+	for _, block := range turn.Process {
+		projection.ProcessKinds = append(projection.ProcessKinds, string(block.Kind))
+		projection.ProcessStatuses = append(projection.ProcessStatuses, string(block.Status))
+	}
+	for _, item := range turn.Timeline {
+		projection.TimelineTypes = append(projection.TimelineTypes, item.Type)
 	}
 	if turn.Final != nil {
-		for _, ref := range turn.Final.CheckedEvidenceRefs {
-			if ref != "" {
-				seen[ref] = true
+		projection.FinalStatus = string(turn.Final.Status)
+	}
+	return projection
+}
+
+func projectStoryEvidence(snapshot *runtimekernel.TurnSnapshot) []string {
+	seen := map[string]bool{}
+	if snapshot == nil {
+		return sortedStoryKeys(seen)
+	}
+	for _, item := range snapshot.AgentItems {
+		var payload struct {
+			ID           string   `json:"id"`
+			Ref          string   `json:"ref"`
+			EvidenceID   string   `json:"evidenceId"`
+			EvidenceRefs []string `json:"evidenceRefs"`
+		}
+		_ = json.Unmarshal(item.Payload.Data, &payload)
+		switch item.Type {
+		case agentstate.TurnItemTypeEvidence, agentstate.TurnItemTypeEvidenceCollected:
+			if item.Payload.Kind == "user_provided" {
+				seen["user_provided_evidence"] = true
+				continue
+			}
+			for _, ref := range []string{payload.ID, payload.Ref, payload.EvidenceID} {
+				if strings.TrimSpace(ref) != "" {
+					seen[strings.TrimSpace(ref)] = true
+				}
+			}
+		case agentstate.TurnItemTypeToolResult:
+			for _, ref := range payload.EvidenceRefs {
+				if strings.TrimSpace(ref) != "" {
+					seen[strings.TrimSpace(ref)] = true
+				}
 			}
 		}
 	}
 	return sortedStoryKeys(seen)
 }
 
-func projectStoryTraceHashes(snapshot *runtimekernel.TurnSnapshot) map[string]string {
-	if snapshot == nil || len(snapshot.Iterations) == 0 {
-		return map[string]string{}
+func projectStoryTraceHashes(snapshot *runtimekernel.TurnSnapshot) storyTraceHashes {
+	out := storyTraceHashes{PromptFingerprint: map[string]string{}, ToolSurfaceFingerprints: []string{}, ToolPolicyHashes: []string{}}
+	if snapshot == nil {
+		return out
 	}
-	iteration := snapshot.Iterations[len(snapshot.Iterations)-1]
-	out := make(map[string]string, len(iteration.PromptFingerprint))
-	for key, value := range iteration.PromptFingerprint {
-		if strings.TrimSpace(value) != "" {
-			out[key] = value
+	out.StablePromptHash = snapshot.StablePromptHash
+	out.StableToolFingerprint = snapshot.StableToolFingerprint
+	out.GovernanceSnapshot = snapshot.GovernanceSnapshot
+	seenSurface := map[string]bool{}
+	seenPolicy := map[string]bool{}
+	for _, iteration := range snapshot.Iterations {
+		for key, value := range iteration.PromptFingerprint {
+			if strings.TrimSpace(value) != "" {
+				out.PromptFingerprint[key] = value
+			}
+		}
+		if value := strings.TrimSpace(iteration.ToolSurfaceFingerprint); value != "" {
+			seenSurface[value] = true
+		}
+		if iteration.ToolSurfaceSnapshot != nil {
+			if value := strings.TrimSpace(iteration.ToolSurfaceSnapshot.PolicySnapshotHash); value != "" {
+				seenPolicy[value] = true
+			}
 		}
 	}
+	out.ToolSurfaceFingerprints = sortedStoryKeys(seenSurface)
+	out.ToolPolicyHashes = sortedStoryKeys(seenPolicy)
 	return out
 }
 
@@ -280,20 +631,73 @@ func normalizeStoryAssert(assertion *storyTransportAssert) {
 	if assertion.Messages == nil {
 		assertion.Messages = []storyMessage{}
 	}
-	if assertion.Tools == nil {
-		assertion.Tools = []storyToolAssert{}
+	if assertion.ModelVisibleTools == nil {
+		assertion.ModelVisibleTools = []string{}
 	}
-	if assertion.Approvals == nil {
-		assertion.Approvals = []string{}
+	if assertion.ActualTools == nil {
+		assertion.ActualTools = []storyToolAssert{}
+	}
+	if assertion.ApprovalLifecycle == nil {
+		assertion.ApprovalLifecycle = []string{}
 	}
 	if assertion.Evidence == nil {
 		assertion.Evidence = []string{}
 	}
-	if assertion.TraceHashes == nil {
-		assertion.TraceHashes = map[string]string{}
+	if assertion.Target.ResourceRefs == nil {
+		assertion.Target.ResourceRefs = []string{}
 	}
-	sort.Strings(assertion.Approvals)
+	normalizeStoryFinalFacts(&assertion.FinalFacts)
+	if assertion.TransportProjection.ProcessKinds == nil {
+		assertion.TransportProjection.ProcessKinds = []string{}
+	}
+	if assertion.TransportProjection.ProcessStatuses == nil {
+		assertion.TransportProjection.ProcessStatuses = []string{}
+	}
+	if assertion.TransportProjection.TimelineTypes == nil {
+		assertion.TransportProjection.TimelineTypes = []string{}
+	}
+	if assertion.TraceHashes.PromptFingerprint == nil {
+		assertion.TraceHashes.PromptFingerprint = map[string]string{}
+	}
+	if assertion.TraceHashes.ToolSurfaceFingerprints == nil {
+		assertion.TraceHashes.ToolSurfaceFingerprints = []string{}
+	}
+	if assertion.TraceHashes.ToolPolicyHashes == nil {
+		assertion.TraceHashes.ToolPolicyHashes = []string{}
+	}
+	if assertion.ContextFacts != nil && assertion.ContextFacts.GovernanceKinds == nil {
+		assertion.ContextFacts.GovernanceKinds = []string{}
+	}
+	sort.Strings(assertion.ModelVisibleTools)
+	sort.Strings(assertion.ApprovalLifecycle)
 	sort.Strings(assertion.Evidence)
+}
+
+func normalizeStoryFinalFacts(facts *storyFinalFacts) {
+	if facts.CheckedEvidenceRefs == nil {
+		facts.CheckedEvidenceRefs = []string{}
+	}
+	if facts.UncheckedRequirements == nil {
+		facts.UncheckedRequirements = []string{}
+	}
+	if facts.FailedToolImpacts == nil {
+		facts.FailedToolImpacts = []appui.AiopsTransportFailedToolImpact{}
+	}
+	if facts.ApprovedActions == nil {
+		facts.ApprovedActions = []string{}
+	}
+	if facts.PerformedActions == nil {
+		facts.PerformedActions = []string{}
+	}
+	if facts.PostChecks == nil {
+		facts.PostChecks = []string{}
+	}
+	if facts.RequiredPostChecks == nil {
+		facts.RequiredPostChecks = []string{}
+	}
+	if facts.Limitations == nil {
+		facts.Limitations = []string{}
+	}
 }
 
 func executeAssistantTransportStoryHTTP(
@@ -503,7 +907,10 @@ func captureAssistantTransportStoryResult(initial appui.AiopsTransportState, sta
 	if state.SessionID == "" {
 		state.SessionID = initial.SessionID
 	}
-	snapshot := latestAssistantTransportStorySnapshot(sessions, state.SessionID)
+	snapshot, snapshotErr := latestAssistantTransportStorySnapshot(sessions, state.SessionID)
+	if snapshotErr != nil {
+		return assistantTransportStoryResult{State: state, RawTransport: raw}, snapshotErr
+	}
 	traceRef := ""
 	if snapshot != nil && len(snapshot.Iterations) > 0 {
 		traceRef = snapshot.Iterations[len(snapshot.Iterations)-1].ModelInputTraceFile
@@ -521,21 +928,24 @@ func captureAssistantTransportStoryResult(initial appui.AiopsTransportState, sta
 	}, nil
 }
 
-func latestAssistantTransportStorySnapshot(sessions *runtimekernel.SessionManager, sessionID string) *runtimekernel.TurnSnapshot {
+func latestAssistantTransportStorySnapshot(sessions *runtimekernel.SessionManager, sessionID string) (*runtimekernel.TurnSnapshot, error) {
 	if sessions == nil {
-		return nil
+		return nil, nil
 	}
-	session := sessions.Get(sessionID)
+	session, err := sessions.GetSnapshot(sessionID)
+	if err != nil {
+		return nil, err
+	}
 	if session == nil {
-		return nil
+		return nil, nil
 	}
 	if session.CurrentTurn != nil {
-		return session.CurrentTurn
+		return session.CurrentTurn, nil
 	}
 	if len(session.TurnHistory) > 0 {
-		return &session.TurnHistory[len(session.TurnHistory)-1]
+		return &session.TurnHistory[len(session.TurnHistory)-1], nil
 	}
-	return nil
+	return nil, nil
 }
 
 func normalizedAssistantTransportStoryState(state appui.AiopsTransportState) (map[string]any, error) {
@@ -692,10 +1102,14 @@ func (p *storyProvider) assertExhausted() error {
 	return nil
 }
 
-type storyProviderConfigResolver struct{}
+type storyProviderConfigResolver struct{ maxContextTokens int }
 
-func (storyProviderConfigResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelrouter.ProviderConfig, bool) {
-	return modelrouter.ProviderConfig{Provider: "story", Model: "story", MaxContextTokens: runtimekernel.DefaultMaxTokens}, true
+func (r storyProviderConfigResolver) ResolveProviderConfig(modelrouter.AgentKind) (modelrouter.ProviderConfig, bool) {
+	maxTokens := r.maxContextTokens
+	if maxTokens <= 0 {
+		maxTokens = runtimekernel.DefaultMaxTokens
+	}
+	return modelrouter.ProviderConfig{Provider: "story", Model: "story", MaxContextTokens: maxTokens}, true
 }
 
 type storyToolSource struct{ registry *tooling.Registry }
@@ -742,4 +1156,191 @@ func storySlug(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
 	value = strings.NewReplacer(" ", "-", "/", "-", "_", "-").Replace(value)
 	return value
+}
+
+type storyToolControls struct {
+	mu      sync.Mutex
+	started map[string]chan struct{}
+	once    map[string]*sync.Once
+}
+
+func newStoryToolControls(outcomes []storyToolOutcome) *storyToolControls {
+	controls := &storyToolControls{started: map[string]chan struct{}{}, once: map[string]*sync.Once{}}
+	for _, outcome := range outcomes {
+		controls.started[outcome.Name] = make(chan struct{})
+		controls.once[outcome.Name] = &sync.Once{}
+	}
+	return controls
+}
+
+func (c *storyToolControls) markStarted(name string) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	started := c.started[name]
+	once := c.once[name]
+	c.mu.Unlock()
+	if started != nil && once != nil {
+		once.Do(func() { close(started) })
+	}
+}
+
+func (c *storyToolControls) waitStarted(t *testing.T, name string) {
+	t.Helper()
+	if strings.TrimSpace(name) == "" {
+		return
+	}
+	c.mu.Lock()
+	started := c.started[name]
+	c.mu.Unlock()
+	if started == nil {
+		t.Fatalf("story waitForTool %q has no matching tool outcome", name)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("story tool %q did not start", name)
+	}
+}
+
+func hydrateStoryTransportState(t *testing.T, state appui.AiopsTransportState, sessions *runtimekernel.SessionManager) appui.AiopsTransportState {
+	t.Helper()
+	next := state
+	if sessions == nil {
+		return next
+	}
+	session := mustAssistantTransportStorySessionSnapshot(t, sessions, next.SessionID)
+	if session == nil || session.CurrentTurn == nil {
+		return next
+	}
+	next.CurrentTurnID = session.CurrentTurn.ID
+	if session.CurrentTurn.Lifecycle == runtimekernel.TurnLifecycleRunning {
+		next.Status = appui.AiopsTransportStatusWorking
+	}
+	return next
+}
+
+func resolveStoryTransportCommand(t *testing.T, command map[string]any, state appui.AiopsTransportState, sessions *runtimekernel.SessionManager) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(command)
+	if err != nil {
+		t.Fatalf("marshal story command: %v", err)
+	}
+	var cloned map[string]any
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		t.Fatalf("clone story command: %v", err)
+	}
+	approvalID := ""
+	if storyTransportValueContains(cloned, "<pending-approval>") {
+		approvalID = resolveStoryPendingApprovalID(t, state, sessions)
+	}
+	turnID := state.CurrentTurnID
+	if sessions != nil {
+		if session := mustAssistantTransportStorySessionSnapshot(t, sessions, state.SessionID); session != nil && session.CurrentTurn != nil {
+			turnID = session.CurrentTurn.ID
+		}
+	}
+	resolved := resolveStoryTransportValue(cloned, map[string]string{"<pending-approval>": approvalID, "<current-turn>": turnID})
+	return resolved.(map[string]any)
+}
+
+func storyTransportValueContains(value any, target string) bool {
+	switch typed := value.(type) {
+	case string:
+		return typed == target
+	case map[string]any:
+		for _, child := range typed {
+			if storyTransportValueContains(child, target) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range typed {
+			if storyTransportValueContains(child, target) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func resolveStoryPendingApprovalID(t *testing.T, state appui.AiopsTransportState, sessions *runtimekernel.SessionManager) string {
+	t.Helper()
+	if sessions == nil {
+		t.Fatal("story command uses <pending-approval> without a runtime session manager")
+	}
+	session := mustAssistantTransportStorySessionSnapshot(t, sessions, state.SessionID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("story command uses <pending-approval> without a published current turn")
+	}
+	if len(session.CurrentTurn.PendingApprovals) != 1 {
+		t.Fatalf("story command requires exactly one canonical pending approval, got %d", len(session.CurrentTurn.PendingApprovals))
+	}
+	pending := session.CurrentTurn.PendingApprovals[0]
+	if strings.TrimSpace(pending.ID) == "" || strings.TrimSpace(pending.ToolCallID) == "" || strings.TrimSpace(pending.ToolName) == "" {
+		t.Fatalf("canonical pending approval lacks correlation facts: %#v", pending)
+	}
+	transportPending, ok := state.PendingApprovals[pending.ID]
+	if !ok {
+		t.Fatalf("transport pending approvals do not contain canonical approval %q", pending.ID)
+	}
+	if transportPending.TurnID != "" && transportPending.TurnID != pending.TurnID {
+		t.Fatalf("approval %q turn correlation differs: transport=%q runtime=%q", pending.ID, transportPending.TurnID, pending.TurnID)
+	}
+	matchedItem := false
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type != agentstate.TurnItemTypeApprovalRequested {
+			continue
+		}
+		var fact struct {
+			ApprovalID string `json:"approvalId"`
+			ToolCallID string `json:"toolCallId"`
+			ToolName   string `json:"toolName"`
+		}
+		if err := json.Unmarshal(item.Payload.Data, &fact); err != nil {
+			t.Fatalf("decode canonical approval_requested item %q: %v", item.ID, err)
+		}
+		if fact.ApprovalID == pending.ID {
+			if fact.ToolCallID != pending.ToolCallID || fact.ToolName != pending.ToolName {
+				t.Fatalf("approval %q item correlation differs: item=%s#%s pending=%s#%s", pending.ID, fact.ToolName, fact.ToolCallID, pending.ToolName, pending.ToolCallID)
+			}
+			matchedItem = true
+		}
+	}
+	if !matchedItem {
+		t.Fatalf("canonical approval_requested item missing for pending approval %q", pending.ID)
+	}
+	return pending.ID
+}
+
+func resolveStoryTransportValue(value any, replacements map[string]string) any {
+	switch typed := value.(type) {
+	case string:
+		if replacement, ok := replacements[typed]; ok {
+			return replacement
+		}
+		return typed
+	case map[string]any:
+		for key, child := range typed {
+			typed[key] = resolveStoryTransportValue(child, replacements)
+		}
+	case []any:
+		for index := range typed {
+			typed[index] = resolveStoryTransportValue(typed[index], replacements)
+		}
+	}
+	return value
+}
+
+func mustAssistantTransportStorySessionSnapshot(t *testing.T, sessions *runtimekernel.SessionManager, sessionID string) *runtimekernel.SessionState {
+	t.Helper()
+	if sessions == nil {
+		return nil
+	}
+	session, err := sessions.GetSnapshot(sessionID)
+	if err != nil {
+		t.Fatalf("get published session snapshot %q: %v", sessionID, err)
+	}
+	return session
 }

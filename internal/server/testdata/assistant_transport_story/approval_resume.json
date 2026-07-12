@@ -1,0 +1,241 @@
+{
+  "name": "approval_resume",
+  "sessionType": "host",
+  "mode": "execute",
+  "requests": [
+    {
+      "command": {
+        "type": "add-message",
+        "message": {
+          "id": "msg-approval-resume",
+          "role": "user",
+          "parts": [
+            {
+              "type": "text",
+              "text": "@host-a 重启 demo 服务"
+            }
+          ],
+          "metadata": {
+            "enableTool": "read_service_status,restart_service",
+            "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
+          }
+        }
+      }
+    },
+    {
+      "command": {
+        "type": "aiops.approval-decision",
+        "approvalId": "<pending-approval>",
+        "decision": "accept"
+      }
+    }
+  ],
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "id": "call_status",
+          "name": "read_service_status",
+          "arguments": {
+            "service": "demo"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "id": "call_restart",
+          "name": "restart_service",
+          "arguments": {
+            "service": "demo"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "demo 服务已重启并通过检查。"
+    }
+  ],
+  "toolOutcomes": [
+    {
+      "name": "read_service_status",
+      "description": "Read service status.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "content": "{\"status\":\"active\",\"evidenceRefs\":[\"evidence-prechange\"]}"
+    },
+    {
+      "name": "restart_service",
+      "description": "Restart a service.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "content": "demo restarted",
+      "risk": "high",
+      "mutating": true,
+      "postChecks": [
+        "service_health"
+      ],
+      "approval": {
+        "reason": "restart requires approval",
+        "risk": "high",
+        "source": "story",
+        "expectedEffect": "restart demo",
+        "rollback": "restart previous process",
+        "validation": "service_health"
+      }
+    }
+  ],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "commentary",
+        "text": "我会先用 read_service_status 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "commentary",
+        "text": "我会先用 restart_service 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "final_answer",
+        "text": "demo 服务已重启并通过检查。"
+      }
+    ],
+    "modelVisibleTools": [
+      "read_service_status",
+      "restart_service"
+    ],
+    "actualTools": [
+      {
+        "id": "call_status",
+        "name": "read_service_status",
+        "status": "completed"
+      },
+      {
+        "id": "call_restart",
+        "name": "restart_service",
+        "status": "completed"
+      }
+    ],
+    "approvalLifecycle": [
+      "restart_service:approved",
+      "restart_service:executed",
+      "restart_service:requested"
+    ],
+    "target": {
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "verified",
+      "confidence": "high",
+      "checkedEvidenceRefs": [
+        "call_restart",
+        "call_status"
+      ],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [
+        "restart_service#call_restart"
+      ],
+      "performedActions": [
+        "restart_service#call_restart"
+      ],
+      "postChecks": [],
+      "requiredPostChecks": [
+        "service_health"
+      ],
+      "limitations": []
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "approval"
+      ],
+      "processStatuses": [
+        "completed",
+        "completed",
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "approval_requested",
+        "approval_decided",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "final_response"
+      ],
+      "finalStatus": "verified",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [
+      "evidence-prechange"
+    ],
+    "traceHashes": {
+      "promptFingerprint": {
+        "compilerVersion": "prompt-fingerprint-v1",
+        "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "runtimePolicyHash": "76a38fb47c72bc07eea2d2d20c33a3b5a6cf3833a26c3f5a6edcdf43254bbea7",
+        "stableHash": "e0744e8d7e4481e470dc32a1bb71adc519fd1cae2caedeff4540919ea505c444",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "c9edf5fbe93abd831ab6881d4ff9ca21ae4cef643240ea78ee3c6e8fa2d25a53",
+        "version": "prompt-fingerprint-v1"
+      },
+      "stablePromptHash": "e0744e8d7e4481e470dc32a1bb71adc519fd1cae2caedeff4540919ea505c444",
+      "stableToolFingerprint": "6c7b8c5eabfa8531f88c63ae2dc3bc151382238859ed68b4a202390a35532d90",
+      "toolSurfaceFingerprints": [
+        "6c7b8c5eabfa8531f88c63ae2dc3bc151382238859ed68b4a202390a35532d90"
+      ],
+      "toolPolicyHashes": [
+        "03d41d3297dfcf88456116a2b1f7699fd7e92726170dcbc53afad7f68b33203b"
+      ],
+      "governanceSnapshot": ""
+    }
+  }
+}
