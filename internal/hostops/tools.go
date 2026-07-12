@@ -14,6 +14,8 @@ const (
 	ToolSendHostAgentMessage = "send_host_agent_message"
 	ToolWaitHostAgents       = "wait_host_agents"
 	ToolStopHostAgent        = "stop_host_agent"
+
+	capabilityKindOrchestrationControl = "orchestration_control"
 )
 
 func NewManagerTools(orchestrator *Orchestrator) []tooling.Tool {
@@ -59,6 +61,10 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			RecordEvidence:   true,
 			DedupeEligible:   true,
 			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"spawn_child_agents"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_mission",
 				ResourceID:    "missionId",
@@ -101,6 +107,10 @@ func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
 			RecordEvidence:   true,
 			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"send_message"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",
@@ -141,6 +151,11 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			RiskLevel:      tooling.ToolRiskLow,
 			FailurePolicy:  tooling.ToolFailurePolicyFeedBackToModel,
 			RecordEvidence: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:  "read",
+				OperationKinds:  []string{"read"},
+				PermissionScope: "read",
+			},
 		},
 		Visibility:      managerToolVisibility(),
 		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId"],"properties":{"missionId":{"type":"string"}}}`),
@@ -174,6 +189,10 @@ func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
 			RecordEvidence:   true,
 			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"stop_child_agent"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",

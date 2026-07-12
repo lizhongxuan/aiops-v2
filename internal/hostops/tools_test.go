@@ -12,6 +12,11 @@ import (
 
 func TestManagerLifecycleToolsUseCoreNonMutationGovernance(t *testing.T) {
 	tools := managerToolsByName(NewManagerTools(nil))
+	expectedOperation := map[string]string{
+		ToolSpawnHostAgent:       "spawn_child_agents",
+		ToolSendHostAgentMessage: "send_message",
+		ToolStopHostAgent:        "stop_child_agent",
+	}
 	for _, name := range []string{ToolSpawnHostAgent, ToolSendHostAgentMessage, ToolStopHostAgent} {
 		tool := tools[name]
 		if tool == nil {
@@ -30,9 +35,37 @@ func TestManagerLifecycleToolsUseCoreNonMutationGovernance(t *testing.T) {
 		if meta.RequiresApproval {
 			t.Errorf("%s RequiresApproval = true, want false", name)
 		}
+		discovery := meta.EffectiveDiscovery()
+		if discovery.CapabilityKind != "orchestration_control" {
+			t.Errorf("%s CapabilityKind = %q, want orchestration_control", name, discovery.CapabilityKind)
+		}
+		if len(discovery.OperationKinds) != 1 || discovery.OperationKinds[0] != expectedOperation[name] {
+			t.Errorf("%s OperationKinds = %v, want [%s]", name, discovery.OperationKinds, expectedOperation[name])
+		}
 		if tool.IsReadOnly(nil) {
 			t.Errorf("%s IsReadOnly = true, want false because it changes child lifecycle state", name)
 		}
+	}
+}
+
+func TestWaitManagerToolRemainsTypedReadCapability(t *testing.T) {
+	tool := managerToolsByName(NewManagerTools(nil))[ToolWaitHostAgents]
+	if tool == nil {
+		t.Fatal("wait manager tool is missing")
+	}
+	meta := tool.Metadata()
+	discovery := meta.EffectiveDiscovery()
+	if meta.Mutating || meta.RequiresApproval || meta.RiskLevel != tooling.ToolRiskLow {
+		t.Fatalf("wait governance = mutating:%t approval:%t risk:%q, want non-mutating low-risk without approval", meta.Mutating, meta.RequiresApproval, meta.RiskLevel)
+	}
+	if discovery.CapabilityKind != "read" || discovery.PermissionScope != "read" {
+		t.Fatalf("wait discovery = capability:%q permission:%q, want read/read", discovery.CapabilityKind, discovery.PermissionScope)
+	}
+	if len(discovery.OperationKinds) != 1 || discovery.OperationKinds[0] != "read" {
+		t.Fatalf("wait OperationKinds = %v, want [read]", discovery.OperationKinds)
+	}
+	if !tool.IsReadOnly(nil) {
+		t.Fatal("wait IsReadOnly = false, want true")
 	}
 }
 

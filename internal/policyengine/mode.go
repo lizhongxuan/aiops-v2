@@ -8,7 +8,10 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-const defaultPolicyInlineBudgetBytes = 4096
+const (
+	defaultPolicyInlineBudgetBytes     = 4096
+	orchestrationControlCapabilityKind = "orchestration_control"
+)
 
 // ---------------------------------------------------------------------------
 // Tool classification helpers — pattern-based tool name classification.
@@ -120,6 +123,21 @@ func hasExplicitReadOnlyMetadata(meta tooling.ToolMetadata) bool {
 		discovery.PermissionScope != "" ||
 		len(discovery.OperationKinds) > 0 ||
 		strings.TrimSpace(discovery.CapabilityKind) != ""
+}
+
+func isOrchestrationControl(meta tooling.ToolMetadata) bool {
+	return meta.EffectiveDiscovery().CapabilityKind == orchestrationControlCapabilityKind
+}
+
+func planOrchestrationControlDecision(input PolicyInput) PolicyDecision {
+	governance := input.Tool.EffectiveGovernance(defaultPolicyInlineBudgetBytes)
+	if governance.Mutating || governance.RequiresApproval || governance.RiskLevel != tooling.ToolRiskLow {
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: "plan mode only allows non-mutating low-risk orchestration controls that do not require approval",
+		}
+	}
+	return PolicyDecision{Action: PolicyActionAllow}
 }
 
 func normalizedReadOnlyName(name string) string {
@@ -241,6 +259,12 @@ func (p *ChatModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 			},
 		}
 	}
+	if isOrchestrationControl(input.Tool) {
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: "chat mode does not allow orchestration controls",
+		}
+	}
 	if decision, ok := safetyDecision(input, false, "chat"); ok {
 		return decision
 	}
@@ -305,6 +329,12 @@ func (p *InspectModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 		return PolicyDecision{
 			Action: PolicyActionDeny,
 			Reason: "inspect mode only allows read-only terminal commands",
+		}
+	}
+	if isOrchestrationControl(input.Tool) {
+		return PolicyDecision{
+			Action: PolicyActionDeny,
+			Reason: "inspect mode does not allow orchestration controls",
 		}
 	}
 	if decision, ok := safetyDecision(input, true, "inspect"); ok {
@@ -373,6 +403,9 @@ func (p *PlanModePolicy) CheckTool(input PolicyInput) PolicyDecision {
 			Action: PolicyActionDeny,
 			Reason: "plan mode only allows read-only terminal commands",
 		}
+	}
+	if isOrchestrationControl(input.Tool) {
+		return planOrchestrationControlDecision(input)
 	}
 	if isPlanTool(toolName) {
 		return PolicyDecision{Action: PolicyActionAllow}

@@ -205,6 +205,82 @@ func TestPlanModePolicy_AllowsReadOnlySearchAndPlanArtifactTools(t *testing.T) {
 	}
 }
 
+func TestPlanModePolicyAllowsTypedOrchestrationControlIndependentOfToolName(t *testing.T) {
+	p := &PlanModePolicy{}
+	for _, name := range []string{"coordinate_children", "file_write"} {
+		input := PolicyInput{
+			ToolName: name,
+			Tool: tooling.ToolMetadata{
+				Name:      name,
+				RiskLevel: tooling.ToolRiskLow,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "orchestration_control",
+					OperationKinds: []string{"spawn_child_agents"},
+				},
+			},
+			Mode: ModePlan,
+		}
+		assertDecision(t, "plan/orchestration_control/"+name, p.CheckTool(input), PolicyActionAllow)
+	}
+}
+
+func TestPlanModePolicyFailsClosedForUnsafeOrchestrationControlGovernance(t *testing.T) {
+	p := &PlanModePolicy{}
+	tests := []struct {
+		name             string
+		mutating         bool
+		requiresApproval bool
+		risk             tooling.ToolRiskLevel
+	}{
+		{name: "mutating", mutating: true, risk: tooling.ToolRiskLow},
+		{name: "approval_required", requiresApproval: true, risk: tooling.ToolRiskLow},
+		{name: "medium_risk", risk: tooling.ToolRiskMedium},
+		{name: "high_risk", risk: tooling.ToolRiskHigh},
+	}
+	for _, tc := range tests {
+		input := PolicyInput{
+			ToolName: "coordinate_children",
+			Tool: tooling.ToolMetadata{
+				Name:             "coordinate_children",
+				Mutating:         tc.mutating,
+				RequiresApproval: tc.requiresApproval,
+				RiskLevel:        tc.risk,
+				Discovery: tooling.ToolDiscoveryMetadata{
+					CapabilityKind: "orchestration_control",
+					OperationKinds: []string{"send_message"},
+				},
+			},
+			Mode: ModePlan,
+		}
+		assertDecision(t, "plan/orchestration_control/"+tc.name, p.CheckTool(input), PolicyActionDeny)
+	}
+}
+
+func TestChatAndInspectModesDoNotAllowOrchestrationControlCapability(t *testing.T) {
+	input := PolicyInput{
+		ToolName: "read_orchestration_control",
+		Tool: tooling.ToolMetadata{
+			Name:      "read_orchestration_control",
+			RiskLevel: tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: "orchestration_control",
+				OperationKinds: []string{"send_message"},
+			},
+		},
+	}
+	for _, tc := range []struct {
+		name   string
+		mode   Mode
+		policy ModePolicy
+	}{
+		{name: "chat", mode: ModeChat, policy: &ChatModePolicy{}},
+		{name: "inspect", mode: ModeInspect, policy: &InspectModePolicy{}},
+	} {
+		input.Mode = tc.mode
+		assertDecision(t, tc.name+"/orchestration_control", tc.policy.CheckTool(input), PolicyActionDeny)
+	}
+}
+
 func TestPlanModeOnlyAllowsReadOnlyAndPlanArtifactTools(t *testing.T) {
 	p := &PlanModePolicy{}
 	for _, name := range []string{"draft_proposal", "propose_changes", "schedule_task", "preview_changes", "plan_database_update", "draft_config_write", "propose_restart"} {
