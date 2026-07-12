@@ -458,6 +458,15 @@ func (o *Orchestrator) WaitChildren(ctx context.Context, missionID string) ([]Ho
 	return o.store.ListChildAgents(ctx, strings.TrimSpace(missionID))
 }
 
+// MissionSnapshot returns the mission store's canonical read-only view for tool
+// result projection. MissionStore implementations must return detached values.
+func (o *Orchestrator) MissionSnapshot(ctx context.Context, missionID string) (HostOperationMission, error) {
+	if o == nil || o.store == nil {
+		return HostOperationMission{}, ErrMissionNotFound
+	}
+	return o.store.GetMission(ctx, strings.TrimSpace(missionID))
+}
+
 func (o *Orchestrator) appendTranscript(ctx context.Context, childAgentID string, item TranscriptItem) {
 	if o == nil || o.transcript == nil || strings.TrimSpace(childAgentID) == "" {
 		return

@@ -166,6 +166,7 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	mission := HostOperationMission{
 		ID:             "mission-tools",
 		ManagerAgentID: "manager-tools",
+		Status:         HostMissionStatusSpawningChildren,
 		PlanRequired:   true,
 		PlanAccepted:   true,
 		Mentions: []HostMention{{
@@ -189,7 +190,13 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	var spawnPayload struct {
 		SchemaVersion string `json:"schemaVersion"`
-		Children      []struct {
+		Mission       struct {
+			ID           string `json:"id"`
+			PlanRequired bool   `json:"planRequired"`
+			PlanAccepted bool   `json:"planAccepted"`
+			Status       string `json:"status"`
+		} `json:"mission"`
+		Children []struct {
 			ChildAgentID   string `json:"childAgentId"`
 			TargetRef      string `json:"targetRef"`
 			Status         string `json:"status"`
@@ -202,6 +209,9 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	if spawnPayload.SchemaVersion != "aiops.hostops.child/v1" || len(spawnPayload.Children) != 1 {
 		t.Fatalf("spawn payload = %#v, want child schema with one child", spawnPayload)
 	}
+	if spawnPayload.Mission.ID != mission.ID || !spawnPayload.Mission.PlanRequired || !spawnPayload.Mission.PlanAccepted || spawnPayload.Mission.Status != string(HostMissionStatusSpawningChildren) {
+		t.Fatalf("spawn mission = %#v, want canonical accepted mission summary", spawnPayload.Mission)
+	}
 	child := spawnPayload.Children[0]
 	if child.ChildAgentID == "" || child.TargetRef != "host-a" || !child.NoHostMutation {
 		t.Fatalf("spawn child = %#v, want targetRef and noHostMutation guarantee", child)
@@ -213,7 +223,13 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	var waitPayload struct {
 		SchemaVersion string `json:"schemaVersion"`
-		Children      []struct {
+		Mission       struct {
+			ID           string `json:"id"`
+			PlanRequired bool   `json:"planRequired"`
+			PlanAccepted bool   `json:"planAccepted"`
+			Status       string `json:"status"`
+		} `json:"mission"`
+		Children []struct {
 			ChildAgentID string   `json:"childAgentId"`
 			TargetRef    string   `json:"targetRef"`
 			Status       string   `json:"status"`
@@ -226,6 +242,9 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	if waitPayload.SchemaVersion != "aiops.hostops.wait/v1" || len(waitPayload.Children) != 1 {
 		t.Fatalf("wait payload = %#v, want wait schema with one child", waitPayload)
+	}
+	if waitPayload.Mission.ID != mission.ID || !waitPayload.Mission.PlanRequired || !waitPayload.Mission.PlanAccepted || waitPayload.Mission.Status != string(HostMissionStatusSpawningChildren) {
+		t.Fatalf("wait mission = %#v, want canonical accepted mission summary", waitPayload.Mission)
 	}
 	if waitPayload.Children[0].ChildAgentID == "" || waitPayload.Children[0].TargetRef != "host-a" {
 		t.Fatalf("wait child = %#v, want child result contract", waitPayload.Children[0])

@@ -47,8 +47,9 @@ type assistantTransportStoryResult struct {
 }
 
 type storyHostManagerProof struct {
-	MissionID string
-	Children  map[string]storyHostChildProof
+	MissionID    string
+	PlanAccepted bool
+	Children     map[string]storyHostChildProof
 }
 
 type storyHostChildProof struct {
@@ -180,8 +181,8 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 	router.SetProviderConfigResolver(storyProviderConfigResolver{maxContextTokens: story.MaxContextTokens})
 	compiler := promptcompiler.NewCompiler()
 	policy := &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies(), CompletionPolicy: &policyengine.DefaultCompletionEvaluator{}}
-	hostManagerRuntime := configureStoryHostManager(t, story, sessionID, threadID, registry, provider, router, compiler, policy)
 	sessions := runtimekernel.NewSessionManager()
+	hostManagerRuntime := configureStoryHostManager(t, story, sessionID, threadID, registry, provider, router, compiler, policy, sessions)
 	traceRoot := t.TempDir()
 	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{
 		ToolSource:  storyToolSource{registry: registry},
@@ -234,6 +235,7 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 }
 
 type storyHostManagerRuntime struct {
+	mu        sync.RWMutex
 	missionID string
 	store     *hostops.InMemoryMissionStore
 	manager   *agentmgr.AgentManager
@@ -251,13 +253,14 @@ func configureStoryHostManager(
 	router *modelrouter.Router,
 	compiler promptcompiler.Compiler,
 	policy *policyengine.Engine,
+	sessions *runtimekernel.SessionManager,
 ) *storyHostManagerRuntime {
 	t.Helper()
 	if story.HostManager == nil {
 		return nil
 	}
-	missionID := strings.TrimSpace(story.HostManager.MissionID)
-	if missionID == "" || len(story.HostManager.Children) < 2 {
+	missionPlaceholder := strings.TrimSpace(story.HostManager.MissionID)
+	if missionPlaceholder == "" || len(story.HostManager.Children) < 2 {
 		t.Fatalf("story %q hostManager requires missionId and at least two children", story.Name)
 	}
 
@@ -290,29 +293,6 @@ func configureStoryHostManager(
 		})
 	}
 
-	mission := hostops.HostOperationMission{
-		ID:             missionID,
-		SessionID:      sessionID,
-		ThreadID:       threadID,
-		UserTurnID:     "story-user-turn",
-		ManagerAgentID: "story-host-manager",
-		Status:         hostops.HostMissionStatusRunning,
-		PlanRequired:   true,
-		PlanAccepted:   true,
-		Mentions:       mentions,
-	}
-	plan, err := hostops.BuildPlanForMission(mission)
-	if err != nil {
-		t.Fatalf("story %q build host manager plan: %v", story.Name, err)
-	}
-	plan.Status = hostops.PlanStatusAccepted
-	acceptedAt := time.Unix(1, 0).UTC()
-	plan.AcceptedAt = &acceptedAt
-	mission.Plan = plan
-	if err := missionStore.SaveMission(context.Background(), mission); err != nil {
-		t.Fatalf("story %q seed host manager mission: %v", story.Name, err)
-	}
-
 	childRunner := storyHostChildRunner{scenarios: scenarios}
 	factory := agentmgr.NewAgentFactory(registry, compiler, router, policy)
 	manager := agentmgr.NewAgentManager(factory, childRunner, nil)
@@ -324,19 +304,102 @@ func configureStoryHostManager(
 		}
 	}
 
+	runtime := &storyHostManagerRuntime{
+		store:   missionStore,
+		manager: manager,
+		hosts:   newStoryHostRepository(hostRecords),
+		service: appui.NewHostOpsService(missionStore, transcripts, orchestrator),
+	}
 	provider.beforeResponse = func(ctx context.Context, responseIndex int) error {
-		if responseIndex != 1 {
+		switch responseIndex {
+		case 0:
+			missionID, turnID, managerAgentID, err := runtimeMissionIdentityFromSession(sessions, sessionID)
+			if err != nil {
+				return err
+			}
+			if err := seedAndAcceptStoryHostMission(ctx, missionStore, orchestrator, missionID, sessionID, threadID, turnID, managerAgentID, mentions); err != nil {
+				return err
+			}
+			if err := provider.replacePlaceholder(missionPlaceholder, missionID); err != nil {
+				return err
+			}
+			runtime.setMissionID(missionID)
+			return nil
+		case 1:
+			return waitForStoryHostChildren(ctx, missionStore, runtime.getMissionID(), len(scenarios))
+		default:
 			return nil
 		}
-		return waitForStoryHostChildren(ctx, missionStore, missionID, len(scenarios))
 	}
-	return &storyHostManagerRuntime{
-		missionID: missionID,
-		store:     missionStore,
-		manager:   manager,
-		hosts:     newStoryHostRepository(hostRecords),
-		service:   appui.NewHostOpsService(missionStore, transcripts, orchestrator),
+	return runtime
+}
+
+func runtimeMissionIdentityFromSession(sessions *runtimekernel.SessionManager, sessionID string) (missionID, turnID, managerAgentID string, err error) {
+	if sessions == nil {
+		return "", "", "", errors.New("story runtime sessions are unavailable")
 	}
+	session, snapshotErr := sessions.GetSnapshot(sessionID)
+	if snapshotErr != nil {
+		return "", "", "", snapshotErr
+	}
+	if session == nil || session.CurrentTurn == nil {
+		return "", "", "", errors.New("public AssistantTransport turn is not published before provider response")
+	}
+	missionID = strings.TrimSpace(session.CurrentTurn.Metadata["aiops.hostops.missionId"])
+	turnID = strings.TrimSpace(session.CurrentTurn.ID)
+	managerAgentID = strings.TrimSpace(session.CurrentTurn.Metadata["aiops.hostops.managerAgentId"])
+	if missionID == "" || turnID == "" {
+		return "", "", "", fmt.Errorf("public turn hostops identity is incomplete: missionId=%q turnId=%q", missionID, turnID)
+	}
+	return missionID, turnID, managerAgentID, nil
+}
+
+func seedAndAcceptStoryHostMission(
+	ctx context.Context,
+	missionStore hostops.MissionStore,
+	orchestrator *hostops.Orchestrator,
+	missionID string,
+	sessionID string,
+	threadID string,
+	turnID string,
+	managerAgentID string,
+	mentions []hostops.HostMention,
+) error {
+	mission := hostops.HostOperationMission{
+		ID:             missionID,
+		SessionID:      sessionID,
+		ThreadID:       threadID,
+		UserTurnID:     turnID,
+		ManagerAgentID: managerAgentID,
+		Status:         hostops.HostMissionStatusWaitingPlanAcceptance,
+		PlanRequired:   true,
+		PlanAccepted:   false,
+		Mentions:       append([]hostops.HostMention(nil), mentions...),
+	}
+	plan, err := hostops.BuildPlanForMission(mission)
+	if err != nil {
+		return fmt.Errorf("build public turn host manager plan: %w", err)
+	}
+	mission.Plan = plan
+	if err := missionStore.SaveMission(ctx, mission); err != nil {
+		return fmt.Errorf("seed public turn host manager mission: %w", err)
+	}
+	if err := orchestrator.AcceptPlan(ctx, missionID, plan.ID); err != nil {
+		return fmt.Errorf("accept public turn host manager plan: %w", err)
+	}
+	return nil
+}
+
+func (r *storyHostManagerRuntime) setMissionID(missionID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.missionID = strings.TrimSpace(missionID)
+}
+
+func (r *storyHostManagerRuntime) getMissionID() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.missionID
 }
 
 type storyHostChildRunner struct {
@@ -383,11 +446,16 @@ func waitForStoryHostChildren(ctx context.Context, missionStore hostops.MissionS
 
 func (r *storyHostManagerRuntime) proof(t *testing.T) *storyHostManagerProof {
 	t.Helper()
-	children, err := r.store.ListChildAgents(context.Background(), r.missionID)
+	missionID := r.getMissionID()
+	mission, missionErr := r.store.GetMission(context.Background(), missionID)
+	if missionErr != nil {
+		t.Fatalf("get story host mission: %v", missionErr)
+	}
+	children, err := r.store.ListChildAgents(context.Background(), missionID)
 	if err != nil {
 		t.Fatalf("list story host children: %v", err)
 	}
-	proof := &storyHostManagerProof{MissionID: r.missionID, Children: make(map[string]storyHostChildProof, len(children))}
+	proof := &storyHostManagerProof{MissionID: missionID, PlanAccepted: mission.PlanAccepted, Children: make(map[string]storyHostChildProof, len(children))}
 	for _, child := range children {
 		childProof := storyHostChildProof{
 			ChildAgentID:      child.ID,
@@ -614,8 +682,8 @@ func assertStoryHostManagerLifecycle(t *testing.T, story assistantTransportStory
 		return
 	}
 	proof := result.HostManager
-	if proof == nil || proof.MissionID != story.HostManager.MissionID {
-		failAssistantTransportStory(t, story, result, "real host manager proof = %#v, want mission %q", proof, story.HostManager.MissionID)
+	if proof == nil || strings.TrimSpace(proof.MissionID) == "" || proof.MissionID == story.HostManager.MissionID || !proof.PlanAccepted {
+		failAssistantTransportStory(t, story, result, "real host manager proof = %#v, want resolved public runtime mission instead of placeholder %q", proof, story.HostManager.MissionID)
 	}
 	if len(proof.Children) != len(story.HostManager.Children) || len(proof.Children) < 2 {
 		failAssistantTransportStory(t, story, result, "real host manager children = %#v, want %d", proof.Children, len(story.HostManager.Children))
@@ -649,8 +717,20 @@ func assertStoryHostManagerLifecycle(t *testing.T, story assistantTransportStory
 		}
 	}
 	mission, ok := result.State.HostMissions[proof.MissionID]
-	if !ok || len(mission.ChildAgentIDs) < len(proof.Children) || mission.Status != "failed" {
-		failAssistantTransportStory(t, story, result, "transport host mission %q = %#v present=%v, want all child IDs and typed mixed-result failure visible", proof.MissionID, mission, ok)
+	if result.State.ActiveHostMissionID != proof.MissionID {
+		failAssistantTransportStory(t, story, result, "active host mission = %q, want runtime proof mission %q", result.State.ActiveHostMissionID, proof.MissionID)
+	}
+	turnMissionCount := 0
+	for _, candidate := range result.State.HostMissions {
+		if candidate.TurnID == result.State.CurrentTurnID {
+			turnMissionCount++
+		}
+	}
+	if turnMissionCount != 1 {
+		failAssistantTransportStory(t, story, result, "turn %q has %d transport host missions, want exactly one: %#v", result.State.CurrentTurnID, turnMissionCount, result.State.HostMissions)
+	}
+	if !ok || !mission.PlanAccepted || len(mission.ChildAgentIDs) < len(proof.Children) || mission.Status != "failed" {
+		failAssistantTransportStory(t, story, result, "transport host mission %q = %#v present=%v, want accepted plan, all child IDs, and typed mixed-result failure", proof.MissionID, mission, ok)
 	}
 	if completed == 0 || failed == 0 {
 		failAssistantTransportStory(t, story, result, "host manager aggregation completed=%d failed=%d, want mixed terminal child results before synthesis", completed, failed)
@@ -1396,6 +1476,38 @@ func (p *storyProvider) Stream(ctx context.Context, _ []*schema.Message, _ ...mo
 }
 
 func (p *storyProvider) BindTools([]*schema.ToolInfo) error { return nil }
+
+func (p *storyProvider) replacePlaceholder(placeholder, replacement string) error {
+	placeholder = strings.TrimSpace(placeholder)
+	replacement = strings.TrimSpace(replacement)
+	if placeholder == "" || replacement == "" || placeholder == replacement {
+		return fmt.Errorf("story provider placeholder replacement is invalid: placeholder=%q replacement=%q", placeholder, replacement)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	replaced := 0
+	for _, response := range p.responses {
+		if response == nil {
+			continue
+		}
+		for index := range response.ToolCalls {
+			arguments := response.ToolCalls[index].Function.Arguments
+			if !strings.Contains(arguments, placeholder) {
+				continue
+			}
+			arguments = strings.ReplaceAll(arguments, placeholder, replacement)
+			if !json.Valid([]byte(arguments)) {
+				return fmt.Errorf("story provider placeholder replacement produced invalid tool arguments for %q", response.ToolCalls[index].Function.Name)
+			}
+			response.ToolCalls[index].Function.Arguments = arguments
+			replaced++
+		}
+	}
+	if replaced == 0 {
+		return fmt.Errorf("story provider placeholder %q was not found in pending tool calls", placeholder)
+	}
+	return nil
+}
 
 func (p *storyProvider) next(ctx context.Context) (*schema.Message, error) {
 	p.mu.Lock()

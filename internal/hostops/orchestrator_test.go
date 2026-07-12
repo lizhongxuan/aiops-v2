@@ -85,6 +85,44 @@ func TestOrchestratorSpawnsOneChildAgentPerMissionHost(t *testing.T) {
 	}
 }
 
+func TestOrchestratorMissionSnapshotReturnsReadOnlyCanonicalMission(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryMissionStore()
+	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})
+	mission := HostOperationMission{
+		ID:            "mission-snapshot",
+		Status:        HostMissionStatusSpawningChildren,
+		PlanRequired:  true,
+		PlanAccepted:  true,
+		ChildAgentIDs: []string{"child-a"},
+		Mentions:      []HostMention{{HostID: "host-a", Resolved: true}},
+		Plan:          HostOperationPlan{ID: "plan-snapshot", Status: PlanStatusAccepted, Steps: []PlanStep{{ID: "step-a", HostIDs: []string{"host-a"}}}},
+	}
+	if err := store.SaveMission(ctx, mission); err != nil {
+		t.Fatalf("SaveMission() error = %v", err)
+	}
+
+	snapshot, err := orchestrator.MissionSnapshot(ctx, mission.ID)
+	if err != nil {
+		t.Fatalf("MissionSnapshot() error = %v", err)
+	}
+	if snapshot.ID != mission.ID || snapshot.Status != mission.Status || !snapshot.PlanRequired || !snapshot.PlanAccepted {
+		t.Fatalf("MissionSnapshot() = %#v, want canonical accepted mission", snapshot)
+	}
+
+	snapshot.PlanAccepted = false
+	snapshot.ChildAgentIDs[0] = "mutated-child"
+	snapshot.Mentions[0].HostID = "mutated-host"
+	snapshot.Plan.Steps[0].HostIDs[0] = "mutated-plan-host"
+	stored, err := store.GetMission(ctx, mission.ID)
+	if err != nil {
+		t.Fatalf("GetMission() error = %v", err)
+	}
+	if !stored.PlanAccepted || stored.ChildAgentIDs[0] != "child-a" || stored.Mentions[0].HostID != "host-a" || stored.Plan.Steps[0].HostIDs[0] != "host-a" {
+		t.Fatalf("MissionSnapshot() leaked mutable store state: %#v", stored)
+	}
+}
+
 func TestOrchestratorPropagatesRoleBindingToSpawnRequestAndChild(t *testing.T) {
 	ctx := context.Background()
 	store := NewInMemoryMissionStore()

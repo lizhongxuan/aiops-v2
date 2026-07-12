@@ -15,7 +15,7 @@
     }
   },
   "hostManager": {
-    "missionId": "story-multi-host-mission",
+    "missionId": "$runtime",
     "children": [
       {"hostId": "host-a", "output": "host-a network reachable"},
       {"hostId": "host-b", "error": "timeout waiting for host-b"}
@@ -29,7 +29,7 @@
           "id": "call_spawn_hosts",
           "name": "spawn_host_agent",
           "arguments": {
-            "missionId": "story-multi-host-mission",
+            "missionId": "$runtime",
             "assignments": [
               {"hostId": "host-a", "task": "inspect network state on host-a"},
               {"hostId": "host-b", "task": "inspect network state on host-b"}
@@ -41,7 +41,7 @@
     {
       "role": "assistant",
       "toolCalls": [
-        {"id": "call_wait_hosts", "name": "wait_host_agents", "arguments": {"missionId": "story-multi-host-mission"}}
+        {"id": "call_wait_hosts", "name": "wait_host_agents", "arguments": {"missionId": "$runtime"}}
       ]
     },
     {

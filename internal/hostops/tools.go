@@ -87,7 +87,11 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolSpawnHostAgent, spawnHostAgentContract(children))
+			mission, err := orchestrator.MissionSnapshot(ctx, req.MissionID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolSpawnHostAgent, spawnHostAgentContract(children, mission))
 		},
 	}
 }
@@ -169,7 +173,11 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			result, err := jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children))
+			mission, err := orchestrator.MissionSnapshot(ctx, req.MissionID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			result, err := jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children, mission))
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
@@ -229,17 +237,35 @@ func managerToolVisibility() tooling.Visibility {
 	return tooling.Visibility{SessionTypes: []string{"workspace"}, Modes: []string{"plan", "execute"}}
 }
 
-func spawnHostAgentContract(children []HostChildAgent) map[string]any {
+type missionResultContract struct {
+	ID           string            `json:"id"`
+	PlanRequired bool              `json:"planRequired"`
+	PlanAccepted bool              `json:"planAccepted"`
+	Status       HostMissionStatus `json:"status"`
+}
+
+func newMissionResultContract(mission HostOperationMission) missionResultContract {
+	return missionResultContract{
+		ID:           mission.ID,
+		PlanRequired: mission.PlanRequired,
+		PlanAccepted: mission.PlanAccepted,
+		Status:       mission.Status,
+	}
+}
+
+func spawnHostAgentContract(children []HostChildAgent, mission HostOperationMission) map[string]any {
 	return map[string]any{
 		"schemaVersion":  "aiops.hostops.child/v1",
 		"noHostMutation": true,
+		"mission":        newMissionResultContract(mission),
 		"children":       childAgentResultContracts(children, true),
 	}
 }
 
-func waitHostAgentsContract(children []HostChildAgent) map[string]any {
+func waitHostAgentsContract(children []HostChildAgent, mission HostOperationMission) map[string]any {
 	return map[string]any{
 		"schemaVersion": "aiops.hostops.wait/v1",
+		"mission":       newMissionResultContract(mission),
 		"children":      childAgentResultContracts(children, false),
 	}
 }

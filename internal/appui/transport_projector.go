@@ -1252,6 +1252,12 @@ func projectHostOpsToolPayload(state *AiopsTransportState, turnID string, tool t
 		return
 	}
 	var decoded struct {
+		Mission struct {
+			ID           string `json:"id"`
+			PlanRequired bool   `json:"planRequired"`
+			PlanAccepted bool   `json:"planAccepted"`
+			Status       string `json:"status"`
+		} `json:"mission"`
 		Children []AiopsTransportChildAgent `json:"children"`
 		Child    AiopsTransportChildAgent   `json:"child"`
 	}
@@ -1262,7 +1268,8 @@ func projectHostOpsToolPayload(state *AiopsTransportState, turnID string, tool t
 	if strings.TrimSpace(decoded.Child.ID) != "" {
 		children = append(children, decoded.Child)
 	}
-	if len(children) == 0 {
+	missionID := strings.TrimSpace(decoded.Mission.ID)
+	if missionID == "" && len(children) == 0 {
 		return
 	}
 	if state.ChildAgents == nil {
@@ -1270,6 +1277,22 @@ func projectHostOpsToolPayload(state *AiopsTransportState, turnID string, tool t
 	}
 	if state.HostMissions == nil {
 		state.HostMissions = map[string]AiopsTransportHostMission{}
+	}
+	if missionID != "" {
+		mission := state.HostMissions[missionID]
+		if mission.ID == "" {
+			mission.ID = missionID
+			mission.CreatedAt = transportTimestamp(updatedAt)
+		}
+		mission.TurnID = firstNonEmptyString(mission.TurnID, strings.TrimSpace(turnID))
+		mission.PlanRequired = decoded.Mission.PlanRequired
+		mission.PlanAccepted = decoded.Mission.PlanAccepted
+		if status := strings.TrimSpace(decoded.Mission.Status); status != "" {
+			mission.Status = status
+		}
+		mission.UpdatedAt = transportTimestamp(updatedAt)
+		state.HostMissions[missionID] = mission
+		state.ActiveHostMissionID = missionID
 	}
 	for _, child := range children {
 		child = normalizeProjectedHostChild(child, turnID, updatedAt)

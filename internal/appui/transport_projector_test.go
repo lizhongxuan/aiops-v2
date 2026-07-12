@@ -1264,6 +1264,64 @@ func TestTransportProjectorClearsStaleHostOpsMissionForHostBoundChat(t *testing.
 	}
 }
 
+func TestTransportProjectorMergesCanonicalHostMissionFromTypedToolPayload(t *testing.T) {
+	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-host-mission", "thread-host-mission")
+	state.ActiveHostMissionID = "mission-runtime"
+	state.HostMissions["mission-runtime"] = AiopsTransportHostMission{
+		ID:           "mission-runtime",
+		TurnID:       "turn-host-mission",
+		Status:       "planning",
+		PlanRequired: true,
+		PlanAccepted: false,
+	}
+	toolPayload := json.RawMessage(`{
+		"toolCallId":"call-wait",
+		"toolName":"wait_host_agents",
+		"displayKind":"hostops.wait_host_agents",
+		"displayData":{
+			"schemaVersion":"aiops.hostops.wait/v1",
+			"mission":{"id":"mission-runtime","planRequired":true,"planAccepted":true,"status":"spawning_children"},
+			"children":[{"id":"child-a","childAgentId":"child-a","missionId":"mission-runtime","hostId":"host-a","hostDisplayName":"host-a","sessionId":"host-child:mission-runtime:host-a","status":"completed"}]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-host-mission",
+		SessionID: "session-host-mission",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		Metadata: map[string]string{
+			"aiops.route.mode":             "multi_host_ops",
+			"aiops.hostops.missionId":      "mission-runtime",
+			"aiops.hostops.planRequired":   "true",
+			"aiops.hostops.planAccepted":   "false",
+			"aiops.hostops.managerAgentId": "manager-runtime",
+		},
+		AgentItems: []agentstate.TurnItem{{
+			ID: "wait-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload:   agentstate.PayloadEnvelope{Kind: "tool", Summary: "host agents complete", Data: toolPayload},
+			CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+		}},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	mission, ok := projected.HostMissions["mission-runtime"]
+	if !ok {
+		t.Fatalf("HostMissions = %#v, want mission-runtime", projected.HostMissions)
+	}
+	if projected.ActiveHostMissionID != "mission-runtime" || !mission.PlanRequired || !mission.PlanAccepted {
+		t.Fatalf("projected mission = %#v, active = %q; want canonical accepted mission", mission, projected.ActiveHostMissionID)
+	}
+	if len(projected.HostMissions) != 1 || len(mission.ChildAgentIDs) != 1 || mission.ChildAgentIDs[0] != "child-a" {
+		t.Fatalf("projected mission = %#v, want one mission preserving child projection", mission)
+	}
+}
+
 func TestTransportProjectorAddsPostRunSuggestionsOnlyForUsefulTerminalOpsRun(t *testing.T) {
 	now := time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()

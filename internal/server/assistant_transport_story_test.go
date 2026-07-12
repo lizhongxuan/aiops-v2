@@ -304,7 +304,7 @@ func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
 			}
 		}
 	}
-	if multi.HostManager == nil || strings.TrimSpace(multi.HostManager.MissionID) == "" || len(multi.HostManager.Children) < 2 {
+	if multi.HostManager == nil || multi.HostManager.MissionID != "$runtime" || len(multi.HostManager.Children) < 2 {
 		t.Errorf("multi_host_manager must configure at least two children on the real hostops/AgentManager lifecycle")
 	}
 	if len(multi.ToolOutcomes) != 0 {
