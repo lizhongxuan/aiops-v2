@@ -49,12 +49,12 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			Name:             ToolSpawnHostAgent,
 			Description:      "Spawn one host-bound child agent per assignment for a host operation mission. This manager tool does not execute host commands or mutate hosts directly.",
 			Origin:           tooling.ToolOriginBuiltin,
-			Layer:            tooling.ToolLayerMutation,
+			Layer:            tooling.ToolLayerCore,
 			Pack:             ToolPackHostOps,
 			Profiles:         []string{"host_manager"},
 			Domain:           "hostops",
-			Mutating:         true,
-			RiskLevel:        tooling.ToolRiskMedium,
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
 			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
 			RecordEvidence:   true,
 			DedupeEligible:   true,
@@ -89,17 +89,18 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:           ToolSendHostAgentMessage,
-			Description:    "Send a manager follow-up message to one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
-			Origin:         tooling.ToolOriginBuiltin,
-			Layer:          tooling.ToolLayerMutation,
-			Pack:           ToolPackHostOps,
-			Profiles:       []string{"host_manager"},
-			Domain:         "hostops",
-			Mutating:       true,
-			RiskLevel:      tooling.ToolRiskMedium,
-			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
-			RecordEvidence: true,
+			Name:             ToolSendHostAgentMessage,
+			Description:      "Send a manager follow-up message to one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
+			Origin:           tooling.ToolOriginBuiltin,
+			Layer:            tooling.ToolLayerCore,
+			Pack:             ToolPackHostOps,
+			Profiles:         []string{"host_manager"},
+			Domain:           "hostops",
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
+			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence:   true,
+			RequiresApproval: false,
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",
@@ -122,7 +123,7 @@ func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolSendHostAgentMessage, map[string]any{"child": child})
+			return jsonToolResult(ToolSendHostAgentMessage, map[string]any{"child": childAgentResultContract(child, true)})
 		},
 	}
 }
@@ -161,17 +162,18 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:           ToolStopHostAgent,
-			Description:    "Stop one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
-			Origin:         tooling.ToolOriginBuiltin,
-			Layer:          tooling.ToolLayerMutation,
-			Pack:           ToolPackHostOps,
-			Profiles:       []string{"host_manager"},
-			Domain:         "hostops",
-			Mutating:       true,
-			RiskLevel:      tooling.ToolRiskMedium,
-			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
-			RecordEvidence: true,
+			Name:             ToolStopHostAgent,
+			Description:      "Stop one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
+			Origin:           tooling.ToolOriginBuiltin,
+			Layer:            tooling.ToolLayerCore,
+			Pack:             ToolPackHostOps,
+			Profiles:         []string{"host_manager"},
+			Domain:           "hostops",
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
+			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence:   true,
+			RequiresApproval: false,
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",
@@ -194,7 +196,7 @@ func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolStopHostAgent, map[string]any{"child": child})
+			return jsonToolResult(ToolStopHostAgent, map[string]any{"child": childAgentResultContract(child, true)})
 		},
 	}
 }
@@ -221,20 +223,39 @@ func waitHostAgentsContract(children []HostChildAgent) map[string]any {
 func childAgentResultContracts(children []HostChildAgent, includeNoHostMutation bool) []map[string]any {
 	out := make([]map[string]any, 0, len(children))
 	for _, child := range children {
-		item := map[string]any{
-			"childAgentId": child.ID,
-			"targetRef":    childTargetRef(child),
-			"hostId":       child.HostID,
-			"status":       child.Status,
-			"evidenceRefs": []string{},
-			"blockerRefs":  childBlockerRefs(child),
-		}
-		if includeNoHostMutation {
-			item["noHostMutation"] = true
-		}
-		out = append(out, item)
+		out = append(out, childAgentResultContract(child, includeNoHostMutation))
 	}
 	return out
+}
+
+func childAgentResultContract(child HostChildAgent, includeNoHostMutation bool) map[string]any {
+	item := map[string]any{
+		"id":                child.ID,
+		"childAgentId":      child.ID,
+		"missionId":         child.MissionID,
+		"parentAgentId":     child.ParentAgentID,
+		"sessionId":         child.SessionID,
+		"targetRef":         childTargetRef(child),
+		"hostId":            child.HostID,
+		"hostAddress":       child.HostAddress,
+		"hostDisplayName":   child.HostDisplayName,
+		"role":              child.Role,
+		"task":              child.Task,
+		"status":            child.Status,
+		"planStepIds":       child.PlanStepIDs,
+		"lastInputPreview":  child.LastInputPreview,
+		"lastOutputPreview": child.LastOutputPreview,
+		"error":             child.Error,
+		"startedAt":         child.StartedAt,
+		"updatedAt":         child.UpdatedAt,
+		"completedAt":       child.CompletedAt,
+		"evidenceRefs":      []string{},
+		"blockerRefs":       childBlockerRefs(child),
+	}
+	if includeNoHostMutation {
+		item["noHostMutation"] = true
+	}
+	return item
 }
 
 func childTargetRef(child HostChildAgent) string {

@@ -71,3 +71,12 @@
 - 修复方式：集中计算 outstanding required post-check；只要仍有未完成项，FinalContract 降为 `needs_evidence`，置信度最高为 medium，所有声明项完成后才允许 `verified`。证据恢复按 snapshot resume state 分流，精确校验 evidence ID、turn 与 pending toolCall，错误或陈旧 ID 继续 fail closed；普通 approval 的原有精确匹配保持不变。
 - 验证结果：RED 已复现 `verified/high` 与 `approval "evidence-1" is not pending`；实现后运行 `go test ./internal/runtimekernel -count=1`、相关 race 测试和公开 `RunTurn -> pending evidence -> ResumeTurn -> ToolDispatcher -> FinalContract` 回归链均通过。AssistantTransport `approval_resume` story 的受控 baseline 由 `verified/high` 更新为 `needs_evidence/medium`，且 required/completed post-check 仍分别投影。
 - 风险与后续：当前 `PostChecks` 的 completed 事实仍必须由真实验证执行写入，不能把模型文本或声明本身当作完成；后续新增 verifier 时必须复用同一 typed 集合语义并补充 AssistantTransport 故事。
+
+## 2026-07-12 13:10 - Host Manager 编排工具被误判为主机变更
+
+- 修复时间：2026-07-12 13:10
+- Bug 现象：已接受多主机计划后，manager 调用 `spawn_host_agent` 仍在 ToolDispatcher/RuntimeKernel 的主机 mutation rollback gate 被阻断，报告 `rollback_contract_invalid`，真实 host-bound child lifecycle 无法启动；工具输出同时只有 `childAgentId`，AssistantTransport 无法按 `id` 投影 child 状态。
+- 根因：spawn/send/stop 三个 manager lifecycle 工具虽然明确“不直接执行或修改主机”，metadata 却声明为 `LayerMutation + Mutating + RiskMedium`，把编排控制面变化错误等同于主机数据面变更；child result contract 也缺少 transport 所需的 identity/session/host/lifecycle 字段。
+- 修复方式：把 manager lifecycle 工具归为 low-risk core orchestration control，保持 `IsReadOnly=false` 并继续由 Orchestrator 的 `PlanAccepted` gate 控制实际执行；真实 child 的 host command/policy/approval/rollback 路径完全不变。child result 增加 transport-compatible `id` 等完整字段，并保留 `childAgentId` 兼容字段。
+- 验证结果：RED 精确命中错误 governance 与缺失 DTO；PlanAccepted 拒绝测试在修复前后都通过。修复后 `go test ./internal/hostops -count=1`、`go test -race ./internal/hostops -count=1` 与 diff check 通过；后续由 public AssistantTransport multi-host story 验证生产 manager/child 链。
+- 风险与后续：manager send/stop 不再触发主机 mutation approval，但它们只能操作既有 mission/child，且 child 的实际主机动作仍由独立 worker RuntimeKernel 治理；必须保留真实 multi-host story 防止再次退化为 StaticTool 外壳。
