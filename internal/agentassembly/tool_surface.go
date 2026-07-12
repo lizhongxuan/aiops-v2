@@ -123,7 +123,7 @@ func toolSurfaceItemsFromMetadata(metas []tooling.ToolMetadata, bindings []resou
 		if name == "" {
 			continue
 		}
-		input, _ := resourcebinding.ToolCapabilityInputFromMetadata(meta, policyHash)
+		input, _ := tooling.ResourceCapabilityInputFromMetadata(meta, policyHash)
 		item := ToolSurfaceItem{
 			Name:             name,
 			Namespace:        toolNamespace(meta),

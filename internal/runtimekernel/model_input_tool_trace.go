@@ -101,7 +101,7 @@ func resourceCapabilitiesFromAssembledTools(bindings []resourcebinding.ResourceB
 		}
 		metas = append(metas, tool.Metadata())
 	}
-	inputs := resourcebinding.ToolCapabilityInputsFromMetadata(metas, policyHash)
+	inputs := tooling.ResourceCapabilityInputsFromMetadata(metas, policyHash)
 	if len(inputs) == 0 {
 		return nil
 	}

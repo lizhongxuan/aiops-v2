@@ -1,10 +1,6 @@
 package resourcebinding
 
-import (
-	"testing"
-
-	"aiops-v2/internal/tooling"
-)
+import "testing"
 
 func TestBuildCapabilitiesForVerifiedBinding(t *testing.T) {
 	binding := NewBindingSnapshot(ResourceRef{Type: ResourceTypeHost, ID: "host-a"}, BindingOptions{
@@ -74,47 +70,5 @@ func TestHiddenToolsDoNotProduceCapabilities(t *testing.T) {
 	})
 	if len(capabilities) != 0 {
 		t.Fatalf("hidden tool capabilities = %+v, want none", capabilities)
-	}
-}
-
-func TestToolCapabilityInputsFromMetadata(t *testing.T) {
-	inputs := ToolCapabilityInputsFromMetadata([]tooling.ToolMetadata{{
-		Name:             "host.exec",
-		RequiresApproval: true,
-		Discovery: tooling.ToolDiscoveryMetadata{
-			CapabilityKind: CapabilityExec,
-			ResourceTypes:  []string{ResourceTypeHost},
-		},
-	}, {
-		Name:     "host.write",
-		Mutating: true,
-		Discovery: tooling.ToolDiscoveryMetadata{
-			OperationKinds: []string{"write"},
-			ResourceTypes:  []string{ResourceTypeHost},
-		},
-	}, {
-		Name: "host.hidden",
-		Discovery: tooling.ToolDiscoveryMetadata{
-			CapabilityKind:   CapabilityRead,
-			HiddenFromPrompt: true,
-		},
-	}}, "sha256:policy")
-
-	if len(inputs) != 3 {
-		t.Fatalf("inputs = %+v, want 3", inputs)
-	}
-	var sawExec, sawMutate, sawHidden bool
-	for _, input := range inputs {
-		switch input.ToolName {
-		case "host.exec":
-			sawExec = input.Capability == CapabilityExec
-		case "host.write":
-			sawMutate = input.Capability == CapabilityMutate && input.RequiresApproval && input.PolicyHash == "sha256:policy"
-		case "host.hidden":
-			sawHidden = input.Hidden
-		}
-	}
-	if !sawExec || !sawMutate || !sawHidden {
-		t.Fatalf("metadata projection = %+v", inputs)
 	}
 }
