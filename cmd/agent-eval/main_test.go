@@ -246,26 +246,46 @@ func TestRunCLIExecutesServerAgent(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "out")
 	writeCLICase(t, casesDir, "server-basic")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/chat/message":
-			writeCLIJSONResponse(t, w, map[string]any{
-				"accepted":  true,
-				"sessionId": "sess-cli-server",
-				"turnId":    "turn-cli-server",
-				"status":    "accepted",
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/state":
-			writeCLIJSONResponse(t, w, map[string]any{
-				"sessionId": "sess-cli-server",
-				"cards": []map[string]any{
-					{"role": "assistant", "text": "server adapter completed the local turn through /api/v1/state, with verification: go test ./internal/eval"},
-				},
-				"runtime": map[string]any{
-					"turn": map[string]any{"active": false, "phase": "completed"},
-				},
-			})
-		default:
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/assistant/transport" {
 			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Commands []struct {
+				Message struct {
+					ID       string            `json:"id"`
+					Metadata map[string]string `json:"metadata"`
+				} `json:"message"`
+			} `json:"commands"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode AssistantTransport request: %v", err)
+		}
+		if len(request.Commands) != 1 {
+			t.Fatalf("commands = %d, want one", len(request.Commands))
+		}
+		message := request.Commands[0].Message
+		clientTurnID := message.Metadata["clientTurnId"]
+		if message.ID == "" || clientTurnID == "" {
+			t.Fatalf("missing client correlation: message=%#v", message)
+		}
+		answer := "server adapter completed the local turn through AssistantTransport, with verification: go test ./internal/eval"
+		ops := []map[string]any{
+			{"type": "set", "path": []any{"currentTurnId"}, "value": "turn-cli-server"},
+			{"type": "set", "path": []any{"turns", "turn-cli-server"}, "value": map[string]any{
+				"id": "turn-cli-server", "clientTurnId": clientTurnID, "clientMessageId": message.ID,
+				"status": "completed", "agentItems": []any{},
+				"final": map[string]any{"id": "final-cli-server", "text": answer, "answerText": answer, "status": "completed"},
+			}},
+			{"type": "set", "path": []any{"status"}, "value": "idle"},
+		}
+		payload, err := json.Marshal(ops)
+		if err != nil {
+			t.Fatalf("marshal AssistantTransport ops: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := w.Write(append(append([]byte("aui-state:"), payload...), '\n')); err != nil {
+			t.Fatalf("write AssistantTransport response: %v", err)
 		}
 	}))
 	defer server.Close()

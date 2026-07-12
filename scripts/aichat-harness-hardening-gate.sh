@@ -14,6 +14,10 @@ go test ./internal/server -run 'TestAssistantTransport|TestAssistantTransportSto
 go test ./internal/specialinputmemory -count=1
 go test ./internal/appui ./internal/runtimekernel ./internal/resourcebinding -run 'SpecialInput|MemoryReadPlan|ExecutionScope|RoleBinding|TransportCommandsSpecialInput|Correction|Forget|Confirm|Conflict' -count=1
 go test ./internal/eval -run 'TestServerAgent|Test.*Harness.*Golden|TestHarnessServerAgent' -count=1
+if rg -n '/api/v1/state|/api/v1/chat/message' internal/eval cmd/agent-eval -g '!**/*_test.go'; then
+	echo "agent eval must use AssistantTransport instead of legacy chat/state endpoints" >&2
+	exit 1
+fi
 npm --prefix web run test -- src/transport/aiopsTransportConverter.test.ts src/chat/components/ProcessTranscript.test.tsx
 npm --prefix web run test -- src/transport/aiopsTransportRuntime.test.ts src/chat/inputMentions.test.ts src/chat/components/SpecialInputContextBar.test.tsx src/chat/components/HostMentionInlineOverlay.css.test.ts
 scripts/test-aiops-harness-contract-boundaries.sh

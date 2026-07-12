@@ -45,8 +45,8 @@ func runCLI(ctx context.Context, args []string, stdout, stderr io.Writer, now fu
 	flags.StringVar(&runPhase, "run-phase", "", "optional run phase metadata: baseline, candidate, or unknown")
 	flags.IntVar(&repetitions, "repetitions", 1, "number of times to run each case")
 	flags.StringVar(&serverURL, "server-url", "http://localhost:8080", "base URL for -agent server")
-	flags.DurationVar(&pollTimeout, "poll-timeout", 2*time.Minute, "maximum time to poll /api/v1/state for -agent server")
-	flags.DurationVar(&pollInterval, "poll-interval", 500*time.Millisecond, "poll interval for /api/v1/state with -agent server")
+	flags.DurationVar(&pollTimeout, "poll-timeout", 2*time.Minute, "maximum time to wait for the AssistantTransport stream with -agent server")
+	flags.DurationVar(&pollInterval, "poll-interval", 500*time.Millisecond, "deprecated compatibility flag; AssistantTransport server runs do not poll")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
