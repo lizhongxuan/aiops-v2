@@ -13,7 +13,7 @@ go test ./internal/appui -run 'TestTransportProjector|TestApprovalService|TestAg
 go test ./internal/server -run 'TestAssistantTransport|TestAssistantTransportStories' -count=1
 go test ./internal/specialinputmemory -count=1
 go test ./internal/appui ./internal/runtimekernel ./internal/resourcebinding -run 'SpecialInput|MemoryReadPlan|ExecutionScope|RoleBinding|TransportCommandsSpecialInput|Correction|Forget|Confirm|Conflict' -count=1
-go test ./internal/eval -run 'Test.*Harness.*Golden' -count=1
+go test ./internal/eval -run 'TestServerAgent|Test.*Harness.*Golden|TestHarnessServerAgent' -count=1
 npm --prefix web run test -- src/transport/aiopsTransportConverter.test.ts src/chat/components/ProcessTranscript.test.tsx
 npm --prefix web run test -- src/transport/aiopsTransportRuntime.test.ts src/chat/inputMentions.test.ts src/chat/components/SpecialInputContextBar.test.tsx src/chat/components/HostMentionInlineOverlay.css.test.ts
 scripts/test-aiops-harness-contract-boundaries.sh
