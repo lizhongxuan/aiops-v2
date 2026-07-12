@@ -985,6 +985,7 @@ func transportFinalFromAgentItem(id string, text string, fallbackStatus AiopsTra
 	final.ApprovedActions = cleanTransportStringList(contract.ApprovedActions)
 	final.PerformedActions = cleanTransportStringList(contract.PerformedActions)
 	final.PostChecks = cleanTransportStringList(contract.PostChecks)
+	final.RequiredPostChecks = cleanTransportStringList(contract.RequiredPostChecks)
 	final.Limitations = cleanTransportStringList(contract.Limitations)
 	return final
 }

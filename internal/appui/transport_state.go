@@ -200,6 +200,7 @@ type AiopsTransportFinal struct {
 	ApprovedActions       []string                         `json:"approvedActions,omitempty"`
 	PerformedActions      []string                         `json:"performedActions,omitempty"`
 	PostChecks            []string                         `json:"postChecks,omitempty"`
+	RequiredPostChecks    []string                         `json:"requiredPostChecks,omitempty"`
 	Limitations           []string                         `json:"limitations,omitempty"`
 	DurationMs            int64                            `json:"durationMs,omitempty"`
 }

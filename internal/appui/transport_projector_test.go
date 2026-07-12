@@ -2274,6 +2274,73 @@ func TestTransportProjectorProjectsFinalContractStatusAndEvidence(t *testing.T) 
 	}
 }
 
+func TestTransportProjectorKeepsCompletedAndRequiredPostChecksDistinct(t *testing.T) {
+	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
+	finalData := json.RawMessage(`{
+		"displayKind":"assistant.message",
+		"phase":"final_answer",
+		"streamState":"complete",
+		"finalContract":{
+			"schemaVersion":"aiops.harness.final.v1",
+			"status":"partial",
+			"answerText":"变更已执行，仍需完成外部核验。",
+			"postChecks":[" check-complete ","","check-complete","check-secondary"],
+			"requiredPostChecks":["check-required"," check-required ","check-fallback"]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-post-check-contract",
+		SessionID: "session-post-check-contract",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{{
+			ID:     "final-post-check-contract",
+			Type:   agentstate.TurnItemTypeFinalResponse,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Summary: "变更已执行，仍需完成外部核验。",
+				Data:    finalData,
+			},
+		}},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-post-check-contract"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	final := projected.Turns[turn.ID].Final
+	if final == nil {
+		t.Fatal("turn.Final is nil, want projected final contract")
+	}
+	if want := []string{"check-complete", "check-secondary"}; !reflect.DeepEqual(final.PostChecks, want) {
+		t.Fatalf("postChecks = %#v, want completed checks %#v", final.PostChecks, want)
+	}
+	if want := []string{"check-required", "check-fallback"}; !reflect.DeepEqual(final.RequiredPostChecks, want) {
+		t.Fatalf("requiredPostChecks = %#v, want outstanding checks %#v", final.RequiredPostChecks, want)
+	}
+
+	turn.AgentItems[0].Payload.Data[0] = '['
+	if !reflect.DeepEqual(final.RequiredPostChecks, []string{"check-required", "check-fallback"}) {
+		t.Fatalf("requiredPostChecks changed after source payload mutation: %#v", final.RequiredPostChecks)
+	}
+
+	encoded, err := json.Marshal(final)
+	if err != nil {
+		t.Fatalf("json.Marshal(final) error = %v", err)
+	}
+	var roundTripped AiopsTransportFinal
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal(final) error = %v", err)
+	}
+	if !reflect.DeepEqual(roundTripped, *final) {
+		t.Fatalf("transport final JSON round trip changed post-check facts\nwant=%#v\n got=%#v", *final, roundTripped)
+	}
+}
+
 func TestTransportProjectorProjectsIncompleteAssistantMessageFinalAndStreamError(t *testing.T) {
 	now := time.Date(2026, 6, 25, 16, 12, 0, 0, time.UTC)
 	projector := NewTransportProjector()
