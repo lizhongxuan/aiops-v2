@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,15 +14,17 @@ import (
 )
 
 const (
-	transportAgentItemPayloadByteBudget = 16 * 1024
-	transportAgentItemsPerTurnBudget    = 128
-	transportAgentItemsTurnByteBudget   = 512 * 1024
-	transportAgentItemSummaryByteBudget = 4 * 1024
+	transportAgentItemPayloadByteBudget  = 16 * 1024
+	transportAgentItemsPerTurnBudget     = 128
+	transportAgentItemsTurnByteBudget    = 512 * 1024
+	transportAgentItemSummaryByteBudget  = 4 * 1024
+	transportAgentItemByteBudget         = 32 * 1024
+	transportAgentItemMetadataByteBudget = 1024
 )
 
 var (
-	transportAgentBearerPattern     = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
-	transportAgentAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|private[_-]?key|cookie|credential)s?\s*[:=]\s*(?:bearer\s+)?[^\s,;]+`)
+	transportAgentBearerPattern     = regexp.MustCompile(`(?i)\bbearer\s+(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;]+)`)
+	transportAgentAssignmentPattern = regexp.MustCompile(`(?i)\b(authorization|api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|passwd|secret|client[_-]?secret|private[_-]?key|cookie|credential)s?\s*[:=]\s*(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\r\n,;]+)`)
 	transportAgentPrivateKeyPattern = regexp.MustCompile(`(?is)-----BEGIN [^-]*PRIVATE KEY-----.*?-----END [^-]*PRIVATE KEY-----`)
 )
 
@@ -66,7 +69,7 @@ func projectTransportAgentItems(items []agentstate.TurnItem) transportAgentItems
 			result = append(result, projectTransportAgentItem(items[index], true).Item)
 		}
 	}
-	for transportAgentItemsJSONBytes(result) > transportAgentItemsTurnByteBudget && len(indices) > 2 {
+	for transportAgentItemsJSONBytes(result) > transportAgentItemsTurnByteBudget && len(indices) > 0 {
 		truncated = true
 		indices = transportAgentItemIndices(len(items), len(indices)-1)
 		result = result[:0]
@@ -95,25 +98,23 @@ func redactTransportProjectionTurnItems(items []agentstate.TurnItem) []agentstat
 	out := make([]agentstate.TurnItem, len(items))
 	copy(out, items)
 	for i := range out {
-		out[i].Payload.Summary = redactTransportAgentText(out[i].Payload.Summary)
-		if len(out[i].Payload.Data) == 0 {
-			continue
-		}
-		value := redactTransportAgentValue(decodeTransportAgentPayload(out[i].Payload.Data))
-		if raw, err := json.Marshal(value); err == nil {
-			out[i].Payload.Data = raw
-		}
+		safe := projectTransportAgentItem(out[i], false).Item
+		out[i].ID = safe.ID
+		out[i].Type = agentstate.TurnItemType(safe.Type)
+		out[i].Status = agentstate.ItemStatus(safe.Status)
+		out[i].Payload = agentstate.PayloadEnvelope{Kind: safe.Payload.Kind, Summary: safe.Payload.Summary, Data: append(json.RawMessage(nil), safe.Payload.Data...)}
 	}
 	return out
 }
 
 func projectTransportAgentItem(item agentstate.TurnItem, forceCompact bool) transportAgentItemProjection {
-	summary := redactTransportAgentText(item.Payload.Summary)
-	summaryTruncated := len(summary) > transportAgentItemSummaryByteBudget
-	if summaryTruncated {
-		summary = truncateTransportAgentText(summary, transportAgentItemSummaryByteBudget)
-	}
+	id, idTruncated := boundTransportAgentText(item.ID, transportAgentItemMetadataByteBudget)
+	kind, kindTruncated := boundTransportAgentText(item.Payload.Kind, transportAgentItemMetadataByteBudget)
+	typeName, typeTruncated := boundTransportAgentText(string(item.Type), transportAgentItemMetadataByteBudget)
+	status, statusTruncated := boundTransportAgentText(string(item.Status), transportAgentItemMetadataByteBudget)
+	summary, summaryTruncated := boundTransportAgentText(item.Payload.Summary, transportAgentItemSummaryByteBudget)
 	value := decodeTransportAgentPayload(item.Payload.Data)
+	invalidPayload := transportAgentPayloadInvalid(value)
 	value = redactTransportAgentValue(value)
 	fullData, _ := json.Marshal(value)
 	if len(item.Payload.Data) == 0 {
@@ -121,15 +122,15 @@ func projectTransportAgentItem(item agentstate.TurnItem, forceCompact bool) tran
 	}
 	source := AiopsTransportAgentItem{
 		SchemaVersion: AiopsTransportAgentItemSchemaVersion,
-		ID:            item.ID, Type: string(item.Type), Status: string(item.Status),
-		Payload:   AiopsTransportAgentItemPayload{Kind: item.Payload.Kind, Summary: redactTransportAgentText(item.Payload.Summary), Data: fullData},
+		ID:            id, Type: typeName, Status: status,
+		Payload:   AiopsTransportAgentItemPayload{Kind: kind, Summary: summary, Data: fullData},
 		CreatedAt: transportTimestamp(item.CreatedAt), UpdatedAt: transportTimestamp(item.UpdatedAt),
 	}
 	sourceJSON, _ := json.Marshal(source)
 	digest := transportAgentContentHash(sourceJSON)
-	truncated := forceCompact || summaryTruncated || len(fullData) > transportAgentItemPayloadByteBudget
+	truncated := forceCompact || invalidPayload || idTruncated || kindTruncated || typeTruncated || statusTruncated || summaryTruncated || len(fullData) > transportAgentItemPayloadByteBudget
 	data := fullData
-	if truncated && len(fullData) > 0 {
+	if !invalidPayload && (forceCompact || len(fullData) > transportAgentItemPayloadByteBudget) && len(fullData) > 0 {
 		data = compactTransportAgentPayload(value, digest, len(fullData))
 	}
 	projected := source
@@ -140,6 +141,15 @@ func projectTransportAgentItem(item agentstate.TurnItem, forceCompact bool) tran
 		projected.OriginalBytes = int64(len(sourceJSON))
 		projected.ContentHash = digest
 		projected.Ref = "agent-item://" + strings.TrimPrefix(digest, "sha256:")
+	}
+	if raw, _ := json.Marshal(projected); len(raw) > transportAgentItemByteBudget {
+		projected.ID = truncateTransportAgentText(projected.ID, 256)
+		projected.Payload.Kind = truncateTransportAgentText(projected.Payload.Kind, 256)
+		projected.Payload.Summary = truncateTransportAgentText(projected.Payload.Summary, 1024)
+		if !invalidPayload {
+			projected.Payload.Data = compactTransportAgentPayload(nil, digest, len(fullData))
+		}
+		projected.Truncated = true
 	}
 	return transportAgentItemProjection{Item: projected, OriginalBytes: int64(len(sourceJSON)), SourceHash: digest}
 }
@@ -152,9 +162,23 @@ func decodeTransportAgentPayload(raw json.RawMessage) any {
 	decoder.UseNumber()
 	var value any
 	if err := decoder.Decode(&value); err != nil {
-		return redactTransportAgentText(string(raw))
+		return invalidTransportAgentPayload(len(raw))
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return invalidTransportAgentPayload(len(raw))
 	}
 	return value
+}
+
+func invalidTransportAgentPayload(originalBytes int) map[string]any {
+	return map[string]any{"_transportInvalidPayload": map[string]any{"invalid": true, "originalBytes": originalBytes, "ref": "invalid-json"}}
+}
+
+func transportAgentPayloadInvalid(value any) bool {
+	object, ok := value.(map[string]any)
+	_, invalid := object["_transportInvalidPayload"]
+	return ok && invalid
 }
 
 func redactTransportAgentValue(value any) any {
@@ -289,11 +313,20 @@ func truncateTransportAgentText(value string, budget int) string {
 	if len(value) <= budget {
 		return value
 	}
-	cut := budget
+	const marker = "…[truncated]"
+	cut := budget - len(marker)
+	if cut < 0 {
+		cut = 0
+	}
 	for cut > 0 && !utf8.ValidString(value[:cut]) {
 		cut--
 	}
-	return value[:cut] + "…[truncated]"
+	return value[:cut] + marker
+}
+
+func boundTransportAgentText(value string, budget int) (string, bool) {
+	redacted := redactTransportAgentText(value)
+	return truncateTransportAgentText(redacted, budget), len(redacted) > budget
 }
 
 func transportAgentContentHash(value []byte) string {

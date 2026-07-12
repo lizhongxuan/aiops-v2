@@ -226,6 +226,126 @@ func TestTransportProjectorCanonicalTurnFactsRedactAndBoundPayload(t *testing.T)
 	}
 }
 
+func TestTransportProjectorRejectsInvalidOrTrailingAgentPayloadWithoutHashingSecrets(t *testing.T) {
+	project := func(secret string) AiopsTransportTurn {
+		turn := &runtimekernel.TurnSnapshot{
+			ID: "turn-invalid-private", SessionID: "session-invalid-private", Lifecycle: runtimekernel.TurnLifecycleRunning,
+			AgentItems: []agentstate.TurnItem{
+				{ID: "invalid", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`password="` + secret + `" Authorization:"Bearer ` + secret + `"`)}},
+				{ID: "trailing", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"toolCallId":"call-trailing"} trailing password="` + secret + `"`)}},
+			},
+		}
+		projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-invalid-private"), turn)
+		if err != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+		}
+		return projected.Turns[turn.ID]
+	}
+	first := project("secret value")
+	second := project("public value")
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	for _, forbidden := range []string{`secret value`, `Bearer secret value`, `password=`, `trailing password`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("invalid payload leaked %q: %s", forbidden, encoded)
+		}
+	}
+	for i, item := range first.AgentItems {
+		if !item.Truncated || item.ContentHash == "" || !strings.Contains(string(item.Payload.Data), "_transportInvalidPayload") {
+			t.Fatalf("AgentItems[%d] invalid payload facts = %#v", i, item)
+		}
+		if item.ContentHash != second.AgentItems[i].ContentHash {
+			t.Fatalf("AgentItems[%d] hash depends on secret: %q != %q", i, item.ContentHash, second.AgentItems[i].ContentHash)
+		}
+	}
+}
+
+func TestTransportProjectorRedactsIterationSearchResultFallback(t *testing.T) {
+	secret := "secret value"
+	turn := &runtimekernel.TurnSnapshot{
+		ID: "turn-private-search", SessionID: "session-private-search", Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		Iterations: []runtimekernel.IterationState{{
+			ID: "iteration-private-search", ToolResults: []runtimekernel.ToolResult{{
+				ToolCallID: "call-private-search",
+				Content:    `{"results":[{"title":"password=\"` + secret + `\"","url":"https://example.com","snippet":"Authorization:\"Bearer ` + secret + `\"","text":"token=` + secret + `"}]}`,
+			}},
+		}},
+		AgentItems: []agentstate.TurnItem{{
+			ID: "search-private", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Data: json.RawMessage(`{"toolCallId":"call-private-search","toolName":"web_search","displayKind":"browser.search","inputSummary":"safe query"}`)},
+		}},
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-private-search"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("iteration fallback leaked secret: %s", encoded)
+	}
+	block := findTransportProcessBlock(t, got.Process, AiopsTransportProcessKindSearch)
+	if len(block.Results) != 1 || !strings.Contains(block.Results[0].Title+block.Results[0].Snippet+block.Results[0].Text, "[REDACTED]") {
+		t.Fatalf("search results = %#v, want structured redaction", block.Results)
+	}
+}
+
+func TestTransportProjectorRejectsTrailingJSONInIterationFallback(t *testing.T) {
+	secret := "secret value"
+	turn := &runtimekernel.TurnSnapshot{Iterations: []runtimekernel.IterationState{{
+		ToolResults: []runtimekernel.ToolResult{{
+			ToolCallID: "call-invalid-fallback",
+			Content:    `{"password":"` + secret + `"} trailing`,
+		}},
+	}}}
+	previews, payloads := transportToolResultFacts(turn)
+	encoded, err := json.Marshal(map[string]any{"previews": previews, "payloads": payloads})
+	if err != nil {
+		t.Fatalf("json.Marshal(fallback facts) error = %v", err)
+	}
+	if strings.Contains(string(encoded), secret) || !strings.Contains(string(encoded), "_transportInvalidPayload") {
+		t.Fatalf("invalid iteration fallback was not fail-closed: %s", encoded)
+	}
+}
+
+func TestTransportProjectorHardCapsHugeAgentItemAndTurnJSON(t *testing.T) {
+	huge := strings.Repeat("huge-field-", transportAgentItemsTurnByteBudget)
+	turn := &runtimekernel.TurnSnapshot{
+		ID: "turn-huge-agent-item", SessionID: "session-huge-agent-item", Lifecycle: runtimekernel.TurnLifecycleRunning,
+		AgentItems: []agentstate.TurnItem{{
+			ID: huge, Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Kind: huge, Summary: huge, Data: json.RawMessage(`{"toolCallId":` + strconv.Quote(huge) + `,"outputSummary":` + strconv.Quote(huge) + `}`)},
+		}},
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-huge-agent-item"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	itemJSON, err := json.Marshal(got.AgentItems[0])
+	if err != nil {
+		t.Fatalf("json.Marshal(item) error = %v", err)
+	}
+	if len(itemJSON) > 32*1024 {
+		t.Fatalf("agent item bytes = %d, hard cap = %d", len(itemJSON), 32*1024)
+	}
+	turnJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	if len(turnJSON) > transportAgentItemsTurnByteBudget {
+		t.Fatalf("turn bytes = %d, hard cap = %d", len(turnJSON), transportAgentItemsTurnByteBudget)
+	}
+	if !got.AgentItems[0].Truncated || got.AgentItems[0].ContentHash == "" || got.AgentItems[0].Ref == "" {
+		t.Fatalf("huge item truncation facts missing: %#v", got.AgentItems[0])
+	}
+}
+
 func TestTransportProjectorCanonicalTurnFactsEnforceDeterministicTurnBudget(t *testing.T) {
 	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
 	items := make([]agentstate.TurnItem, 0, transportAgentItemsPerTurnBudget+17)

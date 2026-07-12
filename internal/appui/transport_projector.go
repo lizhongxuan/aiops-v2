@@ -66,8 +66,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 		activeApprovalIDs = snapshotPendingApprovalIDs(turn.PendingApprovals, turn.PendingEvidence)
 	}
 	pruneTransportPendingApprovalsForTurn(&next, turnID, activeApprovalIDs)
-	resultPreviews := transportToolResultPreviews(turn)
-	resultPayloads := transportToolResultJSONPayloads(turn)
+	resultPreviews, resultPayloads := transportToolResultFacts(turn)
 	for _, item := range projectionItems {
 		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads, turn.Metadata)
 	}
@@ -349,33 +348,11 @@ func snapshotPendingApprovalIDs(approvals []runtimekernel.PendingApproval, evide
 	return ids
 }
 
-func transportToolResultPreviews(turn *runtimekernel.TurnSnapshot) map[string]string {
+func transportToolResultFacts(turn *runtimekernel.TurnSnapshot) (map[string]string, map[string]json.RawMessage) {
 	previews := map[string]string{}
-	if turn == nil {
-		return previews
-	}
-	for _, iteration := range turn.Iterations {
-		for _, result := range iteration.ToolResults {
-			toolCallID := strings.TrimSpace(result.ToolCallID)
-			if toolCallID == "" || strings.TrimSpace(result.Content) == "" {
-				continue
-			}
-			if _, exists := previews[toolCallID]; exists {
-				continue
-			}
-			_, outputPreview, _ := summarizeToolResultForEvent(turn.ID, toolCallID, result.Content)
-			if preview := jsonStringValue(outputPreview); preview != "" {
-				previews[toolCallID] = preview
-			}
-		}
-	}
-	return previews
-}
-
-func transportToolResultJSONPayloads(turn *runtimekernel.TurnSnapshot) map[string]json.RawMessage {
 	payloads := map[string]json.RawMessage{}
 	if turn == nil {
-		return payloads
+		return previews, payloads
 	}
 	for _, iteration := range turn.Iterations {
 		for _, result := range iteration.ToolResults {
@@ -384,17 +361,27 @@ func transportToolResultJSONPayloads(turn *runtimekernel.TurnSnapshot) map[strin
 			if toolCallID == "" || content == "" {
 				continue
 			}
-			if _, exists := payloads[toolCallID]; exists {
-				continue
+			safeContent := redactTransportAgentText(content)
+			var value any
+			if strings.HasPrefix(content, "{") || strings.HasPrefix(content, "[") {
+				value = decodeTransportAgentPayload(json.RawMessage(content))
+				value = redactTransportAgentValue(value)
+				if safeRaw, err := json.Marshal(value); err == nil {
+					safeContent = string(safeRaw)
+					if object, ok := value.(map[string]any); ok && len(object) > 0 && len(payloads[toolCallID]) == 0 {
+						payloads[toolCallID] = append(json.RawMessage(nil), safeRaw...)
+					}
+				}
 			}
-			var obj map[string]any
-			if err := json.Unmarshal([]byte(content), &obj); err != nil || len(obj) == 0 {
-				continue
+			if _, exists := previews[toolCallID]; !exists {
+				_, outputPreview, _ := summarizeToolResultForEvent(turn.ID, toolCallID, safeContent)
+				if preview := jsonStringValue(outputPreview); preview != "" {
+					previews[toolCallID] = preview
+				}
 			}
-			payloads[toolCallID] = append(json.RawMessage(nil), []byte(content)...)
 		}
 	}
-	return payloads
+	return previews, payloads
 }
 
 func projectContextGovernanceEvents(events []runtimekernel.ContextGovernanceEvent) []AiopsContextGovernanceEvent {
@@ -3506,13 +3493,13 @@ func cleanTransportSearchResults(results []AiopsSearchResult) []AiopsSearchResul
 	countByDomain := map[string]int{}
 	for _, result := range results {
 		item := AiopsSearchResult{
-			Title:       strings.TrimSpace(result.Title),
-			URL:         strings.TrimSpace(result.URL),
-			Snippet:     strings.TrimSpace(result.Snippet),
-			Text:        strings.TrimSpace(result.Text),
+			Title:       truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.Title)), transportAgentItemSummaryByteBudget),
+			URL:         truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.URL)), transportAgentItemSummaryByteBudget),
+			Snippet:     truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.Snippet)), transportAgentItemSummaryByteBudget),
+			Text:        truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.Text)), transportAgentItemSummaryByteBudget),
 			Fetched:     result.Fetched,
-			FetchError:  strings.TrimSpace(result.FetchError),
-			ContentType: strings.TrimSpace(result.ContentType),
+			FetchError:  truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.FetchError)), transportAgentItemSummaryByteBudget),
+			ContentType: truncateTransportAgentText(redactTransportAgentText(strings.TrimSpace(result.ContentType)), transportAgentItemSummaryByteBudget),
 		}
 		if item.Title == "" && item.URL == "" && item.Snippet == "" && item.Text == "" {
 			continue
