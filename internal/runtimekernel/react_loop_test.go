@@ -934,6 +934,123 @@ func TestRunTurn_FeedsToolFailureBackToModelInsteadOfFailingTurn(t *testing.T) {
 	}
 }
 
+func TestRunTurn_TypedPartialToolResultFeedsModelAndFinalizesPartial(t *testing.T) {
+	model := &sequentialLoopModel{
+		responses: []*schema.Message{
+			schema.AssistantMessage("", []schema.ToolCall{{
+				ID:   "call-wait-aggregate",
+				Type: "function",
+				Function: schema.FunctionCall{
+					Name:      "wait_host_agents",
+					Arguments: `{"missionId":"mission-partial"}`,
+				},
+			}}),
+			schema.AssistantMessage("聚合结果如下。", nil),
+		},
+	}
+	partialContent := `{"children":[{"id":"child-a","status":"completed"},{"id":"child-b","status":"failed","error":"host unavailable"}]}`
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:           "wait_host_agents",
+			Description:    "Wait for host child agents",
+			RecordEvidence: true,
+			RiskLevel:      tooling.ToolRiskLow,
+			FailurePolicy:  tooling.ToolFailurePolicyFeedBackToModel,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:  "read",
+				OperationKinds:  []string{"read"},
+				PermissionScope: "read",
+			},
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{
+				Content: partialContent,
+				Outcome: tooling.ToolResultOutcomePartial,
+			}, nil
+		},
+	}
+
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-typed-partial",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-typed-partial",
+		Input:       "汇总各主机子任务结果",
+		HostID:      "manager-host",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("result status = %q, want completed turn with partial final contract", result.Status)
+	}
+	if len(model.inputs) != 2 {
+		t.Fatalf("model inputs = %d, want 2", len(model.inputs))
+	}
+	foundToolFeedback := false
+	for _, msg := range model.inputs[1] {
+		if msg.Role == schema.Tool && msg.ToolCallID == "call-wait-aggregate" && strings.Contains(msg.Content, `"child-b"`) {
+			foundToolFeedback = true
+			break
+		}
+	}
+	if !foundToolFeedback {
+		t.Fatalf("second model input did not retain partial aggregate content: %#v", model.inputs[1])
+	}
+
+	session := kernel.sessions.Get("sess-typed-partial")
+	if session == nil || session.CurrentTurn == nil || len(session.CurrentTurn.Iterations) == 0 {
+		t.Fatal("expected persisted current turn with iterations")
+	}
+	iteration := session.CurrentTurn.Iterations[0]
+	if len(iteration.ToolResults) != 1 || iteration.ToolResults[0].Outcome != tooling.ToolResultOutcomePartial {
+		t.Fatalf("recorded tool results = %#v, want typed partial outcome", iteration.ToolResults)
+	}
+	if len(iteration.ToolInvocations) != 1 {
+		t.Fatalf("tool invocations = %#v, want one", iteration.ToolInvocations)
+	}
+	invocation := iteration.ToolInvocations[0]
+	if invocation.Status != ToolInvocationPartial || invocation.FailureKind != "partial_result" || invocation.CompletedAt == nil {
+		t.Fatalf("invocation = %#v, want terminal partial/partial_result", invocation)
+	}
+
+	foundTypedToolItem := false
+	var finalContract FinalContract
+	for _, item := range session.CurrentTurn.AgentItems {
+		switch item.Type {
+		case agentstate.TurnItemTypeToolResult:
+			var payload struct {
+				Outcome tooling.ToolResultOutcome `json:"outcome"`
+			}
+			if json.Unmarshal(item.Payload.Data, &payload) == nil && payload.Outcome == tooling.ToolResultOutcomePartial {
+				foundTypedToolItem = true
+			}
+		case agentstate.TurnItemTypeAssistantMessage:
+			var payload struct {
+				FinalContract FinalContract `json:"finalContract"`
+			}
+			if json.Unmarshal(item.Payload.Data, &payload) == nil && payload.FinalContract.SchemaVersion != "" {
+				finalContract = payload.FinalContract
+			}
+		}
+	}
+	if !foundTypedToolItem {
+		t.Fatalf("agent items = %#v, want canonical tool_result outcome=partial", session.CurrentTurn.AgentItems)
+	}
+	if finalContract.Status != FinalContractStatusPartial || finalContract.Confidence != FinalEvidenceConfidenceMedium {
+		t.Fatalf("final contract = %#v, want partial/medium", finalContract)
+	}
+	if len(finalContract.FailedToolImpacts) != 1 || finalContract.FailedToolImpacts[0].FailureClass != "partial_result" {
+		t.Fatalf("failed tool impacts = %#v, want typed partial_result impact", finalContract.FailedToolImpacts)
+	}
+}
+
 func TestRunTurn_FeedsDeniedToolBackToModelInsteadOfFailingTurn(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{

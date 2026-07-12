@@ -3011,6 +3011,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			if recordedResult.Error != "" {
 				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+			} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+				markToolInvocationPartial(snapshot, tc.ID)
 			} else {
 				markToolInvocationCompleted(snapshot, tc.ID)
 			}
@@ -4825,6 +4827,8 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	))
 	if recordedResult.Error != "" {
 		markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+	} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+		markToolInvocationPartial(snapshot, toolCall.ID)
 	} else {
 		markToolInvocationCompleted(snapshot, toolCall.ID)
 	}
@@ -4931,6 +4935,8 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 		}
 		if recordedResult.Error != "" {
 			markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+		} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+			markToolInvocationPartial(snapshot, tc.ID)
 		} else {
 			markToolInvocationCompleted(snapshot, tc.ID)
 		}
@@ -4965,6 +4971,9 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 		"rawRef":          rawRef,
 		"resultBytes":     resultBytes,
 		"resultTruncated": resultTruncated,
+	}
+	if result.Outcome != "" {
+		payload["outcome"] = result.Outcome
 	}
 	if inputSummary := strings.TrimSpace(approvalCommandForToolCall(tc)); inputSummary != "" {
 		payload["inputSummary"] = inputSummary
@@ -5364,6 +5373,7 @@ func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *T
 		Content:    toolResult.Content,
 		Display:    copyToolDisplay(toolResult.Display),
 		Error:      toolResult.Error,
+		Outcome:    toolResult.Outcome,
 		References: normalizeToolResultReferences(toolResult.References, toolResult.Display),
 	}
 	defaultInlineBytes := defaultInlineResultBytesForContext(k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())

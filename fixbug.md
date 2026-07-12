@@ -80,3 +80,12 @@
 - 修复方式：把 manager lifecycle 工具归为 low-risk core orchestration control，保持 `IsReadOnly=false` 并继续由 Orchestrator 的 `PlanAccepted` gate 控制实际执行；真实 child 的 host command/policy/approval/rollback 路径完全不变。child result 增加 transport-compatible `id` 等完整字段，并保留 `childAgentId` 兼容字段。
 - 验证结果：RED 精确命中错误 governance 与缺失 DTO；PlanAccepted 拒绝测试在修复前后都通过。修复后 `go test ./internal/hostops -count=1`、`go test -race ./internal/hostops -count=1` 与 diff check 通过；后续由 public AssistantTransport multi-host story 验证生产 manager/child 链。
 - 风险与后续：manager send/stop 不再触发主机 mutation approval，但它们只能操作既有 mission/child，且 child 的实际主机动作仍由独立 worker RuntimeKernel 治理；必须保留真实 multi-host story 防止再次退化为 StaticTool 外壳。
+
+## 2026-07-12 13:45 - 多主机部分失败被 FinalContract 误标 verified
+
+- 修复时间：2026-07-12 13:45
+- Bug 现象：`wait_host_agents` 成功返回完整聚合 JSON，其中 host-a completed、host-b failed，但 Runtime 只看到“工具调用无 Error”，把 invocation 标为 completed，最终输出 `verified/high`。
+- 根因：`ToolResult` 没有表达“调用成功但业务聚合仅部分完成”的 typed outcome；Runtime 只能在 completed/failed 二元状态中选择，FinalEvidence 因而丢失 child partial failure。
+- 修复方式：新增兼容默认值的 typed `ToolResultOutcome`；hostops wait 按 child typed status 写入 complete/partial，仍保留完整 JSON 且不伪造 Go error。Runtime 无损物化 outcome、写入 canonical tool_result AgentItem，并把 invocation 标为 terminal `partial/partial_result`；FinalContract 从 invocation 事实降为 `partial/medium`。
+- 验证结果：RED public story 真实观察到 failed child 与 `verified/high` 同时存在；新增 `RunTurn` 回归证明 partial 内容继续反馈模型、canonical item/invocation/final 三处一致。`go test ./internal/hostops ./internal/runtimekernel -count=1` 和新增路径 race 测试通过；后续 AssistantTransport story负责验证 manager/child/transport 全链。
+- 风险与后续：未知 outcome 归一化为 partial 以 fail safe；旧工具未写 outcome 时保持空值并按 complete 兼容，不向所有旧 AgentItem 注入新字段。当前 partial impact 通用文案仍偏向普通工具失败，另以独立小阶段调整为聚合结果语义。

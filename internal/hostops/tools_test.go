@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -230,6 +232,83 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	if waitPayload.Children[0].EvidenceRefs == nil || waitPayload.Children[0].BlockerRefs == nil {
 		t.Fatalf("wait child = %#v, want explicit evidenceRefs/blockerRefs arrays", waitPayload.Children[0])
+	}
+}
+
+func TestWaitHostAgentsReturnsTypedAggregateOutcome(t *testing.T) {
+	tests := []struct {
+		name        string
+		statuses    []HostChildAgentStatus
+		wantOutcome tooling.ToolResultOutcome
+	}{
+		{
+			name:        "all children completed",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusCompleted},
+			wantOutcome: tooling.ToolResultOutcomeComplete,
+		},
+		{
+			name:        "one child failed",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusFailed},
+			wantOutcome: tooling.ToolResultOutcomePartial,
+		},
+		{
+			name:        "one child still running",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusRunning},
+			wantOutcome: tooling.ToolResultOutcomePartial,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewInMemoryMissionStore()
+			missionID := "mission-aggregate-" + strings.ReplaceAll(tt.name, " ", "-")
+			if err := store.SaveMission(ctx, HostOperationMission{ID: missionID}); err != nil {
+				t.Fatalf("SaveMission() error = %v", err)
+			}
+			for i, status := range tt.statuses {
+				child := HostChildAgent{
+					ID:        fmt.Sprintf("child-%d", i),
+					MissionID: missionID,
+					HostID:    fmt.Sprintf("host-%d", i),
+					Status:    status,
+				}
+				if status == HostChildAgentStatusFailed {
+					child.Error = "host unavailable"
+				}
+				if err := store.SaveChildAgent(ctx, child); err != nil {
+					t.Fatalf("SaveChildAgent() error = %v", err)
+				}
+			}
+
+			orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})
+			tool := managerToolsByName(NewManagerTools(orchestrator))[ToolWaitHostAgents]
+			result, err := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"missionId":%q}`, missionID)))
+			if err != nil {
+				t.Fatalf("wait Execute() error = %v, want aggregate result without Go error", err)
+			}
+			if result.Error != "" {
+				t.Fatalf("wait result Error = %q, want empty", result.Error)
+			}
+			if result.Outcome != tt.wantOutcome {
+				t.Fatalf("wait result Outcome = %q, want %q", result.Outcome, tt.wantOutcome)
+			}
+			var payload struct {
+				Children []struct {
+					Status string `json:"status"`
+					Error  string `json:"error"`
+				} `json:"children"`
+			}
+			if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+				t.Fatalf("wait result content is not complete JSON: %v\n%s", err, result.Content)
+			}
+			if len(payload.Children) != len(tt.statuses) {
+				t.Fatalf("wait result children = %#v, want %d complete child records", payload.Children, len(tt.statuses))
+			}
+			if tt.wantOutcome == tooling.ToolResultOutcomePartial && payload.Children[1].Status == "" {
+				t.Fatalf("partial result dropped child status: %#v", payload.Children)
+			}
+		})
 	}
 }
 

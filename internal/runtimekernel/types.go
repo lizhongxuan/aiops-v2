@@ -208,17 +208,18 @@ type ToolCall struct {
 
 // ToolResult represents the result of a tool execution.
 type ToolResult struct {
-	ToolCallID          string                `json:"toolCallId"`
-	Content             string                `json:"content"`
-	Summary             string                `json:"summary,omitempty"`
-	Display             *ToolDisplayPayload   `json:"display,omitempty"`
-	Error               string                `json:"error,omitempty"`
-	References          []ToolResultReference `json:"references,omitempty"`
-	Spilled             bool                  `json:"spilled,omitempty"`
-	ExternalReferences  []ExternalReference   `json:"externalReferences,omitempty"`
-	MaterializationTier string                `json:"materializationTier,omitempty"`
-	OriginalBytes       int64                 `json:"originalBytes,omitempty"`
-	InlineBytes         int64                 `json:"inlineBytes,omitempty"`
+	ToolCallID          string                    `json:"toolCallId"`
+	Content             string                    `json:"content"`
+	Summary             string                    `json:"summary,omitempty"`
+	Display             *ToolDisplayPayload       `json:"display,omitempty"`
+	Error               string                    `json:"error,omitempty"`
+	Outcome             tooling.ToolResultOutcome `json:"outcome,omitempty"`
+	References          []ToolResultReference     `json:"references,omitempty"`
+	Spilled             bool                      `json:"spilled,omitempty"`
+	ExternalReferences  []ExternalReference       `json:"externalReferences,omitempty"`
+	MaterializationTier string                    `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                     `json:"originalBytes,omitempty"`
+	InlineBytes         int64                     `json:"inlineBytes,omitempty"`
 }
 
 // Validate checks the tool result payload.

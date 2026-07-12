@@ -362,11 +362,32 @@ type StreamingResult struct {
 }
 
 // ToolResult is the output of a tool invocation.
+type ToolResultOutcome string
+
+const (
+	ToolResultOutcomeComplete ToolResultOutcome = "complete"
+	ToolResultOutcomePartial  ToolResultOutcome = "partial"
+)
+
+// Normalize preserves backward compatibility for tools that predate typed
+// outcomes while treating unknown values conservatively as partial results.
+func (o ToolResultOutcome) Normalize() ToolResultOutcome {
+	switch o {
+	case "", ToolResultOutcomeComplete:
+		return ToolResultOutcomeComplete
+	case ToolResultOutcomePartial:
+		return ToolResultOutcomePartial
+	default:
+		return ToolResultOutcomePartial
+	}
+}
+
 type ToolResult struct {
 	ToolCallID   string              `json:"toolCallId,omitempty"`
 	Content      string              `json:"content,omitempty"`
 	Display      *ToolDisplayPayload `json:"display,omitempty"`
 	Error        string              `json:"error,omitempty"`
+	Outcome      ToolResultOutcome   `json:"outcome,omitempty"`
 	References   []ResultReference   `json:"references,omitempty"`
 	ResultBudget ResultBudget        `json:"resultBudget,omitempty"`
 	Spill        *ResultSpill        `json:"spill,omitempty"`

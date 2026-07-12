@@ -19,6 +19,7 @@ const (
 	ToolInvocationQueued    ToolInvocationStatus = "queued"
 	ToolInvocationRunning   ToolInvocationStatus = "running"
 	ToolInvocationCompleted ToolInvocationStatus = "completed"
+	ToolInvocationPartial   ToolInvocationStatus = "partial"
 	ToolInvocationFailed    ToolInvocationStatus = "failed"
 	ToolInvocationBlocked   ToolInvocationStatus = "blocked"
 )
@@ -107,6 +108,10 @@ func markToolInvocationCompleted(snapshot *TurnSnapshot, toolCallID string) {
 	updateToolInvocation(snapshot, toolCallID, ToolInvocationCompleted, "", nil)
 }
 
+func markToolInvocationPartial(snapshot *TurnSnapshot, toolCallID string) {
+	updateToolInvocation(snapshot, toolCallID, ToolInvocationPartial, "partial_result", nil)
+}
+
 func markToolInvocationFailed(snapshot *TurnSnapshot, toolCallID string, failureKind string) {
 	updateToolInvocation(snapshot, toolCallID, ToolInvocationFailed, failureKind, nil)
 	if failureKind == string(toolfailure.KindInvalidArguments) {
@@ -134,7 +139,7 @@ func updateToolInvocation(snapshot *TurnSnapshot, toolCallID string, status Tool
 		inv.FailureKind = failureKind
 	}
 	switch status {
-	case ToolInvocationCompleted, ToolInvocationFailed:
+	case ToolInvocationCompleted, ToolInvocationPartial, ToolInvocationFailed:
 		inv.CompletedAt = &now
 	}
 }

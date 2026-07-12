@@ -169,7 +169,12 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children))
+			result, err := jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children))
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			result.Outcome = waitHostAgentsOutcome(children)
+			return result, nil
 		},
 	}
 }
@@ -237,6 +242,15 @@ func waitHostAgentsContract(children []HostChildAgent) map[string]any {
 		"schemaVersion": "aiops.hostops.wait/v1",
 		"children":      childAgentResultContracts(children, false),
 	}
+}
+
+func waitHostAgentsOutcome(children []HostChildAgent) tooling.ToolResultOutcome {
+	for _, child := range children {
+		if child.Status != HostChildAgentStatusCompleted {
+			return tooling.ToolResultOutcomePartial
+		}
+	}
+	return tooling.ToolResultOutcomeComplete
 }
 
 func childAgentResultContracts(children []HostChildAgent, includeNoHostMutation bool) []map[string]any {
