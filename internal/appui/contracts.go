@@ -466,6 +466,7 @@ type Services struct {
 	uiCards         UICardService
 	coroot          CorootConfigRepository
 	agentEvents     AgentEventService
+	promptTraces    PromptTraceService
 	incidents       IncidentService
 	chatArchive     ChatArchiveService
 	postmortems     PostmortemService
@@ -542,6 +543,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	hostOpsService := cfg.hostOps
 	chatService := NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, runtimeSettingsProvider, agentEvents)
+	promptTraceService := NewPromptTraceService("")
+	if reader, ok := runtime.(CanonicalRolloutReader); ok {
+		promptTraceService = NewPromptTraceServiceWithRolloutReader("", reader)
+	}
 	return &Services{
 		chat:            chatService,
 		state:           NewStateService(sessions, builder),
@@ -560,6 +565,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards:         uiCards,
 		coroot:          cfg.coroot,
 		agentEvents:     agentEvents,
+		promptTraces:    promptTraceService,
 		incidents:       incidentService,
 		chatArchive:     chatArchiveService,
 		postmortems:     NewPostmortemService(incidentService),
@@ -609,6 +615,7 @@ func (s *Services) CorootConfigRepository() CorootConfigRepository {
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
+func (s *Services) PromptTraceService() PromptTraceService     { return s.promptTraces }
 func (s *Services) IncidentService() IncidentService           { return s.incidents }
 func (s *Services) ChatArchiveService() ChatArchiveService     { return s.chatArchive }
 func (s *Services) PostmortemService() PostmortemService       { return s.postmortems }

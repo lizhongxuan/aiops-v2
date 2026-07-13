@@ -2,11 +2,170 @@ package appui
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"aiops-v2/internal/modeltrace"
 )
+
+type promptTraceCanonicalReaderStub struct {
+	events []modeltrace.CanonicalRolloutEvent
+	err    error
+}
+
+func (s promptTraceCanonicalReaderStub) CanonicalRolloutEvents(context.Context, string, string) ([]modeltrace.CanonicalRolloutEvent, error) {
+	return append([]modeltrace.CanonicalRolloutEvent(nil), s.events...), s.err
+}
+
+func freezePromptTraceCanonicalEvent(t *testing.T, event modeltrace.CanonicalRolloutEvent) modeltrace.CanonicalRolloutEvent {
+	t.Helper()
+	frozen, err := modeltrace.FreezeCanonicalRolloutEvent(event)
+	if err != nil {
+		t.Fatalf("FreezeCanonicalRolloutEvent() error = %v", err)
+	}
+	return frozen
+}
+
+func TestPromptTraceServiceProjectsCanonicalControlChainWithoutTraceDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing-model-input-traces")
+	assembly := freezePromptTraceCanonicalEvent(t, modeltrace.CanonicalRolloutEvent{
+		Sequence:         1,
+		SessionID:        "session-canonical",
+		TurnID:           "turn-canonical",
+		Kind:             modeltrace.CanonicalRolloutKindAssembly,
+		TurnAssemblyHash: "sha256:assembly",
+		SourceRefs:       []string{"rollout:assembly"},
+		Payload: map[string]any{
+			"capabilityPolicyHash": "sha256:capability-policy",
+			"rawContent":           "must never reach prompt trace",
+		},
+	})
+	prompt := freezePromptTraceCanonicalEvent(t, modeltrace.CanonicalRolloutEvent{
+		Sequence:         2,
+		SessionID:        "session-canonical",
+		TurnID:           "turn-canonical",
+		StepID:           "step:1",
+		Kind:             modeltrace.CanonicalRolloutKindPrompt,
+		TurnAssemblyHash: "sha256:assembly",
+		StepContextHash:  "sha256:step",
+		SourceRefs:       []string{"rollout:prompt"},
+		Payload: map[string]any{
+			"stepRevisionKind":   "approval_resume",
+			"stepRevisionKinds":  []string{"approval_resume", "checkpoint_advanced"},
+			"absoluteSystemHash": "sha256:l0",
+			"roleProfileHash":    "sha256:l1",
+			"modelInputHash":     "sha256:model-input",
+			"apiKey":             "do-not-leak",
+			"ragContent":         "private retrieved document",
+		},
+	})
+	service := NewPromptTraceServiceWithRolloutReader(root, promptTraceCanonicalReaderStub{events: []modeltrace.CanonicalRolloutEvent{assembly, prompt}})
+
+	list, err := service.ListModelInputTraces(context.Background(), PromptTraceListRequest{
+		SessionID:           "session-canonical",
+		TurnID:              "turn-canonical",
+		IncludeControlChain: true,
+	})
+	if err != nil {
+		t.Fatalf("ListModelInputTraces() error = %v", err)
+	}
+	if len(list.Traces) != 0 || list.ControlChain == nil || !list.ControlChain.Available {
+		t.Fatalf("canonical-only response = %#v", list)
+	}
+	if got := list.ControlChain.Events; len(got) != 2 {
+		t.Fatalf("control chain events = %#v, want 2", got)
+	} else {
+		if got[0].Owner != "assembly" || got[0].EventID != assembly.EventID || got[0].Hash != assembly.Hash || got[0].TurnAssemblyHash != "sha256:assembly" {
+			t.Fatalf("assembly projection = %#v", got[0])
+		}
+		if len(got[0].SourceRefs) != 1 || got[0].SourceRefs[0] != "rollout:assembly" || got[0].PayloadRefs["capabilityPolicyHash"] != "sha256:capability-policy" {
+			t.Fatalf("assembly refs = %#v", got[0])
+		}
+		if got[1].Owner != "prompt" || got[1].StepContextHash != "sha256:step" || got[1].PayloadRefs["modelInputHash"] != "sha256:model-input" || got[1].PayloadRefs["absoluteSystemHash"] != "sha256:l0" || got[1].PayloadRefs["stepRevisionKind"] != "approval_resume" || len(got[1].PayloadRefs["stepRevisionKinds"].([]string)) != 2 {
+			t.Fatalf("prompt projection = %#v", got[1])
+		}
+	}
+	if got := list.ControlChain.HeadRef; got == nil || got.Sequence != prompt.Sequence || got.EventID != prompt.EventID || got.Hash != prompt.Hash {
+		t.Fatalf("control chain head ref = %#v, want last validated event", got)
+	}
+	encoded, err := json.Marshal(list)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	for _, secret := range []string{"do-not-leak", "private retrieved document", "must never reach prompt trace", "apiKey", "ragContent", "rawContent"} {
+		if strings.Contains(string(encoded), secret) {
+			t.Fatalf("control chain leaked %q: %s", secret, encoded)
+		}
+	}
+}
+
+func TestPromptTraceServiceProjectsCanonicalApprovalAndCheckpointReferences(t *testing.T) {
+	events := []modeltrace.CanonicalRolloutEvent{
+		freezePromptTraceCanonicalEvent(t, modeltrace.CanonicalRolloutEvent{
+			Sequence: 1, SessionID: "session-approval", TurnID: "turn-approval", Kind: modeltrace.CanonicalRolloutKindApprovalRequested,
+			Payload: map[string]any{
+				"approvalId": "approval:1", "toolCallId": "call:1", "toolName": "ops.change",
+				"actionTokenHash": "sha256:token", "permissionHash": "sha256:permission",
+				"checkpointId": "checkpoint:1", "targetRefs": []string{"resource:1"},
+				"mismatchFields": []string{"permissionHash"}, "args": map[string]any{"password": "secret"},
+			},
+		}),
+		freezePromptTraceCanonicalEvent(t, modeltrace.CanonicalRolloutEvent{
+			Sequence: 2, SessionID: "session-approval", TurnID: "turn-approval", Kind: modeltrace.CanonicalRolloutKindCheckpoint,
+			SourceRefs: []string{"checkpoint:1"}, Payload: map[string]any{
+				"checkpointId": "checkpoint:1", "checkpointRef": "checkpoint:1", "checkpointHash": "sha256:checkpoint",
+			},
+		}),
+	}
+	service := NewPromptTraceServiceWithRolloutReader(t.TempDir(), promptTraceCanonicalReaderStub{events: events})
+	list, err := service.ListModelInputTraces(context.Background(), PromptTraceListRequest{SessionID: "session-approval", TurnID: "turn-approval", IncludeControlChain: true})
+	if err != nil {
+		t.Fatalf("ListModelInputTraces() error = %v", err)
+	}
+	if got := list.ControlChain.Events[0]; got.Owner != "approval" || got.PayloadRefs["approvalId"] != "approval:1" || got.PayloadRefs["toolCallId"] != "call:1" || got.PayloadRefs["permissionHash"] != "sha256:permission" || len(got.PayloadRefs["mismatchFields"].([]string)) != 1 {
+		t.Fatalf("approval projection = %#v", got)
+	}
+	if got := list.ControlChain.Events[1]; got.Owner != "approval" || got.PayloadRefs["checkpointRef"] != "checkpoint:1" || len(got.SourceRefs) != 1 {
+		t.Fatalf("checkpoint projection = %#v", got)
+	}
+	encoded, _ := json.Marshal(list.ControlChain)
+	if strings.Contains(string(encoded), "password") || strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "args") {
+		t.Fatalf("approval projection leaked action args: %s", encoded)
+	}
+}
+
+func TestPromptTraceServiceMarksCanonicalControlChainUnavailableWithoutReader(t *testing.T) {
+	service := NewPromptTraceService(t.TempDir())
+	list, err := service.ListModelInputTraces(context.Background(), PromptTraceListRequest{SessionID: "session-1", TurnID: "turn-1", IncludeControlChain: true})
+	if err != nil {
+		t.Fatalf("ListModelInputTraces() error = %v", err)
+	}
+	if list.ControlChain == nil || list.ControlChain.Available || list.ControlChain.UnavailableReason != "canonical rollout reader unavailable" {
+		t.Fatalf("control chain availability = %#v", list.ControlChain)
+	}
+}
+
+func TestPromptTraceServiceRejectsInvalidCanonicalControlChain(t *testing.T) {
+	event := freezePromptTraceCanonicalEvent(t, modeltrace.CanonicalRolloutEvent{Sequence: 1, SessionID: "session-1", TurnID: "turn-1", Kind: modeltrace.CanonicalRolloutKindPrompt})
+	event.Hash = "sha256:tampered"
+	service := NewPromptTraceServiceWithRolloutReader(t.TempDir(), promptTraceCanonicalReaderStub{events: []modeltrace.CanonicalRolloutEvent{event}})
+	_, err := service.ListModelInputTraces(context.Background(), PromptTraceListRequest{SessionID: "session-1", TurnID: "turn-1", IncludeControlChain: true})
+	if err == nil || !strings.Contains(err.Error(), "canonical rollout event") {
+		t.Fatalf("ListModelInputTraces() error = %v, want canonical validation failure", err)
+	}
+}
+
+func TestPromptTraceServicePropagatesCanonicalReaderFailure(t *testing.T) {
+	service := NewPromptTraceServiceWithRolloutReader(t.TempDir(), promptTraceCanonicalReaderStub{err: errors.New("rollout store unavailable")})
+	_, err := service.ListModelInputTraces(context.Background(), PromptTraceListRequest{SessionID: "session-1", TurnID: "turn-1", IncludeControlChain: true})
+	if err == nil || !strings.Contains(err.Error(), "read canonical rollout") {
+		t.Fatalf("ListModelInputTraces() error = %v, want reader failure", err)
+	}
+}
 
 func TestPromptTraceServiceListsAndReadsTraceFiles(t *testing.T) {
 	root := t.TempDir()

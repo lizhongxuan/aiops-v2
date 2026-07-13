@@ -165,6 +165,12 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 			agentEvents = provided
 		}
 	}
+	promptTraces := appui.NewPromptTraceService("")
+	if provider, ok := ui.(interface {
+		PromptTraceService() appui.PromptTraceService
+	}); ok && provider.PromptTraceService() != nil {
+		promptTraces = provider.PromptTraceService()
+	}
 	s := &HTTPServer{
 		ui:                 ui,
 		mux:                http.NewServeMux(),
@@ -172,7 +178,7 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
 		agentEvents:        agentEvents,
-		promptTraces:       appui.NewPromptTraceService(""),
+		promptTraces:       promptTraces,
 		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {

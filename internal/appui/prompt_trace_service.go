@@ -13,23 +13,56 @@ import (
 	"time"
 
 	"aiops-v2/internal/diagnostics"
+	"aiops-v2/internal/modeltrace"
 )
 
 const defaultPromptTraceLimit = 500
 const maxPromptTraceLimit = 2000
 
 type PromptTraceListRequest struct {
-	Limit  int
-	Query  string
-	CaseID string
-	Trace  string
+	Limit               int
+	Query               string
+	CaseID              string
+	Trace               string
+	SessionID           string
+	TurnID              string
+	IncludeControlChain bool
 }
 
 type PromptTraceListResponse struct {
-	RootDir    string            `json:"rootDir"`
-	Traces     []PromptTraceItem `json:"traces"`
-	SelectedID string            `json:"selectedId,omitempty"`
-	SetupHint  string            `json:"setupHint,omitempty"`
+	RootDir      string                   `json:"rootDir"`
+	Traces       []PromptTraceItem        `json:"traces"`
+	SelectedID   string                   `json:"selectedId,omitempty"`
+	SetupHint    string                   `json:"setupHint,omitempty"`
+	ControlChain *PromptTraceControlChain `json:"controlChain,omitempty"`
+}
+
+type PromptTraceControlChain struct {
+	SchemaVersion     string                          `json:"schemaVersion"`
+	SessionID         string                          `json:"sessionId"`
+	TurnID            string                          `json:"turnId"`
+	Available         bool                            `json:"available"`
+	UnavailableReason string                          `json:"unavailableReason,omitempty"`
+	HeadRef           *PromptTraceControlChainHeadRef `json:"headRef,omitempty"`
+	Events            []PromptTraceControlChainEvent  `json:"events,omitempty"`
+}
+
+type PromptTraceControlChainHeadRef struct {
+	Sequence int64  `json:"sequence"`
+	EventID  string `json:"eventId"`
+	Hash     string `json:"hash"`
+}
+
+type PromptTraceControlChainEvent struct {
+	Sequence         int64          `json:"sequence"`
+	Kind             string         `json:"kind"`
+	EventID          string         `json:"eventId"`
+	Hash             string         `json:"hash"`
+	Owner            string         `json:"owner"`
+	TurnAssemblyHash string         `json:"turnAssemblyHash,omitempty"`
+	StepContextHash  string         `json:"stepContextHash,omitempty"`
+	SourceRefs       []string       `json:"sourceRefs,omitempty"`
+	PayloadRefs      map[string]any `json:"payloadRefs,omitempty"`
 }
 
 type PromptTraceItem struct {
@@ -132,8 +165,13 @@ type PromptTraceService interface {
 	GetModelInputTraceFile(ctx context.Context, req PromptTraceFileRequest) (PromptTraceFileResponse, error)
 }
 
+type CanonicalRolloutReader interface {
+	CanonicalRolloutEvents(ctx context.Context, sessionID, turnID string) ([]modeltrace.CanonicalRolloutEvent, error)
+}
+
 type promptTraceService struct {
-	rootDir string
+	rootDir       string
+	rolloutReader CanonicalRolloutReader
 }
 
 type promptTraceMessage struct {
@@ -224,6 +262,10 @@ func NewPromptTraceService(rootDir string) PromptTraceService {
 	return promptTraceService{rootDir: strings.TrimSpace(rootDir)}
 }
 
+func NewPromptTraceServiceWithRolloutReader(rootDir string, reader CanonicalRolloutReader) PromptTraceService {
+	return promptTraceService{rootDir: strings.TrimSpace(rootDir), rolloutReader: reader}
+}
+
 func shouldSkipPromptTraceJSON(root, path string) bool {
 	if strings.EqualFold(filepath.Base(path), "index.json") {
 		return true
@@ -247,6 +289,13 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 	}
 	limit := normalizePromptTraceLimit(req.Limit)
 	response := PromptTraceListResponse{RootDir: root}
+	if req.IncludeControlChain {
+		controlChain, err := s.projectCanonicalControlChain(ctx, req.SessionID, req.TurnID)
+		if err != nil {
+			return PromptTraceListResponse{}, err
+		}
+		response.ControlChain = controlChain
+	}
 	if _, err := os.Stat(root); err != nil {
 		if os.IsNotExist(err) {
 			response.SetupHint = promptTraceSetupHint(root)
@@ -300,6 +349,171 @@ func (s promptTraceService) ListModelInputTraces(ctx context.Context, req Prompt
 		response.SetupHint = promptTraceSetupHint(root)
 	}
 	return response, nil
+}
+
+func (s promptTraceService) projectCanonicalControlChain(ctx context.Context, sessionID, turnID string) (*PromptTraceControlChain, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	turnID = strings.TrimSpace(turnID)
+	if sessionID == "" || turnID == "" {
+		return nil, fmt.Errorf("sessionId and turnId are required when includeControlChain is true")
+	}
+	projection := &PromptTraceControlChain{
+		SchemaVersion: modeltrace.CanonicalRolloutSchemaVersion,
+		SessionID:     sessionID,
+		TurnID:        turnID,
+	}
+	if s.rolloutReader == nil {
+		projection.UnavailableReason = "canonical rollout reader unavailable"
+		return projection, nil
+	}
+	events, err := s.rolloutReader.CanonicalRolloutEvents(ctx, sessionID, turnID)
+	if err != nil {
+		return nil, fmt.Errorf("read canonical rollout: %w", err)
+	}
+	projection.Available = true
+	projection.Events = make([]PromptTraceControlChainEvent, 0, len(events))
+	var previousSequence int64
+	for index, event := range events {
+		if err := event.Validate(); err != nil {
+			return nil, fmt.Errorf("canonical rollout event %d: %w", index, err)
+		}
+		if event.SessionID != sessionID || event.TurnID != turnID {
+			return nil, fmt.Errorf("canonical rollout event %d coordinates do not match request", index)
+		}
+		if event.Sequence <= previousSequence {
+			return nil, fmt.Errorf("canonical rollout event %d sequence is not strictly increasing", index)
+		}
+		previousSequence = event.Sequence
+		projection.Events = append(projection.Events, PromptTraceControlChainEvent{
+			Sequence:         event.Sequence,
+			Kind:             event.Kind,
+			EventID:          event.EventID,
+			Hash:             event.Hash,
+			Owner:            promptTraceControlChainOwner(event.Kind),
+			TurnAssemblyHash: event.TurnAssemblyHash,
+			StepContextHash:  event.StepContextHash,
+			SourceRefs:       append([]string(nil), event.SourceRefs...),
+			PayloadRefs:      promptTraceCanonicalPayloadRefs(event.Payload),
+		})
+		projection.HeadRef = &PromptTraceControlChainHeadRef{
+			Sequence: event.Sequence,
+			EventID:  event.EventID,
+			Hash:     event.Hash,
+		}
+	}
+	return projection, nil
+}
+
+func promptTraceControlChainOwner(kind string) string {
+	switch kind {
+	case modeltrace.CanonicalRolloutKindAdmission:
+		return "admission"
+	case modeltrace.CanonicalRolloutKindAssembly:
+		return "assembly"
+	case modeltrace.CanonicalRolloutKindPrompt,
+		modeltrace.CanonicalRolloutKindProviderRequest,
+		modeltrace.CanonicalRolloutKindProviderResponse:
+		return "prompt"
+	case modeltrace.CanonicalRolloutKindToolProposed,
+		modeltrace.CanonicalRolloutKindToolDispatched,
+		modeltrace.CanonicalRolloutKindToolResult:
+		return "router"
+	case modeltrace.CanonicalRolloutKindApprovalRequested,
+		modeltrace.CanonicalRolloutKindApprovalDecided,
+		modeltrace.CanonicalRolloutKindCheckpoint:
+		return "approval"
+	case modeltrace.CanonicalRolloutKindFinalFacts:
+		return "final"
+	case modeltrace.CanonicalRolloutKindTransportProjection:
+		return "transport"
+	default:
+		return "rollout"
+	}
+}
+
+var promptTraceCanonicalPayloadRefKeys = map[string]struct{}{
+	"factsHash": {}, "capabilityPolicyHash": {}, "stepRevisionKind": {}, "stepRevisionKinds": {},
+	"absoluteSystemHash": {}, "roleProfileHash": {}, "stableRuntimeContractHash": {}, "stablePrefixHash": {},
+	"turnStableHash": {}, "conversationHistoryHash": {}, "dynamicContextHash": {}, "currentUserInputHash": {},
+	"modelInputHash": {}, "requestPropertiesHash": {}, "rawPayloadRef": {}, "promptSectionRefs": {},
+	"callId": {}, "name": {}, "argsHash": {}, "contentHash": {}, "evidenceRefs": {}, "sourceRefs": {},
+	"modelVisibleToolRefs": {}, "dispatchableToolRefs": {}, "hiddenToolRefs": {}, "toolPolicyHash": {},
+	"approvalId": {}, "toolCallId": {}, "toolName": {}, "targetRefs": {}, "actionTokenHash": {},
+	"toolSurfaceFingerprint": {}, "permissionHash": {}, "mismatchFields": {}, "checkpointId": {}, "rollbackHash": {},
+	"checkpointHash": {}, "checkpointRef": {}, "finalRuntimeFactsHash": {}, "finalContractHash": {},
+	"failureCodeHashes": {}, "agentItemsFactHash": {}, "pendingApprovalIDsHash": {},
+	"pendingEvidenceIDsHash": {}, "pendingInputIDsHash": {}, "projectionInputHash": {},
+}
+
+func promptTraceCanonicalPayloadRefs(payload map[string]any) map[string]any {
+	if len(payload) == 0 {
+		return nil
+	}
+	result := make(map[string]any)
+	for key, value := range payload {
+		if key == "calls" {
+			if calls := promptTraceCanonicalToolCallRefs(value); len(calls) > 0 {
+				result[key] = calls
+			}
+			continue
+		}
+		if _, allowed := promptTraceCanonicalPayloadRefKeys[key]; !allowed {
+			continue
+		}
+		if safe, ok := promptTraceCanonicalReferenceValue(value); ok {
+			result[key] = safe
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
+func promptTraceCanonicalToolCallRefs(value any) []map[string]any {
+	values, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	result := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		call, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		projected := map[string]any{}
+		for _, key := range []string{"callId", "name", "argsHash"} {
+			if safe, ok := promptTraceCanonicalReferenceValue(call[key]); ok {
+				projected[key] = safe
+			}
+		}
+		if len(projected) > 0 {
+			result = append(result, projected)
+		}
+	}
+	return result
+}
+
+func promptTraceCanonicalReferenceValue(value any) (any, bool) {
+	switch typed := value.(type) {
+	case string:
+		return typed, strings.TrimSpace(typed) != ""
+	case []string:
+		values := append([]string(nil), typed...)
+		return values, len(values) > 0
+	case []any:
+		values := make([]string, 0, len(typed))
+		for _, item := range typed {
+			text, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			values = append(values, text)
+		}
+		return values, len(values) > 0
+	default:
+		return nil, false
+	}
 }
 
 func promptTraceSetupHint(root string) string {
