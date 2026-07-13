@@ -29,15 +29,19 @@ func (m *emptyResponseModel) BindTools([]*schema.ToolInfo) error {
 }
 
 type recordingProviderChatModel struct {
-	input []*schema.Message
+	input         []*schema.Message
+	generateCalls int
+	streamCalls   int
 }
 
 func (m *recordingProviderChatModel) Generate(_ context.Context, input []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.generateCalls++
 	m.input = append([]*schema.Message(nil), input...)
 	return schema.AssistantMessage("ok", nil), nil
 }
 
 func (m *recordingProviderChatModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.streamCalls++
 	return nil, nil
 }
 
@@ -51,11 +55,7 @@ func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
 	resp, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
 		Provider: "openai",
 		Model:    "gpt-4.1",
-		Input: []promptinput.ModelInputItem{{
-			ID:           "user-1",
-			ProviderRole: promptinput.ProviderRoleUser,
-			Content:      "hello",
-		}},
+		Input:    providerAdapterCanonicalInput("hello"),
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
@@ -63,9 +63,104 @@ func TestEinoProviderAdapterCallsModelThroughSnapshot(t *testing.T) {
 	if resp.Output != "ok" || resp.RequestID == "" {
 		t.Fatalf("provider response = %#v, want output and request id", resp)
 	}
-	if len(model.input) != 1 || model.input[0].Role != schema.User || model.input[0].Content != "hello" {
-		t.Fatalf("model input = %#v, want converted user message", model.input)
+	if len(model.input) != 9 || model.input[len(model.input)-1].Role != schema.System || model.input[len(model.input)-1].Content != "hello" {
+		t.Fatalf("model input = %#v, want canonical input with converted L6 message", model.input)
 	}
+}
+
+func TestEinoProviderAdapterRejectsNonCanonicalInputBeforeModelCall(t *testing.T) {
+	tests := []struct {
+		name  string
+		input func() []promptinput.ModelInputItem
+		want  string
+	}{
+		{
+			name: "untyped",
+			input: func() []promptinput.ModelInputItem {
+				return []promptinput.ModelInputItem{{ID: "user-1", ProviderRole: promptinput.ProviderRoleUser, Content: "hello"}}
+			},
+			want: "logical",
+		},
+		{
+			name: "mixed typed and untyped",
+			input: func() []promptinput.ModelInputItem {
+				items := providerAdapterCanonicalInput("hello")
+				untyped := promptinput.ModelInputItem{ID: "untyped", ProviderRole: promptinput.ProviderRoleUser, Content: "shadow"}
+				return append(items[:len(items)-1], untyped, items[len(items)-1])
+			},
+			want: "logical",
+		},
+		{
+			name: "incomplete L0-L6",
+			input: func() []promptinput.ModelInputItem {
+				items := providerAdapterCanonicalInput("hello")
+				return append(items[:2], items[3:]...)
+			},
+			want: "logical",
+		},
+		{
+			name: "causal order",
+			input: func() []promptinput.ModelInputItem {
+				items := providerAdapterCanonicalInput("hello")
+				return append(items[:6], items[7:]...)
+			},
+			want: "causal",
+		},
+		{
+			name: "logical order",
+			input: func() []promptinput.ModelInputItem {
+				items := providerAdapterCanonicalInput("hello")
+				items[2], items[3] = items[3], items[2]
+				return items
+			},
+			want: "logical",
+		},
+		{
+			name: "content parts",
+			input: func() []promptinput.ModelInputItem {
+				items := providerAdapterCanonicalInput("hello")
+				items[len(items)-1].ContentParts = []promptinput.ModelInputContentPart{{Type: "text", Text: "must not disappear"}}
+				return items
+			},
+			want: "content parts",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := &recordingProviderChatModel{}
+			adapter := NewEinoProviderAdapter(model)
+			_, err := adapter.Call(context.Background(), ProviderRequestSnapshot{Provider: "openai", Model: "gpt-4.1", Input: test.input()}, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Call() error = %v, want %q rejection", err, test.want)
+			}
+			if model.streamCalls != 0 || model.generateCalls != 0 || len(model.input) != 0 {
+				t.Fatalf("model was called with rejected input: stream=%d generate=%d input=%#v", model.streamCalls, model.generateCalls, model.input)
+			}
+		})
+	}
+}
+
+func TestEinoProviderAdapterProviderSelectionDoesNotChangeCanonicalMessages(t *testing.T) {
+	input := providerAdapterCanonicalInput("same request")
+	providerHashes := map[string]string{}
+	for _, provider := range []string{"openai", "deepseek"} {
+		model := &recordingProviderChatModel{}
+		adapter := NewEinoProviderAdapter(model)
+		if _, err := adapter.Call(context.Background(), ProviderRequestSnapshot{Provider: provider, Model: "provider-model", Input: input}, nil, nil); err != nil {
+			t.Fatalf("Call(%s) error = %v", provider, err)
+		}
+		providerHashes[provider] = stableProviderHash(model.input)
+	}
+	if providerHashes["openai"] != providerHashes["deepseek"] {
+		t.Fatalf("provider selection changed canonical messages: %#v", providerHashes)
+	}
+}
+
+func providerAdapterCanonicalInput(currentUserContent string) []promptinput.ModelInputItem {
+	items := canonicalAdapterModelInputItems()
+	items[len(items)-1].Content = currentUserContent
+	return items
 }
 
 func TestEinoProviderAdapterPreservesReasoningContentForThinkingMode(t *testing.T) {
@@ -77,11 +172,7 @@ func TestEinoProviderAdapterPreservesReasoningContentForThinkingMode(t *testing.
 	resp, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
 		Provider: "deepseek",
 		Model:    "deepseek-v4-pro",
-		Input: []promptinput.ModelInputItem{{
-			ID:           "user-1",
-			ProviderRole: promptinput.ProviderRoleUser,
-			Content:      "检查 agent",
-		}},
+		Input:    providerAdapterCanonicalInput("检查 agent"),
 	}, nil, nil)
 	if err != nil {
 		t.Fatalf("Call() error = %v", err)
@@ -684,11 +775,7 @@ func TestEinoProviderAdapterUsesConfiguredRequestTimeout(t *testing.T) {
 	_, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
 		Provider: "openai",
 		Model:    "gpt-5.4",
-		Input: []promptinput.ModelInputItem{{
-			ID:           "user-1",
-			ProviderRole: promptinput.ProviderRoleUser,
-			Content:      "ping",
-		}},
+		Input:    providerAdapterCanonicalInput("ping"),
 	}, nil, nil)
 	if err == nil {
 		t.Fatal("expected timeout error")

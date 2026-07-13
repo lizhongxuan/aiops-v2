@@ -60,6 +60,9 @@ func (a *EinoProviderAdapter) Call(ctx context.Context, req ProviderRequestSnaps
 	if a == nil || a.model == nil {
 		return ProviderResponse{}, fmt.Errorf("provider adapter model is required")
 	}
+	if err := validateCanonicalProviderInput(req.Input); err != nil {
+		return ProviderResponse{}, err
+	}
 	messages, audit, err := ModelInputItemsToEinoMessages(req.Input)
 	if err != nil {
 		return ProviderResponse{}, err
@@ -87,6 +90,16 @@ func (a *EinoProviderAdapter) Call(ctx context.Context, req ProviderRequestSnaps
 		return providerResp, err
 	}
 	return providerResp, nil
+}
+
+func validateCanonicalProviderInput(items []promptinput.ModelInputItem) error {
+	if err := promptinput.ValidateModelInputCausalOrder(items); err != nil {
+		return fmt.Errorf("canonical model input causal order: %w", err)
+	}
+	if err := promptinput.ValidateModelInputLogicalOrder(items, true); err != nil {
+		return fmt.Errorf("canonical model input logical order: %w", err)
+	}
+	return nil
 }
 
 func generateEinoModelResponse(

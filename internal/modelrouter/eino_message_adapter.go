@@ -16,6 +16,9 @@ func ModelInputItemsToEinoMessages(items []promptinput.ModelInputItem) ([]*schem
 		if err := item.Validate(); err != nil {
 			return nil, ProviderMessageAudit{}, fmt.Errorf("item[%d]: %w", idx, err)
 		}
+		if len(item.ContentParts) > 0 {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("item[%d]: content parts are unsupported by the Eino message adapter", idx)
+		}
 	}
 	if promptinput.HasTypedModelInputLayers(items) {
 		if err := promptinput.ValidateModelInputCausalOrder(items); err != nil {

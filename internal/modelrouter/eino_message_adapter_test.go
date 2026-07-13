@@ -40,6 +40,15 @@ func TestModelInputItemsToEinoMessagesRejectsInvalidItem(t *testing.T) {
 	}
 }
 
+func TestModelInputItemsToEinoMessagesRejectsUnsupportedContentParts(t *testing.T) {
+	items := canonicalAdapterModelInputItems()
+	items[len(items)-1].ContentParts = []promptinput.ModelInputContentPart{{Type: "text", Text: "must not disappear"}}
+	_, _, err := ModelInputItemsToEinoMessages(items)
+	if err == nil || !strings.Contains(err.Error(), "content parts") {
+		t.Fatalf("error = %v, want content parts rejection", err)
+	}
+}
+
 func TestModelInputItemsToEinoMessagesPreservesCanonicalOrderExactly(t *testing.T) {
 	items := canonicalAdapterModelInputItems()
 	messages, _, err := ModelInputItemsToEinoMessages(items)
