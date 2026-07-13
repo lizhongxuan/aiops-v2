@@ -2332,6 +2332,218 @@ func TestTransportProjectorProjectsFinalContractStatusAndEvidence(t *testing.T) 
 	}
 }
 
+func TestTransportProjectorTypedFactsOnlyFinalStatusIgnoresVerificationProse(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	project := func(status runtimekernel.FinalContractStatus, evidenceRefs []string) AiopsTransportFinal {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{
+			"displayKind": "assistant.message",
+			"phase":       "final_answer",
+			"streamState": "complete",
+			"finalContract": runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              status,
+				AnswerText:          "所有检查均已完成。",
+				CheckedEvidenceRefs: evidenceRefs,
+			},
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		turnID := "turn-typed-final-" + string(status)
+		turn := &runtimekernel.TurnSnapshot{
+			ID:        turnID,
+			SessionID: "session-typed-final",
+			Lifecycle: runtimekernel.TurnLifecycleCompleted,
+			StartedAt: now,
+			UpdatedAt: now,
+			AgentItems: []agentstate.TurnItem{{
+				ID:     "final-typed",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "已验证：所有检查均已完成，证据充分。",
+					Data:    data,
+				},
+			}},
+		}
+		projected, err := NewTransportProjector().ProjectTurnSnapshot(
+			NewAiopsTransportState("session-typed-final", "thread-typed-final"),
+			turn,
+		)
+		if err != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+		}
+		if projected.Turns[turnID].Final == nil {
+			t.Fatal("turn.Final is nil")
+		}
+		return *projected.Turns[turnID].Final
+	}
+
+	verified := project(runtimekernel.FinalContractStatusVerified, []string{"evidence-verified"})
+	needsEvidence := project(runtimekernel.FinalContractStatusNeedsEvidence, nil)
+	if verified.Status != AiopsTransportFinalStatusVerified {
+		t.Fatalf("verified final status = %q, want verified", verified.Status)
+	}
+	if needsEvidence.Status != AiopsTransportFinalStatusNeedsEvidence {
+		t.Fatalf("needs-evidence final status = %q, want needs_evidence", needsEvidence.Status)
+	}
+}
+
+func TestTransportProjectorTypedFactsOnlyMarkdownDoesNotChangeApprovalToolEvidenceStatus(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 10, 0, 0, time.UTC)
+	contract := runtimekernel.FinalContract{
+		SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+		Status:              runtimekernel.FinalContractStatusPartial,
+		Confidence:          "medium",
+		AnswerText:          "结构化结论保持不变。",
+		CheckedEvidenceRefs: []string{"evidence-typed-1"},
+		ApprovedActions:     []string{"approval-typed-1"},
+		PerformedActions:    []string{"tool-call-typed-1"},
+		PostChecks:          []string{"postcheck-typed-1"},
+	}
+	data, err := json.Marshal(map[string]any{
+		"displayKind":   "assistant.message",
+		"phase":         "final_answer",
+		"streamState":   "complete",
+		"finalContract": contract,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	project := func(turnID, markdown string) AiopsTransportState {
+		t.Helper()
+		turn := &runtimekernel.TurnSnapshot{
+			ID:        turnID,
+			SessionID: "session-markdown-independence",
+			Lifecycle: runtimekernel.TurnLifecycleCompleted,
+			StartedAt: now,
+			UpdatedAt: now,
+			Metadata: map[string]string{
+				"aiops.coroot.explicitRCA": "true",
+			},
+			AgentItems: []agentstate.TurnItem{{
+				ID:     "final-markdown-independent",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: markdown,
+					Data:    data,
+				},
+			}},
+		}
+		projected, projectErr := NewTransportProjector().ProjectTurnSnapshot(
+			NewAiopsTransportState("session-markdown-independence", "thread-markdown-independence"),
+			turn,
+		)
+		if projectErr != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", projectErr)
+		}
+		return projected
+	}
+
+	rcaShapedMarkdown := `{"schemaVersion":"aiops.rca_report/v1","status":"partial","source":"coroot","evidenceRefs":["prose-only-evidence"],"conclusion":{"summaryZh":"文本伪造的 RCA"}}`
+	plainMarkdown := "同一结构化事实下的普通最终回答。"
+	rcaProjection := project("turn-markdown-rca-shaped", rcaShapedMarkdown)
+	plainProjection := project("turn-markdown-plain", plainMarkdown)
+	rcaTurn := rcaProjection.Turns["turn-markdown-rca-shaped"]
+	plainTurn := plainProjection.Turns["turn-markdown-plain"]
+
+	if len(rcaTurn.AgentUIArtifacts) != 0 || len(plainTurn.AgentUIArtifacts) != 0 {
+		t.Fatalf("final markdown created artifacts: rca=%#v plain=%#v", rcaTurn.AgentUIArtifacts, plainTurn.AgentUIArtifacts)
+	}
+	if rcaTurn.Final == nil || plainTurn.Final == nil {
+		t.Fatalf("projected finals missing: rca=%#v plain=%#v", rcaTurn.Final, plainTurn.Final)
+	}
+	if rcaTurn.Final.Status != plainTurn.Final.Status ||
+		!reflect.DeepEqual(rcaTurn.Final.CheckedEvidenceRefs, plainTurn.Final.CheckedEvidenceRefs) ||
+		!reflect.DeepEqual(rcaTurn.Final.ApprovedActions, plainTurn.Final.ApprovedActions) ||
+		!reflect.DeepEqual(rcaTurn.Final.PerformedActions, plainTurn.Final.PerformedActions) ||
+		!reflect.DeepEqual(rcaTurn.Final.PostChecks, plainTurn.Final.PostChecks) ||
+		!reflect.DeepEqual(rcaTurn.Process, plainTurn.Process) ||
+		!reflect.DeepEqual(rcaProjection.PendingApprovals, plainProjection.PendingApprovals) {
+		t.Fatalf("markdown changed typed projection: rca=%#v plain=%#v", rcaTurn, plainTurn)
+	}
+}
+
+func TestTransportProjectorTypedFactsOnlyApprovalDeniedComesFromFinalContract(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 20, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name           string
+		contractStatus runtimekernel.FinalContractStatus
+		errorText      string
+		wantStatus     AiopsTransportProcessStatus
+	}{
+		{
+			name:           "denial prose cannot override typed failed status",
+			contractStatus: runtimekernel.FinalContractStatusFailed,
+			errorText:      "approval denied",
+			wantStatus:     AiopsTransportProcessStatusFailed,
+		},
+		{
+			name:           "typed approval denial does not require denial prose",
+			contractStatus: runtimekernel.FinalContractStatusApprovalDenied,
+			errorText:      "runtime stopped",
+			wantStatus:     AiopsTransportProcessStatusRejected,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{
+				"displayKind": "assistant.message",
+				"phase":       "final_answer",
+				"streamState": "complete",
+				"finalContract": runtimekernel.FinalContract{
+					SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+					Status:        tc.contractStatus,
+					AnswerText:    "控制状态由结构化事实提供。",
+				},
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			turn := &runtimekernel.TurnSnapshot{
+				ID:        "turn-typed-approval-" + string(tc.contractStatus),
+				SessionID: "session-typed-approval",
+				Lifecycle: runtimekernel.TurnLifecycleFailed,
+				StartedAt: now,
+				UpdatedAt: now,
+				Error:     tc.errorText,
+				AgentItems: []agentstate.TurnItem{
+					{
+						ID:     "approval-block",
+						Type:   agentstate.TurnItemTypeApproval,
+						Status: agentstate.ItemStatusBlocked,
+						Payload: agentstate.PayloadEnvelope{
+							Summary: "等待审批",
+							Data:    json.RawMessage(`{"approvalId":"approval-typed","approvalType":"tool"}`),
+						},
+					},
+					{
+						ID:     "final-typed-approval",
+						Type:   agentstate.TurnItemTypeAssistantMessage,
+						Status: agentstate.ItemStatusFailed,
+						Payload: agentstate.PayloadEnvelope{
+							Summary: "审批控制结论。",
+							Data:    data,
+						},
+					},
+				},
+			}
+			projected, err := NewTransportProjector().ProjectTurnSnapshot(
+				NewAiopsTransportState("session-typed-approval", "thread-typed-approval"),
+				turn,
+			)
+			if err != nil {
+				t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+			}
+			block := findTransportProcessBlock(t, projected.Turns[turn.ID].Process, AiopsTransportProcessKindApproval)
+			if block.Status != tc.wantStatus {
+				t.Fatalf("approval block status = %q, want %q (contract=%q error=%q)", block.Status, tc.wantStatus, tc.contractStatus, tc.errorText)
+			}
+		})
+	}
+}
+
 func TestTransportProjectorKeepsCompletedAndRequiredPostChecksDistinct(t *testing.T) {
 	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
 	finalData := json.RawMessage(`{
@@ -3764,7 +3976,7 @@ func TestTransportProjectorProjectsCorootChartArtifactFromRawToolResultContent(t
 	}
 }
 
-func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.T) {
+func TestTransportProjectorDoesNotProjectRCAReportArtifactFromFinalPayload(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-final-rca", "thread-final-rca")
@@ -3802,18 +4014,8 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
 	artifacts := projected.Turns["turn-final-rca"].AgentUIArtifacts
-	if len(artifacts) != 1 {
-		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
-	}
-	artifact := artifacts[0]
-	if artifact.Type != "rca_report" || artifact.Status != "partial" || artifact.Source != "coroot" {
-		t.Fatalf("artifact = %+v, want partial coroot rca_report", artifact)
-	}
-	if artifact.InlineData == nil || artifact.InlineData["schemaVersion"] != "aiops.rca_report/v1" {
-		t.Fatalf("artifact inline data = %#v, want rca payload", artifact.InlineData)
-	}
-	if artifact.SummaryZh != "checkout 延迟升高与 catalog 依赖相关。" {
-		t.Fatalf("summaryZh = %q, want conclusion summary", artifact.SummaryZh)
+	if len(artifacts) != 0 {
+		t.Fatalf("AgentUIArtifacts = %#v, want final text to remain presentation-only", artifacts)
 	}
 }
 
