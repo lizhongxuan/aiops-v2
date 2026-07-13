@@ -1,6 +1,7 @@
 package agentassembly
 
 import (
+	"fmt"
 	"strings"
 
 	"aiops-v2/internal/promptcompiler"
@@ -78,12 +79,44 @@ func Build(input BuildInput) AgentAssemblySnapshot {
 	return snapshot
 }
 
+func BuildSnapshotFromTurnAssembly(assembly TurnAssembly, input BuildInput) (AgentAssemblySnapshot, error) {
+	frozen, err := cloneJSONValue(assembly)
+	if err != nil {
+		return AgentAssemblySnapshot{}, fmt.Errorf("clone turn assembly: %w", err)
+	}
+	if strings.TrimSpace(frozen.Hash) == "" {
+		return AgentAssemblySnapshot{}, fmt.Errorf("turn assembly hash is required")
+	}
+	if err := frozen.Validate(); err != nil {
+		return AgentAssemblySnapshot{}, err
+	}
+	frozen, err = rebuildTurnAssembly(frozen)
+	if err != nil {
+		return AgentAssemblySnapshot{}, err
+	}
+	snapshot := Build(input)
+	snapshot.AgentKind = frozen.AdmissionFacts.AgentKind
+	snapshot.Profile = frozen.AdmissionFacts.Profile
+	snapshot.RouteReason = append([]string(nil), frozen.SourceRefs...)
+	snapshot.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), frozen.AdmissionFacts.ResourceBindings...)
+	snapshot.SessionTargets = turnAssemblySessionTargets(frozen.AdmissionFacts)
+	snapshot.RoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), frozen.AdmissionFacts.RoleBindings...)
+	snapshot.ToolSurface = frozen.CapabilityPolicy
+	snapshot.ContextSelector = frozen.ContextPolicy
+	snapshot.LoopPolicy = frozen.LoopPolicy
+	snapshot.FinalContract = frozen.FinalContractPolicy
+	snapshot.SpecHash = frozen.Hash
+	snapshot.Lifecycle = LifecycleTurnScope
+	return snapshot, nil
+}
+
 func normalizeContextSelector(input ContextSelectorSnapshot) ContextSelectorSnapshot {
 	input.Policy = strings.TrimSpace(input.Policy)
 	input.Budget = strings.TrimSpace(input.Budget)
 	if input.Lifecycle == "" {
 		input.Lifecycle = LifecycleRequestScope
 	}
+	input.Hash = ""
 	input.Hash = StableHash("context-selector.snapshot", input)
 	return input
 }
@@ -106,6 +139,7 @@ func normalizeFinalContract(input FinalContractSnapshot) FinalContractSnapshot {
 	if input.Lifecycle == "" {
 		input.Lifecycle = LifecycleRequestScope
 	}
+	input.Hash = ""
 	input.Hash = StableHash("final-contract.snapshot", input)
 	return input
 }

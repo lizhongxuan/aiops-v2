@@ -17,6 +17,18 @@ func StableHash(scope string, value any) string {
 	return "sha256:" + hex.EncodeToString(sum[:])
 }
 
+func cloneJSONValue[T any](value T) (T, error) {
+	var clone T
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return clone, err
+	}
+	if err := json.Unmarshal(raw, &clone); err != nil {
+		return clone, err
+	}
+	return clone, nil
+}
+
 func normalizeForHash(value any) any {
 	raw, err := json.Marshal(value)
 	if err != nil {
