@@ -1,11 +1,14 @@
 package runtimekernel
 
 import (
+	"encoding/json"
 	"testing"
 
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/runtimecontract"
 )
 
 func TestBuildRuntimeTurnContextFreezesRequestMetadata(t *testing.T) {
@@ -50,6 +53,80 @@ func TestBuildRuntimeTurnContextFreezesRequestMetadata(t *testing.T) {
 	}
 	if ctx.Permission.ApprovalPolicy != "on-request" {
 		t.Fatalf("approval policy = %q", ctx.Permission.ApprovalPolicy)
+	}
+}
+
+func TestBuildRuntimeTurnContextBuildsShadowAdmissionFacts(t *testing.T) {
+	frameJSON, err := json.Marshal(runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindChange,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite},
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal(IntentFrame) error = %v", err)
+	}
+	binding := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{
+		Type: resourcebinding.ResourceTypeHost,
+		ID:   "host-a",
+	}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		VerifiedBy: "runtime-context-test",
+		TrustLevel: resourcebinding.TrustLevelVerified,
+	})
+	req := TurnRequest{
+		SessionType:      SessionTypeHost,
+		Mode:             ModeExecute,
+		SessionID:        "session-admission",
+		TurnID:           "turn-admission",
+		HostID:           "host-a",
+		ResourceBindings: []resourcebinding.ResourceBindingSnapshot{binding},
+		Metadata: map[string]string{
+			runtimecontract.MetadataIntentFrame: string(frameJSON),
+			runtimecontract.MetadataProfile:     RuntimePromptProfileHostWorker,
+			"future.unregistered":               "trace-only",
+		},
+	}
+	ctx, err := BuildRuntimeTurnContext(req, nil, RuntimeTurnContextOptions{
+		Lineage: RuntimeLineageSnapshot{AgentKind: "host_worker"},
+	})
+	if err != nil {
+		t.Fatalf("BuildRuntimeTurnContext() error = %v", err)
+	}
+	if ctx.AdmissionFacts.Hash == "" {
+		t.Fatal("AdmissionFacts.Hash is empty")
+	}
+	if ctx.AdmissionFacts.Intent.Kind != runtimecontract.IntentKindChange {
+		t.Fatalf("AdmissionFacts.Intent.Kind = %q, want change", ctx.AdmissionFacts.Intent.Kind)
+	}
+	if ctx.AdmissionFacts.SessionTarget.ID != "host-a" || ctx.AdmissionFacts.Profile != RuntimePromptProfileHostWorker {
+		t.Fatalf("AdmissionFacts target/profile = %#v / %q", ctx.AdmissionFacts.SessionTarget, ctx.AdmissionFacts.Profile)
+	}
+	if len(ctx.AdmissionFacts.CompatibilityOnlyKeys) != 1 || ctx.AdmissionFacts.CompatibilityOnlyKeys[0] != "future.unregistered" {
+		t.Fatalf("compatibility keys = %#v, want future.unregistered", ctx.AdmissionFacts.CompatibilityOnlyKeys)
+	}
+
+	req.ResourceBindings[0].Ref.ID = "mutated"
+	req.Metadata["future.unregistered"] = "mutated"
+	if ctx.AdmissionFacts.ResourceBindings[0].Ref.ID != "host-a" || ctx.AdmissionFacts.CompatibilityOnlyKeys[0] != "future.unregistered" {
+		t.Fatalf("shadow admission facts mutated with request: %#v", ctx.AdmissionFacts)
+	}
+}
+
+func TestBuildRuntimeTurnContextKeepsAdmissionValidationShadowOnly(t *testing.T) {
+	ctx, err := BuildRuntimeTurnContext(TurnRequest{
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeExecute,
+		SessionID:   "session-shadow-invalid",
+		TurnID:      "turn-shadow-invalid",
+		Metadata: map[string]string{
+			runtimecontract.MetadataIntentKind:       string(runtimecontract.IntentKindChange),
+			runtimecontract.MetadataIntentRiskBudget: string(runtimecontract.ActionRiskWrite),
+		},
+	}, nil, RuntimeTurnContextOptions{})
+	if err != nil {
+		t.Fatalf("BuildRuntimeTurnContext() error = %v, want shadow-only validation", err)
+	}
+	if ctx.AdmissionError == "" || ctx.AdmissionFacts.Hash == "" {
+		t.Fatalf("shadow admission result = %#v, want typed facts plus validation error", ctx)
 	}
 }
 
