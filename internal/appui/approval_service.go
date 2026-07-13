@@ -115,26 +115,7 @@ func (s *defaultApprovalService) approvalResumeRequest(decision ApprovalDecision
 		CheckpointID: currentCheckpointID(session),
 		ResumeState:  resumeState,
 		Decision:     normalizeApprovalDecision(decision.Decision),
-		Metadata:     approvalResumeMetadata(approval),
 	}, nil
-}
-
-func approvalResumeMetadata(approval runtimekernel.PendingApproval) map[string]string {
-	metadata := map[string]string{}
-	for key, value := range map[string]string{
-		"inputHash":              approval.InputHash,
-		"argumentsHash":          approval.ArgumentsHash,
-		"toolSurfaceFingerprint": approval.ToolSurfaceFingerprint,
-		"permissionSnapshotHash": approval.PermissionSnapshotHash,
-	} {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			metadata[key] = trimmed
-		}
-	}
-	if len(metadata) == 0 {
-		return nil
-	}
-	return metadata
 }
 
 func normalizeApprovalDecision(value string) string {
