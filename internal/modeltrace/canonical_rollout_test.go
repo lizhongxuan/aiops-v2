@@ -116,12 +116,13 @@ func TestCanonicalRolloutFreezeRedactsSecretsActionArgsAndRAGOriginals(t *testin
 				"host":    "host-a",
 				"command": "echo " + canary,
 			},
-			"ragRawContent":  "retrieved " + canary,
-			"secretRef":      "vault://provider/key?secret_ref=" + canary,
-			"eventRef":       "event:admission-1",
-			"contentHash":    "sha256:trusted",
-			"payloadDigest":  "sha256:payload",
-			"tokensEstimate": 42,
+			"ragRawContent":   "retrieved " + canary,
+			"secretRef":       "vault://provider/key",
+			"secretReference": "secret://provider/key",
+			"eventRef":        "event:admission-1",
+			"contentHash":     "sha256:trusted",
+			"payloadDigest":   "sha256:payload",
+			"tokensEstimate":  42,
 		},
 	})
 	if err != nil {
@@ -157,7 +158,7 @@ func TestCanonicalRolloutFreezeRedactsSecretsActionArgsAndRAGOriginals(t *testin
 	}
 	for _, key := range []string{
 		"apiKey", "authorization", "providerCredential", "providerCredentialRef",
-		"secretRef", "error", "err", "errorMessage", "actionArgs", "ragRawContent",
+		"secretRef", "secretReference", "error", "err", "errorMessage", "actionArgs", "ragRawContent",
 	} {
 		marker, ok := event.Payload[key].(map[string]any)
 		if !ok || marker["redacted"] != true || marker["sha256"] == "" {
@@ -166,6 +167,90 @@ func TestCanonicalRolloutFreezeRedactsSecretsActionArgsAndRAGOriginals(t *testin
 	}
 	if err := event.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestCanonicalRolloutFreezeRedactsSecretStoreSourceRefs(t *testing.T) {
+	sourceRefs := []string{
+		"vault://provider/key",
+		"secret://provider/key",
+		"keychain://provider/key",
+		"aws-secretsmanager://provider/key",
+		"gcp-secretmanager://provider/key",
+	}
+	event, err := FreezeCanonicalRolloutEvent(CanonicalRolloutEvent{
+		Sequence:   8,
+		SessionID:  "session-secret-stores",
+		TurnID:     "turn-secret-stores",
+		Kind:       CanonicalRolloutKindProviderRequest,
+		SourceRefs: sourceRefs,
+	})
+	if err != nil {
+		t.Fatalf("FreezeCanonicalRolloutEvent() error = %v", err)
+	}
+	if len(event.SourceRefs) != len(sourceRefs) {
+		t.Fatalf("source refs = %#v, want %d hash-backed refs", event.SourceRefs, len(sourceRefs))
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, sourceRef := range sourceRefs {
+		if strings.Contains(string(encoded), sourceRef) {
+			t.Fatalf("canonical event leaked secret-store ref %q: %s", sourceRef, encoded)
+		}
+	}
+	for _, sourceRef := range event.SourceRefs {
+		if !strings.HasPrefix(sourceRef, "redacted:") {
+			t.Fatalf("secret-store source ref = %q, want redacted hash", sourceRef)
+		}
+		if _, err := hex.DecodeString(strings.TrimPrefix(sourceRef, "redacted:")); err != nil {
+			t.Fatalf("secret-store source ref = %q, want valid sha256 hex: %v", sourceRef, err)
+		}
+	}
+}
+
+func TestCanonicalRolloutFreezeRedactsErrorFieldsButPreservesClosedErrorFacts(t *testing.T) {
+	const canary = "raw-provider-error-canary"
+	event, err := FreezeCanonicalRolloutEvent(CanonicalRolloutEvent{
+		Sequence:  9,
+		SessionID: "session-errors",
+		TurnID:    "turn-errors",
+		Kind:      CanonicalRolloutKindProviderResponse,
+		Payload: map[string]any{
+			"err":           canary,
+			"error":         canary,
+			"errors":        []any{canary},
+			"errorMessage":  canary,
+			"errorText":     canary,
+			"providerError": canary,
+			"storeError":    canary,
+			"lastError":     canary,
+			"errorClass":    "provider_unavailable",
+			"errorCode":     "UPSTREAM_TIMEOUT",
+		},
+	})
+	if err != nil {
+		t.Fatalf("FreezeCanonicalRolloutEvent() error = %v", err)
+	}
+	encoded, err := json.Marshal(event)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if strings.Contains(string(encoded), canary) {
+		t.Fatalf("canonical event leaked raw error: %s", encoded)
+	}
+	for _, key := range []string{"err", "error", "errors", "errorMessage", "errorText", "providerError", "storeError", "lastError"} {
+		marker, ok := event.Payload[key].(map[string]any)
+		if !ok || marker["redacted"] != true || marker["sha256"] == "" {
+			t.Fatalf("payload[%q] = %#v, want hash-backed redaction marker", key, event.Payload[key])
+		}
+	}
+	if got := event.Payload["errorClass"]; got != "provider_unavailable" {
+		t.Fatalf("errorClass = %#v, want closed fact", got)
+	}
+	if got := event.Payload["errorCode"]; got != "UPSTREAM_TIMEOUT" {
+		t.Fatalf("errorCode = %#v, want closed fact", got)
 	}
 }
 
@@ -202,6 +287,66 @@ func TestCanonicalRolloutFreezeRejectsForgedRedactionMarker(t *testing.T) {
 	}
 	if err := event.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
+func TestCanonicalRolloutRedactionMarkerIsRepresentationNotPreimageProof(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("a", 64)
+	event, err := FreezeCanonicalRolloutEvent(CanonicalRolloutEvent{
+		Sequence:  10,
+		SessionID: "session-valid-marker",
+		TurnID:    "turn-valid-marker",
+		Kind:      CanonicalRolloutKindProviderRequest,
+		Payload: map[string]any{
+			"authorization": map[string]any{
+				"redacted": true,
+				"sha256":   digest,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FreezeCanonicalRolloutEvent() error = %v", err)
+	}
+	marker := event.Payload["authorization"].(map[string]any)
+	if marker["sha256"] != digest {
+		t.Fatalf("valid redaction representation changed: %#v", marker)
+	}
+	if event.Hash == "" {
+		t.Fatal("event hash must bind the accepted redaction representation")
+	}
+	if err := event.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	// A marker with extra data is not a redaction representation. Freeze must
+	// redact the whole value so the extra raw field cannot escape.
+	const canary = "marker-extra-raw-canary"
+	withExtra, err := FreezeCanonicalRolloutEvent(CanonicalRolloutEvent{
+		Sequence:  11,
+		SessionID: "session-extra-marker",
+		TurnID:    "turn-extra-marker",
+		Kind:      CanonicalRolloutKindProviderRequest,
+		Payload: map[string]any{
+			"authorization": map[string]any{
+				"redacted": true,
+				"sha256":   digest,
+				"raw":      canary,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("FreezeCanonicalRolloutEvent(extra marker) error = %v", err)
+	}
+	encoded, err := json.Marshal(withExtra)
+	if err != nil {
+		t.Fatalf("json.Marshal(extra marker) error = %v", err)
+	}
+	if strings.Contains(string(encoded), canary) {
+		t.Fatalf("marker with extra field leaked raw value: %s", encoded)
+	}
+	marker = withExtra.Payload["authorization"].(map[string]any)
+	if marker["sha256"] == digest {
+		t.Fatalf("marker with extra fields was trusted: %#v", marker)
 	}
 }
 

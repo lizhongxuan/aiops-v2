@@ -246,6 +246,9 @@ func sanitizeCanonicalSourceRef(sourceRef string) string {
 		}
 		return sourceRef
 	}
+	if isCanonicalSecretStoreScheme(parsed.Scheme) {
+		return hashCanonicalSourceRef(sourceRef)
+	}
 	changed := false
 	if parsed.User != nil {
 		parsed.User = url.User("redacted")
@@ -271,6 +274,15 @@ func sanitizeCanonicalSourceRef(sourceRef string) string {
 func hashCanonicalSourceRef(sourceRef string) string {
 	digest := sha256.Sum256([]byte(sourceRef))
 	return "redacted:" + hex.EncodeToString(digest[:])
+}
+
+func isCanonicalSecretStoreScheme(scheme string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "vault", "secret", "keychain", "aws-secretsmanager", "gcp-secretmanager":
+		return true
+	default:
+		return false
+	}
 }
 
 func cloneAndRedactCanonicalPayload(payload map[string]any) (map[string]any, error) {
@@ -334,6 +346,9 @@ func redactCanonicalValue(key string, value any) (any, error) {
 }
 
 func isCanonicalRedactionMarker(value any) bool {
+	// This is only a privacy-safe representation of already-redacted data, not
+	// proof that the digest preimage was authentic. Runtime event ownership
+	// supplies authority; the canonical event hash binds this representation.
 	marker, ok := value.(map[string]any)
 	if !ok || len(marker) != 2 || marker["redacted"] != true {
 		return false
@@ -393,6 +408,8 @@ func isCanonicalSensitiveKey(key string) bool {
 		strings.Contains(normalized, "credential") ||
 		strings.Contains(normalized, "privatekey") ||
 		strings.Contains(normalized, "clientsecret") ||
+		strings.Contains(normalized, "secretref") ||
+		strings.HasPrefix(normalized, "secret") ||
 		strings.HasSuffix(normalized, "secret") {
 		return true
 	}
@@ -406,12 +423,15 @@ func isCanonicalSensitiveKey(key string) bool {
 }
 
 func isCanonicalErrorKey(key string) bool {
-	switch normalizeCanonicalKey(key) {
-	case "error", "err", "errormessage":
-		return true
-	default:
+	normalized := normalizeCanonicalKey(key)
+	if normalized == "errorclass" || normalized == "errorcode" {
 		return false
 	}
+	return normalized == "err" ||
+		strings.HasSuffix(normalized, "error") ||
+		strings.HasSuffix(normalized, "errors") ||
+		strings.HasSuffix(normalized, "errormessage") ||
+		strings.HasSuffix(normalized, "errortext")
 }
 
 func isCanonicalActionArgsKey(key string) bool {
