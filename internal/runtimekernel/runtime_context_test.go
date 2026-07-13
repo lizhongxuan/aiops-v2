@@ -149,10 +149,12 @@ func TestRuntimeStepContextOwnsModelInputProviderRequestAndToolSurface(t *testin
 		Content:      "check nginx",
 	}
 	step := RuntimeStepContext{
-		Turn:       turn,
-		Iteration:  2,
-		Compiled:   promptcompiler.CompiledPrompt{},
-		ModelInput: []promptinput.ModelInputItem{item},
+		Turn:             turn,
+		TurnAssemblyHash: "assembly-hash",
+		PermissionHash:   "permission-hash",
+		Iteration:        2,
+		Compiled:         promptcompiler.CompiledPrompt{},
+		ModelInput:       []promptinput.ModelInputItem{item},
 		ToolSurface: RuntimeToolRouterSnapshot{
 			RegisteredTools:   []string{"exec_command"},
 			ModelVisibleTools: []string{"exec_command"},
@@ -160,6 +162,11 @@ func TestRuntimeStepContextOwnsModelInputProviderRequestAndToolSurface(t *testin
 			PolicyHash:        "policy-hash",
 			Fingerprint:       "tool-fp",
 		},
+	}
+	var err error
+	step, err = FreezeRuntimeStepContext(step)
+	if err != nil {
+		t.Fatalf("FreezeRuntimeStepContext() error = %v", err)
 	}
 	if err := step.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)

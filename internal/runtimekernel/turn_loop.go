@@ -20,6 +20,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	contextMessages []Message,
 	compiled promptcompiler.CompiledPrompt,
 	toolSurface RuntimeToolRouterSnapshot,
+	control RuntimeStepControlFacts,
 	thresholds ContextBudgetThresholds,
 	modelName string,
 ) (RuntimeStepContext, promptinput.BuildResult, error) {
@@ -88,15 +89,19 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	}
 	providerReq.ComputeHashes()
 	step := RuntimeStepContext{
-		Turn:            turnCtx,
-		Iteration:       iteration,
-		ContextState:    contextState,
-		Compiled:        compiled,
-		ModelInput:      promptBuild.Items,
-		ToolSurface:     toolSurface,
-		ProviderRequest: providerReq,
+		Turn:             turnCtx,
+		TurnAssemblyHash: control.TurnAssemblyHash,
+		PermissionHash:   control.PermissionHash,
+		CheckpointRef:    control.CheckpointRef,
+		Iteration:        iteration,
+		ContextState:     contextState,
+		Compiled:         compiled,
+		ModelInput:       promptBuild.Items,
+		ToolSurface:      toolSurface,
+		ProviderRequest:  providerReq,
 	}
-	if err := step.Validate(); err != nil {
+	step, err = FreezeRuntimeStepContext(step)
+	if err != nil {
 		return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("runtime step context: %w", err)
 	}
 	return step, promptBuild, nil
@@ -141,7 +146,15 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 		State:      finalEvidenceState,
 	})
 	root := modeltrace.TraceDocumentV2Directory(traceConfig.RootDir, step.Turn.SessionID, step.Turn.TurnID)
-	rawRef, err := modeltrace.WriteRawPayloadRef(root, "provider-request", "provider_request", step.ProviderRequest)
+	rawRef, err := modeltrace.WriteRawPayloadRef(root, "provider-request", "provider_request_hashes", runtimeProviderRequestTraceDocumentV2{
+		Provider:              step.ProviderRequest.Provider,
+		Model:                 step.ProviderRequest.Model,
+		ModelInputHash:        step.ProviderRequest.ModelInputHash,
+		ProviderMessagesHash:  step.ProviderRequest.ProviderMessagesHash,
+		RequestPropertiesHash: step.ProviderRequest.RequestPropertiesHash,
+		PromptCacheKey:        step.ProviderRequest.PromptCacheKey,
+		ToolCount:             len(step.ProviderRequest.Tools),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -153,12 +166,25 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 		VisibleTools:      traceReq.VisibleTools,
 		PromptFingerprint: traceReq.PromptFingerprint,
 		TurnContext:       step.Turn,
+		StepContextHash:   step.Hash,
 		HarnessTurn:       harnessTurn,
 		StepContext: runtimeStepTraceDocumentV2{
-			RuntimeStepContext: step,
-			PromptInputTrace:   traceReq.PromptInputTrace,
-			PromptInputDiff:    traceReq.PromptInputDiff,
-			DiagnosticTrace:    traceReq.DiagnosticTrace,
+			Hash:                   step.Hash,
+			TurnAssemblyHash:       step.TurnAssemblyHash,
+			PermissionHash:         step.PermissionHash,
+			CheckpointRef:          step.CheckpointRef,
+			Iteration:              step.Iteration,
+			ToolSurfaceFingerprint: step.ToolSurface.Fingerprint,
+			ToolPolicyHash:         step.ToolSurface.PolicyHash,
+			ProviderRequest: modeltrace.ProviderRequestTrace{
+				ModelInputHash:        step.ProviderRequest.ModelInputHash,
+				ProviderMessagesHash:  step.ProviderRequest.ProviderMessagesHash,
+				RequestPropertiesHash: step.ProviderRequest.RequestPropertiesHash,
+				PromptCacheKey:        step.ProviderRequest.PromptCacheKey,
+			},
+			PromptInputTrace: traceReq.PromptInputTrace,
+			PromptInputDiff:  traceReq.PromptInputDiff,
+			DiagnosticTrace:  traceReq.DiagnosticTrace,
 		},
 		ProviderRequest: modeltrace.ProviderRequestTrace{
 			ModelInputHash:        step.ProviderRequest.ModelInputHash,
@@ -182,8 +208,25 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 }
 
 type runtimeStepTraceDocumentV2 struct {
-	RuntimeStepContext
-	PromptInputTrace any `json:"promptInputTrace,omitempty"`
-	PromptInputDiff  any `json:"promptInputDiff,omitempty"`
-	DiagnosticTrace  any `json:"diagnosticTrace,omitempty"`
+	Hash                   string                          `json:"hash"`
+	TurnAssemblyHash       string                          `json:"turnAssemblyHash"`
+	PermissionHash         string                          `json:"permissionHash"`
+	CheckpointRef          string                          `json:"checkpointRef,omitempty"`
+	Iteration              int                             `json:"iteration"`
+	ToolSurfaceFingerprint string                          `json:"toolSurfaceFingerprint"`
+	ToolPolicyHash         string                          `json:"toolPolicyHash,omitempty"`
+	ProviderRequest        modeltrace.ProviderRequestTrace `json:"providerRequest"`
+	PromptInputTrace       any                             `json:"promptInputTrace,omitempty"`
+	PromptInputDiff        any                             `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace        any                             `json:"diagnosticTrace,omitempty"`
+}
+
+type runtimeProviderRequestTraceDocumentV2 struct {
+	Provider              string `json:"provider,omitempty"`
+	Model                 string `json:"model,omitempty"`
+	ModelInputHash        string `json:"modelInputHash"`
+	ProviderMessagesHash  string `json:"providerMessagesHash"`
+	RequestPropertiesHash string `json:"requestPropertiesHash"`
+	PromptCacheKey        string `json:"promptCacheKey"`
+	ToolCount             int    `json:"toolCount"`
 }

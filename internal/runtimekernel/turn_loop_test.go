@@ -49,6 +49,7 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 		runtimeToolRouterSnapshotFromCompile([]promptcompiler.Tool{
 			&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "read_logs", Description: "Read logs"}},
 		}, []string{"read_logs"}, "tool-fingerprint", tooling.ToolSurfacePolicySnapshot{Hash: "policy-hash"}),
+		RuntimeStepControlFacts{TurnAssemblyHash: "assembly-hash", PermissionHash: "permission-hash", CheckpointRef: "checkpoint-1"},
 		DefaultContextBudgetPolicy(32000, 8000).Thresholds(),
 		"synthetic-model",
 	)
@@ -66,5 +67,8 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	}
 	if step.ToolSurface.PolicyHash != "policy-hash" || len(step.ToolSurface.ModelVisibleTools) != 1 {
 		t.Fatalf("tool surface = %#v", step.ToolSurface)
+	}
+	if step.Hash == "" || step.TurnAssemblyHash != "assembly-hash" || step.PermissionHash != "permission-hash" {
+		t.Fatalf("step control hashes = %#v", step)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/specialinputmemory"
@@ -80,6 +81,44 @@ func TestWriteTraceDocumentV2CarriesTurnAssemblyShadow(t *testing.T) {
 	}
 	if payload["turnAssembly"] == nil || payload["legacyAgentAssemblySnapshot"] == nil || payload["turnAssemblyShadow"] == nil {
 		t.Fatalf("trace assembly fields = %#v", payload)
+	}
+}
+
+func TestWriteTraceDocumentV2RedactsSensitiveKeysWithoutCorruptingTokenCounters(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteTraceDocumentV2(dir, TraceDocumentV2{
+		SessionID: "session-redaction", TurnID: "turn-redaction",
+		TurnContext: map[string]any{"metadata": map[string]any{
+			"apiKey": "secret-canary-v2", "note": "token=secret-canary-v2",
+		}},
+		PromptInputTrace: map[string]any{"contextUsage": map[string]any{
+			"categories": []any{map[string]any{"name": "prompt", "tokensEstimate": 42}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("WriteTraceDocumentV2() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if strings.Contains(string(data), "secret-canary-v2") {
+		t.Fatalf("trace leaked secret canary: %s", data)
+	}
+	var payload struct {
+		PromptInputTrace struct {
+			ContextUsage struct {
+				Categories []struct {
+					TokensEstimate int `json:"tokensEstimate"`
+				} `json:"categories"`
+			} `json:"contextUsage"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got := payload.PromptInputTrace.ContextUsage.Categories[0].TokensEstimate; got != 42 {
+		t.Fatalf("tokensEstimate = %d, want 42", got)
 	}
 }
 
