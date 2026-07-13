@@ -131,7 +131,7 @@
       ],
       "processStatuses": [
         "completed",
-        "completed",
+        "rejected",
         "completed"
       ],
       "timelineTypes": [
