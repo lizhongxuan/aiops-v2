@@ -159,8 +159,12 @@ type LoadedSkillPromptRef struct {
 
 // PromptSection is an additional prompt fragment injected into developer instructions.
 type PromptSection struct {
-	Title   string
-	Content string
+	Title       string
+	Content     string
+	SourceType  string
+	SourceRef   string
+	RetrievedAt string
+	TrustLevel  string
 }
 
 // DynamicContextSource is a bounded prompt-facing dynamic context block.
@@ -184,14 +188,16 @@ type DynamicContextSource struct {
 // during migration, but callers should prefer this ordered envelope for model
 // input assembly.
 type PromptCompiledSection struct {
-	ID        string
-	Layer     string
-	Role      string
-	Content   string
-	Stability string
-	MaxTokens int
-	Source    string
-	Required  bool
+	ID           string
+	Layer        string
+	LogicalLayer PromptLogicalLayer
+	BundleRef    string
+	Role         string
+	Content      string
+	Stability    string
+	MaxTokens    int
+	Source       string
+	Required     bool
 }
 
 // PromptEnvelope is the ordered prompt product consumed by model input
@@ -508,6 +514,10 @@ const (
 type CompiledPrompt struct {
 	// Envelope is the section-first prompt product consumed by model input assembly.
 	Envelope PromptEnvelope
+
+	// EnvelopeV2 is the validated L0-L6 shadow product. Task 10 does not
+	// change provider input; the promptinput cutover consumes it later.
+	EnvelopeV2 PromptEnvelopeV2
 
 	// Stable is a derived compatibility view of stable envelope sections.
 	Stable StablePromptEnvelope
