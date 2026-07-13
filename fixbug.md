@@ -179,3 +179,12 @@
 - 修复方式：增加 production-neutral、deep-frozen `ReplayArtifactSink`，在 provider/final commit 前捕获 TurnAssembly、RuntimeStepContext、FinalRuntimeFacts/FinalContract 和已验证 ActionToken；reference overlay 校验 AssistantTransport story 路径与 SHA，并由真实 scripted provider、ToolRegistry、RuntimeKernel、TransportCommandHandler 和 TransportProjector hydrate 后双跑。Step control hash排除 wall-clock和随机 message ID；checkpoint/approval ID改由冻结控制事实稳定派生；ActionToken 原始 Hash/expiry仍先严格验证，只在 replay 对比时归一 wall-clock并重算 token hash。event 比较使用跨事件双射 normalizer，tool/approval/control 字段继续逐项保留。
 - 验证结果：`approval_resume` 与 `tool_not_found` 真实 provider/full-story replay 连跑 10 次稳定；prompt/tool/permission 篡改在 Contract、Provider Fixture、Full-story 三模式均报告首个 sequence/kind/expected/actual hash/owner。`go test ./internal/eval -count=1`、`go test ./internal/runtimekernel -count=1`、全部 AssistantTransport stories、focused race 和 `go vet` 通过。
 - 风险与后续：reference JSON 是带 SHA 的 source overlay，权威 command/provider/tool/transport 断言仍来自既有 AssistantTransport story，hydrate 只生成内存 sidecar，不落第二套输入真相。ActionToken expiry 不能从安全 hash 中删除；任何新增时间派生控制字段都必须提供 typed sidecar和显式 normalizer，禁止直接忽略 hash。
+
+## 2026-07-14 07:12 - Prompt Trace 需要从错误文本猜 Step revision 与审批漂移
+
+- 修复时间：2026-07-14 07:12
+- Bug 现象：Prompt Trace 要展示 `stepRevisionKind` 和 approval token mismatch field，但 canonical rollout 没有记录这两个 typed facts；若 UI 从 error/status 文本推断，会重新产生第二套控制解释链。
+- 根因：Prompt event 只保存 model input hash/count，stale approval 虽在 Runtime 中生成 typed `ApprovalContextStaleError.MismatchFields`，重发 `approval_requested` 时却没有把字段提交到 canonical event。
+- 修复方式：Prompt event 直接记录 StepReference transition 的 `stepRevisionKind(s)`；stale reissue 通过专用 recorder helper把 server-owned mismatch fields写入同一个 approval_requested event。Prompt Trace API 仅 allowlist 投影这些字段，UI 禁止从 outcome/errorClass/status 推断 divergence。
+- 验证结果：RED 先证明首个 Prompt 缺 initial revision、nil-token reissue 缺 mismatchFields；GREEN 后 focused Runtime 测试重复 10 次通过，真实 approval/tool-not-found replay baseline 按新增 typed facts更新并恢复稳定通过。
+- 风险与后续：新增 Prompt payload 会有意改变 canonical event hash；所有持久 replay baseline 必须随 schema 内事实扩充显式审查更新，不能由测试运行时自基线覆盖。

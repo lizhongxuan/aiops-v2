@@ -353,6 +353,10 @@ func (k *RuntimeKernel) recordCanonicalToolResult(ctx context.Context, snapshot 
 }
 
 func (k *RuntimeKernel) recordCanonicalApprovalRequested(ctx context.Context, snapshot *TurnSnapshot, approval PendingApproval) error {
+	return k.recordCanonicalApprovalRequestedWithMismatches(ctx, snapshot, approval, nil)
+}
+
+func (k *RuntimeKernel) recordCanonicalApprovalRequestedWithMismatches(ctx context.Context, snapshot *TurnSnapshot, approval PendingApproval, mismatchFields []string) error {
 	if approval.ActionToken == nil {
 		return fmt.Errorf("approval_requested requires validated ActionToken")
 	}
@@ -368,6 +372,9 @@ func (k *RuntimeKernel) recordCanonicalApprovalRequested(ctx context.Context, sn
 		"argsHash": token.ArgumentsHash, "targetRefs": append([]string(nil), token.TargetRefs...), "status": "pending",
 		"actionTokenHash": token.Hash, "toolSurfaceFingerprint": token.ToolSurfaceFingerprint,
 		"permissionHash": token.PermissionHash, "checkpointId": token.CheckpointID, "rollbackHash": token.RollbackHash,
+	}
+	if fields := uniqueSortedTraceStrings(mismatchFields); len(fields) > 0 {
+		payload["mismatchFields"] = fields
 	}
 	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindApprovalRequested, payload))
 }

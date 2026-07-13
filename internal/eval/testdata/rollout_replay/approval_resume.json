@@ -11,7 +11,7 @@
     "events": [
       {"sequence": 1, "kind": "admission", "hash": "sha256:f83a392ac27112ae132c32e6e365a4ca7eb69a62a5cff4f345fa8d1543c88198"},
       {"sequence": 2, "kind": "assembly", "hash": "sha256:c05d718c0f2b9cf1f7ed9d06be42fee8f72b776d3abee334516f0a38c4f343fa"},
-      {"sequence": 3, "kind": "prompt", "hash": "sha256:aa7db814d0977357ba46b06dc6b7948036da2af78bae63f6b55f59cc206f6472"},
+      {"sequence": 3, "kind": "prompt", "hash": "sha256:f8df90db0310a585046144fa213e5aa2bbb211ca5f03eedc9aff74efe4bc3fb9"},
       {"sequence": 4, "kind": "provider_request", "hash": "sha256:4dee4101fd60524b5df6e1687008e6965c08333828005e18bf5e3ad3ccce064d"},
       {"sequence": 5, "kind": "provider_response", "hash": "sha256:3bb0c60759c3863a3436e023bc78bd1889d40bff732da2621f6a0e22d5180495"},
       {"sequence": 6, "kind": "tool_proposed", "hash": "sha256:1d385ad6695e447a47b57540ad47a1bc4e8096eae6233f3fd35eb0c9cccab374"},
@@ -19,7 +19,7 @@
       {"sequence": 8, "kind": "tool_result", "hash": "sha256:14237c10fe49d500c3cff33eb8276f8337d833dc9d59cf3c43e950e363c0fe27"},
       {"sequence": 9, "kind": "checkpoint", "hash": "sha256:3f9d1466469453747a467360413c257aecc7c4a931c85c50d44462c48e76b6bf"},
       {"sequence": 10, "kind": "transport_projection", "hash": "sha256:55459c349c85c7128d5cf326047783431e53e3f7b6ef44650dfb00f7b6e10df7"},
-      {"sequence": 11, "kind": "prompt", "hash": "sha256:d657e89747176377b70ff663e97ab4e468131af4e9cfef9de6c9691a163e3680"},
+      {"sequence": 11, "kind": "prompt", "hash": "sha256:5025d328f7dea82c7e72cda475946c89fdcad5dc95116a4ab9f69a4799fe1699"},
       {"sequence": 12, "kind": "provider_request", "hash": "sha256:ee6fa2c4c6ae5ae308df6e306114dcef265cc16efa7de3834aaaff344520b5ee"},
       {"sequence": 13, "kind": "provider_response", "hash": "sha256:a6841978dc245b823d03c8d5299927d423f7e5093372dba0580e7b37d376a90a"},
       {"sequence": 14, "kind": "tool_proposed", "hash": "sha256:a5d0d64789c9cef53dd00d76c6d85c32c89b722d43474a9fe65fcd0f5f5ffd92"},
@@ -34,13 +34,13 @@
       {"sequence": 23, "kind": "tool_result", "hash": "sha256:e55fe0a69ba25936544673c348e823d5b3d66a8e1ace58baf0c26b0745360eb9"},
       {"sequence": 24, "kind": "checkpoint", "hash": "sha256:ed4fbef717f039703e7db30765e5a59f64d88e5e44a662a1be80b10081a3281f"},
       {"sequence": 25, "kind": "transport_projection", "hash": "sha256:3e16e30f5e0bff33d0dc3b02e0112d4c1b1d33fe578ec6b90fc90efc22b76f21"},
-      {"sequence": 26, "kind": "prompt", "hash": "sha256:2ff519c48de60380f85d6f5f16c918c4c21b8ceb6968637e8e3d709c8a8ca42f"},
+      {"sequence": 26, "kind": "prompt", "hash": "sha256:1dd2582ddeaecc89c5d46377e53b3d1863036375becac30a258b6525b69798f2"},
       {"sequence": 27, "kind": "provider_request", "hash": "sha256:ddde36fa9b65d6171b09134766d5931084adaddd4e666b0ca08065843897091d"},
       {"sequence": 28, "kind": "provider_response", "hash": "sha256:cfc9d95ae3754a5bb8cf0aa70eeea9083e746847ced2d88ec1405cb0015120a8"},
       {"sequence": 29, "kind": "final_facts", "hash": "sha256:34281bf46aa07c2b00b697b287358f88a613c28eae7abfd558f90210cffc6a07"},
       {"sequence": 30, "kind": "transport_projection", "hash": "sha256:59d7df88e3359c1742d688b40c79a7555b93c9d5bf0b3afa669e4917243ad755"}
     ],
-    "rolloutHash": "sha256:231f28a48fd2a777c70638d070b80aedea4940624f2f4b9c344eafee272aa236",
+    "rolloutHash": "sha256:ba034d8f7a3a56de31492980c2351d0b0ce79a78870a85743df50aeb271623b1",
     "transportHash": "sha256:2ef952f306ffcb7f19a86ff8a86b23c9ad5c702ccb357f811bf3130f4e0bcebe"
   }
 }

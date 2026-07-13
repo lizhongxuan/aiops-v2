@@ -2538,6 +2538,16 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		frozenStepReference := cloneStepReference(stepReference)
 		snapshot.LatestStepReference = &frozenStepReference
 		snapshot.PendingStepCause = nil
+		stepRevisionKinds := make([]string, 0, len(stepReference.Transition.Revisions))
+		for _, revision := range stepReference.Transition.Revisions {
+			if kind := strings.TrimSpace(revision.Kind); kind != "" {
+				stepRevisionKinds = append(stepRevisionKinds, kind)
+			}
+		}
+		stepRevisionKind := strings.TrimSpace(stepRevisionFacts.Cause.Kind)
+		if stepRevisionKind == "" && len(stepRevisionKinds) > 0 {
+			stepRevisionKind = stepRevisionKinds[0]
+		}
 		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
 			StepID:           stepReference.StepHash,
 			Kind:             modeltrace.CanonicalRolloutKindPrompt,
@@ -2547,6 +2557,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				"modelInputHash":     stepCtx.ProviderRequest.ModelInputHash,
 				"promptSectionCount": len(compiled.PromptSections),
 				"visibleToolCount":   len(visibleToolNames),
+				"stepRevisionKind":   stepRevisionKind,
+				"stepRevisionKinds":  stepRevisionKinds,
 			},
 		}); recordErr != nil {
 			return "", nil, fmt.Errorf("record compiled prompt: %w", recordErr)
@@ -5218,7 +5230,7 @@ func (k *RuntimeKernel) blockStaleApprovalContext(ctx context.Context, session *
 	now := time.Now()
 	if reissued, checkpoint, err := k.reissueStaleApprovalBinding(session, snapshot, approval, toolCall, now); err == nil {
 		approval = reissued
-		if err := k.recordCanonicalApprovalRequested(ctx, snapshot, approval); err != nil {
+		if err := k.recordCanonicalApprovalRequestedWithMismatches(ctx, snapshot, approval, fields); err != nil {
 			return TurnResult{}, fmt.Errorf("record reissued approval request: %w", err)
 		}
 		snapshot.LatestCheckpoint = checkpoint

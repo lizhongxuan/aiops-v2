@@ -82,6 +82,13 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 		countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindAssembly) != 1 {
 		t.Fatalf("admission/assembly repeated across existing assembly: %v", canonicalRolloutKindsForTest(events))
 	}
+	firstPrompt := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindPrompt)
+	if firstPrompt.Payload["stepRevisionKind"] != StepRevisionKindInitial {
+		t.Fatalf("first prompt stepRevisionKind = %#v, want %q", firstPrompt.Payload["stepRevisionKind"], StepRevisionKindInitial)
+	}
+	if kinds := compactStringList(anyStringSlice(firstPrompt.Payload["stepRevisionKinds"])); len(kinds) == 0 || kinds[0] != StepRevisionKindInitial {
+		t.Fatalf("first prompt stepRevisionKinds = %#v, want initial typed revision", firstPrompt.Payload["stepRevisionKinds"])
+	}
 
 	session := kernel.sessions.Get(sessionID)
 	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.CanonicalRolloutHead == nil {
@@ -531,6 +538,9 @@ func TestRuntimeKernelNilActionTokenReissueRecordsFreshApprovalRequest(t *testin
 	}
 	if got := events[len(events)-1].Payload["approvalId"]; got != session.PendingApprovals[0].ID {
 		t.Fatalf("fresh approval_requested id = %#v, want %q", got, session.PendingApprovals[0].ID)
+	}
+	if fields := compactStringList(anyStringSlice(events[len(events)-1].Payload["mismatchFields"])); len(fields) != 1 || fields[0] != "token" {
+		t.Fatalf("fresh approval_requested mismatchFields = %#v, want [token]", events[len(events)-1].Payload["mismatchFields"])
 	}
 }
 
