@@ -47,3 +47,10 @@ func admissionMetadataKeyUse(key string) (admissionMetadataUse, bool) {
 	use, ok := admissionMetadataRegistry[strings.TrimSpace(key)]
 	return use, ok
 }
+
+// IsAdmissionControlMetadataKey reports whether a metadata key participates in
+// immutable admission control rather than compatibility-only projection.
+func IsAdmissionControlMetadataKey(key string) bool {
+	use, ok := admissionMetadataKeyUse(key)
+	return ok && use == admissionMetadataControl
+}

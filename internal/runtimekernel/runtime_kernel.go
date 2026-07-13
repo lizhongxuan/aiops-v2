@@ -34,6 +34,7 @@ import (
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/runtimecontract"
 	runtimestate "aiops-v2/internal/runtimekernel/state"
 	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/skills"
@@ -924,6 +925,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}
+	if err := validateResumeImmutableControlMetadata(snapshot, req.Metadata); err != nil {
+		return TurnResult{}, err
+	}
 	decisionApproval, err := exactApprovalForResumeDecision(session, snapshot, req)
 	if err != nil {
 		return TurnResult{}, err
@@ -1138,6 +1142,42 @@ func checkpointIDForStepCause(snapshot *TurnSnapshot) string {
 		return ""
 	}
 	return strings.TrimSpace(snapshot.LatestCheckpoint.ID)
+}
+
+func validateResumeImmutableControlMetadata(snapshot *TurnSnapshot, resumeMetadata map[string]string) error {
+	if snapshot == nil || len(resumeMetadata) == 0 {
+		return nil
+	}
+	for key, value := range resumeMetadata {
+		if !runtimecontract.IsAdmissionControlMetadataKey(key) {
+			continue
+		}
+		expected, ok := immutableResumeControlMetadataValue(snapshot, key)
+		if !ok || strings.TrimSpace(value) != expected {
+			return fmt.Errorf("immutable control metadata drift: %s", strings.TrimSpace(key))
+		}
+	}
+	return nil
+}
+
+func immutableResumeControlMetadataValue(snapshot *TurnSnapshot, key string) (string, bool) {
+	key = strings.TrimSpace(key)
+	if snapshot != nil && snapshot.TurnAssembly != nil {
+		assembly := snapshot.TurnAssembly
+		switch key {
+		case runtimecontract.MetadataProfile, runtimecontract.MetadataToolProfile, runtimecontract.MetadataAgentProfile:
+			return strings.TrimSpace(assembly.AdmissionFacts.Profile), true
+		case runtimecontract.MetadataAgentKind:
+			return strings.TrimSpace(assembly.AdmissionFacts.AgentKind), true
+		case runtimecontract.MetadataPermissionProfile:
+			return strings.TrimSpace(firstNonEmptyString(assembly.PermissionProfile, assembly.AdmissionFacts.PermissionProfile)), true
+		}
+	}
+	if snapshot == nil || snapshot.Metadata == nil {
+		return "", false
+	}
+	value, ok := snapshot.Metadata[key]
+	return strings.TrimSpace(value), ok
 }
 
 func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) {

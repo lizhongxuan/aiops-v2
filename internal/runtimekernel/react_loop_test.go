@@ -2861,6 +2861,23 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if !foundApprovalNeeded {
 		t.Fatal("expected approval-needed projection event when turn blocks")
 	}
+	modelCallsBeforeDrift := len(model.inputs)
+	for _, key := range []string{"profile", "toolProfile", "agentProfile"} {
+		_, driftErr := kernel.ResumeTurn(context.Background(), ResumeRequest{
+			SessionID: "sess-approval", TurnID: "turn-approval", ApprovalID: pendingApproval.ID, Decision: "approved",
+			Metadata: map[string]string{key: "drifted-profile"},
+		})
+		if driftErr == nil || !strings.Contains(driftErr.Error(), "immutable control metadata drift") {
+			t.Fatalf("%s-drift resume error = %v, want immutable control metadata drift", key, driftErr)
+		}
+		if executed != 0 || len(model.inputs) != modelCallsBeforeDrift {
+			t.Fatalf("%s-drift resume reached tool/provider: executions=%d modelCalls=%d want=%d", key, executed, len(model.inputs), modelCallsBeforeDrift)
+		}
+	}
+	session = kernel.sessions.Get("sess-approval")
+	if session == nil || len(session.PendingApprovals) != 1 || session.PendingApprovals[0].ID != pendingApproval.ID {
+		t.Fatalf("profile-drift resume consumed pending approval: %#v", session)
+	}
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID:  "sess-approval",

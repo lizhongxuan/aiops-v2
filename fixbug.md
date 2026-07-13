@@ -107,3 +107,12 @@
 - 修复方式：在 `context.go` 集中构建 assistant tool calls + 紧随匹配 tool results 的原子 causal group；初始 split、hard-keep 边界与 summary 预算预留只移动完整 group。额外预算压缩在 refs/summary/segment 生成前扩大 compactable prefix，删除生成后的逐消息静默回退，确保 `TrimmedCount`、`TruncatedAt` 和 segment 范围覆盖所有被摘要替代的消息。
 - 验证结果：RED 分别复现了 `assistant-tools/tool-result-a` 被压缩而 `tool-result-b` 被保留，以及 `msg-3` 既未压缩也未保留；修复后运行 causal group 多预算性质测试、coverage 回归、全部 context compaction 聚焦测试和相关 race 测试均通过。
 - 风险与后续：当 hard-kept 最小后缀或单个 causal group 本身超过模型预算时，原子性优先，context window 可能暂时高于目标预算；后续应以独立任务增加 typed oversized-group spill/拒绝策略，禁止重新引入逐消息切割。
+
+## 2026-07-13 16:56 - Resume metadata 可绕过冻结的 TurnAssembly profile
+
+- 修复时间：2026-07-13 16:56
+- Bug 现象：pending approval 恢复请求可通过 `metadata.profile`、`toolProfile` 或 `agentProfile` 改变恢复 Step 的 Prompt 编译 profile 和 tool-surface policy；随后 Step builder 又把 admission facts 覆盖为冻结的 TurnAssembly，导致实际工具面已经变化，但 StepReference 仍显示原 profile/TurnAssembly hash。
+- 根因：`ResumeTurn` 在校验 immutable admission metadata 前先 merge 客户端 resume metadata；`buildRuntimeStepContext` 的冻结 admission 回填发生在 Prompt 编译和 StepToolRouter 构建之后，只保证 trace facts 一致，不能撤销上游已发生的 control drift。
+- 修复方式：在任何 approval decision、tool replay、Prompt 编译或 provider 调用前校验 ResumeRequest 中所有 admission-control metadata；profile aliases、agent kind 和 permission profile直接对比冻结 TurnAssembly，其余 control key 必须与原 snapshot metadata 精确一致。`runtimecontract` 导出统一 key 分类，runtime 不新增第二份控制 key 字符串表。
+- 验证结果：RED 证明 profile drift resume 返回 nil 且会继续执行；修复后生产 `RunTurn -> pending approval -> ResumeTurn` 回归逐一验证三个 profile alias 均返回 `immutable control metadata drift`，tool execution 和 model call 计数不变，pending approval 未被消费；合法 approval resume、model-timeout resume、rollback/choice resume、runtimecontract/runtimekernel 全包和 focused race 均通过。
+- 风险与后续：当前只阻止 `runtimecontract` 注册的 admission-control keys；其他会改变 capability surface 的兼容 metadata 仍应在 Task 9 ActionToken/current-world revalidation 中通过 router、permission 和 target hash 拒绝，不能依赖客户端自律。
