@@ -250,12 +250,12 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 			Required:  true,
 		},
 	}}
-	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
 	compiled.PromptSections = promptcompiler.BuildPromptSectionTrace(compiled)
 	compiled.EnvelopeV2 = promptcompiler.BuildPromptEnvelopeV2(compiled, ctx)
 	if err := compiled.EnvelopeV2.Validate(); err != nil {
 		return promptcompiler.CompiledPrompt{}, fmt.Errorf("compile child prompt envelope v2: %w", err)
 	}
+	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
 	return compiled, nil
 }
 

@@ -73,6 +73,69 @@ func TestPromptFingerprintChangesOnlyForChangedLayer(t *testing.T) {
 	}
 }
 
+func TestPromptFingerprintV2SeparatesStableTurnAndDynamicLayers(t *testing.T) {
+	base, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "inspect", HostContext: "host-a"})
+	if err != nil {
+		t.Fatalf("Compile base error = %v", err)
+	}
+	hostChanged, err := NewCompiler().Compile(CompileContext{SessionType: "host", Mode: "inspect", HostContext: "host-b"})
+	if err != nil {
+		t.Fatalf("Compile host change error = %v", err)
+	}
+	if base.Fingerprint.StablePrefixHash == "" || base.Fingerprint.TurnPrefixHash == "" {
+		t.Fatalf("V2 prefix hashes missing: %#v", base.Fingerprint)
+	}
+	if base.Fingerprint.StablePrefixHash != hostChanged.Fingerprint.StablePrefixHash {
+		t.Fatal("host-only change polluted L0-L2 stable prefix")
+	}
+	if base.Fingerprint.TurnStableHash == hostChanged.Fingerprint.TurnStableHash || base.Fingerprint.TurnPrefixHash == hostChanged.Fingerprint.TurnPrefixHash {
+		t.Fatal("host-only change did not update L3/turn prefix")
+	}
+
+	ragChanged, err := NewCompiler().Compile(CompileContext{
+		SessionType: "host", Mode: "inspect", HostContext: "host-a",
+		ExtraSections: []PromptSection{{Title: "Evidence", Content: "rag result changed"}},
+	})
+	if err != nil {
+		t.Fatalf("Compile RAG change error = %v", err)
+	}
+	if base.Fingerprint.StablePrefixHash != ragChanged.Fingerprint.StablePrefixHash || base.Fingerprint.TurnPrefixHash != ragChanged.Fingerprint.TurnPrefixHash {
+		t.Fatal("RAG-only change polluted stable or turn prefix")
+	}
+	if base.Fingerprint.DynamicContextHash == ragChanged.Fingerprint.DynamicContextHash {
+		t.Fatal("RAG-only change did not update L5 hash")
+	}
+
+	roleEnvelope := base.EnvelopeV2
+	roleEnvelope.Sections = append([]PromptCompiledSection(nil), base.EnvelopeV2.Sections...)
+	roleEnvelope.Sections[1].Content += "\ncustom role change"
+	roleChanged, err := BuildPromptFingerprintFromEnvelopeV2(roleEnvelope)
+	if err != nil {
+		t.Fatalf("BuildPromptFingerprintFromEnvelopeV2() error = %v", err)
+	}
+	if roleChanged.RoleProfileHash == base.Fingerprint.RoleProfileHash || roleChanged.StablePrefixHash == base.Fingerprint.StablePrefixHash {
+		t.Fatal("L1 role change did not update role/stable prefix hash")
+	}
+	if roleChanged.AbsoluteSystemHash != base.Fingerprint.AbsoluteSystemHash || roleChanged.StableRuntimeContractHash != base.Fingerprint.StableRuntimeContractHash || roleChanged.DynamicContextHash != base.Fingerprint.DynamicContextHash {
+		t.Fatal("L1 role change polluted unrelated logical layer hashes")
+	}
+
+	metadataEnvelope := base.EnvelopeV2
+	metadataEnvelope.DynamicContext = append([]DynamicContextBundle(nil), base.EnvelopeV2.DynamicContext...)
+	if len(metadataEnvelope.DynamicContext) == 0 {
+		t.Fatal("expected dynamic bundles for metadata hash test")
+	}
+	metadataEnvelope.DynamicContext[0].StepID = "different-step"
+	metadataEnvelope.DynamicContext[0].RetrievedAt = "different-retrieval-marker"
+	metadataChanged, err := BuildPromptFingerprintFromEnvelopeV2(metadataEnvelope)
+	if err != nil {
+		t.Fatalf("metadata-only fingerprint error = %v", err)
+	}
+	if metadataChanged.DynamicContextHash != base.Fingerprint.DynamicContextHash {
+		t.Fatal("StepID/RetrievedAt metadata polluted provider-visible L5 semantic hash")
+	}
+}
+
 func TestProtocolStateRendersFailureSwitchPathReason(t *testing.T) {
 	compiled, err := NewCompiler().Compile(CompileContext{
 		SessionType: "host",
