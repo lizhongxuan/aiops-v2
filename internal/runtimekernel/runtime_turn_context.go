@@ -126,7 +126,7 @@ func admissionErrorText(err error) string {
 	if err == nil {
 		return ""
 	}
-	return err.Error()
+	return "admission_facts_invalid"
 }
 
 func copyRuntimeMetadata(in map[string]string) map[string]string {

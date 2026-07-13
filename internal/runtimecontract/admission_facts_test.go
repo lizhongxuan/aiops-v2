@@ -1,6 +1,7 @@
 package runtimecontract
 
 import (
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/resourcebinding"
@@ -12,6 +13,54 @@ func TestAdmissionFactsRejectsMutationWithoutTarget(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("BuildAdmissionFacts() error = nil, want missing mutation target failure")
+	}
+}
+
+func TestAdmissionFactsTypedInputIgnoresShadowedControlMetadata(t *testing.T) {
+	typed := IntentFrame{Kind: IntentKindDiagnose, RiskBudget: []ActionRisk{ActionRiskReadOnly}}
+	first, err := BuildAdmissionFacts(AdmissionInput{
+		Intent:  &typed,
+		Profile: "typed-profile",
+		Metadata: map[string]string{
+			MetadataIntentFrame: `{"kind":`,
+			MetadataIntentKind:  string(IntentKindChange),
+			MetadataProfile:     "shadow-profile",
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts(shadowed metadata) error = %v", err)
+	}
+	second, err := BuildAdmissionFacts(AdmissionInput{Intent: &typed, Profile: "typed-profile"})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts(typed only) error = %v", err)
+	}
+	if first.Hash != second.Hash || first.Profile != "typed-profile" || first.Intent.Kind != IntentKindDiagnose {
+		t.Fatalf("shadowed metadata changed typed facts: first=%#v second=%#v", first, second)
+	}
+	for _, ref := range first.SourceRefs {
+		if strings.Contains(ref, "intent") || strings.Contains(ref, "profile") {
+			t.Fatalf("shadowed metadata entered source refs: %#v", first.SourceRefs)
+		}
+	}
+}
+
+func TestAdmissionFactsStructuredMetadataFrameShadowsLegacyIntentKeys(t *testing.T) {
+	frameOnly, err := BuildAdmissionFacts(AdmissionInput{Metadata: map[string]string{
+		MetadataIntentFrame: `{"kind":"diagnose","risk_budget":["read_only"]}`,
+	}})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts(frame only) error = %v", err)
+	}
+	withLegacy, err := BuildAdmissionFacts(AdmissionInput{Metadata: map[string]string{
+		MetadataIntentFrame:      `{"kind":"diagnose","risk_budget":["read_only"]}`,
+		MetadataIntentKind:       string(IntentKindChange),
+		MetadataIntentRiskBudget: string(ActionRiskUnknown),
+	}})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts(frame plus shadowed legacy) error = %v", err)
+	}
+	if frameOnly.Hash != withLegacy.Hash {
+		t.Fatalf("shadowed legacy metadata changed frame hash: %q != %q", frameOnly.Hash, withLegacy.Hash)
 	}
 }
 
@@ -119,6 +168,35 @@ func TestAdmissionFactsDeepCopiesIntentAndRejectsInvalidScope(t *testing.T) {
 	}})
 	if err == nil {
 		t.Fatal("BuildAdmissionFacts() error = nil, want invalid registered data scope failure")
+	}
+}
+
+func TestAdmissionFactsRejectsRegisteredUnknownEnumsBeforeNormalization(t *testing.T) {
+	cases := []AdmissionInput{
+		{Metadata: map[string]string{MetadataIntentKind: string(IntentKindDiagnose), MetadataIntentRiskBudget: string(ActionRiskUnknown)}},
+		{Metadata: map[string]string{MetadataIntentKind: string(IntentKindDiagnose), MetadataIntentDataScopes: string(DataScopeUnknown)}},
+		{Intent: &IntentFrame{Kind: IntentKindDiagnose, Evidence: EvidenceEnvelope{EvidenceKinds: []string{"unknown_evidence"}}}},
+		{Intent: &IntentFrame{Kind: IntentKindDiagnose, Evidence: EvidenceEnvelope{WeakSignals: []WeakSignal{{Name: "unknown_signal"}}}}},
+	}
+	for index, input := range cases {
+		if _, err := BuildAdmissionFacts(input); err == nil {
+			t.Fatalf("case %d BuildAdmissionFacts() error = nil, want registered enum failure", index)
+		}
+	}
+}
+
+func TestAdmissionFactsDoesNotUpgradeFailClosedResourceBinding(t *testing.T) {
+	binding := verifiedAdmissionBinding(resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"})
+	binding.FailClosed = true
+	facts, err := BuildAdmissionFacts(AdmissionInput{
+		Intent:           &IntentFrame{Kind: IntentKindChange, RiskBudget: []ActionRisk{ActionRiskWrite}},
+		ResourceBindings: []resourcebinding.ResourceBindingSnapshot{binding},
+	})
+	if err == nil {
+		t.Fatal("BuildAdmissionFacts() error = nil, want fail-closed binding to remain unverified")
+	}
+	if len(facts.ResourceBindings) != 1 || !facts.ResourceBindings[0].FailClosed || facts.ResourceBindings[0].TraceHash != binding.TraceHash {
+		t.Fatalf("resource binding trust was rewritten: got=%#v want=%#v", facts.ResourceBindings, binding)
 	}
 }
 

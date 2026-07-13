@@ -2,6 +2,7 @@ package runtimekernel
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/modelrouter"
@@ -118,7 +119,7 @@ func TestBuildRuntimeTurnContextKeepsAdmissionValidationShadowOnly(t *testing.T)
 		SessionID:   "session-shadow-invalid",
 		TurnID:      "turn-shadow-invalid",
 		Metadata: map[string]string{
-			runtimecontract.MetadataIntentKind:       string(runtimecontract.IntentKindChange),
+			runtimecontract.MetadataIntentKind:       "secret-canary-value",
 			runtimecontract.MetadataIntentRiskBudget: string(runtimecontract.ActionRiskWrite),
 		},
 	}, nil, RuntimeTurnContextOptions{})
@@ -127,6 +128,9 @@ func TestBuildRuntimeTurnContextKeepsAdmissionValidationShadowOnly(t *testing.T)
 	}
 	if ctx.AdmissionError == "" || ctx.AdmissionFacts.Hash == "" {
 		t.Fatalf("shadow admission result = %#v, want typed facts plus validation error", ctx)
+	}
+	if ctx.AdmissionError != "admission_facts_invalid" || strings.Contains(ctx.AdmissionError, "secret-canary-value") {
+		t.Fatalf("AdmissionError = %q, want stable redacted code", ctx.AdmissionError)
 	}
 }
 

@@ -47,7 +47,7 @@ type admissionMetadataFacts struct {
 }
 
 func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
-	compatibility, err := adaptAdmissionMetadata(input.Metadata)
+	compatibility, err := adaptAdmissionMetadata(input)
 	if err != nil {
 		return AdmissionFacts{}, err
 	}
@@ -59,6 +59,14 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 	if intent == nil {
 		intent = &IntentFrame{}
 	}
+	validationIntent := *intent
+	if validationIntent.Kind == "" {
+		validationIntent.Kind = IntentKindUnknown
+	}
+	if strings.TrimSpace(validationIntent.Confidence) == "" {
+		validationIntent.Confidence = ConfidenceLow
+	}
+	intentErr := validateAdmissionIntent(validationIntent)
 	facts := AdmissionFacts{
 		Intent:                normalizeAdmissionIntent(*intent),
 		UserConstraints:       uniqueSortedAdmissionStrings(append(append([]string(nil), compatibility.UserConstraints...), input.UserConstraints...)),
@@ -89,6 +97,9 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 		"permissionProfile": facts.PermissionProfile,
 		"sourceRefs":        facts.SourceRefs,
 	})
+	if intentErr != nil {
+		return facts, intentErr
+	}
 	if err := ValidateAdmissionFacts(facts); err != nil {
 		return facts, err
 	}
@@ -126,7 +137,9 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 	return nil
 }
 
-func adaptAdmissionMetadata(metadata map[string]string) (admissionMetadataFacts, error) {
+func adaptAdmissionMetadata(input AdmissionInput) (admissionMetadataFacts, error) {
+	metadata := input.Metadata
+	metadataIntentFrame := input.Intent == nil && strings.TrimSpace(metadata[MetadataIntentFrame]) != ""
 	out := admissionMetadataFacts{}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)
@@ -138,14 +151,19 @@ func adaptAdmissionMetadata(metadata map[string]string) (admissionMetadataFacts,
 			out.CompatibilityOnly = append(out.CompatibilityOnly, key)
 			continue
 		}
+		if admissionMetadataShadowed(key, input, metadataIntentFrame) {
+			continue
+		}
 		if strings.TrimSpace(value) != "" {
 			out.SourceRefs = append(out.SourceRefs, "metadata:"+key)
 		}
 	}
-	if raw := strings.TrimSpace(metadata[MetadataIntentFrame]); raw != "" {
+	if input.Intent != nil {
+		// Typed intent owns the field; compatibility metadata is ignored.
+	} else if raw := strings.TrimSpace(metadata[MetadataIntentFrame]); raw != "" {
 		var frame IntentFrame
 		if err := json.Unmarshal([]byte(raw), &frame); err != nil {
-			return admissionMetadataFacts{}, fmt.Errorf("invalid %s: %w", MetadataIntentFrame, err)
+			return admissionMetadataFacts{}, fmt.Errorf("invalid registered intent frame")
 		}
 		out.Intent = &frame
 	} else {
@@ -165,13 +183,40 @@ func adaptAdmissionMetadata(metadata map[string]string) (admissionMetadataFacts,
 			out.Intent = &frame
 		}
 	}
-	out.UserConstraints = splitAdmissionMetadataList(metadata[MetadataUserConstraints])
-	out.AgentKind = strings.TrimSpace(metadata[MetadataAgentKind])
-	out.Profile = firstAdmissionValue(metadata[MetadataProfile], metadata[MetadataToolProfile], metadata[MetadataAgentProfile])
-	out.PermissionProfile = strings.TrimSpace(metadata[MetadataPermissionProfile])
+	if len(input.UserConstraints) == 0 {
+		out.UserConstraints = splitAdmissionMetadataList(metadata[MetadataUserConstraints])
+	}
+	if strings.TrimSpace(input.AgentKind) == "" {
+		out.AgentKind = strings.TrimSpace(metadata[MetadataAgentKind])
+	}
+	if strings.TrimSpace(input.Profile) == "" {
+		out.Profile = firstAdmissionValue(metadata[MetadataProfile], metadata[MetadataToolProfile], metadata[MetadataAgentProfile])
+	}
+	if strings.TrimSpace(input.PermissionProfile) == "" {
+		out.PermissionProfile = strings.TrimSpace(metadata[MetadataPermissionProfile])
+	}
 	out.CompatibilityOnly = uniqueSortedAdmissionStrings(out.CompatibilityOnly)
 	out.SourceRefs = uniqueSortedAdmissionStrings(out.SourceRefs)
 	return out, nil
+}
+
+func admissionMetadataShadowed(key string, input AdmissionInput, metadataIntentFrame bool) bool {
+	switch key {
+	case MetadataIntentFrame:
+		return input.Intent != nil
+	case MetadataIntentKind, MetadataIntentDataScopes, MetadataIntentRiskBudget, MetadataIntentConfidence, MetadataEvidenceKinds, MetadataWeakSignals:
+		return input.Intent != nil || metadataIntentFrame
+	case MetadataUserConstraints:
+		return len(input.UserConstraints) > 0
+	case MetadataAgentKind:
+		return strings.TrimSpace(input.AgentKind) != ""
+	case MetadataProfile, MetadataToolProfile, MetadataAgentProfile:
+		return strings.TrimSpace(input.Profile) != ""
+	case MetadataPermissionProfile:
+		return strings.TrimSpace(input.PermissionProfile) != ""
+	default:
+		return false
+	}
 }
 
 func normalizeAdmissionIntent(frame IntentFrame) IntentFrame {
@@ -236,11 +281,17 @@ func normalizeAdmissionIntent(frame IntentFrame) IntentFrame {
 func normalizeAdmissionResourceBindings(values []resourcebinding.ResourceBindingSnapshot) []resourcebinding.ResourceBindingSnapshot {
 	out := make([]resourcebinding.ResourceBindingSnapshot, 0, len(values))
 	for _, value := range values {
-		out = append(out, resourcebinding.NewBindingSnapshot(value.Ref, resourcebinding.BindingOptions{
-			Source: value.Source, VerifiedBy: value.VerifiedBy, TrustLevel: value.TrustLevel,
-		}))
+		value.Ref = resourcebinding.NormalizeRef(value.Ref)
+		value.Source = strings.TrimSpace(value.Source)
+		value.VerifiedBy = strings.TrimSpace(value.VerifiedBy)
+		value.TrustLevel = strings.ToLower(strings.TrimSpace(value.TrustLevel))
+		out = append(out, value)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].TraceHash < out[j].TraceHash })
+	sort.Slice(out, func(i, j int) bool {
+		left := out[i].Ref.IdentityHash() + "\x00" + out[i].Source + "\x00" + out[i].VerifiedBy + "\x00" + out[i].TrustLevel + "\x00" + fmt.Sprint(out[i].FailClosed) + "\x00" + out[i].TraceHash
+		right := out[j].Ref.IdentityHash() + "\x00" + out[j].Source + "\x00" + out[j].VerifiedBy + "\x00" + out[j].TrustLevel + "\x00" + fmt.Sprint(out[j].FailClosed) + "\x00" + out[j].TraceHash
+		return left < right
+	})
 	return out
 }
 
@@ -261,10 +312,10 @@ func validateAdmissionIntent(frame IntentFrame) error {
 	switch frame.Kind {
 	case IntentKindUnknown, IntentKindDiagnose, IntentKindExplain, IntentKindPlan, IntentKindChange, IntentKindVerify, IntentKindResearch, IntentKindConfigure, IntentKindRunbookAuthoring:
 	default:
-		return fmt.Errorf("invalid admission intent kind %q", frame.Kind)
+		return fmt.Errorf("invalid admission intent kind")
 	}
 	if frame.Confidence != ConfidenceLow && frame.Confidence != ConfidenceMedium && frame.Confidence != ConfidenceHigh {
-		return fmt.Errorf("invalid admission confidence %q", frame.Confidence)
+		return fmt.Errorf("invalid admission confidence")
 	}
 	for _, risk := range frame.RiskBudget {
 		if err := validateAdmissionActionRisk(risk); err != nil {
@@ -288,6 +339,16 @@ func validateAdmissionIntent(frame IntentFrame) error {
 			}
 		}
 	}
+	for _, kind := range frame.Evidence.EvidenceKinds {
+		if !validAdmissionEvidenceKind(kind) {
+			return fmt.Errorf("invalid admission evidence kind")
+		}
+	}
+	for _, signal := range frame.Evidence.WeakSignals {
+		if !validAdmissionWeakSignal(signal.Name) {
+			return fmt.Errorf("invalid admission weak signal")
+		}
+	}
 	return nil
 }
 
@@ -296,7 +357,7 @@ func validateAdmissionActionRisk(risk ActionRisk) error {
 	case ActionRiskReadOnly, ActionRiskWrite, ActionRiskHostExec, ActionRiskNetwork, ActionRiskDestruct:
 		return nil
 	default:
-		return fmt.Errorf("invalid admission action risk %q", risk)
+		return fmt.Errorf("invalid admission action risk")
 	}
 }
 
@@ -305,7 +366,25 @@ func validateAdmissionDataScope(scope DataScope) error {
 	case DataScopeLocalRuntime, DataScopeWorkspace, DataScopeOpsKnowledge, DataScopePublicWeb, DataScopeExternalMCP:
 		return nil
 	default:
-		return fmt.Errorf("invalid admission data scope %q", scope)
+		return fmt.Errorf("invalid admission data scope")
+	}
+}
+
+func validAdmissionEvidenceKind(kind string) bool {
+	switch strings.TrimSpace(kind) {
+	case EvidenceKindLog, EvidenceKindCommandOutput, EvidenceKindSQLResult, EvidenceKindMonitoring, EvidenceKindStackTrace, EvidenceKindConfig, EvidenceKindTimeline:
+		return true
+	default:
+		return false
+	}
+}
+
+func validAdmissionWeakSignal(name string) bool {
+	switch strings.TrimSpace(name) {
+	case WeakSignalLogLikeText, WeakSignalConfigLikeText, WeakSignalTimelineLikeSequence, WeakSignalCommandOutputLike, WeakSignalMonitoringLikeText, WeakSignalStackTraceLikeText, WeakSignalSQLResultLikeText:
+		return true
+	default:
+		return false
 	}
 }
 
