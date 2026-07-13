@@ -63,6 +63,19 @@ func TestHarnessContractGoldenCasesCoverRequiredScenarios(t *testing.T) {
 	}
 }
 
+func TestHarnessContractReplayCorpusCoversApprovalResumeAndToolNotFound(t *testing.T) {
+	for _, name := range []string{"approval_resume", "tool_not_found"} {
+		path := filepath.Join("testdata", "rollout_replay", name+".json")
+		fixture, loadErr := LoadRolloutReplayFixtureFile(path)
+		if loadErr != nil {
+			t.Fatalf("load replay fixture %s: %v", path, loadErr)
+		}
+		if fixture.Name != name {
+			t.Fatalf("replay fixture %s name = %q", path, fixture.Name)
+		}
+	}
+}
+
 func TestHarnessContractGoldenCasesDeclareTraceExpectations(t *testing.T) {
 	dir := filepath.Join("..", "runtimekernel", "testdata", "aichat_harness_golden")
 	for _, tc := range loadHarnessGoldenCasesForEvalTest(t, dir) {
