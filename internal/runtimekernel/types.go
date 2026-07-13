@@ -478,6 +478,7 @@ type PendingApproval struct {
 	ApprovalScope          string                 `json:"approvalScope,omitempty"`
 	Mutating               bool                   `json:"mutating,omitempty"`
 	RollbackContract       ActionRollbackContract `json:"rollbackContract,omitempty"`
+	ActionToken            *ActionToken           `json:"actionToken,omitempty"`
 	AllowedActions         []string               `json:"allowedActions,omitempty"`
 	ResourceScopes         []string               `json:"resourceScopes,omitempty"`
 	RiskCeiling            string                 `json:"riskCeiling,omitempty"`
@@ -517,6 +518,14 @@ func (p PendingApproval) Validate() error {
 	}
 	if p.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if p.ActionToken != nil {
+		if err := p.ActionToken.Validate(); err != nil {
+			return fmt.Errorf("action token: %w", err)
+		}
+		if p.ActionToken.ApprovalID != p.ID || p.ActionToken.TurnID != p.TurnID || p.ActionToken.ToolCallID != p.ToolCallID || p.ActionToken.ToolName != p.ToolName {
+			return fmt.Errorf("action token approval binding mismatch")
+		}
 	}
 	return nil
 }
