@@ -1,15 +1,17 @@
 package runtimekernel
 
 import (
+	"context"
 	"fmt"
 	"time"
 
+	"aiops-v2/internal/agentstate"
 	runtimestate "aiops-v2/internal/runtimekernel/state"
 )
 
 const admissionTargetRequiredFinalText = "缺少明确且已验证的执行目标，因此未执行任何操作。请先选择或绑定目标后重试。"
 
-func (k *RuntimeKernel) completeAdmissionTargetRequiredTurn(session *SessionState, snapshot *TurnSnapshot) (string, error) {
+func (k *RuntimeKernel) completeAdmissionTargetRequiredTurn(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (string, error) {
 	if session == nil || snapshot == nil {
 		return "", fmt.Errorf("session and snapshot are required")
 	}
@@ -42,18 +44,8 @@ func (k *RuntimeKernel) completeAdmissionTargetRequiredTurn(session *SessionStat
 		Content:   finalText,
 		Timestamp: now,
 	}
-	session.Messages = append(session.Messages, message)
-	snapshot.Lifecycle = TurnLifecycleCompleted
-	snapshot.ResumeState = TurnResumeStateNone
-	snapshot.Error = ""
-	snapshot.PendingApprovals = nil
-	snapshot.PendingEvidence = nil
-	snapshot.UpdatedAt = now
-	snapshot.CompletedAt = &now
 	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "admission_target_required", TurnLifecycleCompleted, TurnResumeStateNone)
-	snapshot.LatestCheckpoint = checkpoint
-	session.LatestCheckpoint = checkpoint
-	commitFinalAssistantOutput(snapshot, assistantOutputCommitInput{
+	finalCommit := assistantOutputCommitInput{
 		TurnID:           snapshot.ID,
 		Iteration:        snapshot.Iteration,
 		MessageID:        message.ID,
@@ -61,7 +53,40 @@ func (k *RuntimeKernel) completeAdmissionTargetRequiredTurn(session *SessionStat
 		EvidenceBoundary: "blocked",
 		BoundaryAction:   FinalMessageBoundaryBlock,
 		FinalContract:    &finalContract,
-	})
+	}
+	recordSnapshot := *snapshot
+	recordSnapshot.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	recordSnapshot.Lifecycle = TurnLifecycleCompleted
+	recordSnapshot.ResumeState = TurnResumeStateNone
+	recordSnapshot.PendingApprovals = nil
+	recordSnapshot.PendingEvidence = nil
+	recordSnapshot.LatestCheckpoint = checkpoint
+	commitFinalAssistantOutput(&recordSnapshot, finalCommit)
+	if err := k.recordCanonicalCheckpoint(ctx, &recordSnapshot, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return "", err
+	}
+	if err := k.recordCanonicalFinalFacts(ctx, &recordSnapshot, facts, finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return "", err
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, &recordSnapshot, TurnLifecycleCompleted, TurnResumeStateNone, checkpoint.ID, &finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return "", err
+	}
+
+	session.Messages = append(session.Messages, message)
+	snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+	snapshot.Lifecycle = TurnLifecycleCompleted
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = ""
+	snapshot.PendingApprovals = nil
+	snapshot.PendingEvidence = nil
+	snapshot.UpdatedAt = now
+	snapshot.CompletedAt = &now
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
+	commitFinalAssistantOutput(snapshot, finalCommit)
 	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)

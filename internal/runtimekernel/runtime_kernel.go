@@ -433,16 +433,36 @@ func turnLifecycleStateForValidator(lifecycle TurnLifecycleState) (runtimestate.
 }
 
 func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
+	ok, _ := k.markTurnCanceledRecorded(context.Background(), session, snapshot, reason)
+	return ok
+}
+
+func (k *RuntimeKernel) markTurnCanceledRecorded(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, reason string) (bool, error) {
 	if session == nil || snapshot == nil {
-		return false
+		return false, nil
 	}
 	if snapshot.Lifecycle == TurnLifecycleCanceled {
-		return false
+		return false, nil
 	}
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCancelled, TurnLifecycleCanceled); err != nil {
-		return false
+		return false, nil
 	}
 	now := time.Now()
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "turn_cancelled", TurnLifecycleCanceled, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleCanceled
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	cancelActiveAgentItems(&candidate)
+	if err := k.recordCanonicalTerminalBoundary(context.WithoutCancel(ctx), &candidate, checkpoint, FinalContractStatusCancelled, "turn_cancelled"); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return false, err
+	}
+
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleCanceled
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = strings.TrimSpace(reason)
@@ -451,11 +471,8 @@ func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSn
 	snapshot.PendingApprovals = nil
 	snapshot.PendingEvidence = nil
 	cancelActiveAgentItems(snapshot)
-	if snapshot.LatestCheckpoint != nil {
-		snapshot.LatestCheckpoint.Lifecycle = TurnLifecycleCanceled
-		snapshot.LatestCheckpoint.ResumeState = TurnResumeStateNone
-		snapshot.LatestCheckpoint.UpdatedAt = now
-	}
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
 		last.Lifecycle = TurnLifecycleCanceled
 		last.ResumeState = TurnResumeStateNone
@@ -475,7 +492,7 @@ func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSn
 			Timestamp: now,
 		})
 	}
-	return true
+	return true, nil
 }
 
 func appendAbortedToolResultsForCancel(session *SessionState, snapshot *TurnSnapshot, reason string, now time.Time) {
@@ -750,7 +767,9 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 	recomputeContextWindow(&session.Context, session.Messages)
 	if pendingCancelReason != "" {
 		snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
-		k.markTurnCanceled(session, snapshot, pendingCancelReason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, pendingCancelReason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 		return TurnResult{
 			SessionType:     req.SessionType,
 			Mode:            req.Mode,
@@ -791,7 +810,9 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
 			snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
-			k.markTurnCanceled(session, snapshot, "user stop")
+			if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+				return TurnResult{}, cancelErr
+			}
 			return TurnResult{
 				SessionType:     req.SessionType,
 				Mode:            req.Mode,
@@ -1060,7 +1081,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
 	}
 	if pendingCancelReason != "" {
-		k.markTurnCanceled(session, snapshot, pendingCancelReason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, pendingCancelReason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 		return TurnResult{
 			SessionType:     session.Type,
 			Mode:            session.Mode,
@@ -1127,7 +1150,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, agentKind, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
-			k.markTurnCanceled(session, snapshot, "user stop")
+			if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+				return TurnResult{}, cancelErr
+			}
 			return TurnResult{
 				SessionType:     session.Type,
 				Mode:            session.Mode,
@@ -1384,13 +1409,14 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session 
 	if session == nil || snapshot == nil {
 		return TurnResult{}, fmt.Errorf("session and snapshot are required")
 	}
+	transitionSnapshot := *snapshot
 	if snapshot.Lifecycle == TurnLifecycleSuspended {
-		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
+		if err := validateTurnLifecycleTransition(&transitionSnapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
 			return TurnResult{}, err
 		}
-		snapshot.Lifecycle = TurnLifecycleRunning
+		transitionSnapshot.Lifecycle = TurnLifecycleRunning
 	}
-	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
+	if err := validateTurnLifecycleTransition(&transitionSnapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 		return TurnResult{}, err
 	}
 	finalText := deniedApprovalFinalText(approval, reason)
@@ -1400,29 +1426,19 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session 
 		Content:   finalText,
 		Timestamp: at,
 	}
-	session.Messages = append(session.Messages, message)
-	snapshot.Lifecycle = TurnLifecycleCompleted
-	snapshot.ResumeState = TurnResumeStateNone
-	snapshot.Error = ""
-	snapshot.PendingApprovals = nil
-	snapshot.PendingEvidence = nil
-	snapshot.UpdatedAt = at
-	snapshot.CompletedAt = &at
-	session.PendingApprovals = nil
-	session.PendingEvidence = nil
 	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "approval_denied", TurnLifecycleCompleted, TurnResumeStateNone)
-	snapshot.LatestCheckpoint = checkpoint
-	session.LatestCheckpoint = checkpoint
-	if last := latestIteration(snapshot); last != nil {
-		last.Lifecycle = TurnLifecycleCompleted
-		last.ResumeState = TurnResumeStateNone
-		last.Checkpoint = checkpoint
-		last.UpdatedAt = at
-		last.CompletedAt = &at
-	}
-	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
-	finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, snapshot, session, k.finalCompletionEvaluator())
+	recordSnapshot := transitionSnapshot
+	recordSnapshot.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	recordSnapshot.Lifecycle = TurnLifecycleCompleted
+	recordSnapshot.ResumeState = TurnResumeStateNone
+	recordSnapshot.PendingApprovals = nil
+	recordSnapshot.PendingEvidence = nil
+	recordSnapshot.LatestCheckpoint = checkpoint
+	recordSession := *session
+	recordSession.PendingApprovals = nil
+	recordSession.PendingEvidence = nil
+	finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, &recordSnapshot, &recordSession, k.finalCompletionEvaluator())
 	finalContract := BuildFinalContract(finalText, finalRuntimeFacts)
 	finalData := assistantMessageData{
 		MessageID:        message.ID,
@@ -1434,6 +1450,48 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session 
 		TextHash:         debugTextHash(finalText),
 		FinalContract:    &finalContract,
 	}
+	completeAssistantMessageItem(&recordSnapshot, itemID, finalText, finalData)
+	appendAgentItem(&recordSnapshot, newAgentItem(
+		finalResponseItemID(snapshot.ID, snapshot.Iteration),
+		agentstate.TurnItemTypeFinalResponse,
+		agentstate.ItemStatusCompleted,
+		finalText,
+		assistantMessageAgentItemData(finalData),
+	))
+	if err := k.recordCanonicalCheckpoint(ctx, &recordSnapshot, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalFinalFacts(ctx, &recordSnapshot, finalRuntimeFacts, finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, &recordSnapshot, TurnLifecycleCompleted, TurnResumeStateNone, checkpoint.ID, &finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+
+	session.Messages = append(session.Messages, message)
+	snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+	snapshot.Lifecycle = TurnLifecycleCompleted
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = ""
+	snapshot.PendingApprovals = nil
+	snapshot.PendingEvidence = nil
+	snapshot.UpdatedAt = at
+	snapshot.CompletedAt = &at
+	session.PendingApprovals = nil
+	session.PendingEvidence = nil
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
+	if last := latestIteration(snapshot); last != nil {
+		last.Lifecycle = TurnLifecycleCompleted
+		last.ResumeState = TurnResumeStateNone
+		last.Checkpoint = checkpoint
+		last.UpdatedAt = at
+		last.CompletedAt = &at
+	}
+	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	completeAssistantMessageItem(snapshot, itemID, finalText, finalData)
 	appendAgentItem(snapshot, newAgentItem(
 		finalResponseItemID(snapshot.ID, snapshot.Iteration),
@@ -1538,7 +1596,7 @@ func rememberSessionApprovalGrant(session *SessionState, toolCall ToolCall, appr
 // ---------------------------------------------------------------------------
 
 // CancelTurn cancels an active turn and returns the cancellation result.
-func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResult, error) {
+func (k *RuntimeKernel) CancelTurn(ctx context.Context, req CancelRequest) (TurnResult, error) {
 	if err := req.Validate(); err != nil {
 		return TurnResult{}, fmt.Errorf("invalid cancel request: %w", err)
 	}
@@ -1563,7 +1621,9 @@ func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnRe
 		}
 		clientTurnID = snapshot.ClientTurnID
 		clientMessageID = snapshot.ClientMessageID
-		k.markTurnCanceled(session, snapshot, req.Reason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, req.Reason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 	}
 
 	return TurnResult{
@@ -2236,7 +2296,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		}
 		k.persistTurnSnapshot(session, snapshot)
 		if admissionContext.AdmissionError == runtimeAdmissionErrorTargetRequired {
-			finalText, completeErr := k.completeAdmissionTargetRequiredTurn(session, snapshot)
+			finalText, completeErr := k.completeAdmissionTargetRequiredTurn(ctx, session, snapshot)
 			return finalText, nil, completeErr
 		}
 	}
@@ -2771,7 +2831,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				finishObservedSpan(modelSpan, "cancelled", genErr.Error(), map[string]any{"error": genErr.Error()})
 				updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCancelled, "模型调用已取消")
 				if snapshot.Lifecycle != TurnLifecycleCanceled {
-					k.markTurnCanceled(session, snapshot, "user stop")
+					if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+						return "", nil, cancelErr
+					}
 				} else {
 					snapshot.UpdatedAt = time.Now()
 					k.persistTurnSnapshot(session, snapshot)
@@ -3076,15 +3138,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
 			}
-			now := time.Now()
-			if !assistantMessageCommitted {
-				assistantMsg.Content = assistantContent
-				session.Messages = append(session.Messages, assistantMsg)
-				assistantMessageCommitted = true
-			}
-			snapshot.Lifecycle = TurnLifecycleCompleted
-			snapshot.ResumeState = TurnResumeStateNone
-			commitFinalAssistantOutput(snapshot, assistantOutputCommitInput{
+			finalCommit := assistantOutputCommitInput{
 				TurnID:           turnID,
 				Iteration:        iteration,
 				MessageID:        assistantMsg.ID,
@@ -3095,7 +3149,33 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				BoundaryAction:   boundaryDecision.Action,
 				EvidenceRefs:     assistantMessageEvidenceRefsFromSnapshot(snapshot),
 				FinalContract:    &finalContract,
-			})
+			}
+			recordSnapshot := *snapshot
+			recordSnapshot.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+			recordSnapshot.Lifecycle = TurnLifecycleCompleted
+			recordSnapshot.ResumeState = TurnResumeStateNone
+			recordSnapshot.PendingApprovals = nil
+			recordSnapshot.PendingEvidence = nil
+			commitFinalAssistantOutput(&recordSnapshot, finalCommit)
+			if err := k.recordCanonicalFinalFacts(ctx, &recordSnapshot, finalRuntimeFacts, finalContract); err != nil {
+				snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+				return "", nil, err
+			}
+			checkpointRef := checkpointIDForStepCause(snapshot)
+			if err := k.recordCanonicalTransportProjection(ctx, &recordSnapshot, TurnLifecycleCompleted, TurnResumeStateNone, checkpointRef, &finalContract); err != nil {
+				snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+				return "", nil, err
+			}
+			snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+			now := time.Now()
+			if !assistantMessageCommitted {
+				assistantMsg.Content = assistantContent
+				session.Messages = append(session.Messages, assistantMsg)
+				assistantMessageCommitted = true
+			}
+			snapshot.Lifecycle = TurnLifecycleCompleted
+			snapshot.ResumeState = TurnResumeStateNone
+			commitFinalAssistantOutput(snapshot, finalCommit)
 			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
@@ -3452,11 +3532,24 @@ func (k *RuntimeKernel) runHostIterationLoop(
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
 		return "", nil, err
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, maxIterations, nextCheckpointSequence(snapshot), "iteration_limit", TurnLifecycleFailed, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	appendAgentItem(&candidate, newAgentItem(errorItemID(turnID, maxIterations), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "iteration limit exceeded", nil))
+	if err := k.recordCanonicalTerminalBoundary(ctx, &candidate, checkpoint, FinalContractStatusFailed, "iteration_limit"); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return "", nil, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = "iteration limit exceeded"
 	snapshot.UpdatedAt = now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, maxIterations, nextCheckpointSequence(snapshot), "iteration_limit", TurnLifecycleFailed, TurnResumeStateNone)
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
@@ -6842,10 +6935,6 @@ func (k *RuntimeKernel) markTurnFailed(session *SessionState, snapshot *TurnSnap
 		return err
 	}
 	now := time.Now()
-	snapshot.Lifecycle = TurnLifecycleFailed
-	snapshot.ResumeState = TurnResumeStateNone
-	snapshot.Error = result.Error
-	snapshot.UpdatedAt = now
 	checkpointKind := result.Outcome
 	if checkpointKind == "" {
 		checkpointKind = "tool_failed"
@@ -6854,6 +6943,22 @@ func (k *RuntimeKernel) markTurnFailed(session *SessionState, snapshot *TurnSnap
 	if result.Source != "" {
 		checkpoint.Source = result.Source
 	}
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalTerminalBoundary(context.Background(), &candidate, checkpoint, FinalContractStatusFailed, checkpointKind); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+	snapshot.Lifecycle = TurnLifecycleFailed
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = result.Error
+	snapshot.UpdatedAt = now
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil
@@ -6887,12 +6992,24 @@ func (k *RuntimeKernel) markTurnFailedFromError(session *SessionState, snapshot 
 	if checkpointKind == "" {
 		checkpointKind = "turn_failed"
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleFailed, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if recordErr := k.recordCanonicalTerminalBoundary(context.Background(), &candidate, checkpoint, FinalContractStatusFailed, checkpointKind); recordErr != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return recordErr
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = errText
 	snapshot.UpdatedAt = now
 	snapshot.CompletedAt = &now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleFailed, TurnResumeStateNone)
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil

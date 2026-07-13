@@ -15,6 +15,7 @@ import (
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/tooling"
 )
 
@@ -146,8 +147,110 @@ func TestRuntimeKernelProviderRequestRolloutFailureCallsProviderZeroTimes(t *tes
 		modeltrace.CanonicalRolloutKindAdmission,
 		modeltrace.CanonicalRolloutKindAssembly,
 		modeltrace.CanonicalRolloutKindPrompt,
+		modeltrace.CanonicalRolloutKindCheckpoint,
+		modeltrace.CanonicalRolloutKindFinalFacts,
+		modeltrace.CanonicalRolloutKindTransportProjection,
 	}) {
-		t.Fatalf("persisted kinds = %v, want admission/assembly/prompt only", got)
+		t.Fatalf("persisted kinds = %v, want pre-provider facts followed by failed terminal", got)
+	}
+}
+
+func TestRuntimeKernelCanonicalRolloutCommitsFinalFactsThenProjectionWithoutText(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("final-markdown-secret-canary", nil)}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	const sessionID, turnID = "session-final-boundary", "turn-final-boundary"
+	if _, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: sessionID, SessionType: SessionTypeHost, Mode: ModeInspect, TurnID: turnID, Input: "inspect",
+	}); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), sessionID, turnID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	want := []string{modeltrace.CanonicalRolloutKindFinalFacts, modeltrace.CanonicalRolloutKindTransportProjection}
+	if got := canonicalRolloutFilteredKindsForTest(events, want); !equalCanonicalRolloutKinds(got, want) {
+		t.Fatalf("terminal sequence = %v, want %v; all=%v", got, want, canonicalRolloutKindsForTest(events))
+	}
+	encoded, _ := json.Marshal([]modeltrace.CanonicalRolloutEvent{
+		lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindFinalFacts),
+		lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection),
+	})
+	for _, forbidden := range []string{"final-markdown-secret-canary", "answerText", "markdown", "blocks", "AiopsTransportState", `"text"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("terminal rollout leaked %q: %s", forbidden, encoded)
+		}
+	}
+	snapshot := kernel.sessions.Get(sessionID).CurrentTurn
+	assertCanonicalProjectionMatchesSnapshot(t, lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), snapshot, finalContractForRolloutTest(t, snapshot))
+}
+
+func TestRuntimeKernelCanonicalFinalFactHashesIgnoreFinalMarkdown(t *testing.T) {
+	facts := FinalRuntimeFacts{CompletionStatus: FinalCompletionStatusSucceeded, PostcheckStatus: FinalPostcheckStatusNotRequired, RollbackStatus: FinalRollbackStatusNotRequired}
+	plain := BuildFinalContract("plain answer", facts)
+	markdown := BuildFinalContract("# Different markdown\n\nsecret-canary", facts)
+	plainHash, err := canonicalFinalContractFactHash(&plain)
+	if err != nil {
+		t.Fatalf("canonicalFinalContractFactHash(plain) error = %v", err)
+	}
+	markdownHash, err := canonicalFinalContractFactHash(&markdown)
+	if err != nil {
+		t.Fatalf("canonicalFinalContractFactHash(markdown) error = %v", err)
+	}
+	if plainHash != markdownHash {
+		t.Fatalf("typed final contract hash changed with markdown: %q != %q", plainHash, markdownHash)
+	}
+}
+
+func TestRuntimeKernelTargetRequiredRecordsTypedTerminalBeforeProvider(t *testing.T) {
+	model := &sequentialLoopModel{}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	intent := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}, Confidence: runtimecontract.ConfidenceHigh}
+	const sessionID, turnID = "session-target-required-rollout", "turn-target-required-rollout"
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: sessionID, SessionType: SessionTypeWorkspace, Mode: ModeExecute, TurnID: turnID,
+		Input: "mutate target-required-secret-canary", IntentFrame: &intent,
+	})
+	if err != nil || result.Status != "completed" || len(model.inputs) != 0 {
+		t.Fatalf("RunTurn() = %#v, %v provider=%d; want completed/0", result, err, len(model.inputs))
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), sessionID, turnID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	want := []string{modeltrace.CanonicalRolloutKindAdmission, modeltrace.CanonicalRolloutKindCheckpoint, modeltrace.CanonicalRolloutKindFinalFacts, modeltrace.CanonicalRolloutKindTransportProjection}
+	if got := canonicalRolloutKindsForTest(events); !equalCanonicalRolloutKinds(got, want) {
+		t.Fatalf("events = %v, want %v", got, want)
+	}
+	encoded, _ := json.Marshal(events)
+	if strings.Contains(string(encoded), "target-required-secret-canary") || strings.Contains(string(encoded), admissionTargetRequiredFinalText) {
+		t.Fatalf("target-required rollout leaked text: %s", encoded)
+	}
+}
+
+func TestRuntimeKernelTargetRequiredFinalFactsAppendFailureLeavesFinalUncommitted(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindFinalFacts)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	model := &sequentialLoopModel{}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	kernel.rolloutRecorder = recorder
+	intent := runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}, Confidence: runtimecontract.ConfidenceHigh}
+	_, err = kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-target-required-fail", SessionType: SessionTypeWorkspace, Mode: ModeExecute,
+		TurnID: "turn-target-required-fail", Input: "mutate", IntentFrame: &intent,
+	})
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want final_facts append failure")
+	}
+	snapshot := kernel.sessions.Get("session-target-required-fail").CurrentTurn
+	if snapshot.Lifecycle == TurnLifecycleCompleted || strings.TrimSpace(snapshot.FinalOutput) != "" {
+		t.Fatalf("failed append committed final state: lifecycle=%s final=%q", snapshot.Lifecycle, snapshot.FinalOutput)
+	}
+	if len(model.inputs) != 0 {
+		t.Fatalf("provider calls = %d, want 0", len(model.inputs))
 	}
 }
 
@@ -646,6 +749,117 @@ func TestRuntimeKernelCanonicalRolloutOrdersApprovalBlockCheckpointProjection(t 
 		t.Fatalf("approval block sequence = %v, want %v; all=%v", got, blockWant, canonicalRolloutKindsForTest(events))
 	}
 	assertCanonicalProjectionMatchesSnapshot(t, firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), session.CurrentTurn, nil)
+	approvalID := session.PendingApprovals[0].ID
+	denied, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: approvalID,
+		Decision: "denied", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err != nil || denied.Status != "completed" || executed != 0 {
+		t.Fatalf("ResumeTurn(denied) = %#v, %v executed=%d; want completed/0", denied, err, executed)
+	}
+	events, err = kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents(denied) error = %v", err)
+	}
+	want := []string{
+		modeltrace.CanonicalRolloutKindApprovalRequested,
+		modeltrace.CanonicalRolloutKindCheckpoint,
+		modeltrace.CanonicalRolloutKindTransportProjection,
+		modeltrace.CanonicalRolloutKindApprovalDecided,
+		modeltrace.CanonicalRolloutKindCheckpoint,
+		modeltrace.CanonicalRolloutKindFinalFacts,
+		modeltrace.CanonicalRolloutKindTransportProjection,
+	}
+	if got := canonicalRolloutFilteredKindsForTest(events, want); !equalCanonicalRolloutKinds(got, want) {
+		t.Fatalf("approval denied sequence = %v, want %v; all=%v", got, want, canonicalRolloutKindsForTest(events))
+	}
+	terminalFacts := lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindFinalFacts)
+	if terminalFacts.Payload["finalContractStatus"] != string(FinalContractStatusApprovalDenied) {
+		t.Fatalf("denied final facts = %#v, want approval_denied", terminalFacts.Payload)
+	}
+	assertCanonicalProjectionMatchesSnapshot(t, lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), session.CurrentTurn, finalContractForRolloutTest(t, session.CurrentTurn))
+}
+
+func TestRuntimeKernelCanonicalRolloutRecordsCanceledAndFailedTerminals(t *testing.T) {
+	newRunningTurn := func(kernel *RuntimeKernel, sessionID, turnID string) (*SessionState, *TurnSnapshot) {
+		session := kernel.sessions.GetOrCreate(sessionID, SessionTypeHost, ModeInspect)
+		snapshot := &TurnSnapshot{ID: turnID, SessionID: session.ID, SessionType: session.Type, Mode: session.Mode, Lifecycle: TurnLifecycleRunning, ResumeState: TurnResumeStateNone}
+		session.CurrentTurn = snapshot
+		return session, snapshot
+	}
+	t.Run("cancelled", func(t *testing.T) {
+		kernel := NewRuntimeKernel(RuntimeKernelConfig{})
+		session, snapshot := newRunningTurn(kernel, "session-terminal-cancel", "turn-terminal-cancel")
+		cancelCtx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if ok, err := kernel.markTurnCanceledRecorded(cancelCtx, session, snapshot, "cancel-reason-secret-canary"); err != nil || !ok {
+			t.Fatalf("markTurnCanceledRecorded() = %v, %v; want true, nil", ok, err)
+		}
+		events, err := kernel.CanonicalRolloutEvents(context.Background(), session.ID, snapshot.ID)
+		if err != nil {
+			t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+		}
+		want := []string{modeltrace.CanonicalRolloutKindCheckpoint, modeltrace.CanonicalRolloutKindFinalFacts, modeltrace.CanonicalRolloutKindTransportProjection}
+		if got := canonicalRolloutKindsForTest(events); !equalCanonicalRolloutKinds(got, want) {
+			t.Fatalf("cancel events = %v, want %v", got, want)
+		}
+		encoded, _ := json.Marshal(events)
+		if strings.Contains(string(encoded), "cancel-reason-secret-canary") {
+			t.Fatalf("cancel terminal leaked reason: %s", encoded)
+		}
+		contract := BuildTerminalFinalContract("", FinalContractStatusCancelled, []string{"turn_cancelled"})
+		assertCanonicalProjectionMatchesSnapshot(t, lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), snapshot, &contract)
+	})
+	t.Run("failed", func(t *testing.T) {
+		kernel := NewRuntimeKernel(RuntimeKernelConfig{})
+		session, snapshot := newRunningTurn(kernel, "session-terminal-failed", "turn-terminal-failed")
+		if err := kernel.markTurnFailedFromError(session, snapshot, errors.New("failure-text-secret-canary"), "provider_failed"); err != nil {
+			t.Fatalf("markTurnFailedFromError() error = %v", err)
+		}
+		events, err := kernel.CanonicalRolloutEvents(context.Background(), session.ID, snapshot.ID)
+		if err != nil {
+			t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+		}
+		want := []string{modeltrace.CanonicalRolloutKindCheckpoint, modeltrace.CanonicalRolloutKindFinalFacts, modeltrace.CanonicalRolloutKindTransportProjection}
+		if got := canonicalRolloutKindsForTest(events); !equalCanonicalRolloutKinds(got, want) {
+			t.Fatalf("failed events = %v, want %v", got, want)
+		}
+		encoded, _ := json.Marshal(events)
+		if strings.Contains(string(encoded), "failure-text-secret-canary") {
+			t.Fatalf("failed terminal leaked error: %s", encoded)
+		}
+		contract := BuildTerminalFinalContract("", FinalContractStatusFailed, []string{"provider_failed"})
+		assertCanonicalProjectionMatchesSnapshot(t, lastCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), snapshot, &contract)
+	})
+}
+
+func TestRuntimeKernelTransportProjectionAppendFailureLeavesRegularFinalUncommitted(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindTransportProjection)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("must-not-commit", nil)}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	kernel.rolloutRecorder = recorder
+	_, err = kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-final-projection-fail", SessionType: SessionTypeHost, Mode: ModeInspect,
+		TurnID: "turn-final-projection-fail", Input: "inspect",
+	})
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want transport_projection append failure")
+	}
+	snapshot := kernel.sessions.Get("session-final-projection-fail").CurrentTurn
+	if snapshot.Lifecycle == TurnLifecycleCompleted || strings.TrimSpace(snapshot.FinalOutput) != "" {
+		t.Fatalf("projection failure committed final: lifecycle=%s final=%q", snapshot.Lifecycle, snapshot.FinalOutput)
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), snapshot.SessionID, snapshot.ID)
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindFinalFacts) < 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindTransportProjection) != 0 {
+		t.Fatalf("events = %v, want durable typed facts without false projection", canonicalRolloutKindsForTest(events))
+	}
 }
 
 func TestRuntimeKernelApprovalRequestedRejectsMissingOrInvalidActionToken(t *testing.T) {
@@ -849,14 +1063,16 @@ func TestRuntimeKernelDegradedRecorderContinuesOnlyWithPersistedTypedMarker(t *t
 	if err != nil {
 		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
 	}
-	if len(events) == 0 || events[len(events)-1].Kind != modeltrace.CanonicalRolloutKindRecorderDegraded {
-		t.Fatalf("events = %v, want persisted recorder_degraded tail", canonicalRolloutKindsForTest(events))
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindRecorderDegraded) != 1 ||
+		countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindFinalFacts) != 1 ||
+		countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindTransportProjection) != 1 {
+		t.Fatalf("events = %v, want persisted degraded marker followed by terminal facts/projection", canonicalRolloutKindsForTest(events))
 	}
 	session := kernel.sessions.Get(sessionID)
 	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.CanonicalRolloutHead == nil ||
-		session.CurrentTurn.CanonicalRolloutHead.Status != RolloutRecordStatusDegraded ||
+		session.CurrentTurn.CanonicalRolloutHead.Status != RolloutRecordStatusRecorded ||
 		session.CurrentTurn.CanonicalRolloutHead.EventID != events[len(events)-1].EventID {
-		t.Fatalf("canonical rollout head = %#v, want observable degraded marker", session)
+		t.Fatalf("canonical rollout head = %#v, want latest recorded projection after observable degraded marker", session)
 	}
 }
 
