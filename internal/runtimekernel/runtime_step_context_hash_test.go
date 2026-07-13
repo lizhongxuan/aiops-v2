@@ -189,6 +189,43 @@ func TestRuntimeStepContextTraceStoresHashWithoutSecret(t *testing.T) {
 	}
 }
 
+func TestRuntimeStepContextTraceCarriesPreviousPromptFingerprint(t *testing.T) {
+	step := mustFreezeRuntimeStepContextForTest(t, validRuntimeStepContextForHashTest())
+	dir := t.TempDir()
+	path, err := writeRuntimeStepTrace(modeltrace.Config{Enabled: true, RootDir: dir}, step, RuntimeTraceDebugRequest{
+		PreviousPromptFingerprint: map[string]string{"stableHash": "previous-stable"},
+	})
+	if err != nil {
+		t.Fatalf("writeRuntimeStepTrace() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(trace) error = %v", err)
+	}
+	var payload modeltrace.TraceDocumentV2
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("json.Unmarshal(trace) error = %v", err)
+	}
+	if payload.PreviousPromptFingerprint["stableHash"] != "previous-stable" {
+		t.Fatalf("previousPromptFingerprint = %#v", payload.PreviousPromptFingerprint)
+	}
+}
+
+func TestLatestRuntimePromptFingerprintUsesLastCompletedIterationAndClones(t *testing.T) {
+	snapshot := &TurnSnapshot{Iterations: []IterationState{
+		{PromptFingerprint: map[string]string{"stableHash": "first"}},
+		{PromptFingerprint: map[string]string{"stableHash": "latest"}},
+	}}
+	got := latestRuntimePromptFingerprint(snapshot)
+	if got["stableHash"] != "latest" {
+		t.Fatalf("latestRuntimePromptFingerprint() = %#v", got)
+	}
+	got["stableHash"] = "mutated"
+	if snapshot.Iterations[1].PromptFingerprint["stableHash"] != "latest" {
+		t.Fatal("latestRuntimePromptFingerprint() returned shared state")
+	}
+}
+
 func validRuntimeStepContextForHashTest() RuntimeStepContext {
 	items := []promptinput.ModelInputItem{{
 		ID: "user-1", ProviderRole: promptinput.ProviderRoleUser, SemanticRole: "user_request", Content: "inspect host",

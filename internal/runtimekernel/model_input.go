@@ -27,6 +27,7 @@ type RuntimeTraceDebugRequest struct {
 	Compiled                      promptcompiler.CompiledPrompt
 	ModelInput                    []promptinput.ModelInputItem
 	VisibleTools                  []string
+	PreviousPromptFingerprint     map[string]string
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
 	DiagnosticTrace               diagnostics.DiagnosticTrace

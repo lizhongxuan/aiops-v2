@@ -25,6 +25,7 @@ type TraceDocumentV2 struct {
 	Metadata                    map[string]string                                 `json:"metadata,omitempty"`
 	VisibleTools                []string                                          `json:"visibleTools,omitempty"`
 	PromptFingerprint           map[string]string                                 `json:"promptFingerprint,omitempty"`
+	PreviousPromptFingerprint   map[string]string                                 `json:"previousPromptFingerprint,omitempty"`
 	TurnContext                 any                                               `json:"turnContext,omitempty"`
 	StepContext                 any                                               `json:"stepContext,omitempty"`
 	StepContextHash             string                                            `json:"stepContextHash,omitempty"`

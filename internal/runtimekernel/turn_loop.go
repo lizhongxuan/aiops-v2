@@ -165,6 +165,18 @@ func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) 
 	return providerToolSpecsFromStepToolRouter(surface)
 }
 
+func latestRuntimePromptFingerprint(snapshot *TurnSnapshot) map[string]string {
+	if snapshot == nil {
+		return nil
+	}
+	for index := len(snapshot.Iterations) - 1; index >= 0; index-- {
+		if fingerprint := cloneStringMap(snapshot.Iterations[index].PromptFingerprint); len(fingerprint) > 0 {
+			return fingerprint
+		}
+	}
+	return nil
+}
+
 func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContext, req RuntimeTraceDebugRequest, references ...*StepReference) (string, error) {
 	if !traceConfig.Enabled {
 		return "", nil
@@ -203,15 +215,16 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 		return "", err
 	}
 	return modeltrace.WriteTraceDocumentV2(root, modeltrace.TraceDocumentV2{
-		SessionID:         step.Turn.SessionID,
-		TurnID:            step.Turn.TurnID,
-		Iteration:         step.Iteration,
-		Metadata:          traceReq.Metadata,
-		VisibleTools:      traceReq.VisibleTools,
-		PromptFingerprint: traceReq.PromptFingerprint,
-		TurnContext:       step.Turn,
-		StepContextHash:   step.Hash,
-		HarnessTurn:       harnessTurn,
+		SessionID:                 step.Turn.SessionID,
+		TurnID:                    step.Turn.TurnID,
+		Iteration:                 step.Iteration,
+		Metadata:                  traceReq.Metadata,
+		VisibleTools:              traceReq.VisibleTools,
+		PromptFingerprint:         traceReq.PromptFingerprint,
+		PreviousPromptFingerprint: cloneStringMap(req.PreviousPromptFingerprint),
+		TurnContext:               step.Turn,
+		StepContextHash:           step.Hash,
+		HarnessTurn:               harnessTurn,
 		StepContext: runtimeStepTraceDocumentV2{
 			Hash:                   step.Hash,
 			TurnAssemblyHash:       step.TurnAssemblyHash,

@@ -358,7 +358,7 @@ func run() error {
 	httpOptions := []server.HTTPServerOption{
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
-		server.WithPromptTraceService(appui.NewPromptTraceService(modeltrace.DefaultRootDir(dataDir))),
+		server.WithPromptTraceService(newAIServerPromptTraceService(dataDir, kernel)),
 		server.WithWorkflowEditorService(workfloweditor.NewService(nil, workfloweditor.WithEditPlanner(workfloweditor.ModelRouterWorkflowEditPlanner{Router: router}))),
 	}
 	httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
@@ -450,6 +450,10 @@ func run() error {
 
 	log.Println("ai-server: stopped")
 	return nil
+}
+
+func newAIServerPromptTraceService(dataDir string, reader appui.CanonicalRolloutReader) appui.PromptTraceService {
+	return appui.NewPromptTraceServiceWithRolloutReader(modeltrace.DefaultRootDir(dataDir), reader)
 }
 
 // ---------------------------------------------------------------------------

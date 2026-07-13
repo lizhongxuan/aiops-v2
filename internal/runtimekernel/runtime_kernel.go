@@ -2612,6 +2612,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		}, stepCtx, RuntimeTraceDebugRequest{
 			Metadata:                      turnMetadata,
 			ModelInput:                    append([]promptinput.ModelInputItem(nil), stepCtx.ProviderRequest.Input...),
+			PreviousPromptFingerprint:     latestRuntimePromptFingerprint(snapshot),
 			PromptInputTrace:              promptBuild.Trace,
 			PromptInputDiff:               promptInputDiff,
 			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),

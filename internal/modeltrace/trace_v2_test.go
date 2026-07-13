@@ -57,6 +57,30 @@ func TestWriteTraceDocumentV2WritesSummaryRawRefsAndHarnessTurn(t *testing.T) {
 	}
 }
 
+func TestWriteTraceDocumentV2CarriesPreviousPromptFingerprint(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteTraceDocumentV2(dir, TraceDocumentV2{
+		SessionID:                 "session-prompt-diff",
+		TurnID:                    "turn-prompt-diff",
+		PromptFingerprint:         map[string]string{"stableHash": "current-stable"},
+		PreviousPromptFingerprint: map[string]string{"stableHash": "previous-stable"},
+	})
+	if err != nil {
+		t.Fatalf("WriteTraceDocumentV2() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var got TraceDocumentV2
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if got.PreviousPromptFingerprint["stableHash"] != "previous-stable" {
+		t.Fatalf("previousPromptFingerprint = %#v", got.PreviousPromptFingerprint)
+	}
+}
+
 func TestWriteTraceDocumentV2CarriesTurnAssemblyShadow(t *testing.T) {
 	dir := t.TempDir()
 	path, err := WriteTraceDocumentV2(dir, TraceDocumentV2{
