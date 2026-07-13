@@ -511,6 +511,22 @@ func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute C
 	}
 }
 
+func applyRuntimeMutationPolicies(req *runtimekernel.TurnRequest, frame runtimecontract.IntentFrame) {
+	if req == nil {
+		return
+	}
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	mutates := frame.Kind == runtimecontract.IntentKindChange || frame.Kind == runtimecontract.IntentKindConfigure ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskWrite) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskDestruct)
+	if !mutates {
+		return
+	}
+	req.PermissionProfile = runtimekernel.RuntimePermissionProfileApprovalRequired
+	req.RollbackPolicy = runtimekernel.RuntimeRollbackPolicyActionContractRequired
+}
+
 func intentFrameForActiveRoute(frame runtimecontract.IntentFrame, route ChatRuntimeRoute) runtimecontract.IntentFrame {
 	frame = runtimecontract.NormalizeIntentFrame(frame)
 	if route.Mode != ChatRouteHostBoundOps || !route.AllowsExecCommand || route.UserProhibitedHostExec {

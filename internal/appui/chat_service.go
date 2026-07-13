@@ -212,6 +212,7 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	}
 	applyChatRuntimeRouteMetadata(&req, activeRoute)
 	applyIntentFrameRouteMetadata(&req, route, intentRoute, activeRoute, intentFrame, routingMode)
+	applyRuntimeMutationPolicies(&req, intentFrameForActiveRoute(intentFrame, activeRoute))
 	req.Metadata["aiops.route.activeSource"] = routingMode
 	applySessionTargetRouteMetadata(&req, sessionTargetRoute)
 	applyChatRuntimeToolSurfaceMetadata(&req, activeRoute)

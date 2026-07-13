@@ -1033,6 +1033,11 @@ func (m Mode) IsValid() bool {
 // ---------------------------------------------------------------------------
 
 // TurnRequest is the typed V2 input contract for a runtime turn.
+const (
+	RuntimePermissionProfileApprovalRequired    = "runtime-approval-required"
+	RuntimeRollbackPolicyActionContractRequired = "action-rollback-contract-required"
+)
+
 type TurnRequest struct {
 	SessionType           SessionType                               `json:"sessionType"`
 	Mode                  Mode                                      `json:"mode"`

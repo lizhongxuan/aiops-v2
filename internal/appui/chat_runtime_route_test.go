@@ -297,6 +297,33 @@ func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeMutationPoliciesProjectsTrustedTypedPolicies(t *testing.T) {
+	mutation := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&mutation, runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindChange,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite},
+	})
+	if mutation.PermissionProfile != runtimekernel.RuntimePermissionProfileApprovalRequired ||
+		mutation.RollbackPolicy != runtimekernel.RuntimeRollbackPolicyActionContractRequired {
+		t.Fatalf("mutation policies = %q/%q", mutation.PermissionProfile, mutation.RollbackPolicy)
+	}
+
+	hostExec := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&hostExec, runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindVerify,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskHostExec},
+	})
+	if hostExec.PermissionProfile == "" || hostExec.RollbackPolicy == "" {
+		t.Fatalf("host execution is missing high-risk policies: %#v", hostExec)
+	}
+
+	readOnly := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&readOnly, runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindExplain})
+	if readOnly.PermissionProfile != "" || readOnly.RollbackPolicy != "" {
+		t.Fatalf("risk-free read received mutation policies: %#v", readOnly)
+	}
+}
+
 func TestWorkflowAgentRuntimeMetadataRequiresExplicitDrawerFlag(t *testing.T) {
 	req := runtimekernel.TurnRequest{
 		HostID:      "server-local",
