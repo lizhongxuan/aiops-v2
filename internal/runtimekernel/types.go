@@ -1042,6 +1042,8 @@ type TurnRequest struct {
 	ClientMessageID       string                                    `json:"clientMessageId,omitempty"`
 	Input                 string                                    `json:"input,omitempty"`
 	HostID                string                                    `json:"hostId,omitempty"`
+	PermissionProfile     string                                    `json:"permissionProfile,omitempty"`
+	RollbackPolicy        string                                    `json:"rollbackPolicy,omitempty"`
 	Metadata              map[string]string                         `json:"metadata,omitempty"`
 	ResourceBindings      []resourcebinding.ResourceBindingSnapshot `json:"resourceBindings,omitempty"`
 	ResourceRoleBindings  []resourcebinding.ResourceRoleBinding     `json:"resourceRoleBindings,omitempty"`

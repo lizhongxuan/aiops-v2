@@ -94,7 +94,7 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		RoleBindings:      req.ResourceRoleBindings,
 		AgentKind:         opts.Lineage.AgentKind,
 		Profile:           profile,
-		PermissionProfile: strings.TrimSpace(metadata[runtimecontract.MetadataPermissionProfile]),
+		PermissionProfile: firstNonBlankRuntimeString(req.PermissionProfile, metadata[runtimecontract.MetadataPermissionProfile]),
 		SourceRefs:        []string{"runtimekernel:turn_request"},
 		Metadata:          metadata,
 	})

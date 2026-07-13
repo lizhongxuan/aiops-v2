@@ -2264,6 +2264,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				ToolSurfacePolicy:      surfacePolicy,
 				ToolSurfaceFingerprint: compileCtx.VisibleToolFingerprint,
 				ResourceBindings:       req.ResourceBindings,
+				RollbackPolicy:         req.RollbackPolicy,
 				Mode:                   req.Mode,
 				MaxIterations:          maxIterations,
 			})

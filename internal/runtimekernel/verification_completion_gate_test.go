@@ -228,12 +228,14 @@ func TestRunTurnVerificationCompletionGateRetriesProseApprovalForScopedMutation(
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-prose-approval-mutation",
-		SessionType: SessionTypeWorkspace,
-		Mode:        ModeExecute,
-		TurnID:      "turn-prose-approval-mutation",
-		HostID:      "host-a",
-		Input:       "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
+		SessionID:         "sess-prose-approval-mutation",
+		SessionType:       SessionTypeWorkspace,
+		Mode:              ModeExecute,
+		TurnID:            "turn-prose-approval-mutation",
+		HostID:            "host-a",
+		PermissionProfile: "host-mutation-with-runtime-approval",
+		RollbackPolicy:    "action-rollback-contract-required",
+		Input:             "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
 		Metadata: map[string]string{
 			"taskDepth":                       "operations",
 			"aiops.intent.kind":               "change",

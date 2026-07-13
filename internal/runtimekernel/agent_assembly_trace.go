@@ -17,6 +17,7 @@ type runtimeTurnAssemblyInput struct {
 	ToolSurfacePolicy      tooling.ToolSurfacePolicySnapshot
 	ToolSurfaceFingerprint string
 	ResourceBindings       []resourcebinding.ResourceBindingSnapshot
+	RollbackPolicy         string
 	Mode                   Mode
 	MaxIterations          int
 }
@@ -41,11 +42,8 @@ func buildRuntimeTurnAssembly(input runtimeTurnAssemblyInput) (*agentassembly.Tu
 		AdmissionError: input.TurnContext.AdmissionError,
 		PermissionProfile: firstNonBlankRuntimeString(
 			input.TurnContext.AdmissionFacts.PermissionProfile,
-			input.TurnContext.Permission.PermissionHash,
 			input.ToolSurfacePolicy.PermissionHash,
-			input.TurnContext.Permission.ApprovalPolicy,
 			input.ToolSurfacePolicy.ApprovalPolicy,
-			input.ToolSurfacePolicy.Hash,
 		),
 		CapabilityPolicy: capabilityPolicy,
 		ContextPolicy: agentassembly.ContextSelectorSnapshot{
@@ -65,7 +63,7 @@ func buildRuntimeTurnAssembly(input runtimeTurnAssemblyInput) (*agentassembly.Tu
 			Lifecycle: agentassembly.LifecycleRequestScope,
 			Shape:     firstNonBlankRuntimeString(input.CompileContext.AnswerStyle, "default"),
 		},
-		RollbackPolicy: ActionRollbackContractSchemaVersion,
+		RollbackPolicy: input.RollbackPolicy,
 		SourceRefs:     sourceRefs,
 	})
 	if err != nil {
