@@ -324,10 +324,18 @@ func (k *RuntimeKernel) recordCanonicalToolResult(ctx context.Context, snapshot 
 }
 
 func (k *RuntimeKernel) recordCanonicalApprovalRequested(ctx context.Context, snapshot *TurnSnapshot, approval PendingApproval) error {
+	if approval.ActionToken == nil {
+		return fmt.Errorf("approval_requested requires validated ActionToken")
+	}
+	token := *approval.ActionToken
+	if err := token.Validate(); err != nil {
+		return fmt.Errorf("approval_requested ActionToken: %w", err)
+	}
 	payload := map[string]any{
-		"approvalId": approval.ID, "toolCallId": approval.ToolCallID, "toolName": approval.ToolName,
-		"argsHash":   firstNonEmptyString(approval.ArgumentsHash, approval.InputHash),
-		"targetRefs": append([]string(nil), approval.TargetRefs...), "status": "pending",
+		"approvalId": token.ApprovalID, "toolCallId": token.ToolCallID, "toolName": token.ToolName,
+		"argsHash": token.ArgumentsHash, "targetRefs": append([]string(nil), token.TargetRefs...), "status": "pending",
+		"actionTokenHash": token.Hash, "toolSurfaceFingerprint": token.ToolSurfaceFingerprint,
+		"permissionHash": token.PermissionHash, "checkpointId": token.CheckpointID, "rollbackHash": token.RollbackHash,
 	}
 	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindApprovalRequested, payload))
 }

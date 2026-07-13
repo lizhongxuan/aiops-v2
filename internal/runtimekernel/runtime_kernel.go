@@ -1093,13 +1093,8 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if err := k.emitApprovalDecided(runCtx, session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now()); err != nil {
 			return TurnResult{}, err
 		}
-		snapshot.PendingStepCause = &StepRevisionCause{
-			Kind: StepRevisionKindApprovalResumed, ApprovalID: firstNonEmpty(decisionApproval.ID, req.ApprovalID),
-			ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
-		}
-		if isSessionApprovalResumeDecision(req.Decision) {
-			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
-		}
+		execution.approvalID = firstNonEmpty(decisionApproval.ID, req.ApprovalID)
+		execution.rememberSessionGrant = isSessionApprovalResumeDecision(req.Decision)
 		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot, execution)
 		if err != nil {
 			return TurnResult{}, err
@@ -5206,9 +5201,11 @@ func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snaps
 }
 
 type approvalResumeExecution struct {
-	compileContext promptcompiler.CompileContext
-	dispatcher     *ToolDispatcher
-	authorization  VerifiedActionToken
+	compileContext       promptcompiler.CompileContext
+	dispatcher           *ToolDispatcher
+	authorization        VerifiedActionToken
+	approvalID           string
+	rememberSessionGrant bool
 }
 
 func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, execution approvalResumeExecution) (*TurnResult, error) {
@@ -5216,12 +5213,20 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
-	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
+	if err := validateSnapshotResuming(session, snapshot); err != nil {
 		return nil, err
 	}
 	if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{toolCall}); err != nil {
 		return nil, fmt.Errorf("record approved tool dispatch: %w", err)
 	}
+	snapshot.PendingStepCause = &StepRevisionCause{
+		Kind: StepRevisionKindApprovalResumed, ApprovalID: execution.approvalID,
+		ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
+	}
+	if execution.rememberSessionGrant {
+		rememberSessionApprovalGrant(session, toolCall, execution.approvalID)
+	}
+	k.commitSnapshotResuming(session, snapshot, "resume_tool_approval")
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
@@ -5647,12 +5652,24 @@ func appendResumeInputMessage(session *SessionState, input string) {
 }
 
 func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
+	if err := validateSnapshotResuming(session, snapshot); err != nil {
+		return err
+	}
+	k.commitSnapshotResuming(session, snapshot, checkpointKind)
+	return nil
+}
+
+func validateSnapshotResuming(session *SessionState, snapshot *TurnSnapshot) error {
 	if session == nil || snapshot == nil {
 		return fmt.Errorf("session and snapshot are required")
 	}
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (k *RuntimeKernel) commitSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) {
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
 	snapshot.ResumeState = TurnResumeStateNone
@@ -5673,7 +5690,6 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
-	return nil
 }
 
 type dispatcherPermissionBinding struct {
@@ -6558,10 +6574,6 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 	if result.Outcome == "evidence_needed" || containsPhrase(reason, "evidence") {
 		resumeState = TurnResumeStatePendingEvidence
 	}
-	snapshot.Lifecycle = TurnLifecycleSuspended
-	snapshot.ResumeState = resumeState
-	snapshot.Error = reason
-	snapshot.UpdatedAt = now
 	kind := result.Outcome
 	if kind == "" {
 		kind = "suspended"
@@ -6570,14 +6582,20 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 	if result.Source != "" {
 		checkpoint.Source = result.Source
 	}
-	snapshot.LatestCheckpoint = checkpoint
-	session.LatestCheckpoint = checkpoint
-
-	if last := latestIteration(snapshot); last != nil {
-		last.Lifecycle = TurnLifecycleSuspended
-		last.ResumeState = resumeState
-		last.Checkpoint = checkpoint
-		last.UpdatedAt = now
+	last := latestIteration(snapshot)
+	commitBlockedState := func(state TurnResumeState, blockedReason string) {
+		snapshot.Lifecycle = TurnLifecycleSuspended
+		snapshot.ResumeState = state
+		snapshot.Error = blockedReason
+		snapshot.UpdatedAt = now
+		snapshot.LatestCheckpoint = checkpoint
+		session.LatestCheckpoint = checkpoint
+		if last != nil {
+			last.Lifecycle = TurnLifecycleSuspended
+			last.ResumeState = state
+			last.Checkpoint = checkpoint
+			last.UpdatedAt = now
+		}
 	}
 
 	if resumeState == TurnResumeStatePendingEvidence {
@@ -6593,6 +6611,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
+		commitBlockedState(resumeState, reason)
 		snapshot.PendingEvidence = []PendingEvidence{evidence}
 		snapshot.PendingApprovals = nil
 		session.PendingEvidence = []PendingEvidence{evidence}
@@ -6602,7 +6621,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 		argumentsHash := firstNonEmpty(result.DecisionTrace.ArgumentsHash, toolArgumentsHash(tc.Arguments))
 		targetRefs := pendingApprovalTargetRefs(session.HostID, resourceScopes)
 		iterationID := ""
-		if last := latestIteration(snapshot); last != nil {
+		if last != nil {
 			iterationID = last.ID
 		}
 		approval := PendingApproval{
@@ -6663,16 +6682,11 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 				CreatedAt:  now,
 				UpdatedAt:  now,
 			}
-			snapshot.ResumeState = TurnResumeStatePendingEvidence
-			snapshot.Error = reason
 			if checkpoint != nil {
 				checkpoint.Kind = "rollback_contract_invalid"
 				checkpoint.ResumeState = TurnResumeStatePendingEvidence
 			}
-			if last := latestIteration(snapshot); last != nil {
-				last.ResumeState = TurnResumeStatePendingEvidence
-				last.Checkpoint = checkpoint
-			}
+			commitBlockedState(TurnResumeStatePendingEvidence, reason)
 			snapshot.PendingEvidence = []PendingEvidence{evidence}
 			snapshot.PendingApprovals = nil
 			session.PendingEvidence = []PendingEvidence{evidence}
@@ -6689,6 +6703,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 		if err := k.recordCanonicalApprovalRequested(context.Background(), snapshot, approval); err != nil {
 			return fmt.Errorf("record approval request: %w", err)
 		}
+		commitBlockedState(resumeState, reason)
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
 		session.PendingApprovals = []PendingApproval{approval}

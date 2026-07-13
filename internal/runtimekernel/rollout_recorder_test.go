@@ -14,6 +14,7 @@ import (
 
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
 
@@ -337,7 +338,11 @@ func TestRuntimeKernelApprovalRolloutOrdersRequestedDecisionDispatchAndResult(t 
 	if session == nil || len(session.PendingApprovals) != 1 {
 		t.Fatalf("pending approval missing: %#v", session)
 	}
-	approvalID := session.PendingApprovals[0].ID
+	pendingApproval := session.PendingApprovals[0]
+	if pendingApproval.ActionToken == nil {
+		t.Fatal("pending approval action token is nil")
+	}
+	approvalID := pendingApproval.ID
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: approvalID,
 		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
@@ -359,6 +364,22 @@ func TestRuntimeKernelApprovalRolloutOrdersRequestedDecisionDispatchAndResult(t 
 	}
 	if got := canonicalRolloutFilteredKindsForTest(events, wantOrdered); !equalCanonicalRolloutKinds(got, wantOrdered) {
 		t.Fatalf("tool/approval sequence = %v, want %v; all=%v", got, wantOrdered, canonicalRolloutKindsForTest(events))
+	}
+	requested := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindApprovalRequested)
+	token := *pendingApproval.ActionToken
+	wantTokenFacts := map[string]string{
+		"approvalId": token.ApprovalID, "toolCallId": token.ToolCallID, "toolName": token.ToolName,
+		"argsHash": token.ArgumentsHash, "actionTokenHash": token.Hash,
+		"toolSurfaceFingerprint": token.ToolSurfaceFingerprint, "permissionHash": token.PermissionHash,
+		"checkpointId": token.CheckpointID, "rollbackHash": token.RollbackHash,
+	}
+	for key, want := range wantTokenFacts {
+		if got := requested.Payload[key]; got != want {
+			t.Fatalf("approval_requested %s = %#v, want ActionToken value %q; payload=%#v", key, got, want, requested.Payload)
+		}
+	}
+	if got := compactStringList(anyStringSlice(requested.Payload["targetRefs"])); strings.Join(got, "\x00") != strings.Join(token.TargetRefs, "\x00") {
+		t.Fatalf("approval_requested targetRefs = %#v, want ActionToken value %#v", got, token.TargetRefs)
 	}
 	encoded, _ := json.Marshal(events)
 	if strings.Contains(string(encoded), "/tmp/approval-secret-canary") || strings.Contains(string(encoded), "approved complete") {
@@ -525,8 +546,10 @@ func TestRuntimeKernelApprovedResumeDispatchAppendFailureCallsExecutorZeroTimes(
 		t.Fatalf("RunTurn() = %#v, %v, want pending approval", blocked, err)
 	}
 	session := kernel.sessions.Get("session-resume-dispatch-fail")
+	oldApprovalID := session.PendingApprovals[0].ID
+	oldCheckpointID := session.LatestCheckpoint.ID
 	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
-		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: session.PendingApprovals[0].ID,
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: oldApprovalID,
 		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
 	})
 	if err == nil {
@@ -535,12 +558,148 @@ func TestRuntimeKernelApprovedResumeDispatchAppendFailureCallsExecutorZeroTimes(
 	if executed != 0 {
 		t.Fatalf("approved executor calls = %d, want 0", executed)
 	}
+	session = kernel.sessions.Get(session.ID)
+	if session.CurrentTurn.Lifecycle != TurnLifecycleSuspended || session.CurrentTurn.ResumeState != TurnResumeStatePendingApproval ||
+		len(session.PendingApprovals) != 1 || len(session.CurrentTurn.PendingApprovals) != 1 || session.PendingApprovals[0].ID != oldApprovalID ||
+		session.LatestCheckpoint == nil || session.CurrentTurn.LatestCheckpoint == nil || session.LatestCheckpoint.ID != oldCheckpointID || session.CurrentTurn.LatestCheckpoint.ID != oldCheckpointID {
+		t.Fatalf("dispatch append failure consumed approval state: lifecycle=%s resume=%s sessionApprovals=%#v turnApprovals=%#v checkpoints=%#v/%#v",
+			session.CurrentTurn.Lifecycle, session.CurrentTurn.ResumeState, session.PendingApprovals, session.CurrentTurn.PendingApprovals, session.LatestCheckpoint, session.CurrentTurn.LatestCheckpoint)
+	}
 	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
 	if readErr != nil {
 		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
 	}
 	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindApprovalDecided) != 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolResult) != 0 {
 		t.Fatalf("events = %v, want decision plus only pre-approval dispatch", canonicalRolloutKindsForTest(events))
+	}
+}
+
+func TestRuntimeKernelApprovalRequestedRejectsMissingOrInvalidActionToken(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		token *ActionToken
+	}{
+		{name: "missing"},
+		{name: "invalid", token: &ActionToken{SchemaVersion: ActionTokenSchemaVersion, ApprovalID: "approval-invalid", Hash: "sha256:forged"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			kernel := NewRuntimeKernel(RuntimeKernelConfig{})
+			snapshot := &TurnSnapshot{ID: "turn-token-" + tt.name, SessionID: "session-token-" + tt.name}
+			err := kernel.recordCanonicalApprovalRequested(context.Background(), snapshot, PendingApproval{
+				ID: "approval-" + tt.name, ToolCallID: "call-token", ToolName: "write_file", ActionToken: tt.token,
+			})
+			if err == nil {
+				t.Fatal("recordCanonicalApprovalRequested() error = nil, want invalid ActionToken fail closed")
+			}
+			events, readErr := kernel.CanonicalRolloutEvents(context.Background(), snapshot.SessionID, snapshot.ID)
+			if readErr != nil {
+				t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+			}
+			if len(events) != 0 {
+				t.Fatalf("events = %#v, want no approval_requested for invalid token", events)
+			}
+		})
+	}
+}
+
+func TestRuntimeKernelInitialApprovalAppendFailureLeavesRunningStateUntouched(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindApprovalRequested)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{RolloutRecorder: recorder})
+	session := kernel.sessions.GetOrCreate("session-initial-request-fail", SessionTypeHost, ModeExecute)
+	session.HostID = "host-a"
+	oldCheckpoint := newCheckpointMetadata(session.ID, "turn-initial-request-fail", 0, 1, "assistant_response", TurnLifecycleRunning, TurnResumeStateNone)
+	snapshot := &TurnSnapshot{
+		ID: "turn-initial-request-fail", SessionID: session.ID, SessionType: session.Type, Mode: session.Mode,
+		Lifecycle: TurnLifecycleRunning, ResumeState: TurnResumeStateNone, Iteration: 0, LatestCheckpoint: oldCheckpoint,
+		Iterations: []IterationState{{
+			ID: "turn-initial-request-fail-iter-0", SessionID: session.ID, TurnID: "turn-initial-request-fail", Iteration: 0,
+			Lifecycle: TurnLifecycleRunning, ResumeState: TurnResumeStateNone, Checkpoint: oldCheckpoint,
+		}},
+	}
+	session.CurrentTurn = snapshot
+	session.LatestCheckpoint = oldCheckpoint
+	call := ToolCall{ID: "call-initial-request-fail", Name: "write_file", Arguments: json.RawMessage(`{"path":"/tmp/a"}`)}
+	dispatch := DispatchResult{
+		Blocked: true, Reason: "approval required", Outcome: "approval_needed", Source: "tool",
+		Metadata: tooling.ToolMetadata{Name: call.Name},
+		DecisionTrace: promptinput.DispatchDecisionTrace{
+			ArgumentsHash: toolArgumentsHash(call.Arguments), ToolSurfaceFingerprint: "sha256:surface", PermissionSnapshotHash: "sha256:permission",
+		},
+	}
+
+	err = kernel.markTurnBlocked(session, snapshot, call, dispatch)
+	if err == nil {
+		t.Fatal("markTurnBlocked() error = nil, want approval_requested append failure")
+	}
+	if snapshot.Lifecycle != TurnLifecycleRunning || snapshot.ResumeState != TurnResumeStateNone || snapshot.Error != "" ||
+		snapshot.LatestCheckpoint != oldCheckpoint || session.LatestCheckpoint != oldCheckpoint ||
+		len(snapshot.PendingApprovals) != 0 || len(session.PendingApprovals) != 0 || len(snapshot.PendingEvidence) != 0 || len(session.PendingEvidence) != 0 {
+		t.Fatalf("append failure mutated blocked state: lifecycle=%s resume=%s error=%q checkpoint=%p/%p approvals=%#v/%#v evidence=%#v/%#v",
+			snapshot.Lifecycle, snapshot.ResumeState, snapshot.Error, snapshot.LatestCheckpoint, session.LatestCheckpoint,
+			snapshot.PendingApprovals, session.PendingApprovals, snapshot.PendingEvidence, session.PendingEvidence)
+	}
+	last := latestIteration(snapshot)
+	if last == nil || last.Lifecycle != TurnLifecycleRunning || last.ResumeState != TurnResumeStateNone || last.Checkpoint != oldCheckpoint {
+		t.Fatalf("append failure mutated latest iteration: %#v", last)
+	}
+}
+
+func TestRuntimeKernelInitialApprovalAppendFailureCallsExecutorZeroTimes(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindApprovalRequested)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-initial-request-executor", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	kernel.rolloutRecorder = recorder
+	_, err = kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-initial-request-executor", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-initial-request-executor", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want approval_requested append failure")
+	}
+	if executed != 0 {
+		t.Fatalf("executor calls = %d, want 0", executed)
+	}
+}
+
+func TestRuntimeKernelResumeTransitionFailureDoesNotRecordToolHandoff(t *testing.T) {
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{})
+	session := kernel.sessions.GetOrCreate("session-invalid-resume-transition", SessionTypeHost, ModeExecute)
+	call := ToolCall{ID: "call-invalid-resume-transition", Name: "write_file", Arguments: json.RawMessage(`{}`)}
+	snapshot := &TurnSnapshot{
+		ID: "turn-invalid-resume-transition", SessionID: session.ID, SessionType: session.Type, Mode: session.Mode,
+		Lifecycle: TurnLifecycleCompleted, ResumeState: TurnResumeStatePendingApproval,
+		PendingApprovals: []PendingApproval{{ID: "approval-invalid-transition", ToolCallID: call.ID}},
+		Iterations: []IterationState{{
+			ID: "turn-invalid-resume-transition-iter-0", SessionID: session.ID, TurnID: "turn-invalid-resume-transition", Iteration: 0,
+			Lifecycle: TurnLifecycleCompleted, ResumeState: TurnResumeStatePendingApproval, ToolCalls: []ToolCall{call},
+		}},
+	}
+	session.CurrentTurn = snapshot
+	_, err := kernel.resumePendingToolCall(context.Background(), session, snapshot, approvalResumeExecution{})
+	if err == nil {
+		t.Fatal("resumePendingToolCall() error = nil, want invalid completed-to-running transition")
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), session.ID, snapshot.ID)
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 0 {
+		t.Fatalf("events = %v, transition failure must not record handoff", canonicalRolloutKindsForTest(events))
 	}
 }
 
