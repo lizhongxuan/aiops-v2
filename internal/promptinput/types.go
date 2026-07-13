@@ -33,7 +33,11 @@ type Message struct {
 	ReasoningContent string      `json:"reasoningContent,omitempty"`
 	ToolCalls        []ToolCall  `json:"toolCalls,omitempty"`
 	ToolResult       *ToolResult `json:"toolResult,omitempty"`
+	ContextKind      string      `json:"contextKind,omitempty"`
+	ContextRef       string      `json:"contextRef,omitempty"`
 }
+
+const ContextKindToolProgress = "tool_progress"
 
 type CurrentInputKind string
 

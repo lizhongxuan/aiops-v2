@@ -192,6 +192,33 @@ func TestBuildV2RejectsSystemMessageInsideToolCausalGroup(t *testing.T) {
 	}
 }
 
+func TestBuildV2MovesTypedToolProgressAfterCompletedCausalGroup(t *testing.T) {
+	compiled := compiledPromptV2ForCausalTest(t)
+	result, err := Builder{}.Build(BuildRequest{
+		Envelope: compiled.EnvelopeV2, Compiled: compiled, Iteration: 1,
+		CurrentInputKind: CurrentInputKindContinuation, ContinuationInstruction: "continue",
+		History: []Message{
+			{Role: "user", Content: "stream logs"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-stream", Name: "read_stream"}}},
+			{Role: "system", Content: "partial stream evidence", ContextKind: ContextKindToolProgress, ContextRef: "call-stream"},
+			{Role: "tool", ToolResult: &ToolResult{ToolCallID: "call-stream", Content: "complete stream evidence"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	callIndex := modelInputItemIndex(result.Items, func(item ModelInputItem) bool {
+		return len(item.ToolCalls) == 1 && item.ToolCalls[0].ID == "call-stream"
+	})
+	if callIndex < 0 || result.Items[callIndex+1].ToolCallID != "call-stream" {
+		t.Fatalf("tool causal group is not adjacent: %#v", result.Items)
+	}
+	progressIndex := modelInputItemIndex(result.Items, func(item ModelInputItem) bool { return item.Content == "partial stream evidence" })
+	if progressIndex <= callIndex+1 || result.Items[progressIndex].Source.Layer != string(promptcompiler.LayerStepDynamicContext) {
+		t.Fatalf("typed tool progress not moved to L5: %#v", result.Items)
+	}
+}
+
 func TestModelInputCausalOrderRejectsInvalidToolSequences(t *testing.T) {
 	assistantCall := func(ids ...string) ModelInputItem {
 		item := ModelInputItem{ID: "assistant", ProviderRole: ProviderRoleAssistant, Source: ModelInputSource{Layer: string(promptcompiler.LayerConversationHistory)}}

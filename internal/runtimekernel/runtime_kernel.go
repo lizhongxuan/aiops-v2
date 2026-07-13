@@ -6779,6 +6779,11 @@ func (k *RuntimeKernel) upsertPartialToolProgressMessage(session *SessionState, 
 		if session.Messages[i].ID != messageID {
 			continue
 		}
+		if session.Messages[i].Metadata == nil {
+			session.Messages[i].Metadata = map[string]string{}
+		}
+		session.Messages[i].Metadata["runtime.context.kind"] = promptinput.ContextKindToolProgress
+		session.Messages[i].Metadata["runtime.context.ref"] = update.ToolCallID
 		if delta := strings.TrimSpace(update.Delta); delta != "" {
 			raw := partialToolProgressBody(session.Messages[i].Content)
 			session.Messages[i].Content = partialToolProgressContent(update.ToolName, raw+update.Delta)
@@ -6794,6 +6799,10 @@ func (k *RuntimeKernel) upsertPartialToolProgressMessage(session *SessionState, 
 		Role:      "system",
 		Content:   content,
 		Timestamp: now,
+		Metadata: map[string]string{
+			"runtime.context.kind": promptinput.ContextKindToolProgress,
+			"runtime.context.ref":  update.ToolCallID,
+		},
 	})
 	recomputeContextWindow(&session.Context, session.Messages)
 }

@@ -81,7 +81,11 @@ func buildPromptInputV2(req BuildRequest, envelope promptcompiler.PromptEnvelope
 			}
 		}
 	}
-	originalHistoryItems, err := MessagesToModelInputItems(history)
+	causalHistory, err := causalHistoryWithoutBoundDerivedContext(history)
+	if err != nil {
+		return BuildResult{}, err
+	}
+	originalHistoryItems, err := MessagesToModelInputItems(causalHistory)
 	if err != nil {
 		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
 	}
@@ -214,6 +218,38 @@ func splitConversationAndDerivedContext(history []Message) ([]Message, []Message
 		conversation = append(conversation, message)
 	}
 	return conversation, derived
+}
+
+func causalHistoryWithoutBoundDerivedContext(history []Message) ([]Message, error) {
+	calls := map[string]bool{}
+	results := map[string]bool{}
+	for _, message := range history {
+		for _, call := range message.ToolCalls {
+			calls[strings.TrimSpace(call.ID)] = true
+		}
+		if message.ToolResult != nil {
+			results[strings.TrimSpace(message.ToolResult.ToolCallID)] = true
+		}
+	}
+	out := make([]Message, 0, len(history))
+	for index, message := range history {
+		kind := strings.TrimSpace(message.ContextKind)
+		if kind == "" {
+			out = append(out, message)
+			continue
+		}
+		if kind != ContextKindToolProgress {
+			return nil, fmt.Errorf("conversation message[%d] has unsupported derived context kind", index)
+		}
+		ref := strings.TrimSpace(message.ContextRef)
+		if strings.TrimSpace(message.Role) != "system" || ref == "" {
+			return nil, fmt.Errorf("conversation message[%d] has invalid tool progress context binding", index)
+		}
+		if !calls[ref] || !results[ref] {
+			return nil, fmt.Errorf("conversation message[%d] tool progress context is not bound to a completed causal group", index)
+		}
+	}
+	return out, nil
 }
 
 func rewriteModelInputLayer(items []ModelInputItem, layer promptcompiler.PromptLogicalLayer, phase, origin string) {
@@ -398,6 +434,12 @@ func MessagesToModelInputItems(history []Message) ([]ModelInputItem, error) {
 			Source:           ModelInputSource{Layer: "history", Origin: "conversation"},
 			Phase:            "history",
 			CacheGroup:       "dynamic",
+		}
+		if strings.TrimSpace(msg.ContextKind) != "" || strings.TrimSpace(msg.ContextRef) != "" {
+			item.Metadata = map[string]string{
+				"context_kind": strings.TrimSpace(msg.ContextKind),
+				"context_ref":  strings.TrimSpace(msg.ContextRef),
+			}
 		}
 		for _, call := range msg.ToolCalls {
 			item.ToolCalls = append(item.ToolCalls, ModelInputToolCall{ID: call.ID, Name: call.Name, Arguments: call.Arguments})
