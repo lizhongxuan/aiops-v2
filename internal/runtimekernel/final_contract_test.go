@@ -125,7 +125,7 @@ func TestBuildFinalContractStatusVocabulary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			contract := BuildFinalContract(tt.answer, tt.verification)
+			contract := BuildFinalContract(tt.answer, finalRuntimeFactsForContractTest(tt.verification))
 			if contract.SchemaVersion != FinalContractSchemaVersion {
 				t.Fatalf("schemaVersion = %q, want %q", contract.SchemaVersion, FinalContractSchemaVersion)
 			}
@@ -145,6 +145,39 @@ func TestBuildFinalContractStatusVocabulary(t *testing.T) {
 			}
 		})
 	}
+}
+
+func finalRuntimeFactsForContractTest(verification FinalEvidenceVerification) FinalRuntimeFacts {
+	state := verification.State
+	facts := FinalRuntimeFacts{
+		CompletionStatus: FinalCompletionStatusUnknown,
+		EvidenceRefs:     checkedEvidenceRefs(state.Checked),
+		PostcheckStatus:  finalPostcheckStatus(state.RequiredPostChecks, state.PostChecks, nil),
+		RollbackStatus:   FinalRollbackStatusNotRequired,
+		FailureCodes:     append([]string(nil), verification.Reasons...),
+		EvidenceState:    state,
+		EvidenceDecision: verification,
+	}
+	for _, failed := range state.FailedTools {
+		facts.FailureCodes = append(facts.FailureCodes, failed.FailureClass)
+	}
+	for _, missing := range state.NotChecked {
+		facts.FailureCodes = append(facts.FailureCodes, missing.Reason, missing.RequiredAction)
+	}
+	facts.FailureCodes = uniqueSortedHarnessStrings(facts.FailureCodes)
+	switch verification.Action {
+	case FinalEvidenceActionBlock:
+		facts.CompletionStatus = FinalCompletionStatusBlocked
+	case FinalEvidenceActionDowngrade:
+		facts.CompletionStatus = FinalCompletionStatusPartial
+	case FinalEvidenceActionAllow:
+		if len(outstandingRequiredPostChecks(state)) > 0 {
+			facts.CompletionStatus = FinalCompletionStatusPartial
+		} else if len(state.Checked) > 0 && len(state.NotChecked) == 0 && len(state.FailedTools) == 0 {
+			facts.CompletionStatus = FinalCompletionStatusSucceeded
+		}
+	}
+	return facts
 }
 
 func TestBuildTerminalFinalContractStatuses(t *testing.T) {
