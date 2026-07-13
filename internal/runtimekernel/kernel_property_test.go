@@ -29,9 +29,9 @@ import (
 // testMockCompiler implements promptcompiler.Compiler for testing.
 type testMockCompiler struct{}
 
-func (m *testMockCompiler) Compile(_ promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
+func (m *testMockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
 	stable := "system\n\ndev\n\ntools"
-	return promptcompiler.CompiledPrompt{
+	compiled := promptcompiler.CompiledPrompt{
 		Stable: promptcompiler.StablePromptEnvelope{
 			Content:   stable,
 			System:    promptcompiler.SystemPrompt{Content: "system"},
@@ -56,7 +56,9 @@ func (m *testMockCompiler) Compile(_ promptcompiler.CompileContext) (promptcompi
 			RuntimePolicyHash: "mock-runtime-policy-hash",
 			ProtocolStateHash: "mock-protocol-state-hash",
 		},
-	}, nil
+	}
+	compiled.EnvelopeV2 = promptcompiler.BuildPromptEnvelopeV2(compiled, ctx)
+	return compiled, nil
 }
 
 // testPanicCompiler panics during Compile (for panic recovery testing).

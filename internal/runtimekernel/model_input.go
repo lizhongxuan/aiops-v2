@@ -109,11 +109,37 @@ func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt)
 
 func buildPromptInputWithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent) (promptinput.BuildResult, error) {
 	promptHistory, contextDedupe := promptInputMessagesFromRuntimeWithContextDedupe(history)
-	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{
+	return buildPromptInputRequest(promptinput.BuildRequest{
 		History:           promptHistory,
 		Compiled:          compiled,
 		ContextGovernance: promptInputContextGovernanceFromRuntime(governance),
-	})
+	}, compiled, governance, contextDedupe)
+}
+
+func buildRuntimePromptInputV2WithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent, iteration int, cause *StepRevisionCause) (promptinput.BuildResult, error) {
+	promptHistory, contextDedupe := promptInputMessagesFromRuntimeWithContextDedupe(history)
+	promptHistory = promptHistoryWithEffectiveUsers(promptHistory)
+	if compiled.EnvelopeV2.SchemaVersion != promptcompiler.PromptEnvelopeV2SchemaVersion {
+		return promptinput.BuildResult{}, fmt.Errorf("runtime prompt requires validated prompt envelope v2")
+	}
+	kind, currentUser, continuation, err := runtimePromptCurrentInput(promptHistory, iteration, cause)
+	if err != nil {
+		return promptinput.BuildResult{}, err
+	}
+	return buildPromptInputRequest(promptinput.BuildRequest{
+		Envelope:                compiled.EnvelopeV2,
+		History:                 promptHistory,
+		Iteration:               iteration,
+		CurrentInputKind:        kind,
+		CurrentUserInput:        currentUser,
+		ContinuationInstruction: continuation,
+		Compiled:                compiled,
+		ContextGovernance:       promptInputContextGovernanceFromRuntime(governance),
+	}, compiled, governance, contextDedupe)
+}
+
+func buildPromptInputRequest(req promptinput.BuildRequest, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent, contextDedupe *promptinput.ContextDedupeTrace) (promptinput.BuildResult, error) {
+	result, err := promptinput.Builder{}.Build(req)
 	if err != nil {
 		return promptinput.BuildResult{}, err
 	}
@@ -126,6 +152,67 @@ func buildPromptInputWithContextGovernance(history []Message, compiled promptcom
 		Governance: governance,
 	})
 	return result, nil
+}
+
+func runtimePromptCurrentInput(history []promptinput.Message, iteration int, cause *StepRevisionCause) (promptinput.CurrentInputKind, string, string, error) {
+	if iteration < 0 {
+		return "", "", "", fmt.Errorf("runtime prompt iteration must be non-negative")
+	}
+	if cause != nil {
+		if err := cause.Validate(); err != nil {
+			return "", "", "", fmt.Errorf("runtime prompt step cause: %w", err)
+		}
+	}
+	if iteration == 0 {
+		if cause != nil && cause.Kind != StepRevisionKindModelRetryResumed && strings.TrimSpace(cause.Kind) != "" {
+			return "", "", "", fmt.Errorf("initial runtime prompt cannot have resume cause")
+		}
+		current := latestPromptInputUserContent(history)
+		if current == "" {
+			return "", "", "", fmt.Errorf("initial runtime prompt requires current user input")
+		}
+		return promptinput.CurrentInputKindInitialUser, current, "", nil
+	}
+	if cause != nil && cause.Kind == StepRevisionKindUserInputResumed {
+		current := latestPromptInputUserContent(history)
+		if current == "" {
+			return "", "", "", fmt.Errorf("resumed runtime prompt requires current user input")
+		}
+		return promptinput.CurrentInputKindResumedUser, current, "", nil
+	}
+	return promptinput.CurrentInputKindContinuation, "", runtimeContinuationInstruction(iteration, cause), nil
+}
+
+func latestPromptInputUserContent(history []promptinput.Message) string {
+	for index := len(history) - 1; index >= 0; index-- {
+		content := strings.TrimSpace(history[index].Content)
+		if strings.TrimSpace(history[index].Role) == "user" && content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func promptHistoryWithEffectiveUsers(history []promptinput.Message) []promptinput.Message {
+	out := make([]promptinput.Message, 0, len(history))
+	for _, message := range history {
+		if strings.TrimSpace(message.Role) == "user" && strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func runtimeContinuationInstruction(iteration int, cause *StepRevisionCause) string {
+	switch {
+	case cause != nil && cause.Kind == StepRevisionKindApprovalResumed:
+		return fmt.Sprintf("Continue runtime iteration %d after approval resume using completed L4 tool results and current L5 runtime context.", iteration)
+	case cause != nil && cause.Kind == StepRevisionKindModelRetryResumed:
+		return fmt.Sprintf("Continue runtime iteration %d after model retry using preserved L4 history and current L5 runtime context; do not assume the previous model request completed.", iteration)
+	default:
+		return fmt.Sprintf("Continue runtime iteration %d from the completed L4 tool results and current L5 runtime context.", iteration)
+	}
 }
 
 func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []Message) ([]Message, []ContextGovernanceEvent) {
@@ -375,6 +462,8 @@ func promptInputMessagesFromRuntimeWithContextDedupe(history []Message) ([]promp
 			ReasoningContent: msg.ReasoningContent,
 			ToolCalls:        promptInputToolCallsFromRuntime(msg.ToolCalls),
 			ToolResult:       toolResult,
+			ContextKind:      strings.TrimSpace(msg.Metadata["runtime.context.kind"]),
+			ContextRef:       strings.TrimSpace(msg.Metadata["runtime.context.ref"]),
 		})
 	}
 	return out, dedupe.Trace()

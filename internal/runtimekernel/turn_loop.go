@@ -79,7 +79,13 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		turnCtx.Profile = assembly.AdmissionFacts.Profile
 		turnCtx.Route.Profile = assembly.AdmissionFacts.Profile
 	}
-	promptBuild, err := buildPromptInputWithContextGovernance(contextMessages, compiled, append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...))
+	promptBuild, err := buildRuntimePromptInputV2WithContextGovernance(
+		contextMessages,
+		compiled,
+		append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...),
+		iteration,
+		currentPendingStepCause(session),
+	)
 	if err != nil {
 		return RuntimeStepContext{}, promptinput.BuildResult{}, err
 	}
@@ -120,6 +126,14 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("runtime step context: %w", err)
 	}
 	return step, promptBuild, nil
+}
+
+func currentPendingStepCause(session *SessionState) *StepRevisionCause {
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.PendingStepCause == nil {
+		return nil
+	}
+	cause := *session.CurrentTurn.PendingStepCause
+	return &cause
 }
 
 func runtimeToolRouterSnapshotFromCompile(tools []promptcompiler.Tool, visibleToolNames []string, fingerprint string, policy tooling.ToolSurfacePolicySnapshot) RuntimeToolRouterSnapshot {

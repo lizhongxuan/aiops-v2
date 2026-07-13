@@ -14,12 +14,7 @@ type captureCompileContextCompiler struct {
 
 func (c *captureCompileContextCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
 	c.last = ctx
-	return promptcompiler.CompiledPrompt{
-		System:    promptcompiler.SystemPrompt{Content: "system"},
-		Developer: promptcompiler.DeveloperInstructions{Content: "dev"},
-		Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
-		Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy"},
-	}, nil
+	return promptcompiler.NewCompiler().Compile(ctx)
 }
 
 func TestRunTurn_PreTurnHookCanRewriteInput(t *testing.T) {

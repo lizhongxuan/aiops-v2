@@ -20,16 +20,12 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 		},
 		Context: ContextWindow{MaxTokens: 32000},
 	}
-	compiled := promptcompiler.CompiledPrompt{
-		System: promptcompiler.SystemPrompt{Content: "system layer"},
-		Envelope: promptcompiler.PromptEnvelope{Sections: []promptcompiler.PromptCompiledSection{{
-			ID:        "base.contract",
-			Layer:     promptcompiler.PromptSectionKindStable,
-			Role:      "system",
-			Content:   "system layer",
-			Stability: promptcompiler.PromptSectionKindStable,
-			Source:    "base",
-		}}},
+	compiled, err := promptcompiler.NewCompiler().Compile(promptcompiler.CompileContext{
+		SessionType: string(SessionTypeHost),
+		Mode:        string(ModeChat),
+	})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
 	}
 	step, promptBuild, err := kernel.buildRuntimeStepContext(
 		TurnRequest{
@@ -58,6 +54,9 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	}
 	if len(promptBuild.Items) == 0 {
 		t.Fatalf("missing prompt/model input: items=%d", len(promptBuild.Items))
+	}
+	if promptBuild.Items[0].Source.Layer != string(promptcompiler.LayerAbsoluteSystemCore) || promptBuild.Items[len(promptBuild.Items)-1].Source.Layer != string(promptcompiler.LayerCurrentUserInput) {
+		t.Fatalf("model input does not span L0-L6: %#v", promptBuild.Items)
 	}
 	if step.ProviderRequest.ModelInputHash == "" || step.ProviderRequest.PromptCacheKey == "" {
 		t.Fatalf("provider request missing hashes: %#v", step.ProviderRequest)
