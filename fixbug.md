@@ -134,3 +134,12 @@
 - 修复方式：通过中立 `agentruntime` machine-contract adapter 校验真实 tool call name 与 hostops schema version 一一绑定，再聚合最新 worker status；任意非终态（含 spawning/queued/approval_required/unknown）在真实 finalization 前触发一次 typed retry，仍 pending 时以 `pending_worker_evidence` 硬阻断，failed/cancelled 则以 `non_completed_worker_evidence` 降为 partial。把 target/approval/plan/coverage/runtime approval/completion policy 硬阻断置于 partial 之前，但保留 partial 优先于单纯 missing verification report；RejectedApproval 新增 TurnID 并只向同 turn final 投影；RuntimeKernel 使用当前 run context 和完整 TurnState 只调用一次实际注入的 CompletionEvaluator，FinalContract、TurnResult、TurnComplete event 与 span terminal 复用同一个决定。
 - 验证结果：RED 已分别复现 premature worker final、partial 覆盖五类硬阻断、历史拒绝污染和注入 evaluator 未被调用；修复后 focused RuntimeKernel 测试与 `multi_host_manager` 公开 AssistantTransport story 通过，story 在 spawn 后加入一次虚假完成回答并验证 Runtime 强制继续调用 `wait_host_agents`。`go test ./internal/... -count=1`、`scripts/check-aiops-harness-contract-boundaries.sh` 和 `scripts/aichat-harness-hardening-gate.sh` 全部通过，Web gate 为 117 + 18 tests。
 - 风险与后续：worker gate 目前消费 `aiops.hostops.child/v1` 与 `aiops.hostops.wait/v1` 两个 versioned machine contract，且拒绝普通工具伪造同名 schema；其他 agent backend 必须先在中立 adapter 定义 tool source 与 schema 的精确绑定，不能靠回答文本或任意 JSON 字段接入。暂无已知审批绕过风险。
+
+## 2026-07-14 02:32 - 缺少目标的变更请求直到 Final 阶段才被文本补判
+
+- 修复时间：2026-07-14 02:32
+- Bug 现象：没有绑定目标的部署、安装或重启请求仍会进入 Prompt 编译和模型采样，Runtime 最后再从用户或回答文本推断变更意图；移除文本门禁后，同类请求可能只显示 `needs_evidence`，并且浪费 provider 调用。
+- 根因：AppUI 已生成 `IntentFrame`，但只序列化进兼容 metadata；`TurnRequest`、`RuntimeTurnContext` 和首轮 `depthReq` 没有直接传递 typed intent。Final/verification 门禁因此依赖 task depth、metadata 和用户文本重复推导，无法在 admission 阶段依据冻结事实 fail closed。
+- 修复方式：把 active-route 修正后的 `IntentFrame` 直接写入 `TurnRequest` 并传到 `AdmissionInput`；Final、verification 和资源去重只消费已验证的 `TurnAssembly`。为 `mutation + no verified target` 增加稳定 admission sentinel，首轮在 Prompt/provider 前生成 `FinalContract.status=blocked` 的结构化安全结果；P0 story 显式断言 provider 调用为 0、无 iteration 和无 Prompt hash。
+- 验证结果：RED 分别复现了 typed intent 字段缺失、部署未分类、最终门禁被 metadata/prose 改写以及 no-target mutation 仍调用 provider；修复后 `go test ./internal/runtimekernel -count=1` 与 `go test ./internal/server -run '^TestAssistantTransportStories/mutation_missing_target$|^TestAssistantTransportStoryCorpusCoversP0Contract$' -count=1` 通过，公开 AssistantTransport 中保留 user/final timeline 和三个稳定 limitation，provider 调用为 0。
+- 风险与后续：自然语言候选分类仍位于 AppUI admission adapter，Runtime 不包含业务关键词；未识别或低置信意图不会被 Final 文本启发式升级为变更。其他 assembly failure（例如缺少 rollback policy）仍需复用相同的 typed structured-failure 模式，不能恢复文本补判。

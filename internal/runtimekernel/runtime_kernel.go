@@ -2139,6 +2139,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			return "", nil, fmt.Errorf("turn admission context: %w", admissionErr)
 		}
 		admissionFacts = admissionContext.AdmissionFacts
+		if admissionContext.AdmissionError == runtimeAdmissionErrorTargetRequired {
+			finalText, completeErr := k.completeAdmissionTargetRequiredTurn(session, snapshot)
+			return finalText, nil, completeErr
+		}
 	}
 	depthProfile := depthProfileFromAdmissionFacts(depthReq, admissionFacts)
 	if snapshot.TaskDepth.Level == "" {

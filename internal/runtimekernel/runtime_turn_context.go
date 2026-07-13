@@ -1,6 +1,7 @@
 package runtimekernel
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -8,6 +9,8 @@ import (
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 )
+
+const runtimeAdmissionErrorTargetRequired = "admission_target_required"
 
 type RuntimeRouteSnapshot struct {
 	Route   string `json:"route,omitempty"`
@@ -188,6 +191,9 @@ func deriveRuntimeRouteSnapshot(facts runtimecontract.AdmissionFacts, sessionTyp
 func admissionErrorText(err error) string {
 	if err == nil {
 		return ""
+	}
+	if errors.Is(err, runtimecontract.ErrAdmissionTargetRequired) {
+		return runtimeAdmissionErrorTargetRequired
 	}
 	return "admission_facts_invalid"
 }

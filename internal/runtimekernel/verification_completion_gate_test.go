@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 	"aiops-v2/internal/verification"
@@ -332,11 +333,15 @@ func TestRunTurnVerificationCompletionGateConvertsInstallProseApprovalIntoRuntim
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-install-prose-approval",
-		SessionType: SessionTypeWorkspace,
-		Mode:        ModeExecute,
-		TurnID:      "turn-install-prose-approval",
-		Input:       "在 @host-a 上安装一个 nginx",
+		SessionID:         "sess-install-prose-approval",
+		SessionType:       SessionTypeWorkspace,
+		Mode:              ModeExecute,
+		TurnID:            "turn-install-prose-approval",
+		HostID:            "host-a",
+		IntentFrame:       &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite, runtimecontract.ActionRiskHostExec}, Confidence: runtimecontract.ConfidenceHigh},
+		PermissionProfile: RuntimePermissionProfileApprovalRequired,
+		RollbackPolicy:    RuntimeRollbackPolicyActionContractRequired,
+		Input:             "在 @host-a 上安装一个 nginx",
 		Metadata: map[string]string{
 			"taskDepth":                       string(taskdepth.LevelSimpleRead),
 			"aiops.route.mode":                "host_bound_ops",

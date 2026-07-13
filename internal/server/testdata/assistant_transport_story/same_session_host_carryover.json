@@ -58,10 +58,6 @@
     {
       "role": "assistant",
       "content": "已沿用本会话主机绑定检查 agent，服务 active。"
-    },
-    {
-      "role": "assistant",
-      "content": "已沿用本会话主机绑定检查 agent，服务 active。"
     }
   ],
   "toolOutcomes": [
@@ -126,7 +122,6 @@
       "postChecks": [],
       "limitations": [
         "execution_required",
-        "missing_runtime_approval_gate",
         "missing_verification_report"
       ]
     },
@@ -151,9 +146,6 @@
         "model_call",
         "assistant_message",
         "evidence",
-        "model_call",
-        "assistant_message",
-        "evidence",
         "final_response"
       ],
       "finalStatus": "needs_evidence",
@@ -167,7 +159,7 @@
       "promptFingerprint": {
         "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
         "compilerVersion": "prompt-fingerprint-v2",
-        "currentUserInputHash": "5ec794c00e4e3a95ab89a98595f0e9c378ef2f2f96902600b6e243e74e945f2d",
+        "currentUserInputHash": "0713feca342869bd1eff3fdcfcef09d6867693773a7b59fe5c8f72f451f1c91c",
         "developerHash": "bb0bc35c86d3cd10bda4ee007af1c1cf7238cfebf8e708e3f67b9e833e09a03f",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
         "roleProfileHash": "5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea",

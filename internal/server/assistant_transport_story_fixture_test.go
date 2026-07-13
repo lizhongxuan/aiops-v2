@@ -45,6 +45,7 @@ type assistantTransportStoryResult struct {
 	HostManager     *storyHostManagerProof
 	TraceRef        string
 	RawTransport    string
+	ProviderCalls   int
 }
 
 type storyHostManagerProof struct {
@@ -93,7 +94,7 @@ func loadAssistantTransportStories(t *testing.T) []assistantTransportStory {
 		if strings.TrimSpace(story.Name) == "" || len(storyTransportRequests(story)) == 0 {
 			t.Fatalf("assistant transport story %s must define name and at least one request command", path)
 		}
-		if len(story.ProviderResponses) == 0 {
+		if len(story.ProviderResponses) == 0 && (story.Want.ProviderCallCount == nil || *story.Want.ProviderCallCount != 0) {
 			t.Fatalf("assistant transport story %s must define providerResponses", path)
 		}
 		stories = append(stories, story)
@@ -225,6 +226,7 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 	httpServer := httptest.NewServer(NewHTTPServer(appui.NewServices(kernel, sessions, servicesOptions...)).Handler())
 	defer httpServer.Close()
 	result := runAssistantTransportStoryRequests(t, story, httpServer.URL, initial, threadID, sessions, toolControls)
+	result.ProviderCalls = provider.invocationCount()
 	if hostManagerRuntime != nil {
 		result.HostManager = hostManagerRuntime.proof(t)
 	}
@@ -639,7 +641,11 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	if result.Snapshot == nil {
 		failAssistantTransportStory(t, story, result, "runtime turn snapshot is missing")
 	}
-	assertStoryPromptShadowParity(t, story, result)
+	if story.Want.ProviderCallCount == nil || *story.Want.ProviderCallCount != 0 {
+		assertStoryPromptShadowParity(t, story, result)
+	} else if result.Snapshot != nil && len(result.Snapshot.Iterations) != 0 {
+		failAssistantTransportStory(t, story, result, "provider-free admission failure persisted model iterations")
+	}
 	turn, ok := result.State.Turns[result.State.CurrentTurnID]
 	if !ok {
 		failAssistantTransportStory(t, story, result, "current transport turn %q is missing", result.State.CurrentTurnID)
@@ -661,6 +667,10 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 		Evidence:            projectStoryEvidence(result.Snapshot),
 		TraceHashes:         projectStoryTraceHashes(result.Snapshot),
 	}
+	if story.Want.ProviderCallCount != nil {
+		providerCalls := result.ProviderCalls
+		got.ProviderCallCount = &providerCalls
+	}
 	if story.Want.ContextFacts != nil {
 		got.ContextFacts = projectStoryContextFacts(result.Snapshot)
 	}
@@ -673,7 +683,7 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 		failAssistantTransportStory(t, story, result, "assertion mismatch\nwant=%s\n got=%s", wantJSON, gotJSON)
 	}
 	assertStoryHostManagerLifecycle(t, story, result)
-	if result.TraceRef == "" {
+	if (story.Want.ProviderCallCount == nil || *story.Want.ProviderCallCount != 0) && result.TraceRef == "" {
 		failAssistantTransportStory(t, story, result, "model input trace ref is missing")
 	}
 }
@@ -1469,6 +1479,7 @@ type storyProvider struct {
 	mu             sync.Mutex
 	responses      []*schema.Message
 	served         int
+	invocations    int
 	beforeResponse func(context.Context, int) error
 }
 
@@ -1536,7 +1547,8 @@ func (p *storyProvider) replacePlaceholder(placeholder, replacement string) erro
 
 func (p *storyProvider) next(ctx context.Context) (*schema.Message, error) {
 	p.mu.Lock()
-	responseIndex := p.served
+	responseIndex := p.invocations
+	p.invocations++
 	beforeResponse := p.beforeResponse
 	p.mu.Unlock()
 	if beforeResponse != nil {
@@ -1553,6 +1565,12 @@ func (p *storyProvider) next(ctx context.Context) (*schema.Message, error) {
 	p.responses = p.responses[1:]
 	p.served++
 	return response, nil
+}
+
+func (p *storyProvider) invocationCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.invocations
 }
 
 func (p *storyProvider) assertExhausted() error {

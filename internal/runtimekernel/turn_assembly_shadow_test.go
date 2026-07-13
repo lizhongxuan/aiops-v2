@@ -11,6 +11,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modeltrace"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/tooling"
 )
 
@@ -123,6 +124,43 @@ func TestTurnAssemblyShadowAdmissionFailureMakesZeroProviderCalls(t *testing.T) 
 	}
 	if countTurnAssemblyStage(observer.stages, "prompt_compiled") != 0 || countTurnAssemblyStage(observer.stages, "provider_request_started") != 0 {
 		t.Fatalf("stages after admission failure = %#v, want no prompt/provider stage", observer.stages)
+	}
+}
+
+func TestRunTurnTypedMutationMissingTargetCompletesStructuredFailureBeforeProvider(t *testing.T) {
+	model := &sequentialLoopModel{}
+	observer := &turnAssemblyRecordingObserver{}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	kernel.observer = observer
+	intent := runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindChange,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite},
+		Confidence: runtimecontract.ConfidenceHigh,
+	}
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "sess-typed-mutation-no-target", SessionType: SessionTypeWorkspace,
+		Mode: ModeExecute, TurnID: "turn-typed-mutation-no-target", Input: "deploy requested operation",
+		IntentFrame: &intent,
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v, want structured completed failure", err)
+	}
+	if result.Status != "completed" || strings.TrimSpace(result.Output) == "" {
+		t.Fatalf("result = %#v, want completed turn with safe failure text", result)
+	}
+	if len(model.inputs) != 0 {
+		t.Fatalf("provider calls = %d, want 0", len(model.inputs))
+	}
+	if countTurnAssemblyStage(observer.stages, "prompt_compiled") != 0 || countTurnAssemblyStage(observer.stages, "provider_request_started") != 0 {
+		t.Fatalf("stages = %#v, want admission failure before prompt/provider", observer.stages)
+	}
+	session := kernel.sessions.Get(result.SessionID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing persisted structured failure: %#v", session)
+	}
+	if got := goldenFinalContractStatus(session.CurrentTurn); got != string(FinalContractStatusBlocked) {
+		t.Fatalf("final contract status = %q, want blocked", got)
 	}
 }
 

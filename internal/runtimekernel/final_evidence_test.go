@@ -12,6 +12,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/tooling"
 )
@@ -518,7 +519,7 @@ func TestFinalEvidenceBlockedFallbackPrefersRiskReviewForDestructiveDataAdvice(t
 	}
 }
 
-func TestBuildFinalEvidenceStateDetectsMutationIntentWithoutTarget(t *testing.T) {
+func TestBuildFinalEvidenceStateDoesNotInferMutationIntentFromLegacyProse(t *testing.T) {
 	session := &SessionState{
 		Messages: []Message{{
 			Role:    "user",
@@ -537,8 +538,8 @@ func TestBuildFinalEvidenceStateDetectsMutationIntentWithoutTarget(t *testing.T)
 	if state.TargetBound {
 		t.Fatalf("TargetBound = true, want false")
 	}
-	if !state.MutationIntentWithoutTarget {
-		t.Fatalf("MutationIntentWithoutTarget = false, want true")
+	if state.MutationIntentWithoutTarget {
+		t.Fatalf("MutationIntentWithoutTarget = true, legacy prose/metadata must not create a control fact")
 	}
 }
 
@@ -946,6 +947,7 @@ func TestRunTurnClassifiesUngatedManualMutationFromTypedTargetFacts(t *testing.T
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeChat,
 		TurnID:      "turn-ungated-manual-mutation",
+		IntentFrame: &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}, Confidence: runtimecontract.ConfidenceHigh},
 		Input:       "在 host-a 上重启 nginx。需要先展示审批，用户批准后继续同一个 turn。",
 		Metadata: map[string]string{
 			"aiops.route.mode":              "chat_advisory",
@@ -982,6 +984,7 @@ func TestRunTurnBlocksNoTargetMutationIntentWithoutCommandAdvice(t *testing.T) {
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeChat,
 		TurnID:      "turn-no-target-mutation-intent",
+		IntentFrame: &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}, Confidence: runtimecontract.ConfidenceHigh},
 		Input:       "在 host-a 上重启 nginx。需要先展示审批，用户批准后继续同一个 turn。",
 		Metadata: map[string]string{
 			"aiops.route.mode":              "chat_advisory",

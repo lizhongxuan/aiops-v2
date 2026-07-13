@@ -87,6 +87,7 @@ type storyToolApproval struct {
 }
 
 type storyTransportAssert struct {
+	ProviderCallCount   *int                     `json:"providerCallCount,omitempty"`
 	TurnStatus          string                   `json:"turnStatus"`
 	Lifecycle           string                   `json:"lifecycle"`
 	Messages            []storyMessage           `json:"messages"`
@@ -224,6 +225,12 @@ func TestAssistantTransportStoryCorpusCoversP0Contract(t *testing.T) {
 			}
 		}
 		traceHashes, _ := want["traceHashes"].(map[string]any)
+		providerFree, _ := want["providerCallCount"].(float64)
+		if providerFree == 0 {
+			if _, explicit := want["providerCallCount"]; explicit {
+				continue
+			}
+		}
 		promptHashes, _ := traceHashes["promptFingerprint"].(map[string]any)
 		for _, hash := range []string{"version", "compilerVersion", "absoluteSystemHash", "roleProfileHash", "stableRuntimeContractHash", "stablePrefixHash", "turnStableHash", "turnPrefixHash", "currentUserInputHash", "developerHash", "protocolStateHash", "runtimePolicyHash", "stableHash", "systemHash", "toolRegistryHash"} {
 			if strings.TrimSpace(fmt.Sprint(promptHashes[hash])) == "" {

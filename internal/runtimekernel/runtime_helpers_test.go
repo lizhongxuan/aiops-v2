@@ -16,6 +16,7 @@ import (
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/tooling"
 )
 
@@ -56,19 +57,21 @@ func TestRuntimeModelInputCompatibilityAdapters(t *testing.T) {
 }
 
 type aiChatHarnessGoldenCase struct {
-	Name                   string                  `json:"name"`
-	UserInput              string                  `json:"userInput"`
-	ModelToolCalls         []aiChatGoldenToolCall  `json:"modelToolCalls,omitempty"`
-	ModelFinalOutput       string                  `json:"modelFinalOutput,omitempty"`
-	AvailableTools         []aiChatGoldenTool      `json:"availableTools,omitempty"`
-	ExpectedStatus         string                  `json:"expectedStatus"`
-	ExpectedVisibleStates  []string                `json:"expectedVisibleStates,omitempty"`
-	ForbiddenVisibleStates []string                `json:"forbiddenVisibleStates,omitempty"`
-	ExpectedFailureKind    string                  `json:"expectedFailureKind,omitempty"`
-	ExpectedAttempts       []aiChatExpectedAttempt `json:"expectedAttempts,omitempty"`
-	HostID                 string                  `json:"hostId,omitempty"`
-	Mode                   string                  `json:"mode,omitempty"`
-	ExpectedHarness        aiChatExpectedHarness   `json:"expectedHarness,omitempty"`
+	Name                   string                       `json:"name"`
+	UserInput              string                       `json:"userInput"`
+	ModelToolCalls         []aiChatGoldenToolCall       `json:"modelToolCalls,omitempty"`
+	ModelFinalOutput       string                       `json:"modelFinalOutput,omitempty"`
+	AvailableTools         []aiChatGoldenTool           `json:"availableTools,omitempty"`
+	ExpectedStatus         string                       `json:"expectedStatus"`
+	ExpectedVisibleStates  []string                     `json:"expectedVisibleStates,omitempty"`
+	ForbiddenVisibleStates []string                     `json:"forbiddenVisibleStates,omitempty"`
+	ExpectedFailureKind    string                       `json:"expectedFailureKind,omitempty"`
+	ExpectedAttempts       []aiChatExpectedAttempt      `json:"expectedAttempts,omitempty"`
+	HostID                 string                       `json:"hostId,omitempty"`
+	Mode                   string                       `json:"mode,omitempty"`
+	IntentFrame            *runtimecontract.IntentFrame `json:"intentFrame,omitempty"`
+	ExpectedProviderCalls  *int                         `json:"expectedProviderCalls,omitempty"`
+	ExpectedHarness        aiChatExpectedHarness        `json:"expectedHarness,omitempty"`
 }
 
 type aiChatGoldenToolCall struct {
@@ -211,11 +214,15 @@ func runGoldenTurn(t *testing.T, tc aiChatHarnessGoldenCase) (TurnResult, *TurnS
 		Mode:        mode,
 		TurnID:      "turn-golden-" + tc.Name,
 		HostID:      strings.TrimSpace(tc.HostID),
+		IntentFrame: tc.IntentFrame,
 		Input:       tc.UserInput,
 		Metadata:    metadata,
 	})
 	if err != nil && tc.ExpectedStatus != "error" {
 		t.Fatalf("RunTurn returned error: %v", err)
+	}
+	if tc.ExpectedProviderCalls != nil && len(model.inputs) != *tc.ExpectedProviderCalls {
+		t.Fatalf("provider calls = %d, want %d", len(model.inputs), *tc.ExpectedProviderCalls)
 	}
 	session := kernel.sessions.Get("sess-golden-" + tc.Name)
 	if session == nil || session.CurrentTurn == nil {
@@ -318,11 +325,18 @@ func assertGoldenTurnContract(t *testing.T, tc aiChatHarnessGoldenCase, result T
 	assertToolInvocationsRecorded(t, tc, snapshot)
 	assertCheckpointSequenceMonotonic(t, snapshot)
 	assertExpectedHarnessContract(t, tc, snapshot, events)
-	if strings.TrimSpace(snapshot.StableToolFingerprint) == "" {
-		t.Fatal("expected stable tool fingerprint to be recorded")
-	}
-	if len(snapshot.Iterations) > 0 && strings.TrimSpace(snapshot.Iterations[len(snapshot.Iterations)-1].ToolSurfaceFingerprint) == "" {
-		t.Fatal("expected latest iteration tool surface fingerprint to be recorded")
+	providerFreeAdmissionFailure := tc.ExpectedProviderCalls != nil && *tc.ExpectedProviderCalls == 0
+	if providerFreeAdmissionFailure {
+		if snapshot.StableToolFingerprint != "" || len(snapshot.Iterations) != 0 {
+			t.Fatalf("provider-free admission failure compiled model state: fingerprint=%q iterations=%d", snapshot.StableToolFingerprint, len(snapshot.Iterations))
+		}
+	} else {
+		if strings.TrimSpace(snapshot.StableToolFingerprint) == "" {
+			t.Fatal("expected stable tool fingerprint to be recorded")
+		}
+		if len(snapshot.Iterations) > 0 && strings.TrimSpace(snapshot.Iterations[len(snapshot.Iterations)-1].ToolSurfaceFingerprint) == "" {
+			t.Fatal("expected latest iteration tool surface fingerprint to be recorded")
+		}
 	}
 }
 

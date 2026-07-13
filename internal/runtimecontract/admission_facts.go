@@ -52,6 +52,7 @@ type admissionMetadataFacts struct {
 
 var (
 	ErrAdmissionTargetConflict    = errors.New("admission target conflict")
+	ErrAdmissionTargetRequired    = errors.New("admission target required")
 	ErrAdmissionRoleScopeConflict = errors.New("admission role scope conflict")
 )
 
@@ -148,7 +149,7 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 		return err
 	}
 	if admissionIntentMutates(facts.Intent) && !admissionHasVerifiedTarget(facts) {
-		return fmt.Errorf("mutation admission requires a verified target")
+		return fmt.Errorf("%w", ErrAdmissionTargetRequired)
 	}
 	if conflicts := resourcebinding.DetectRoleBindingConflicts(facts.RoleBindings); len(conflicts) > 0 {
 		return fmt.Errorf("%w: conflicting role/resource bindings", ErrAdmissionRoleScopeConflict)
