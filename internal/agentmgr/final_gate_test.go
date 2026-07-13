@@ -28,3 +28,13 @@ func TestAgentFinalGateAllowsCompletedEvidenceOnly(t *testing.T) {
 		t.Fatalf("action = %q, want %q: %#v", decision.Action, AgentFinalGateAllow, decision)
 	}
 }
+
+func TestAgentFinalGatePendingDisclosureCannotBypassStatusFacts(t *testing.T) {
+	decision := EvaluateAgentFinalGate(FinalGateInput{
+		FinalText: "worker-3 is still running and not confirmed",
+		Agents:    []AgentNotification{{AgentID: "worker-3", Status: string(AgentStatusRunning)}},
+	})
+	if decision.Action != AgentFinalGateRequireWait {
+		t.Fatalf("action = %q, want %q", decision.Action, AgentFinalGateRequireWait)
+	}
+}

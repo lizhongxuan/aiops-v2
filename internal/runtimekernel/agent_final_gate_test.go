@@ -97,7 +97,7 @@ func TestEvaluateFinalMessageBoundaryConstrainDoesNotRequestRewriteForConfidence
 	}
 }
 
-func TestAgentFinalGateAllowsPendingStatusDisclosure(t *testing.T) {
+func TestAgentFinalGateDoesNotLetPendingStatusDisclosureBypassFacts(t *testing.T) {
 	decision := EvaluateRuntimeAgentFinalGate(
 		"synthetic-worker-1 is still running and not confirmed",
 		[]promptinput.AgentNotificationTrace{{
@@ -105,7 +105,7 @@ func TestAgentFinalGateAllowsPendingStatusDisclosure(t *testing.T) {
 			Status:  "running",
 		}},
 	)
-	if decision.Action != "allow" {
-		t.Fatalf("action = %q, want allow: %#v", decision.Action, decision)
+	if decision.Action != "require_wait" {
+		t.Fatalf("action = %q, want require_wait: %#v", decision.Action, decision)
 	}
 }
