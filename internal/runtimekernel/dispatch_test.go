@@ -94,19 +94,22 @@ func TestToolDispatcher_DispatchApprovedEmitsStartedAfterApprovalGate(t *testing
 				ToolNames: []string{"restart_service"},
 			},
 		},
-	}))
+	})).WithToolSurfaceFingerprint("sha256:approval-router")
+	call := ToolCall{
+		ID:        "tool-restart-1",
+		Name:      "restart_service",
+		Arguments: json.RawMessage(`{"service":"redis"}`),
+	}
+	verified := verifiedActionTokenForDispatcherTest(t, dispatcher, "turn-approval", call)
 
 	result := dispatcher.DispatchApproved(
 		context.Background(),
 		"sess-approval",
 		"turn-approval",
-		ToolCall{
-			ID:        "tool-restart-1",
-			Name:      "restart_service",
-			Arguments: json.RawMessage(`{"service":"redis"}`),
-		},
+		call,
 		SessionTypeHost,
 		ModeExecute,
+		verified,
 	)
 
 	if result.Content != "restarted" {
@@ -179,8 +182,8 @@ func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testin
 	emitter := &testMockEventEmitter{}
 	executor := &permissionCheckingExecutor{
 		decision: tooling.PermissionDecision{
-			Action: tooling.PermissionActionNeedEvidence,
-			Reason: "missing action token",
+			Action: tooling.PermissionActionNeedApproval,
+			Reason: "explicit approval required",
 		},
 	}
 	lookup := &mockToolLookup{

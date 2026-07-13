@@ -19,6 +19,7 @@ import (
 	"aiops-v2/internal/hooks"
 	"aiops-v2/internal/mcp"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/permissions"
 	"aiops-v2/internal/planning"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
@@ -3200,7 +3201,10 @@ func TestRunTurnResumesMatchingPendingEvidenceDecisionThroughRuntime(t *testing.
 	permissionChecks := 0
 	executed := 0
 	toolDef := &tooling.StaticTool{
-		Meta: tooling.ToolMetadata{Name: "inspect_runtime_evidence", Description: "Inspect runtime evidence"},
+		Meta: tooling.ToolMetadata{
+			Name: "inspect_runtime_evidence", Description: "Inspect runtime evidence", RiskLevel: tooling.ToolRiskLow,
+			Discovery: tooling.ToolDiscoveryMetadata{PermissionScope: "read"},
+		},
 		Visibility: tooling.Visibility{
 			SessionTypes: []string{string(SessionTypeHost)},
 			Modes:        []string{string(ModeInspect)},
@@ -3254,7 +3258,7 @@ func TestRunTurnResumesMatchingPendingEvidenceDecisionThroughRuntime(t *testing.
 	}
 }
 
-func TestResumeTurnApprovalFingerprintDriftRequiresReapproval(t *testing.T) {
+func TestResumeTurnApprovalActionTokenPermissionDriftRequiresReapproval(t *testing.T) {
 	model := &sequentialLoopModel{
 		responses: []*schema.Message{
 			schema.AssistantMessage("", []schema.ToolCall{{
@@ -3298,15 +3302,16 @@ func TestResumeTurnApprovalFingerprintDriftRequiresReapproval(t *testing.T) {
 		t.Fatalf("session pending approval missing: %#v", session)
 	}
 	approvalID := session.PendingApprovals[0].ID
+	kernel.permissions = permissions.NewEngine([]permissions.Rule{{
+		Name: "permission-world-changed", Action: permissions.ActionDeny,
+		Matcher: permissions.Matcher{ToolNames: []string{"write_file"}},
+	}})
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID:   "sess-drift",
 		TurnID:      "turn-drift",
 		ApprovalID:  approvalID,
 		Decision:    "approved",
 		ResumeState: TurnResumeStatePendingApproval,
-		Metadata: map[string]string{
-			"permissionSnapshotHash": "sha256:changed-permission",
-		},
 	})
 	if err != nil {
 		t.Fatalf("ResumeTurn drift error = %v", err)
@@ -3314,11 +3319,11 @@ func TestResumeTurnApprovalFingerprintDriftRequiresReapproval(t *testing.T) {
 	if executed != 0 {
 		t.Fatalf("tool executed %d time(s), want no execution after fingerprint drift", executed)
 	}
-	if resumed.Status != "blocked" || !strings.Contains(resumed.Error, "aiops.approval_drift/v1") {
-		t.Fatalf("resume result = %#v, want approval drift blocker", resumed)
+	if resumed.Status != "blocked" || !strings.Contains(resumed.Error, ApprovalContextStaleCode) || !strings.Contains(resumed.Error, `"permission"`) {
+		t.Fatalf("resume result = %#v, want approval permission stale blocker", resumed)
 	}
 	session = kernel.sessions.Get("sess-drift")
-	if session == nil || len(session.PendingApprovals) != 1 || !strings.Contains(session.PendingApprovals[0].Reason, "approval_drift") {
+	if session == nil || len(session.PendingApprovals) != 1 || !strings.Contains(session.PendingApprovals[0].Reason, ApprovalContextStaleCode) {
 		t.Fatalf("pending approvals after drift = %#v, want re-approval request", session.PendingApprovals)
 	}
 }

@@ -243,21 +243,21 @@ type DispatchResult struct {
 //  4. Emit lifecycle events to Projector
 //  5. Return result
 func (d *ToolDispatcher) Dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", false)
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", false, nil)
 }
 
 // DispatchApproved executes a tool call after an explicit approval/resume decision.
-// The tool still flows through the dispatcher, but guard checks are skipped because
-// the approval gate has already been satisfied for this call.
-func (d *ToolDispatcher) DispatchApproved(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", true)
+// A verified binding satisfies repeated approval requests only; current deny and
+// evidence gates still run and win.
+func (d *ToolDispatcher) DispatchApproved(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, authorization VerifiedActionToken) DispatchResult {
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", true, &authorization)
 }
 
 // DispatchWithParentSpan executes a tool call with optional span tracking.
 // If parentSpanID is non-empty and spanSource is configured, a child span
 // is created for this tool call.
 func (d *ToolDispatcher) DispatchWithParentSpan(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, parentSpanID, false)
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, parentSpanID, false, nil)
 }
 
 func (d *ToolDispatcher) dispatchDecisionTrace(tc ToolCall) promptinput.DispatchDecisionTrace {
@@ -281,16 +281,18 @@ func (d *ToolDispatcher) effectivePermissionSnapshotHash() string {
 	if strings.TrimSpace(d.permissionHash) != "" {
 		return strings.TrimSpace(d.permissionHash)
 	}
+	var permissionRules []permissions.Rule
+	if d.permissions != nil {
+		permissionRules = d.permissions.Rules()
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"hasPermissionEngine": d.permissions != nil,
-		"approvalGrants":      d.approvalGrants,
-		"planMode":            d.planMode.State,
-		"planScopes":          d.planScopes,
+		"permissionRules": permissionRules, "approvalGrants": d.approvalGrants,
+		"planMode": d.planMode.State, "planScopes": d.planScopes,
 	})
 	return toolArgumentsHash(payload)
 }
 
-func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool) (result DispatchResult) {
+func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool, authorization *VerifiedActionToken) (result DispatchResult) {
 	var resourceLockTraces []promptinput.ResourceLockTrace
 	decisionTrace := d.dispatchDecisionTrace(tc)
 	defer func() {
@@ -301,6 +303,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			result.DecisionTrace = decisionTrace
 		}
 	}()
+	explicitApproval := approved
+	if explicitApproval && (authorization == nil || authorization.verificationHash == "") {
+		return approvalContextStaleDispatchResult(tc, newApprovalContextStaleError("token"))
+	}
 	if blocked, reject := d.rejectModelToolOutsideStep(sessionID, turnID, tc); reject {
 		return blocked
 	}
@@ -390,6 +396,11 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
 	}
+	if explicitApproval {
+		if err := authorization.revalidateDispatch(turnID, tc.ID, tc.Name, toolArgumentsHash(tc.Arguments), d.toolSurfaceFP, d.effectivePermissionSnapshotHash(), time.Now()); err != nil {
+			return approvalContextStaleDispatchResult(tc, err)
+		}
+	}
 
 	if err := toolfailure.ValidateArguments(desc.InputSchema, tc.Arguments); err != nil {
 		errMsg := "invalid arguments: " + err.Error()
@@ -446,47 +457,48 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		return result
 	}
 
-	if !approved {
-		if checker, ok := executor.(ToolPermissionChecker); ok {
-			decision := checker.CheckPermissions(ctx, tc.Arguments)
-			switch decision.Action {
-			case tooling.PermissionActionDeny:
-				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "tool", "tool_denied", desc.Metadata)
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
-				}
-				return result
-			case tooling.PermissionActionNeedApproval:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     decision.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "approval_needed",
-					Source:     "tool",
-					Approval:   decision.Approval,
-				}
-			case tooling.PermissionActionNeedEvidence:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "evidence required: "+decision.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     "evidence required: " + decision.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "evidence_needed",
-					Source:     "tool",
-				}
+	if checker, ok := executor.(ToolPermissionChecker); ok {
+		decision := checker.CheckPermissions(ctx, tc.Arguments)
+		switch decision.Action {
+		case tooling.PermissionActionDeny:
+			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "tool", "tool_denied", desc.Metadata)
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
+			}
+			return result
+		case tooling.PermissionActionNeedApproval:
+			if approved {
+				break
+			}
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
+			}
+			return DispatchResult{
+				ToolCallID: tc.ID,
+				Blocked:    true,
+				Reason:     decision.Reason,
+				Metadata:   desc.Metadata,
+				Outcome:    "approval_needed",
+				Source:     "tool",
+				Approval:   decision.Approval,
+			}
+		case tooling.PermissionActionNeedEvidence:
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "evidence required: "+decision.Reason)
+			}
+			return DispatchResult{
+				ToolCallID: tc.ID,
+				Blocked:    true,
+				Reason:     "evidence required: " + decision.Reason,
+				Metadata:   desc.Metadata,
+				Outcome:    "evidence_needed",
+				Source:     "tool",
 			}
 		}
 	}
 
 	// Check PolicyEngine
-	if !approved && d.policy != nil {
+	if d.policy != nil {
 		policyInput := policyengine.PolicyInput{
 			ToolName:    tc.Name,
 			Tool:        desc.Metadata,
@@ -505,6 +517,9 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			return result
 
 		case policyengine.PolicyActionNeedApproval:
+			if approved {
+				break
+			}
 			// In production, this would trigger adk.Runner interrupt/resume
 			// via compose.CheckPointStore. For now, return blocked status.
 			if d.spanSource != nil && toolSpanID != "" {
@@ -534,44 +549,45 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 	}
 
-	if !approved {
-		if override := toolEvent.UpdatedPermissions; override != nil {
-			switch override.Action {
-			case tooling.PermissionActionDeny:
-				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+override.Reason, "hook", "tool_denied", desc.Metadata)
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "denied: "+override.Reason)
-				}
-				return result
-			case tooling.PermissionActionNeedApproval:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+override.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     override.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "approval_needed",
-					Source:     "hook",
-				}
-			case tooling.PermissionActionNeedEvidence:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "evidence required: "+override.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     "evidence required: " + override.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "evidence_needed",
-					Source:     "hook",
-				}
+	if override := toolEvent.UpdatedPermissions; override != nil {
+		switch override.Action {
+		case tooling.PermissionActionDeny:
+			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+override.Reason, "hook", "tool_denied", desc.Metadata)
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "denied: "+override.Reason)
+			}
+			return result
+		case tooling.PermissionActionNeedApproval:
+			if approved {
+				break
+			}
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+override.Reason)
+			}
+			return DispatchResult{
+				ToolCallID: tc.ID,
+				Blocked:    true,
+				Reason:     override.Reason,
+				Metadata:   desc.Metadata,
+				Outcome:    "approval_needed",
+				Source:     "hook",
+			}
+		case tooling.PermissionActionNeedEvidence:
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, "evidence required: "+override.Reason)
+			}
+			return DispatchResult{
+				ToolCallID: tc.ID,
+				Blocked:    true,
+				Reason:     "evidence required: " + override.Reason,
+				Metadata:   desc.Metadata,
+				Outcome:    "evidence_needed",
+				Source:     "hook",
 			}
 		}
 	}
 
-	if !approved && d.permissions != nil {
+	if d.permissions != nil {
 		decision := d.permissions.Decide(ctx, permissions.Request{
 			Tool:        desc.Metadata,
 			SessionType: string(sessionType),
@@ -586,6 +602,9 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			}
 			return result
 		case permissions.ActionAsk:
+			if approved {
+				break
+			}
 			if d.spanSource != nil && toolSpanID != "" {
 				d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
 			}
@@ -744,6 +763,18 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
 		Attempts:    append([]ToolAttemptState(nil), retryAttempts...),
+	}
+}
+
+func approvalContextStaleDispatchResult(tc ToolCall, err error) DispatchResult {
+	reason := ApprovalContextStaleCode
+	if err != nil {
+		reason = err.Error()
+	}
+	return DispatchResult{
+		ToolCallID: tc.ID, Blocked: true, Error: reason, Reason: reason,
+		Outcome: ApprovalContextStaleCode, Source: "runtime",
+		Result: tooling.ToolResult{ToolCallID: tc.ID, Error: reason},
 	}
 }
 

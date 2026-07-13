@@ -204,3 +204,34 @@ func newApprovalContextStaleError(fields ...string) *ApprovalContextStaleError {
 	sort.Strings(fields)
 	return &ApprovalContextStaleError{Code: ApprovalContextStaleCode, MismatchFields: fields}
 }
+
+func BuildPendingApprovalActionToken(approval PendingApproval, checkpointID string) (ActionToken, error) {
+	expiresAt := time.Time{}
+	if approval.ExpiresAt != nil {
+		expiresAt = *approval.ExpiresAt
+	} else if !approval.CreatedAt.IsZero() {
+		expiresAt = approval.CreatedAt.Add(15 * time.Minute)
+	}
+	return FreezeActionToken(ActionToken{
+		ApprovalID: approval.ID, TurnID: approval.TurnID, ToolCallID: approval.ToolCallID, ToolName: approval.ToolName,
+		ArgumentsHash: firstNonEmptyString(approval.ArgumentsHash, approval.InputHash),
+		TargetRefs:    approvalActionTokenTargetRefs(approval), ToolSurfaceFingerprint: approval.ToolSurfaceFingerprint,
+		PermissionHash: approval.PermissionSnapshotHash, RollbackHash: approvalRollbackContractHash(approval),
+		CheckpointID: checkpointID, ExpiresAt: expiresAt,
+	})
+}
+
+func approvalActionTokenTargetRefs(approval PendingApproval) []string {
+	refs := compactStringList(approval.TargetRefs)
+	if len(refs) == 0 {
+		refs = compactStringList(approval.ResourceScopes)
+	}
+	if len(refs) == 0 && strings.TrimSpace(approval.ToolName) != "" {
+		refs = []string{"tool:" + strings.TrimSpace(approval.ToolName)}
+	}
+	return refs
+}
+
+func approvalRollbackContractHash(approval PendingApproval) string {
+	return agentassembly.StableHash("approval-rollback-contract", BuildActionRollbackContractFromApproval(approval).Normalize())
+}

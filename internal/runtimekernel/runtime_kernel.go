@@ -986,41 +986,6 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		k.emitApprovalDecided(session, snapshot, approval, req.Decision, "denied", now)
 		return k.completeDeniedApprovalTurn(session, snapshot, approval, decisionReason, now)
 	}
-	if approval := decisionApproval; isApprovedResumeDecision(req.Decision) {
-		if driftPayload, drifted := approvalFingerprintDriftPayload(approval, snapshot, req); drifted {
-			now := time.Now()
-			approval.Reason = driftPayload
-			approval.Status = "pending"
-			approval.UpdatedAt = now
-			snapshot.Lifecycle = TurnLifecycleSuspended
-			snapshot.ResumeState = TurnResumeStatePendingApproval
-			snapshot.Error = driftPayload
-			snapshot.UpdatedAt = now
-			snapshot.PendingApprovals = upsertPendingApproval(snapshot.PendingApprovals, approval)
-			session.PendingApprovals = upsertPendingApproval(session.PendingApprovals, approval)
-			k.persistTurnSnapshot(session, snapshot)
-			if k.projector != nil {
-				k.projector.Emit(LifecycleEvent{
-					Type:      EventApprovalNeeded,
-					SessionID: session.ID,
-					TurnID:    snapshot.ID,
-					Timestamp: now,
-					Payload:   []byte(driftPayload),
-				})
-			}
-			return TurnResult{
-				SessionType:     session.Type,
-				Mode:            session.Mode,
-				SessionID:       session.ID,
-				TurnID:          req.TurnID,
-				ClientTurnID:    snapshot.ClientTurnID,
-				ClientMessageID: snapshot.ClientMessageID,
-				Status:          "blocked",
-				Error:           driftPayload,
-			}, nil
-		}
-	}
-
 	agentKind := modelrouter.AgentKindWorker
 	if session.Type == SessionTypeWorkspace {
 		agentKind = modelrouter.AgentKindPlanner
@@ -1059,6 +1024,10 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 			return TurnResult{}, err
 		}
 	} else if toolCall, ok := gatedPendingToolCall(snapshot); ok {
+		execution, tokenErr := k.prepareApprovalResumeExecution(session, snapshot, decisionApproval, toolCall)
+		if tokenErr != nil {
+			return k.blockStaleApprovalContext(session, snapshot, decisionApproval, toolCall, tokenErr), nil
+		}
 		snapshot.PendingStepCause = &StepRevisionCause{
 			Kind: StepRevisionKindApprovalResumed, ApprovalID: firstNonEmpty(decisionApproval.ID, req.ApprovalID),
 			ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
@@ -1067,7 +1036,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
 		}
 		k.emitApprovalDecided(session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
-		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot)
+		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot, execution)
 		if err != nil {
 			return TurnResult{}, err
 		}
@@ -1311,55 +1280,6 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 		}
 	}
 	return PendingApproval{}
-}
-
-func approvalFingerprintDriftPayload(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) (string, bool) {
-	if strings.TrimSpace(approval.ID) == "" {
-		return "", false
-	}
-	if reason := approvalFingerprintDriftReason(approval, snapshot, req); reason != "" {
-		payload, _ := json.Marshal(map[string]string{
-			"schemaVersion": "aiops.approval_drift/v1",
-			"approvalId":    approval.ID,
-			"decision":      "requires_reapproval",
-			"reason":        reason,
-		})
-		return string(payload), true
-	}
-	return "", false
-}
-
-func approvalFingerprintDriftReason(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) string {
-	currentInputHash := firstNonEmpty(
-		req.Metadata["inputHash"],
-		req.Metadata["argumentsHash"],
-		req.Metadata["aiops.inputHash"],
-		req.Metadata["aiops.argumentsHash"],
-	)
-	if approval.InputHash != "" && currentInputHash != "" && approval.InputHash != currentInputHash {
-		return "input hash changed"
-	}
-	currentSurface := firstNonEmpty(
-		req.Metadata["toolSurfaceFingerprint"],
-		req.Metadata["aiops.toolSurfaceFingerprint"],
-	)
-	if currentSurface == "" && snapshot != nil {
-		currentSurface = snapshot.StableToolFingerprint
-	}
-	if approval.ToolSurfaceFingerprint != "" && currentSurface != "" && approval.ToolSurfaceFingerprint != currentSurface {
-		return "tool surface fingerprint changed"
-	}
-	currentPermission := firstNonEmpty(
-		req.Metadata["permissionSnapshotHash"],
-		req.Metadata["aiops.permissionSnapshotHash"],
-	)
-	if currentPermission == "" {
-		currentPermission = approval.PermissionSnapshotHash
-	}
-	if approval.PermissionSnapshotHash != "" && currentPermission != "" && approval.PermissionSnapshotHash != currentPermission {
-		return "permission snapshot changed"
-	}
-	return ""
 }
 
 func recordRejectedApproval(session *SessionState, approval PendingApproval, decision, reason string, at time.Time) {
@@ -4945,7 +4865,209 @@ func filterOpsManualTools(tools []promptcompiler.Tool) []promptcompiler.Tool {
 	return filtered
 }
 
-func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (*TurnResult, error) {
+func (k *RuntimeKernel) prepareApprovalResumeExecution(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall) (approvalResumeExecution, error) {
+	if session == nil || snapshot == nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("turn")
+	}
+	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
+	if err != nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("tool_router")
+	}
+	token := approval.ActionToken
+	if token == nil {
+		var frozen ActionToken
+		if approval.Source == "pending_evidence" {
+			expiresAt := time.Time{}
+			if approval.ExpiresAt != nil {
+				expiresAt = *approval.ExpiresAt
+			}
+			if expiresAt.IsZero() {
+				expiresAt = firstNonZeroTime(approval.CreatedAt, time.Now()).Add(15 * time.Minute)
+			}
+			frozen, err = FreezeActionToken(ActionToken{
+				ApprovalID: world.facts.ApprovalID, TurnID: world.facts.TurnID, ToolCallID: world.facts.ToolCallID, ToolName: world.facts.ToolName,
+				ArgumentsHash: world.facts.ArgumentsHash, TargetRefs: world.facts.TargetRefs,
+				ToolSurfaceFingerprint: world.facts.ToolSurfaceFingerprint, PermissionHash: world.facts.PermissionHash,
+				RollbackHash: world.facts.RollbackHash, CheckpointID: world.facts.CheckpointID, ExpiresAt: expiresAt,
+			})
+		} else {
+			frozen, err = BuildPendingApprovalActionToken(approval, world.facts.CheckpointID)
+		}
+		if err != nil {
+			return approvalResumeExecution{}, newApprovalContextStaleError("token")
+		}
+		token = &frozen
+	}
+	verified, err := VerifyActionToken(*token, world.facts, time.Now())
+	if err != nil {
+		return approvalResumeExecution{}, err
+	}
+	return approvalResumeExecution{compileContext: world.compileContext, dispatcher: world.dispatcher, authorization: verified}, nil
+}
+
+type approvalCurrentWorld struct {
+	compileContext promptcompiler.CompileContext
+	dispatcher     *ToolDispatcher
+	facts          ActionTokenCurrentFacts
+	resourceScopes []string
+}
+
+func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall) (approvalCurrentWorld, error) {
+	metadata := applyDefaultRuntimePromptProfile(cloneTurnMetadata(snapshot.Metadata), session.Type, session.HostID)
+	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, metadata), session.Type, session.HostID, metadata, time.Now())
+	compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(metadata, "reasoningEffort", "reasoning_effort"))
+	compileCtx = applyTurnPromptProfileMetadata(compileCtx, metadata)
+	compileCtx = k.appendContextArtifactToolsForExternalRefs(compileCtx, session, snapshot)
+	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
+	compileCtx = appendSkillActivationContext(compileCtx, session)
+	compileCtx = appendMCPInstructionContext(compileCtx, session)
+	compileCtx.AssembledTools = filterToolsForContextMode(compileCtx.AssembledTools, k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())
+	compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
+	dispatchTools := append([]promptcompiler.Tool(nil), compileCtx.AssembledTools...)
+	var surfacePolicy tooling.ToolSurfacePolicySnapshot
+	compileCtx, surfacePolicy = applyToolSurfacePolicyToCompileContext(compileCtx, session.Mode, firstMetadataValue(metadata, "profile", "toolProfile"), session)
+	currentRouter, err := BuildStepToolRouter(StepToolRouterInput{
+		Registered: toolNames(dispatchTools), ModelVisible: toolNames(compileCtx.AssembledTools), Dispatchable: toolNames(compileCtx.AssembledTools),
+		HiddenReasons: hiddenReasonsFromToolSurfacePolicy(surfacePolicy), PolicyHash: surfacePolicy.Hash,
+		SourceFingerprint: assembledToolFingerprint(k.tools, session.Type, session.Mode, compileCtx.AssembledTools),
+	})
+	if err != nil {
+		return approvalCurrentWorld{}, err
+	}
+	compileCtx.VisibleToolFingerprint = currentRouter.Fingerprint
+	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, currentRouter)
+	decision := dispatcher.dispatchDecisionTrace(toolCall)
+	meta := toolMetadataForToolCall(compileCtx.AssembledTools, toolCall)
+	resourceScopes := pendingApprovalResourceScopes(meta)
+	currentTargets := pendingApprovalTargetRefs(session.HostID, resourceScopes)
+	if len(currentTargets) == 0 {
+		currentTargets = approvalActionTokenTargetRefs(PendingApproval{ToolName: toolCall.Name})
+	}
+	checkpointID := checkpointIDForStepCause(snapshot)
+	current := ActionTokenCurrentFacts{
+		ApprovalID: approval.ID, TurnID: snapshot.ID, ToolCallID: toolCall.ID, ToolName: toolCall.Name,
+		ArgumentsHash: decision.ArgumentsHash, TargetRefs: currentTargets,
+		ToolSurfaceFingerprint: decision.ToolSurfaceFingerprint, PermissionHash: decision.PermissionSnapshotHash,
+		RollbackHash: approvalRollbackContractHash(approval), CheckpointID: checkpointID,
+	}
+	return approvalCurrentWorld{compileContext: compileCtx, dispatcher: dispatcher, facts: current, resourceScopes: resourceScopes}, nil
+}
+
+func firstNonZeroTime(values ...time.Time) time.Time {
+	for _, value := range values {
+		if !value.IsZero() {
+			return value
+		}
+	}
+	return time.Time{}
+}
+
+func (k *RuntimeKernel) blockStaleApprovalContext(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, cause error) TurnResult {
+	fields := []string{"token"}
+	if stale, ok := cause.(*ApprovalContextStaleError); ok && len(stale.MismatchFields) > 0 {
+		fields = append([]string(nil), stale.MismatchFields...)
+	}
+	now := time.Now()
+	if reissued, err := k.reissueStaleApprovalBinding(session, snapshot, approval, toolCall, now); err == nil {
+		approval = reissued
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"schemaVersion": "aiops.approval-context-stale/v1", "code": ApprovalContextStaleCode,
+		"approvalId": approval.ID, "decision": "requires_reapproval", "mismatchFields": uniqueSortedTraceStrings(fields),
+	})
+	reason := string(payload)
+	approval.Reason = reason
+	approval.Status = "pending"
+	approval.UpdatedAt = now
+	snapshot.Lifecycle = TurnLifecycleSuspended
+	snapshot.ResumeState = TurnResumeStatePendingApproval
+	snapshot.Error = reason
+	snapshot.UpdatedAt = now
+	snapshot.PendingApprovals = []PendingApproval{approval}
+	snapshot.PendingEvidence = nil
+	session.PendingApprovals = []PendingApproval{approval}
+	session.PendingEvidence = nil
+	if last := latestIteration(snapshot); last != nil {
+		last.PendingApprovals = []PendingApproval{approval}
+		last.PendingEvidence = nil
+		last.Checkpoint = snapshot.LatestCheckpoint
+		last.ResumeState = TurnResumeStatePendingApproval
+		last.Lifecycle = TurnLifecycleSuspended
+		last.UpdatedAt = now
+	}
+	k.persistTurnSnapshot(session, snapshot)
+	if k.projector != nil {
+		k.projector.Emit(LifecycleEvent{Type: EventApprovalNeeded, SessionID: session.ID, TurnID: snapshot.ID, Timestamp: now, Payload: payload})
+	}
+	return TurnResult{
+		SessionType: session.Type, Mode: session.Mode, SessionID: session.ID, TurnID: snapshot.ID,
+		ClientTurnID: snapshot.ClientTurnID, ClientMessageID: snapshot.ClientMessageID,
+		Status: "blocked", Error: reason,
+	}
+}
+
+func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, now time.Time) (PendingApproval, error) {
+	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
+	if err != nil {
+		return PendingApproval{}, err
+	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), ApprovalContextStaleCode, TurnLifecycleSuspended, TurnResumeStatePendingApproval)
+	checkpoint.Source = "runtime"
+	approval.ID = fmt.Sprintf("approval-reissued-%d", now.UnixNano())
+	if approval.Source == "pending_evidence" {
+		approval.Source = "runtime_reapproval"
+	}
+	approval.ToolName = toolCall.Name
+	approval.ToolCallID = toolCall.ID
+	approval.HostID = session.HostID
+	approval.Command = approvalCommandForToolCall(toolCall)
+	approval.ArgumentsHash = world.facts.ArgumentsHash
+	approval.InputHash = world.facts.ArgumentsHash
+	approval.TargetRefs = append([]string(nil), world.facts.TargetRefs...)
+	approval.ResourceScopes = append([]string(nil), world.resourceScopes...)
+	approval.RequestedScope = strings.Join(world.facts.TargetRefs, ",")
+	approval.ApprovalScope = approval.RequestedScope
+	approval.ToolSurfaceFingerprint = world.facts.ToolSurfaceFingerprint
+	approval.PermissionSnapshotHash = world.facts.PermissionHash
+	approval.IdempotencyKey = world.facts.ArgumentsHash
+	approval.Status = "pending"
+	approval.CreatedAt = now
+	approval.UpdatedAt = now
+	approval.DecidedAt = nil
+	approval.Decision = ""
+	approval.ExpiresAt = pendingApprovalDefaultExpiry(now)
+	approval.ActionToken = nil
+	contract := BuildActionRollbackContractFromApproval(approval)
+	contract.ActionID = approval.ID
+	contract.ToolName = approval.ToolName
+	contract.TargetRefs = append([]string(nil), approval.TargetRefs...)
+	contract.InputHash = approval.InputHash
+	contract.ApprovalScope = approval.ApprovalScope
+	contract.ResourceScopes = append([]string(nil), approval.ResourceScopes...)
+	contract.IdempotencyKey = approval.IdempotencyKey
+	contract.ToolSurfaceFingerprint = approval.ToolSurfaceFingerprint
+	contract.PermissionSnapshotHash = approval.PermissionSnapshotHash
+	approval.RollbackContract = contract.Normalize()
+	if err := ValidatePendingApprovalRollbackContract(approval); err != nil {
+		return PendingApproval{}, err
+	}
+	token, err := BuildPendingApprovalActionToken(approval, checkpoint.ID)
+	if err != nil {
+		return PendingApproval{}, err
+	}
+	approval.ActionToken = &token
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
+	return approval, nil
+}
+
+type approvalResumeExecution struct {
+	compileContext promptcompiler.CompileContext
+	dispatcher     *ToolDispatcher
+	authorization  VerifiedActionToken
+}
+
+func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, execution approvalResumeExecution) (*TurnResult, error) {
 	toolCall, ok := pendingToolCall(snapshot)
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
@@ -4953,13 +5075,10 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
 		return nil, err
 	}
-	snapshot.Metadata = applyDefaultRuntimePromptProfile(snapshot.Metadata, session.Type, session.HostID)
-	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, snapshot.Metadata), session.Type, session.HostID, snapshot.Metadata, time.Now())
-	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, runtimeToolRouterSnapshotFromTurnSnapshot(snapshot))
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
-	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
+	result := execution.dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode, execution.authorization)
 	appendResourceLockTraces(snapshot, result.ResourceLocks)
 	appendToolAttemptStates(snapshot, toolCall.ID, result.Attempts)
 	if result.Blocked {
@@ -5002,7 +5121,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 		markToolInvocationCompleted(snapshot, toolCall.ID)
 	}
 	k.persistTurnSnapshot(session, snapshot)
-	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, compileCtx, dispatcher)
+	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, execution.compileContext, execution.dispatcher)
 }
 
 func blockedTurnResult(session *SessionState, snapshot *TurnSnapshot, reason string) *TurnResult {
@@ -6359,6 +6478,11 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			k.persistTurnSnapshot(session, snapshot)
 			return nil
 		}
+		actionToken, tokenErr := BuildPendingApprovalActionToken(approval, checkpoint.ID)
+		if tokenErr != nil {
+			return fmt.Errorf("freeze approval action token: %w", tokenErr)
+		}
+		approval.ActionToken = &actionToken
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
 		session.PendingApprovals = []PendingApproval{approval}

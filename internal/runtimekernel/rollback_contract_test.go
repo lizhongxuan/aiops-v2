@@ -191,19 +191,6 @@ func TestMarkTurnBlockedStoresRollbackContractForValidMutatingApproval(t *testin
 	}
 }
 
-func TestApprovalFingerprintDriftDetectsInputHashChange(t *testing.T) {
-	payload, drifted := approvalFingerprintDriftPayload(PendingApproval{
-		ID:        "approval-input-drift",
-		InputHash: "sha256:old",
-	}, nil, ResumeRequest{
-		Metadata: map[string]string{"inputHash": "sha256:new"},
-	})
-
-	if !drifted || !strings.Contains(payload, "input hash changed") {
-		t.Fatalf("approvalFingerprintDriftPayload() = %q/%v, want input hash drift", payload, drifted)
-	}
-}
-
 func validActionRollbackContractForTest() ActionRollbackContract {
 	return ActionRollbackContract{
 		SchemaVersion:          ActionRollbackContractSchemaVersion,

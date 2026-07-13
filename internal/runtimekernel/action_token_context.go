@@ -17,7 +17,7 @@ func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, t
 	execCtx.OriginalInput = append(json.RawMessage(nil), tc.Arguments...)
 
 	token, incidentID, hostID, tenantID, userID, stripped, hasToken := extractActionToken(tc.Arguments)
-	if hasToken {
+	if hasToken && strings.TrimSpace(execCtx.ActionToken) == "" {
 		execCtx.ActionToken = token
 	}
 	if execCtx.IncidentID == "" {

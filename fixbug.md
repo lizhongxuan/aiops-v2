@@ -116,3 +116,12 @@
 - 修复方式：在任何 approval decision、tool replay、Prompt 编译或 provider 调用前校验 ResumeRequest 中所有 admission-control metadata；profile aliases、agent kind 和 permission profile直接对比冻结 TurnAssembly，其余 control key 必须与原 snapshot metadata 精确一致。`runtimecontract` 导出统一 key 分类，runtime 不新增第二份控制 key 字符串表。
 - 验证结果：RED 证明 profile drift resume 返回 nil 且会继续执行；修复后生产 `RunTurn -> pending approval -> ResumeTurn` 回归逐一验证三个 profile alias 均返回 `immutable control metadata drift`，tool execution 和 model call 计数不变，pending approval 未被消费；合法 approval resume、model-timeout resume、rollback/choice resume、runtimecontract/runtimekernel 全包和 focused race 均通过。
 - 风险与后续：当前只阻止 `runtimecontract` 注册的 admission-control keys；其他会改变 capability surface 的兼容 metadata 仍应在 Task 9 ActionToken/current-world revalidation 中通过 router、permission 和 target hash 拒绝，不能依赖客户端自律。
+
+## 2026-07-13 18:10 - 审批恢复自比较旧指纹并跳过当前权限判定
+
+- 修复时间：2026-07-13 18:10
+- Bug 现象：AppUI 在审批决定中回显旧 arguments、tool surface 和 permission hash，Runtime 再拿这些客户端回显值与同一份 PendingApproval 比较；匹配后 `DispatchApproved` 跳过当前 permission、policy 与 hook permission gate，导致审批后世界已经变化时仍可能执行旧动作。
+- 根因：审批记录没有统一的服务端 binding；Resume 把客户端 metadata 当作当前事实；dispatcher 只接收 `approved=true` 布尔值，无法证明批准的是同一 turn、tool call、参数、目标、路由、权限、回滚和 checkpoint。
+- 修复方式：PendingApproval 创建时冻结带完整性 hash 和 expiry 的服务端 ActionToken binding；Resume 在清除 pending approval 或执行工具前，从当前 Runtime Step 重算七类事实并校验，任何漂移都返回稳定 `approval_context_stale` 且只记录 mismatch field。`DispatchApproved` 必须接收 verified typed authorization，并始终重跑 permission、policy 和 hook gate，只有重复 NeedApproval 可由同一 binding 满足，Deny/Evidence 始终优先。AppUI 只发送 approval/checkpoint/decision，不再携带 authority metadata；模型参数 token 也不能覆盖已有可信执行上下文。
+- 验证结果：表驱动真实 `RunTurn -> PendingApproval -> ResumeTurn` 测试覆盖 arguments、target、真实 registry/router、permission、rollback、checkpoint、expiry 漂移，全部在 executor 前拒绝并由服务端重发新 approval ID、checkpoint 和 binding；expiry 用例再次批准新记录后只执行一次。另覆盖无 ActionToken 的旧审批参数漂移、过期 pending evidence 原子迁移为普通 reapproval 并再次成功恢复、缺失 authorization、hook 改参、Deny/Evidence 优先和模型伪造 token；AppUI 测试验证只调用 ResumeTurn、metadata 为空且 reapproval 使用 pending_approval 状态。
+- 风险与后续：旧持久化 approval 没有 ActionToken 时从原服务端 PendingApproval 冻结兼容 binding；只有本来没有 approval binding 的 pending evidence 使用同一组服务端当前事实生成兼容 binding，二者都不读取客户端 hash。ActionToken 是 binding 而非 bearer credential，不能单独授予权限。后续 Task 20 继续用公开 AssistantTransport、真实模型和浏览器审批故事验证整条链。
