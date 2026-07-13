@@ -35,15 +35,28 @@ type Message struct {
 	ToolResult       *ToolResult `json:"toolResult,omitempty"`
 }
 
+type CurrentInputKind string
+
+const (
+	CurrentInputKindInitialUser  CurrentInputKind = "initial_user"
+	CurrentInputKindResumedUser  CurrentInputKind = "resumed_user"
+	CurrentInputKindContinuation CurrentInputKind = "continuation"
+)
+
 // BuildRequest contains all structured inputs needed to build provider model
 // messages and a semantic trace for those messages.
 type BuildRequest struct {
-	History     []Message
-	Compiled    promptcompiler.CompiledPrompt
-	State       agentstate.AgentState
-	Tools       []promptcompiler.Tool
-	Memories    []MemoryItem
-	MaxMemories int
+	Envelope                promptcompiler.PromptEnvelopeV2
+	History                 []Message
+	Iteration               int
+	CurrentInputKind        CurrentInputKind
+	CurrentUserInput        string
+	ContinuationInstruction string
+	Compiled                promptcompiler.CompiledPrompt
+	State                   agentstate.AgentState
+	Tools                   []promptcompiler.Tool
+	Memories                []MemoryItem
+	MaxMemories             int
 
 	OpsContextCapsule     string
 	SessionFactCount      int

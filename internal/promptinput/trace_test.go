@@ -25,6 +25,7 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 		},
 		History: []Message{
 			{Role: "user", Content: "triage"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "read_logs"}}},
 			{Role: "tool", Content: "log output", ToolResult: &ToolResult{ToolCallID: "call-1", Content: "log output"}},
 		},
 	})

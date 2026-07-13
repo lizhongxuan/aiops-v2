@@ -193,6 +193,7 @@ func TestBuilderInjectsLimitedMemoryWithTraceBeforeCurrentEvidence(t *testing.T)
 		},
 		History: []Message{
 			{Role: "user", Content: "check redis"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "read_redis"}}},
 			{Role: "tool", Content: "current redis evidence", ToolResult: &ToolResult{ToolCallID: "call-1", Content: "current redis evidence"}},
 		},
 	})

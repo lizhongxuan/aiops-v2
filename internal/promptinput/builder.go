@@ -2,6 +2,7 @@ package promptinput
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 
 	"aiops-v2/internal/promptcompiler"
@@ -10,6 +11,13 @@ import (
 // Build converts compiled prompt fragments plus current-turn conversation
 // context into provider-neutral model input items and a semantic trace.
 func (Builder) Build(req BuildRequest) (BuildResult, error) {
+	if hasPromptEnvelopeV2(req.Envelope) {
+		return buildPromptInputV2(req, req.Envelope)
+	}
+	return buildLegacyPromptInput(req)
+}
+
+func buildLegacyPromptInput(req BuildRequest) (BuildResult, error) {
 	promptItems := compiledPromptModelInputItems(req.Compiled)
 	opsContextItems := opsContextModelInputItems(req)
 	memoryItems := memoryModelInputItems(req)
@@ -33,6 +41,208 @@ func (Builder) Build(req BuildRequest) (BuildResult, error) {
 		Items: resultItems,
 		Trace: buildTrace(req, resultItems, memoryMessagesFromRequest(req), history),
 	}, nil
+}
+
+func buildPromptInputV2(req BuildRequest, envelope promptcompiler.PromptEnvelopeV2) (BuildResult, error) {
+	if err := envelope.Validate(); err != nil {
+		return BuildResult{}, fmt.Errorf("prompt envelope v2: %w", err)
+	}
+	if hasPromptEnvelopeV2(req.Compiled.EnvelopeV2) && !reflect.DeepEqual(envelope, req.Compiled.EnvelopeV2) {
+		return BuildResult{}, fmt.Errorf("prompt envelope v2 does not match compiled envelope")
+	}
+	for _, section := range envelope.Sections {
+		if section.LogicalLayer == promptcompiler.LayerConversationHistory || section.LogicalLayer == promptcompiler.LayerCurrentUserInput {
+			return BuildResult{}, fmt.Errorf("prompt envelope v2 cannot own L4 or L6; use typed history/current input")
+		}
+	}
+	currentUser := strings.TrimSpace(req.CurrentUserInput)
+	continuation := strings.TrimSpace(req.ContinuationInstruction)
+	if (currentUser == "") == (continuation == "") {
+		return BuildResult{}, fmt.Errorf("model input requires exactly one current user input or continuation instruction")
+	}
+	if err := validateCurrentInputKind(req.Iteration, req.CurrentInputKind, currentUser, continuation); err != nil {
+		return BuildResult{}, err
+	}
+	history := append([]Message(nil), req.History...)
+	if req.CurrentInputKind == CurrentInputKindResumedUser {
+		var removed bool
+		history, removed = detachLatestUserMessage(history, currentUser)
+		if !removed {
+			return BuildResult{}, fmt.Errorf("current user input has no matching history message")
+		}
+		history = MessagesForCurrentTurnModelInput(history)
+	} else {
+		history = MessagesForCurrentTurnModelInput(history)
+		if currentUser != "" {
+			var removed bool
+			history, removed = detachLatestUserMessage(history, currentUser)
+			if !removed {
+				return BuildResult{}, fmt.Errorf("current user input has no matching history message")
+			}
+		}
+	}
+	originalHistoryItems, err := MessagesToModelInputItems(history)
+	if err != nil {
+		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
+	}
+	rewriteModelInputLayer(originalHistoryItems, promptcompiler.LayerConversationHistory, "history", "conversation")
+	if err := ValidateModelInputCausalOrder(originalHistoryItems); err != nil {
+		return BuildResult{}, fmt.Errorf("conversation causal order: %w", err)
+	}
+	conversation, derivedContext := splitConversationAndDerivedContext(history)
+	historyItems, err := MessagesToModelInputItems(conversation)
+	if err != nil {
+		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
+	}
+	rewriteModelInputLayer(historyItems, promptcompiler.LayerConversationHistory, "history", "conversation")
+	derivedItems, err := MessagesToModelInputItems(derivedContext)
+	if err != nil {
+		return BuildResult{}, fmt.Errorf("derived context messages: %w", err)
+	}
+	rewriteModelInputLayer(derivedItems, promptcompiler.LayerStepDynamicContext, "context", "derived_context")
+
+	stableItems := promptEnvelopeV2Items(envelope, false)
+	dynamicItems := promptEnvelopeV2Items(envelope, true)
+	opsItems := opsContextModelInputItems(req)
+	rewriteModelInputLayer(opsItems, promptcompiler.LayerStepDynamicContext, "context", "ops_context")
+	memoryItems := memoryModelInputItems(req)
+	rewriteModelInputLayer(memoryItems, promptcompiler.LayerStepDynamicContext, "memory", "memory")
+
+	resultItems := make([]ModelInputItem, 0, len(stableItems)+len(historyItems)+len(dynamicItems)+len(derivedItems)+len(opsItems)+len(memoryItems)+1)
+	resultItems = append(resultItems, stableItems...)
+	resultItems = append(resultItems, historyItems...)
+	resultItems = append(resultItems, dynamicItems...)
+	resultItems = append(resultItems, derivedItems...)
+	resultItems = append(resultItems, opsItems...)
+	resultItems = append(resultItems, memoryItems...)
+	if currentUser != "" {
+		resultItems = append(resultItems, currentInputModelItem("current-user-input", ProviderRoleUser, "current_user_input", currentUser, "conversation"))
+	} else {
+		resultItems = append(resultItems, currentInputModelItem("continuation-instruction", ProviderRoleDeveloper, "continuation_instruction", continuation, "runtime_continuation"))
+	}
+	for i := range resultItems {
+		if err := resultItems[i].Validate(); err != nil {
+			return BuildResult{}, fmt.Errorf("model input item[%d]: %w", i, err)
+		}
+	}
+	if err := ValidateModelInputCausalOrder(resultItems); err != nil {
+		return BuildResult{}, err
+	}
+	if err := ValidateModelInputLogicalOrder(resultItems, true); err != nil {
+		return BuildResult{}, err
+	}
+	return BuildResult{
+		Items: resultItems,
+		Trace: buildTrace(req, resultItems, memoryMessagesFromRequest(req), history),
+	}, nil
+}
+
+func hasPromptEnvelopeV2(envelope promptcompiler.PromptEnvelopeV2) bool {
+	return strings.TrimSpace(envelope.SchemaVersion) != "" || len(envelope.Sections) > 0 || len(envelope.DynamicContext) > 0
+}
+
+func promptEnvelopeV2Items(envelope promptcompiler.PromptEnvelopeV2, dynamic bool) []ModelInputItem {
+	var out []ModelInputItem
+	for _, section := range envelope.Sections {
+		isDynamic := section.LogicalLayer == promptcompiler.LayerStepDynamicContext
+		if isDynamic != dynamic || section.LogicalLayer == promptcompiler.LayerConversationHistory || section.LogicalLayer == promptcompiler.LayerCurrentUserInput {
+			continue
+		}
+		content := strings.TrimSpace(section.Content)
+		if content == "" {
+			continue
+		}
+		role := ProviderRoleSystem
+		if strings.EqualFold(strings.TrimSpace(section.Role), "developer") {
+			role = ProviderRoleDeveloper
+		}
+		out = append(out, ModelInputItem{
+			ID: section.ID, ProviderRole: role, SemanticRole: string(section.LogicalLayer), Content: content,
+			Source: ModelInputSource{Layer: string(section.LogicalLayer), SectionID: section.ID, Origin: section.Source},
+			Phase:  "prompt", CacheGroup: section.Stability,
+			Metadata: map[string]string{"prompt_layer": string(section.LogicalLayer), "prompt_section_id": section.ID, "bundle_ref": section.BundleRef},
+		})
+	}
+	return out
+}
+
+func detachLatestUserMessage(history []Message, currentUser string) ([]Message, bool) {
+	for index := len(history) - 1; index >= 0; index-- {
+		if strings.TrimSpace(history[index].Role) != "user" {
+			continue
+		}
+		if strings.TrimSpace(history[index].Content) != strings.TrimSpace(currentUser) {
+			return append([]Message(nil), history...), false
+		}
+		out := append([]Message(nil), history[:index]...)
+		out = append(out, history[index+1:]...)
+		return out, true
+	}
+	return append([]Message(nil), history...), false
+}
+
+func validateCurrentInputKind(iteration int, kind CurrentInputKind, currentUser, continuation string) error {
+	if iteration < 0 {
+		return fmt.Errorf("model input iteration must be non-negative")
+	}
+	if iteration == 0 {
+		if kind != CurrentInputKindInitialUser || currentUser == "" || continuation != "" {
+			return fmt.Errorf("iteration 0 requires typed initial user input")
+		}
+		return nil
+	}
+	if currentUser != "" {
+		if kind != CurrentInputKindResumedUser || continuation != "" {
+			return fmt.Errorf("iteration %d requires typed resumed user input", iteration)
+		}
+		return nil
+	}
+	if kind != CurrentInputKindContinuation || continuation == "" {
+		return fmt.Errorf("iteration %d requires typed continuation instruction", iteration)
+	}
+	return nil
+}
+
+func splitConversationAndDerivedContext(history []Message) ([]Message, []Message) {
+	conversation := make([]Message, 0, len(history))
+	derived := make([]Message, 0)
+	for _, message := range history {
+		if strings.TrimSpace(message.Role) == "system" {
+			derived = append(derived, message)
+			continue
+		}
+		conversation = append(conversation, message)
+	}
+	return conversation, derived
+}
+
+func rewriteModelInputLayer(items []ModelInputItem, layer promptcompiler.PromptLogicalLayer, phase, origin string) {
+	for index := range items {
+		items[index].Source.Layer = string(layer)
+		items[index].Source.Origin = origin
+		items[index].Phase = phase
+		items[index].CacheGroup = promptSectionKindForLayer(layer)
+		if items[index].Metadata == nil {
+			items[index].Metadata = map[string]string{}
+		}
+		items[index].Metadata["prompt_layer"] = string(layer)
+	}
+}
+
+func promptSectionKindForLayer(layer promptcompiler.PromptLogicalLayer) string {
+	if layer == promptcompiler.LayerStepDynamicContext || layer == promptcompiler.LayerConversationHistory || layer == promptcompiler.LayerCurrentUserInput {
+		return promptcompiler.PromptSectionKindDynamic
+	}
+	return promptcompiler.PromptSectionKindStable
+}
+
+func currentInputModelItem(id string, role ProviderRole, semanticRole, content, origin string) ModelInputItem {
+	return ModelInputItem{
+		ID: id, ProviderRole: role, SemanticRole: semanticRole, Content: strings.TrimSpace(content),
+		Source: ModelInputSource{Layer: string(promptcompiler.LayerCurrentUserInput), Origin: origin},
+		Phase:  "current_input", CacheGroup: promptcompiler.PromptSectionKindDynamic,
+		Metadata: map[string]string{"prompt_layer": string(promptcompiler.LayerCurrentUserInput)},
+	}
 }
 
 func compiledPromptModelInputItems(compiled promptcompiler.CompiledPrompt) []ModelInputItem {
