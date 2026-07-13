@@ -287,6 +287,9 @@ func (k *RuntimeKernel) appendCanonicalRolloutEvent(
 	if err != nil {
 		return err
 	}
+	if result.Duplicate {
+		return nil
+	}
 	if result.Status == RolloutRecordStatusDegraded && !result.MarkerPersisted {
 		return fmt.Errorf("canonical rollout degraded marker was not persisted")
 	}
@@ -3237,6 +3240,11 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if err := k.recordCanonicalToolResult(ctx, snapshot, tc, recordedResult, failureKindForDispatchResult(dispatchResult)); err != nil {
 				return nil, fmt.Errorf("record tool result %q: %w", tc.Name, err)
 			}
+			checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
+			checkpoint.Incremental = true
+			if err := k.recordCanonicalCheckpoint(ctx, snapshot, checkpoint); err != nil {
+				return nil, fmt.Errorf("record tool-result checkpoint: %w", err)
+			}
 			turnMetadata = updateOpsManualFlowTurnMetadata(turnMetadata, recordedResult)
 			turnMetadata = updateToolSearchPackTurnMetadata(turnMetadata, tc.Name, recordedResult)
 			applyToolSearchDiscoveryState(session, tc.Name, recordedResult, turnID)
@@ -3275,17 +3283,19 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
 			k.applyAggregateToolResultBudget(session, snapshot, iteration, dispatchTools)
-			snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
+			snapshot.LatestCheckpoint = checkpoint
 			appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 			appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
 			if snapshot.LatestCheckpoint != nil {
 				appendCheckpointExternalRefs(snapshot.LatestCheckpoint, recordedResult.ExternalReferences)
-				snapshot.LatestCheckpoint.Incremental = true
 			}
 			if last := latestIteration(snapshot); last != nil {
 				last.Checkpoint = snapshot.LatestCheckpoint
 			}
 			session.LatestCheckpoint = snapshot.LatestCheckpoint
+			if err := k.recordCanonicalTransportProjection(ctx, snapshot, TurnLifecycleRunning, snapshot.ResumeState, checkpoint.ID, nil); err != nil {
+				return nil, fmt.Errorf("record tool-result projection source: %w", err)
+			}
 			k.persistTurnSnapshot(session, snapshot)
 			return nil, nil
 		}
@@ -5219,6 +5229,10 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{toolCall}); err != nil {
 		return nil, fmt.Errorf("record approved tool dispatch: %w", err)
 	}
+	checkpoint, err := k.prepareSnapshotResumeBoundary(ctx, snapshot, "resume_tool_approval")
+	if err != nil {
+		return nil, err
+	}
 	snapshot.PendingStepCause = &StepRevisionCause{
 		Kind: StepRevisionKindApprovalResumed, ApprovalID: execution.approvalID,
 		ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
@@ -5226,7 +5240,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	if execution.rememberSessionGrant {
 		rememberSessionApprovalGrant(session, toolCall, execution.approvalID)
 	}
-	k.commitSnapshotResuming(session, snapshot, "resume_tool_approval")
+	k.commitSnapshotResuming(session, snapshot, checkpoint)
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
@@ -5271,6 +5285,13 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 		markToolInvocationPartial(snapshot, toolCall.ID)
 	} else {
 		markToolInvocationCompleted(snapshot, toolCall.ID)
+	}
+	checkpointRef := ""
+	if snapshot.LatestCheckpoint != nil {
+		checkpointRef = snapshot.LatestCheckpoint.ID
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, snapshot, snapshot.Lifecycle, snapshot.ResumeState, checkpointRef, nil); err != nil {
+		return nil, err
 	}
 	k.persistTurnSnapshot(session, snapshot)
 	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, execution.compileContext, execution.dispatcher)
@@ -5594,6 +5615,11 @@ func (k *RuntimeKernel) recordResumedToolResult(ctx context.Context, session *Se
 	if err := k.recordCanonicalToolResult(ctx, snapshot, toolCall, recordedResult, errorClass); err != nil {
 		return ToolResult{}, err
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
+	checkpoint.Incremental = true
+	if err := k.recordCanonicalCheckpoint(ctx, snapshot, checkpoint); err != nil {
+		return ToolResult{}, err
+	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
 	snapshot.ResumeState = TurnResumeStateCheckpointReady
@@ -5621,11 +5647,10 @@ func (k *RuntimeKernel) recordResumedToolResult(ctx context.Context, session *Se
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
-	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
+	snapshot.LatestCheckpoint = checkpoint
 	appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 	appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
 	appendCheckpointExternalRefs(snapshot.LatestCheckpoint, recordedResult.ExternalReferences)
-	snapshot.LatestCheckpoint.Incremental = true
 	if last := latestIteration(snapshot); last != nil {
 		last.Checkpoint = snapshot.LatestCheckpoint
 	}
@@ -5655,7 +5680,11 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 	if err := validateSnapshotResuming(session, snapshot); err != nil {
 		return err
 	}
-	k.commitSnapshotResuming(session, snapshot, checkpointKind)
+	checkpoint, err := k.prepareSnapshotResumeBoundary(context.Background(), snapshot, checkpointKind)
+	if err != nil {
+		return err
+	}
+	k.commitSnapshotResuming(session, snapshot, checkpoint)
 	return nil
 }
 
@@ -5669,7 +5698,27 @@ func validateSnapshotResuming(session *SessionState, snapshot *TurnSnapshot) err
 	return nil
 }
 
-func (k *RuntimeKernel) commitSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) {
+func (k *RuntimeKernel) prepareSnapshotResumeBoundary(ctx context.Context, snapshot *TurnSnapshot, checkpointKind string) (*CheckpointMetadata, error) {
+	checkpoint := newCheckpointMetadata(snapshot.SessionID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleRunning, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.Lifecycle = TurnLifecycleRunning
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalCheckpoint(ctx, &candidate, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return nil, err
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, &candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return nil, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+	return checkpoint, nil
+}
+
+func (k *RuntimeKernel) commitSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpoint *CheckpointMetadata) {
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
 	snapshot.ResumeState = TurnResumeStateNone
@@ -5677,7 +5726,7 @@ func (k *RuntimeKernel) commitSnapshotResuming(session *SessionState, snapshot *
 	snapshot.UpdatedAt = now
 	snapshot.PendingApprovals = nil
 	snapshot.PendingEvidence = nil
-	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleRunning, TurnResumeStateNone)
+	snapshot.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil
 	session.PendingEvidence = nil
 	session.LatestCheckpoint = snapshot.LatestCheckpoint
@@ -6597,6 +6646,27 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			last.UpdatedAt = now
 		}
 	}
+	recordBlockedBoundary := func(candidate *TurnSnapshot, approval *PendingApproval) error {
+		if approval != nil {
+			if err := k.recordCanonicalApprovalRequested(context.Background(), candidate, *approval); err != nil {
+				return fmt.Errorf("record approval request: %w", err)
+			}
+		}
+		if err := k.recordCanonicalCheckpoint(context.Background(), candidate, checkpoint); err != nil {
+			return fmt.Errorf("record blocked checkpoint: %w", err)
+		}
+		if err := k.recordCanonicalTransportProjection(context.Background(), candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+			return fmt.Errorf("record blocked projection source: %w", err)
+		}
+		return nil
+	}
+	newBlockedCandidate := func(state TurnResumeState) TurnSnapshot {
+		candidate := *snapshot
+		candidate.Lifecycle = TurnLifecycleSuspended
+		candidate.ResumeState = state
+		candidate.LatestCheckpoint = checkpoint
+		return candidate
+	}
 
 	if resumeState == TurnResumeStatePendingEvidence {
 		evidence := PendingEvidence{
@@ -6611,9 +6681,17 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
+		candidate := newBlockedCandidate(resumeState)
+		candidate.PendingEvidence = []PendingEvidence{evidence}
+		candidate.PendingApprovals = nil
+		if err := recordBlockedBoundary(&candidate, nil); err != nil {
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			return err
+		}
 		commitBlockedState(resumeState, reason)
-		snapshot.PendingEvidence = []PendingEvidence{evidence}
-		snapshot.PendingApprovals = nil
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		snapshot.PendingEvidence = candidate.PendingEvidence
+		snapshot.PendingApprovals = candidate.PendingApprovals
 		session.PendingEvidence = []PendingEvidence{evidence}
 		session.PendingApprovals = nil
 	} else {
@@ -6686,9 +6764,17 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 				checkpoint.Kind = "rollback_contract_invalid"
 				checkpoint.ResumeState = TurnResumeStatePendingEvidence
 			}
+			candidate := newBlockedCandidate(TurnResumeStatePendingEvidence)
+			candidate.PendingEvidence = []PendingEvidence{evidence}
+			candidate.PendingApprovals = nil
+			if recordErr := recordBlockedBoundary(&candidate, nil); recordErr != nil {
+				snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+				return recordErr
+			}
 			commitBlockedState(TurnResumeStatePendingEvidence, reason)
-			snapshot.PendingEvidence = []PendingEvidence{evidence}
-			snapshot.PendingApprovals = nil
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			snapshot.PendingEvidence = candidate.PendingEvidence
+			snapshot.PendingApprovals = candidate.PendingApprovals
 			session.PendingEvidence = []PendingEvidence{evidence}
 			session.PendingApprovals = nil
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
@@ -6700,12 +6786,17 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			return fmt.Errorf("freeze approval action token: %w", tokenErr)
 		}
 		approval.ActionToken = &actionToken
-		if err := k.recordCanonicalApprovalRequested(context.Background(), snapshot, approval); err != nil {
-			return fmt.Errorf("record approval request: %w", err)
+		candidate := newBlockedCandidate(resumeState)
+		candidate.PendingApprovals = []PendingApproval{approval}
+		candidate.PendingEvidence = nil
+		if err := recordBlockedBoundary(&candidate, &approval); err != nil {
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			return err
 		}
 		commitBlockedState(resumeState, reason)
-		snapshot.PendingApprovals = []PendingApproval{approval}
-		snapshot.PendingEvidence = nil
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		snapshot.PendingApprovals = candidate.PendingApprovals
+		snapshot.PendingEvidence = candidate.PendingEvidence
 		session.PendingApprovals = []PendingApproval{approval}
 		session.PendingEvidence = nil
 		appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteApprovalLedger, OwnerPendingApproval)
@@ -6849,6 +6940,21 @@ func (k *RuntimeKernel) markTurnResumableFromModelTimeout(session *SessionState,
 	if err != nil {
 		errText = err.Error()
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "model_timeout", TurnLifecycleResumable, TurnResumeStateResumable)
+	checkpoint.Incremental = false
+	candidate := *snapshot
+	candidate.Lifecycle = TurnLifecycleResumable
+	candidate.ResumeState = TurnResumeStateResumable
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalCheckpoint(context.Background(), &candidate, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalTransportProjection(context.Background(), &candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleResumable
 	snapshot.ResumeState = TurnResumeStateResumable
 	snapshot.Error = errText
@@ -6858,8 +6964,6 @@ func (k *RuntimeKernel) markTurnResumableFromModelTimeout(session *SessionState,
 	snapshot.Metadata["recovery.reason"] = "model_timeout"
 	snapshot.Metadata["recovery.recoverable"] = "true"
 	snapshot.UpdatedAt = now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "model_timeout", TurnLifecycleResumable, TurnResumeStateResumable)
-	checkpoint.Incremental = false
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {

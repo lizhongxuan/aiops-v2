@@ -69,12 +69,12 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 		modeltrace.CanonicalRolloutKindProviderRequest,
 		modeltrace.CanonicalRolloutKindProviderResponse,
 	}
-	if len(events) < len(wantKinds) {
-		t.Fatalf("event kinds = %v, want prefix %v", canonicalRolloutKindsForTest(events), wantKinds)
+	if got := canonicalRolloutFilteredKindsForTest(events, wantKinds); !equalCanonicalRolloutKinds(got, wantKinds) {
+		t.Fatalf("core event order = %v, want %v; all=%v", got, wantKinds, canonicalRolloutKindsForTest(events))
 	}
-	for index, want := range wantKinds {
-		if events[index].Kind != want || events[index].Sequence != int64(index+1) {
-			t.Fatalf("events[%d] = kind %q sequence %d, want %q/%d; all=%v", index, events[index].Kind, events[index].Sequence, want, index+1, canonicalRolloutKindsForTest(events))
+	for index, event := range events {
+		if event.Sequence != int64(index+1) {
+			t.Fatalf("events[%d] sequence = %d, want %d; all=%v", index, event.Sequence, index+1, canonicalRolloutKindsForTest(events))
 		}
 	}
 	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindAdmission) != 1 ||
@@ -574,6 +574,80 @@ func TestRuntimeKernelApprovedResumeDispatchAppendFailureCallsExecutorZeroTimes(
 	}
 }
 
+func TestRuntimeKernelCanonicalRolloutOrdersToolResultCheckpointProjection(t *testing.T) {
+	var executed atomic.Int32
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{ID: "call-checkpoint", Type: "function", Function: schema.FunctionCall{Name: "read_checkpoint", Arguments: `{}`}}}),
+		schema.AssistantMessage("done", nil),
+	}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutReadTool("read_checkpoint", &executed, false)}, nil, nil)
+	if _, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-tool-checkpoint", SessionType: SessionTypeHost, Mode: ModeInspect,
+		TurnID: "turn-tool-checkpoint", Input: "inspect",
+	}); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), "session-tool-checkpoint", "turn-tool-checkpoint")
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	want := []string{modeltrace.CanonicalRolloutKindToolResult, modeltrace.CanonicalRolloutKindCheckpoint, modeltrace.CanonicalRolloutKindTransportProjection}
+	if got := canonicalRolloutFilteredKindsForTest(events, want); len(got) < len(want) || !equalCanonicalRolloutKinds(got[:len(want)], want) {
+		t.Fatalf("tool-result boundary = %v, want prefix %v; all=%v", got, want, canonicalRolloutKindsForTest(events))
+	}
+	checkpoint := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindCheckpoint)
+	for _, key := range []string{"checkpointId", "checkpointKind", "lifecycle", "resumeState", "checkpointHash", "checkpointRef"} {
+		if _, ok := checkpoint.Payload[key]; !ok {
+			t.Fatalf("checkpoint missing %q: %#v", key, checkpoint.Payload)
+		}
+	}
+	if len(checkpoint.Payload) != 6 {
+		t.Fatalf("checkpoint payload = %#v, want six typed fields only", checkpoint.Payload)
+	}
+	checkpointID, _ := checkpoint.Payload["checkpointId"].(string)
+	if checkpointID == "" {
+		t.Fatalf("checkpoint id missing: %#v", checkpoint.Payload)
+	}
+	count := 0
+	for _, event := range events {
+		if event.Kind == modeltrace.CanonicalRolloutKindCheckpoint && event.Payload["checkpointId"] == checkpointID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("checkpoint %q recorded %d times, want once", checkpointID, count)
+	}
+}
+
+func TestRuntimeKernelCanonicalRolloutOrdersApprovalBlockCheckpointProjection(t *testing.T) {
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-denied-terminal", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-denied-terminal", SessionType: SessionTypeHost, Mode: ModeExecute,
+		TurnID: "turn-denied-terminal", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" || executed != 0 {
+		t.Fatalf("RunTurn() = %#v, %v, executed=%d; want approval block", blocked, err, executed)
+	}
+	session := kernel.sessions.Get("session-denied-terminal")
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents(blocked) error = %v", err)
+	}
+	blockWant := []string{modeltrace.CanonicalRolloutKindApprovalRequested, modeltrace.CanonicalRolloutKindCheckpoint, modeltrace.CanonicalRolloutKindTransportProjection}
+	if got := canonicalRolloutFilteredKindsForTest(events, blockWant); !equalCanonicalRolloutKinds(got, blockWant) {
+		t.Fatalf("approval block sequence = %v, want %v; all=%v", got, blockWant, canonicalRolloutKindsForTest(events))
+	}
+	assertCanonicalProjectionMatchesSnapshot(t, firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindTransportProjection), session.CurrentTurn, nil)
+}
+
 func TestRuntimeKernelApprovalRequestedRejectsMissingOrInvalidActionToken(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -908,6 +982,44 @@ func TestRolloutRecorderKeepsConcurrentTurnsIsolated(t *testing.T) {
 				t.Fatalf("Events(%s)[%d].Sequence = %d; want %d", turnID, index, event.Sequence, want)
 			}
 		}
+	}
+}
+
+func TestRuntimeKernelCheckpointDedupKeepsHeadAndRecordsChangedFacts(t *testing.T) {
+	kernel := NewRuntimeKernel(RuntimeKernelConfig{})
+	snapshot := &TurnSnapshot{ID: "turn-checkpoint-dedup", SessionID: "session-checkpoint-dedup"}
+	checkpoint := &CheckpointMetadata{ID: "checkpoint-a", Kind: "tool_result", Lifecycle: TurnLifecycleRunning, ResumeState: TurnResumeStateCheckpointReady}
+	if err := kernel.recordCanonicalCheckpoint(context.Background(), snapshot, checkpoint); err != nil {
+		t.Fatalf("recordCanonicalCheckpoint(first) error = %v", err)
+	}
+	if err := kernel.appendCanonicalRolloutEvent(context.Background(), snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindTransportProjection, map[string]any{"projectionInputHash": "sha256:later"})); err != nil {
+		t.Fatalf("append later event error = %v", err)
+	}
+	laterHead := *snapshot.CanonicalRolloutHead
+	if err := kernel.recordCanonicalCheckpoint(context.Background(), snapshot, checkpoint); err != nil {
+		t.Fatalf("recordCanonicalCheckpoint(duplicate) error = %v", err)
+	}
+	if *snapshot.CanonicalRolloutHead != laterHead {
+		t.Fatalf("duplicate checkpoint rewound head: got=%#v want=%#v", snapshot.CanonicalRolloutHead, laterHead)
+	}
+	changed := *checkpoint
+	changed.Lifecycle = TurnLifecycleResumable
+	changed.ResumeState = TurnResumeStateResumable
+	if err := kernel.recordCanonicalCheckpoint(context.Background(), snapshot, &changed); err != nil {
+		t.Fatalf("recordCanonicalCheckpoint(changed) error = %v", err)
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), snapshot.SessionID, snapshot.ID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindCheckpoint) != 2 || snapshot.CanonicalRolloutHead.Sequence != laterHead.Sequence+1 {
+		t.Fatalf("events/head = %v/%#v, want duplicate suppressed and changed facts recorded", canonicalRolloutKindsForTest(events), snapshot.CanonicalRolloutHead)
+	}
+}
+
+func TestCanonicalRolloutFactHashFailsClosedOnUnmarshalableFact(t *testing.T) {
+	if hash, err := canonicalRolloutFactHash(func() {}); err == nil || hash != "" {
+		t.Fatalf("canonicalRolloutFactHash(func) = %q, %v; want empty hash/error", hash, err)
 	}
 }
 
@@ -1270,6 +1382,46 @@ func firstCanonicalRolloutEventForTest(events []modeltrace.CanonicalRolloutEvent
 		}
 	}
 	return modeltrace.CanonicalRolloutEvent{}
+}
+
+func lastCanonicalRolloutEventForTest(events []modeltrace.CanonicalRolloutEvent, kind string) modeltrace.CanonicalRolloutEvent {
+	for index := len(events) - 1; index >= 0; index-- {
+		if events[index].Kind == kind {
+			return events[index]
+		}
+	}
+	return modeltrace.CanonicalRolloutEvent{}
+}
+
+func finalContractForRolloutTest(t *testing.T, snapshot *TurnSnapshot) *FinalContract {
+	t.Helper()
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	for index := len(snapshot.AgentItems) - 1; index >= 0; index-- {
+		var payload struct {
+			FinalContract *FinalContract `json:"finalContract"`
+		}
+		if json.Unmarshal(snapshot.AgentItems[index].Payload.Data, &payload) == nil && payload.FinalContract != nil {
+			return payload.FinalContract
+		}
+	}
+	t.Fatal("final contract missing from committed agent items")
+	return nil
+}
+
+func assertCanonicalProjectionMatchesSnapshot(t *testing.T, event modeltrace.CanonicalRolloutEvent, snapshot *TurnSnapshot, contract *FinalContract) {
+	t.Helper()
+	lifecycle, _ := event.Payload["lifecycle"].(string)
+	resume, _ := event.Payload["resumeState"].(string)
+	checkpointRef, _ := event.Payload["checkpointRef"].(string)
+	expected, err := canonicalTransportProjectionPayload(snapshot, TurnLifecycleState(lifecycle), TurnResumeState(resume), checkpointRef, contract)
+	if err != nil {
+		t.Fatalf("canonicalTransportProjectionPayload() error = %v", err)
+	}
+	if event.Payload["projectionInputHash"] != expected["projectionInputHash"] || event.Payload["agentItemsFactHash"] != expected["agentItemsFactHash"] {
+		t.Fatalf("projection does not match committed snapshot: event=%#v expected=%#v", event.Payload, expected)
+	}
 }
 
 func canonicalRolloutFilteredKindsForTest(events []modeltrace.CanonicalRolloutEvent, allowed []string) []string {

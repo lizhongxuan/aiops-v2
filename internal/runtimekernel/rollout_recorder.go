@@ -2,11 +2,14 @@ package runtimekernel
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 
+	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/modeltrace"
 )
 
@@ -57,6 +60,7 @@ type RolloutAppendResult struct {
 	Event           modeltrace.CanonicalRolloutEvent
 	ObservedError   error
 	MarkerPersisted bool
+	Duplicate       bool
 }
 
 // RolloutRecorderAppendError is fatal under fail-closed policy. It deliberately
@@ -95,6 +99,7 @@ type RolloutRecorder struct {
 	store          RolloutStore
 	failurePolicy  RolloutFailurePolicy
 	lastSequenceBy map[rolloutTurnKey]int64
+	checkpointBy   map[rolloutTurnKey]map[string]modeltrace.CanonicalRolloutEvent
 }
 
 func NewRolloutRecorder(cfg RolloutRecorderConfig) (*RolloutRecorder, error) {
@@ -112,6 +117,7 @@ func NewRolloutRecorder(cfg RolloutRecorderConfig) (*RolloutRecorder, error) {
 		store:          cfg.Store,
 		failurePolicy:  policy,
 		lastSequenceBy: make(map[rolloutTurnKey]int64),
+		checkpointBy:   make(map[rolloutTurnKey]map[string]modeltrace.CanonicalRolloutEvent),
 	}, nil
 }
 
@@ -131,6 +137,10 @@ func (r *RolloutRecorder) Append(ctx context.Context, event modeltrace.Canonical
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	checkpointKey := canonicalRolloutCheckpointKey(event)
+	if prior, ok := r.checkpointBy[key][checkpointKey]; checkpointKey != "" && ok {
+		return RolloutAppendResult{Status: RolloutRecordStatusRecorded, Event: prior, Duplicate: true}, nil
+	}
 
 	sequence := r.lastSequenceBy[key] + 1
 	event.Sequence = sequence
@@ -144,6 +154,12 @@ func (r *RolloutRecorder) Append(ctx context.Context, event modeltrace.Canonical
 	}
 	if err := r.store.Append(ctx, storeEvent); err == nil {
 		r.lastSequenceBy[key] = sequence
+		if checkpointKey != "" {
+			if r.checkpointBy[key] == nil {
+				r.checkpointBy[key] = make(map[string]modeltrace.CanonicalRolloutEvent)
+			}
+			r.checkpointBy[key][checkpointKey] = frozen
+		}
 		return RolloutAppendResult{Status: RolloutRecordStatusRecorded, Event: frozen}, nil
 	} else if r.failurePolicy == RolloutFailurePolicyFailClosed {
 		appendErr := newRolloutRecorderAppendError(frozen, err)
@@ -155,6 +171,19 @@ func (r *RolloutRecorder) Append(ctx context.Context, event modeltrace.Canonical
 	} else {
 		return r.appendDegradedMarker(ctx, key, frozen, err)
 	}
+}
+
+func canonicalRolloutCheckpointKey(event modeltrace.CanonicalRolloutEvent) string {
+	if event.Kind != modeltrace.CanonicalRolloutKindCheckpoint || event.Payload == nil {
+		return ""
+	}
+	id, _ := event.Payload["checkpointId"].(string)
+	hash, _ := event.Payload["checkpointHash"].(string)
+	id, hash = strings.TrimSpace(id), strings.TrimSpace(hash)
+	if id == "" || hash == "" {
+		return ""
+	}
+	return id + "\x00" + hash
 }
 
 // Events returns immutable copies for replay and tests. Recording stores remain
@@ -346,6 +375,222 @@ func (k *RuntimeKernel) recordCanonicalApprovalDecided(ctx context.Context, snap
 		"decision": strings.TrimSpace(decision), "status": strings.TrimSpace(status),
 	}
 	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindApprovalDecided, payload))
+}
+
+const canonicalTransportContractVersion = "aiops.transport.v2"
+
+func canonicalRolloutFactHash(value any) (string, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return "", fmt.Errorf("marshal canonical rollout fact: %w", err)
+	}
+	hash := toolArgumentsHash(data)
+	if strings.TrimSpace(hash) == "" {
+		return "", fmt.Errorf("canonical rollout fact hash is empty")
+	}
+	return hash, nil
+}
+
+func canonicalRolloutStringHashes(values []string) ([]string, error) {
+	values = compactStringList(values)
+	sort.Strings(values)
+	hashes := make([]string, 0, len(values))
+	for _, value := range values {
+		hash, err := canonicalRolloutFactHash(value)
+		if err != nil {
+			return nil, err
+		}
+		hashes = append(hashes, hash)
+	}
+	return hashes, nil
+}
+
+func canonicalFinalContractFactHash(contract *FinalContract) (string, error) {
+	if contract == nil {
+		return canonicalRolloutFactHash(nil)
+	}
+	typed := *contract
+	typed.AnswerText = ""
+	return canonicalRolloutFactHash(typed)
+}
+
+func (k *RuntimeKernel) recordCanonicalCheckpoint(ctx context.Context, snapshot *TurnSnapshot, checkpoint *CheckpointMetadata) error {
+	if checkpoint == nil {
+		return fmt.Errorf("canonical rollout checkpoint is required")
+	}
+	facts := struct {
+		ID         string             `json:"checkpointId"`
+		Kind       string             `json:"checkpointKind"`
+		Lifecycle  TurnLifecycleState `json:"lifecycle"`
+		Resume     TurnResumeState    `json:"resumeState"`
+		Hash       string             `json:"checkpointHash"`
+		Checkpoint string             `json:"checkpointRef"`
+	}{
+		ID: strings.TrimSpace(checkpoint.ID), Kind: strings.TrimSpace(checkpoint.Kind),
+		Lifecycle: checkpoint.Lifecycle, Resume: checkpoint.ResumeState,
+		Checkpoint: strings.TrimSpace(checkpoint.ID),
+	}
+	checkpointHash, err := canonicalRolloutFactHash(struct {
+		ID        string             `json:"id"`
+		Kind      string             `json:"kind"`
+		Lifecycle TurnLifecycleState `json:"lifecycle"`
+		Resume    TurnResumeState    `json:"resumeState"`
+	}{facts.ID, facts.Kind, facts.Lifecycle, facts.Resume})
+	if err != nil {
+		return err
+	}
+	facts.Hash = checkpointHash
+	event := canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindCheckpoint, map[string]any{
+		"checkpointId": facts.ID, "checkpointKind": facts.Kind, "lifecycle": facts.Lifecycle,
+		"resumeState": facts.Resume, "checkpointHash": facts.Hash, "checkpointRef": facts.Checkpoint,
+	})
+	event.SourceRefs = append(event.SourceRefs, facts.Checkpoint)
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, event)
+}
+
+func (k *RuntimeKernel) recordCanonicalFinalFacts(ctx context.Context, snapshot *TurnSnapshot, facts FinalRuntimeFacts, contract FinalContract) error {
+	failureHashes, err := canonicalRolloutStringHashes(facts.FailureCodes)
+	if err != nil {
+		return err
+	}
+	factsHash, err := canonicalRolloutFactHash(facts)
+	if err != nil {
+		return err
+	}
+	contractHash, err := canonicalFinalContractFactHash(&contract)
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"completionStatus": facts.CompletionStatus, "postcheckStatus": facts.PostcheckStatus,
+		"rollbackStatus": facts.RollbackStatus, "finalContractStatus": string(contract.Status),
+		"finalRuntimeFactsHash": factsHash, "finalContractHash": contractHash,
+		"evidenceRefCount": len(facts.EvidenceRefs), "checkedEvidenceCount": len(contract.CheckedEvidenceRefs),
+		"uncheckedRequirementCount": len(contract.UncheckedRequirements), "failureCodeHashes": failureHashes,
+	}
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindFinalFacts, payload))
+}
+
+func canonicalAgentItemsFactHash(snapshot *TurnSnapshot) (string, error) {
+	type itemFact struct {
+		ID     string `json:"id"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	}
+	var facts []itemFact
+	if snapshot != nil {
+		candidate := *snapshot
+		candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+		syncPendingApprovalAgentItems(&candidate)
+		facts = make([]itemFact, 0, len(candidate.AgentItems))
+		for _, item := range candidate.AgentItems {
+			facts = append(facts, itemFact{ID: item.ID, Type: string(item.Type), Status: string(item.Status)})
+		}
+	}
+	return canonicalRolloutFactHash(facts)
+}
+
+func canonicalPendingIDs(snapshot *TurnSnapshot) (approvals, evidence, inputs []string) {
+	if snapshot == nil {
+		return nil, nil, nil
+	}
+	for _, item := range snapshot.PendingApprovals {
+		approvals = append(approvals, item.ID)
+	}
+	for _, item := range snapshot.PendingEvidence {
+		evidence = append(evidence, item.ID)
+	}
+	for _, item := range snapshot.PendingInputs {
+		inputs = append(inputs, item.ID)
+	}
+	return compactStringList(approvals), compactStringList(evidence), compactStringList(inputs)
+}
+
+func (k *RuntimeKernel) recordCanonicalTransportProjection(
+	ctx context.Context,
+	snapshot *TurnSnapshot,
+	lifecycle TurnLifecycleState,
+	resume TurnResumeState,
+	checkpointRef string,
+	contract *FinalContract,
+) error {
+	payload, err := canonicalTransportProjectionPayload(snapshot, lifecycle, resume, checkpointRef, contract)
+	if err != nil {
+		return err
+	}
+	event := canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindTransportProjection, payload)
+	if ref := strings.TrimSpace(checkpointRef); ref != "" {
+		event.SourceRefs = append(event.SourceRefs, ref)
+	}
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, event)
+}
+
+func canonicalTransportProjectionPayload(
+	snapshot *TurnSnapshot,
+	lifecycle TurnLifecycleState,
+	resume TurnResumeState,
+	checkpointRef string,
+	contract *FinalContract,
+) (map[string]any, error) {
+	approvals, evidence, inputs := canonicalPendingIDs(snapshot)
+	if lifecycle.IsTerminal() {
+		approvals, evidence = nil, nil
+	}
+	contractHash, err := canonicalFinalContractFactHash(contract)
+	if err != nil {
+		return nil, err
+	}
+	agentItemsHash, err := canonicalAgentItemsFactHash(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	approvalHash, err := canonicalRolloutFactHash(approvals)
+	if err != nil {
+		return nil, err
+	}
+	evidenceHash, err := canonicalRolloutFactHash(evidence)
+	if err != nil {
+		return nil, err
+	}
+	inputHash, err := canonicalRolloutFactHash(inputs)
+	if err != nil {
+		return nil, err
+	}
+	payload := map[string]any{
+		"lifecycle": lifecycle, "resumeState": resume, "checkpointRef": strings.TrimSpace(checkpointRef),
+		"finalContractHash": contractHash, "agentItemsFactHash": agentItemsHash,
+		"pendingApprovalIDsHash": approvalHash, "pendingEvidenceIDsHash": evidenceHash,
+		"pendingInputIDsHash": inputHash, "transportContractVersion": canonicalTransportContractVersion,
+	}
+	projectionHash, err := canonicalRolloutFactHash(payload)
+	if err != nil {
+		return nil, err
+	}
+	payload["projectionInputHash"] = projectionHash
+	return payload, nil
+}
+
+func (k *RuntimeKernel) recordCanonicalTerminalBoundary(
+	ctx context.Context,
+	snapshot *TurnSnapshot,
+	checkpoint *CheckpointMetadata,
+	status FinalContractStatus,
+	failureCode string,
+) error {
+	facts := FinalRuntimeFacts{
+		CompletionStatus: FinalCompletionStatusFailed,
+		PostcheckStatus:  FinalPostcheckStatusNotRequired,
+		RollbackStatus:   FinalRollbackStatusNotRequired,
+		FailureCodes:     compactStringList([]string{failureCode}),
+	}
+	contract := BuildTerminalFinalContract("", status, facts.FailureCodes)
+	if err := k.recordCanonicalCheckpoint(ctx, snapshot, checkpoint); err != nil {
+		return err
+	}
+	if err := k.recordCanonicalFinalFacts(ctx, snapshot, facts, contract); err != nil {
+		return err
+	}
+	return k.recordCanonicalTransportProjection(ctx, snapshot, checkpoint.Lifecycle, checkpoint.ResumeState, checkpoint.ID, &contract)
 }
 
 // MemoryRolloutStore is a concurrency-safe append-only store for tests and
