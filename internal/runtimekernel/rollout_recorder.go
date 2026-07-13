@@ -245,6 +245,101 @@ func canonicalRolloutTurnKey(sessionID, turnID string) (rolloutTurnKey, error) {
 	return key, nil
 }
 
+type canonicalRolloutToolCallFact struct {
+	CallID   string `json:"callId"`
+	Name     string `json:"name"`
+	ArgsHash string `json:"argsHash"`
+}
+
+func canonicalRolloutToolCall(call ToolCall) canonicalRolloutToolCallFact {
+	return canonicalRolloutToolCallFact{
+		CallID: strings.TrimSpace(call.ID),
+		Name:   strings.TrimSpace(call.Name), ArgsHash: toolArgumentsHash(call.Arguments),
+	}
+}
+
+func canonicalRolloutStepEvent(snapshot *TurnSnapshot, kind string, payload map[string]any) modeltrace.CanonicalRolloutEvent {
+	event := modeltrace.CanonicalRolloutEvent{Kind: kind, Payload: payload}
+	if snapshot == nil {
+		return event
+	}
+	if snapshot.TurnAssembly != nil {
+		event.TurnAssemblyHash = snapshot.TurnAssembly.Hash
+	}
+	if snapshot.LatestStepReference != nil {
+		event.StepID = snapshot.LatestStepReference.StepHash
+		event.StepContextHash = snapshot.LatestStepReference.StepHash
+	}
+	return event
+}
+
+func (k *RuntimeKernel) recordCanonicalToolProposals(ctx context.Context, snapshot *TurnSnapshot, calls []ToolCall) error {
+	for _, call := range calls {
+		fact := canonicalRolloutToolCall(call)
+		if err := k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindToolProposed, map[string]any{
+			"callId": fact.CallID, "name": fact.Name, "argsHash": fact.ArgsHash,
+		})); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (k *RuntimeKernel) recordCanonicalToolDispatch(ctx context.Context, snapshot *TurnSnapshot, calls []ToolCall) error {
+	if len(calls) == 0 {
+		return nil
+	}
+	facts := make([]canonicalRolloutToolCallFact, 0, len(calls))
+	for _, call := range calls {
+		facts = append(facts, canonicalRolloutToolCall(call))
+	}
+	payload := map[string]any{"calls": facts}
+	if len(facts) == 1 {
+		payload = map[string]any{"callId": facts[0].CallID, "name": facts[0].Name, "argsHash": facts[0].ArgsHash}
+	}
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindToolDispatched, payload))
+}
+
+func (k *RuntimeKernel) recordCanonicalToolResult(ctx context.Context, snapshot *TurnSnapshot, call ToolCall, result ToolResult, errorClass string) error {
+	evidenceRefs := evidenceRefsFromToolResultContent(result.Content)
+	sourceRefs := append([]string(nil), evidenceRefs...)
+	for _, ref := range result.ExternalReferences {
+		if id := strings.TrimSpace(ref.ID); id != "" {
+			sourceRefs = append(sourceRefs, id)
+		}
+	}
+	for _, ref := range result.References {
+		if digest := strings.TrimSpace(ref.Digest); digest != "" {
+			sourceRefs = append(sourceRefs, digest)
+		}
+	}
+	payload := map[string]any{
+		"callId": call.ID, "name": call.Name, "outcome": string(result.Outcome.Normalize()),
+		"contentHash": promptContentHash(result.Content), "errorClass": strings.TrimSpace(errorClass),
+		"evidenceRefs": evidenceRefs, "sourceRefs": compactStringList(sourceRefs),
+	}
+	event := canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindToolResult, payload)
+	event.SourceRefs = append(event.SourceRefs, sourceRefs...)
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, event)
+}
+
+func (k *RuntimeKernel) recordCanonicalApprovalRequested(ctx context.Context, snapshot *TurnSnapshot, approval PendingApproval) error {
+	payload := map[string]any{
+		"approvalId": approval.ID, "toolCallId": approval.ToolCallID, "toolName": approval.ToolName,
+		"argsHash":   firstNonEmptyString(approval.ArgumentsHash, approval.InputHash),
+		"targetRefs": append([]string(nil), approval.TargetRefs...), "status": "pending",
+	}
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindApprovalRequested, payload))
+}
+
+func (k *RuntimeKernel) recordCanonicalApprovalDecided(ctx context.Context, snapshot *TurnSnapshot, approval PendingApproval, decision, status string) error {
+	payload := map[string]any{
+		"approvalId": approval.ID, "toolCallId": approval.ToolCallID, "toolName": approval.ToolName,
+		"decision": strings.TrimSpace(decision), "status": strings.TrimSpace(status),
+	}
+	return k.appendCanonicalRolloutEvent(ctx, snapshot, canonicalRolloutStepEvent(snapshot, modeltrace.CanonicalRolloutKindApprovalDecided, payload))
+}
+
 // MemoryRolloutStore is a concurrency-safe append-only store for tests and
 // in-memory replay. It freezes every write and read to prevent aliasing.
 type MemoryRolloutStore struct {

@@ -263,8 +263,17 @@ func (k *RuntimeKernel) appendCanonicalRolloutEvent(
 	snapshot *TurnSnapshot,
 	event modeltrace.CanonicalRolloutEvent,
 ) error {
-	if k == nil || k.rolloutRecorder == nil || snapshot == nil {
+	if k == nil || snapshot == nil {
 		return ErrRolloutStoreRequired
+	}
+	if k.rolloutRecorder == nil {
+		recorder, err := NewRolloutRecorder(RolloutRecorderConfig{
+			Store: NewMemoryRolloutStore(), FailurePolicy: RolloutFailurePolicyFailClosed,
+		})
+		if err != nil {
+			return err
+		}
+		k.rolloutRecorder = recorder
 	}
 	event.SessionID = snapshot.SessionID
 	event.TurnID = snapshot.ID
@@ -991,6 +1000,10 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		now := time.Now()
 		var err error
 		status := "completed"
+		decisionStatus := map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)]
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, planApproval, approvedResumeDecisionLabel(req.Decision), decisionStatus, now); err != nil {
+			return TurnResult{}, err
+		}
 		switch planApproval.Source {
 		case PlanModeEntryApprovalSource:
 			_, err = ApplyPlanModeEntryDecision(session, planApproval.ID, req.Decision, decisionReason, now)
@@ -1015,7 +1028,6 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		}
 		session.PendingApprovals = removePendingApproval(session.PendingApprovals, planApproval.ID)
 		k.persistTurnSnapshot(session, snapshot)
-		k.emitApprovalDecided(session, snapshot, planApproval, approvedResumeDecisionLabel(req.Decision), map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)], now)
 		return TurnResult{
 			SessionType:     session.Type,
 			Mode:            session.Mode,
@@ -1030,8 +1042,10 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		now := time.Now()
 		approval := decisionApproval
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, approval, req.Decision, "denied", now); err != nil {
+			return TurnResult{}, err
+		}
 		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
-		k.emitApprovalDecided(session, snapshot, approval, req.Decision, "denied", now)
 		return k.completeDeniedApprovalTurn(ctx, session, snapshot, approval, decisionReason, now)
 	}
 	agentKind := modelrouter.AgentKindWorker
@@ -1074,7 +1088,10 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	} else if toolCall, ok := gatedPendingToolCall(snapshot); ok {
 		execution, tokenErr := k.prepareApprovalResumeExecution(session, snapshot, decisionApproval, toolCall)
 		if tokenErr != nil {
-			return k.blockStaleApprovalContext(session, snapshot, decisionApproval, toolCall, tokenErr), nil
+			return k.blockStaleApprovalContext(runCtx, session, snapshot, decisionApproval, toolCall, tokenErr)
+		}
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now()); err != nil {
+			return TurnResult{}, err
 		}
 		snapshot.PendingStepCause = &StepRevisionCause{
 			Kind: StepRevisionKindApprovalResumed, ApprovalID: firstNonEmpty(decisionApproval.ID, req.ApprovalID),
@@ -1083,7 +1100,6 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if isSessionApprovalResumeDecision(req.Decision) {
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
 		}
-		k.emitApprovalDecided(session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
 		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot, execution)
 		if err != nil {
 			return TurnResult{}, err
@@ -1197,22 +1213,25 @@ func immutableResumeControlMetadataValue(snapshot *TurnSnapshot, key string) (st
 	return strings.TrimSpace(value), ok
 }
 
-func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) {
+func (k *RuntimeKernel) emitApprovalDecided(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) error {
 	if k == nil || session == nil || snapshot == nil {
-		return
+		return nil
 	}
 	if at.IsZero() {
 		at = time.Now()
 	}
 	id := strings.TrimSpace(approval.ID)
 	if id == "" {
-		return
+		return nil
 	}
 	approval.ID = id
+	if err := k.recordCanonicalApprovalDecided(ctx, snapshot, approval, decision, status); err != nil {
+		return fmt.Errorf("record approval decision: %w", err)
+	}
 	appendApprovalDecidedAgentItem(snapshot, approval, decision, status)
 	k.persistTurnSnapshot(session, snapshot)
 	if k.projector == nil {
-		return
+		return nil
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"id":       id,
@@ -1229,6 +1248,7 @@ func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *Tur
 		Timestamp: at,
 		Payload:   payload,
 	})
+	return nil
 }
 
 func exactApprovalForResumeDecision(session *SessionState, snapshot *TurnSnapshot, req ResumeRequest) (PendingApproval, error) {
@@ -2860,6 +2880,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				snapshot.Metadata["rawToolCallMarkupParsed"] = "true"
 			}
 		}
+		if err := k.recordCanonicalToolProposals(ctx, snapshot, assistantMsg.ToolCalls); err != nil {
+			return "", nil, fmt.Errorf("record tool proposals: %w", err)
+		}
 		iterState.ToolCalls = append(iterState.ToolCalls, assistantMsg.ToolCalls...)
 		appendProviderNativeWebSearchTurnItems(snapshot, &iterState, turnID, providerResponse.NativeWebSearchEvents)
 		assistantMessageCommitted := false
@@ -3216,6 +3239,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				k.persistTurnSnapshot(session, snapshot)
 				return nil, fmt.Errorf("materialize tool result %q: %w", tc.Name, materializeErr)
 			}
+			if err := k.recordCanonicalToolResult(ctx, snapshot, tc, recordedResult, failureKindForDispatchResult(dispatchResult)); err != nil {
+				return nil, fmt.Errorf("record tool result %q: %w", tc.Name, err)
+			}
 			turnMetadata = updateOpsManualFlowTurnMetadata(turnMetadata, recordedResult)
 			turnMetadata = updateToolSearchPackTurnMetadata(turnMetadata, tc.Name, recordedResult)
 			applyToolSearchDiscoveryState(session, tc.Name, recordedResult, turnID)
@@ -3325,6 +3351,13 @@ func (k *RuntimeKernel) runHostIterationLoop(
 							call  ToolCall
 						}{index: j, call: batchCall})
 					}
+					dispatchedBatchCalls := make([]ToolCall, 0, len(dispatchBatch))
+					for _, task := range dispatchBatch {
+						dispatchedBatchCalls = append(dispatchedBatchCalls, task.call)
+					}
+					if err := k.recordCanonicalToolDispatch(ctx, snapshot, dispatchedBatchCalls); err != nil {
+						return "", nil, fmt.Errorf("record parallel tool dispatch: %w", err)
+					}
 					var wg sync.WaitGroup
 					for _, task := range dispatchBatch {
 						wg.Add(1)
@@ -3335,16 +3368,15 @@ func (k *RuntimeKernel) runHostIterationLoop(
 						}(task.index, task.call)
 					}
 					wg.Wait()
-					dispatchedBatchCalls := make([]ToolCall, 0, len(dispatchBatch))
-					for _, task := range dispatchBatch {
-						dispatchedBatchCalls = append(dispatchedBatchCalls, task.call)
-					}
 					for _, deferred := range deferredReuses {
 						if reused, ok := coveredReadReuseFromBatchResult(dispatchTools, batch, results, deferred); ok {
 							results[deferred.index] = reused
 							continue
 						}
 						fallbackCall := batch[deferred.index]
+						if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{fallbackCall}); err != nil {
+							return "", nil, fmt.Errorf("record deferred tool dispatch: %w", err)
+						}
 						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 						results[deferred.index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, fallbackCall, req.SessionType, req.Mode, turnSpanID)
 						dispatchedBatchCalls = append(dispatchedBatchCalls, fallbackCall)
@@ -3382,6 +3414,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			} else if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, tc); ok {
 				dispatchResult = reused
 			} else {
+				if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
+					return "", nil, fmt.Errorf("record tool dispatch: %w", err)
+				}
 				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
@@ -5068,14 +5103,19 @@ func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapsh
 	return approvalCurrentWorld{compileContext: compileCtx, dispatcher: dispatcher, facts: current, resourceScopes: resourceScopes}, nil
 }
 
-func (k *RuntimeKernel) blockStaleApprovalContext(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, cause error) TurnResult {
+func (k *RuntimeKernel) blockStaleApprovalContext(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, cause error) (TurnResult, error) {
 	fields := []string{"token"}
 	if stale, ok := cause.(*ApprovalContextStaleError); ok && len(stale.MismatchFields) > 0 {
 		fields = append([]string(nil), stale.MismatchFields...)
 	}
 	now := time.Now()
-	if reissued, err := k.reissueStaleApprovalBinding(session, snapshot, approval, toolCall, now); err == nil {
+	if reissued, checkpoint, err := k.reissueStaleApprovalBinding(session, snapshot, approval, toolCall, now); err == nil {
 		approval = reissued
+		if err := k.recordCanonicalApprovalRequested(ctx, snapshot, approval); err != nil {
+			return TurnResult{}, fmt.Errorf("record reissued approval request: %w", err)
+		}
+		snapshot.LatestCheckpoint = checkpoint
+		session.LatestCheckpoint = checkpoint
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"schemaVersion": "aiops.approval-context-stale/v1", "code": ApprovalContextStaleCode,
@@ -5109,13 +5149,13 @@ func (k *RuntimeKernel) blockStaleApprovalContext(session *SessionState, snapsho
 		SessionType: session.Type, Mode: session.Mode, SessionID: session.ID, TurnID: snapshot.ID,
 		ClientTurnID: snapshot.ClientTurnID, ClientMessageID: snapshot.ClientMessageID,
 		Status: "blocked", Error: reason,
-	}
+	}, nil
 }
 
-func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, now time.Time) (PendingApproval, error) {
+func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, now time.Time) (PendingApproval, *CheckpointMetadata, error) {
 	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
 	if err != nil {
-		return PendingApproval{}, err
+		return PendingApproval{}, nil, err
 	}
 	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), ApprovalContextStaleCode, TurnLifecycleSuspended, TurnResumeStatePendingApproval)
 	checkpoint.Source = "runtime"
@@ -5155,16 +5195,14 @@ func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snaps
 	contract.PermissionSnapshotHash = approval.PermissionSnapshotHash
 	approval.RollbackContract = contract.Normalize()
 	if err := ValidatePendingApprovalRollbackContract(approval); err != nil {
-		return PendingApproval{}, err
+		return PendingApproval{}, nil, err
 	}
 	token, err := BuildPendingApprovalActionToken(approval, checkpoint.ID)
 	if err != nil {
-		return PendingApproval{}, err
+		return PendingApproval{}, nil, err
 	}
 	approval.ActionToken = &token
-	snapshot.LatestCheckpoint = checkpoint
-	session.LatestCheckpoint = checkpoint
-	return approval, nil
+	return approval, checkpoint, nil
 }
 
 type approvalResumeExecution struct {
@@ -5180,6 +5218,9 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	}
 	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
 		return nil, err
+	}
+	if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{toolCall}); err != nil {
+		return nil, fmt.Errorf("record approved tool dispatch: %w", err)
 	}
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
@@ -5207,7 +5248,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 			result.Metadata.Name = toolCall.Name
 		}
 	}
-	recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result)
+	recordedResult, materializeErr := k.recordResumedToolResult(ctx, session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result, failureKindForDispatchResult(result))
 	if materializeErr != nil {
 		markToolInvocationFailed(snapshot, toolCall.ID, "")
 		return nil, fmt.Errorf("materialize resumed tool result %q: %w", toolCall.Name, materializeErr)
@@ -5273,6 +5314,9 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 
 		dispatchResult, reused := maybeReuseCoveredReadResult(snapshot, compileCtx.AssembledTools, tc)
 		if !reused {
+			if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
+				return nil, fmt.Errorf("record resumed tool dispatch: %w", err)
+			}
 			dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 			dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
 		}
@@ -5308,7 +5352,7 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 			}
 		}
 		applyHiddenTools(snapshot, dispatchResult.HiddenTools)
-		recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, last.Iteration, tc, dispatchResult.Metadata, dispatchResult.Result)
+		recordedResult, materializeErr := k.recordResumedToolResult(ctx, session, snapshot, last.Iteration, tc, dispatchResult.Metadata, dispatchResult.Result, failureKindForDispatchResult(dispatchResult))
 		if materializeErr != nil {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
@@ -5537,10 +5581,13 @@ func cleanEvidenceRefs(values []string) []string {
 	return out
 }
 
-func (k *RuntimeKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {
+func (k *RuntimeKernel) recordResumedToolResult(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult, errorClass string) (ToolResult, error) {
 	recordedResult, materializeErr := k.materializeToolResult(session, snapshot, iteration, toolCall, meta, result)
 	if materializeErr != nil {
 		return ToolResult{}, materializeErr
+	}
+	if err := k.recordCanonicalToolResult(ctx, snapshot, toolCall, recordedResult, errorClass); err != nil {
+		return ToolResult{}, err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
@@ -6639,6 +6686,9 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			return fmt.Errorf("freeze approval action token: %w", tokenErr)
 		}
 		approval.ActionToken = &actionToken
+		if err := k.recordCanonicalApprovalRequested(context.Background(), snapshot, approval); err != nil {
+			return fmt.Errorf("record approval request: %w", err)
+		}
 		snapshot.PendingApprovals = []PendingApproval{approval}
 		snapshot.PendingEvidence = nil
 		session.PendingApprovals = []PendingApproval{approval}

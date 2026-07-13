@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modeltrace"
+	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/tooling"
 )
 
@@ -24,7 +26,7 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("inspect", []schema.ToolCall{{
 			ID: "call-read", Type: "function",
-			Function: schema.FunctionCall{Name: "rollout_read", Arguments: `{}`},
+			Function: schema.FunctionCall{Name: "rollout_read", Arguments: `{"token":"args-secret-canary"}`},
 		}}),
 		schema.AssistantMessage("safe-final", nil),
 	}}
@@ -35,7 +37,7 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 			return true
 		},
 		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
-			return tooling.ToolResult{Content: "healthy"}, nil
+			return tooling.ToolResult{Content: `{"status":"healthy","evidenceRefs":["evidence://health"]}`}, nil
 		},
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
@@ -59,6 +61,9 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 		modeltrace.CanonicalRolloutKindPrompt,
 		modeltrace.CanonicalRolloutKindProviderRequest,
 		modeltrace.CanonicalRolloutKindProviderResponse,
+		modeltrace.CanonicalRolloutKindToolProposed,
+		modeltrace.CanonicalRolloutKindToolDispatched,
+		modeltrace.CanonicalRolloutKindToolResult,
 		modeltrace.CanonicalRolloutKindPrompt,
 		modeltrace.CanonicalRolloutKindProviderRequest,
 		modeltrace.CanonicalRolloutKindProviderResponse,
@@ -94,10 +99,21 @@ func TestRuntimeKernelCanonicalRolloutOrdersFirstLoopAndDoesNotRepeatAssembly(t 
 	if err != nil {
 		t.Fatalf("json.Marshal(events) error = %v", err)
 	}
-	for _, forbidden := range []string{"input-secret-canary", "safe-final", "healthy", `\"rollout_read\"`, `\"Arguments\"`} {
+	for _, forbidden := range []string{"input-secret-canary", "args-secret-canary", "safe-final", "healthy", `\"Arguments\"`} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("canonical rollout leaked provider/model/tool payload %q: %s", forbidden, encoded)
 		}
+	}
+	proposed := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindToolProposed)
+	if proposed.Payload["callId"] != "call-read" || proposed.Payload["name"] != "rollout_read" || proposed.Payload["argsHash"] == "" {
+		t.Fatalf("tool_proposed payload = %#v, want callId/name/argsHash only", proposed.Payload)
+	}
+	result := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindToolResult)
+	if result.Payload["callId"] != "call-read" || result.Payload["outcome"] != "complete" || result.Payload["contentHash"] == "" || result.Payload["errorClass"] != "" {
+		t.Fatalf("tool_result payload = %#v, want typed safe outcome", result.Payload)
+	}
+	if refs, ok := result.Payload["evidenceRefs"].([]any); !ok || len(refs) != 1 || refs[0] != "evidence://health" {
+		t.Fatalf("tool_result evidenceRefs = %#v, want evidence://health", result.Payload["evidenceRefs"])
 	}
 }
 
@@ -174,6 +190,357 @@ func TestRuntimeKernelProviderResponseRolloutFailureStopsBeforeToolAndFinal(t *t
 	}
 	if len(session.CurrentTurn.Iterations) != 0 || strings.TrimSpace(session.CurrentTurn.FinalOutput) != "" {
 		t.Fatalf("turn entered tool/final processing after recorder failure: iterations=%d final=%q", len(session.CurrentTurn.Iterations), session.CurrentTurn.FinalOutput)
+	}
+}
+
+func TestRuntimeKernelToolDispatchedAppendFailureCallsExecutorZeroTimes(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindToolDispatched)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	var executed atomic.Int32
+	toolDef := rolloutReadTool("read_rollout_dispatch_fail", &executed, false)
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-dispatch-fail", Type: "function",
+		Function: schema.FunctionCall{Name: "read_rollout_dispatch_fail", Arguments: `{"secret":"dispatch-secret-canary"}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	kernel.rolloutRecorder = recorder
+
+	_, err = kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-dispatch-fail", SessionType: SessionTypeHost,
+		Mode: ModeInspect, TurnID: "turn-dispatch-fail", Input: "inspect",
+	})
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want tool_dispatched append failure")
+	}
+	if executed.Load() != 0 {
+		t.Fatalf("executor calls = %d, want 0", executed.Load())
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), "session-dispatch-fail", "turn-dispatch-fail")
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolProposed) != 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 0 {
+		t.Fatalf("events = %v, want proposed without false dispatched", canonicalRolloutKindsForTest(events))
+	}
+}
+
+func TestRuntimeKernelParallelDispatchUsesOneStableBatchCommit(t *testing.T) {
+	var executed atomic.Int32
+	tools := []tooling.Tool{
+		rolloutReadTool("read_rollout_parallel_a", &executed, true),
+		rolloutReadTool("read_rollout_parallel_b", &executed, true),
+	}
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{
+			{ID: "call-b", Type: "function", Function: schema.FunctionCall{Name: "read_rollout_parallel_b", Arguments: `{"order":2,"secret":"parallel-secret-b"}`}},
+			{ID: "call-a", Type: "function", Function: schema.FunctionCall{Name: "read_rollout_parallel_a", Arguments: `{"order":1,"secret":"parallel-secret-a"}`}},
+		}),
+		schema.AssistantMessage("complete", nil),
+	}}
+	kernel := newLoopKernel(t, model, tools, nil, nil)
+
+	if _, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-parallel-stable", SessionType: SessionTypeHost,
+		Mode: ModeInspect, TurnID: "turn-parallel-stable", Input: "inspect",
+	}); err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if executed.Load() != 2 {
+		t.Fatalf("executor calls = %d, want 2", executed.Load())
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), "session-parallel-stable", "turn-parallel-stable")
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 1 {
+		t.Fatalf("events = %v, want one atomic batch dispatched event", canonicalRolloutKindsForTest(events))
+	}
+	dispatched := firstCanonicalRolloutEventForTest(events, modeltrace.CanonicalRolloutKindToolDispatched)
+	calls, ok := dispatched.Payload["calls"].([]any)
+	if !ok || len(calls) != 2 {
+		t.Fatalf("tool_dispatched calls = %#v, want ordered two-call batch", dispatched.Payload["calls"])
+	}
+	first, firstOK := calls[0].(map[string]any)
+	second, secondOK := calls[1].(map[string]any)
+	if !firstOK || !secondOK || first["callId"] != "call-b" || second["callId"] != "call-a" || first["argsHash"] == "" || second["argsHash"] == "" {
+		t.Fatalf("tool_dispatched calls = %#v, want provider order call-b/call-a with hashes", calls)
+	}
+	encoded, _ := json.Marshal(dispatched)
+	if strings.Contains(string(encoded), "parallel-secret") {
+		t.Fatalf("batch dispatched event leaked arguments: %s", encoded)
+	}
+}
+
+func TestRuntimeKernelParallelDispatchAppendFailureKeepsWholeBatchAtZero(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindToolDispatched)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	var executed atomic.Int32
+	tools := []tooling.Tool{
+		rolloutReadTool("read_rollout_parallel_fail_a", &executed, true),
+		rolloutReadTool("read_rollout_parallel_fail_b", &executed, true),
+	}
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{
+		{ID: "call-a", Type: "function", Function: schema.FunctionCall{Name: "read_rollout_parallel_fail_a", Arguments: `{}`}},
+		{ID: "call-b", Type: "function", Function: schema.FunctionCall{Name: "read_rollout_parallel_fail_b", Arguments: `{}`}},
+	})}}
+	kernel := newLoopKernel(t, model, tools, nil, nil)
+	kernel.rolloutRecorder = recorder
+
+	_, err = kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-parallel-fail", SessionType: SessionTypeHost,
+		Mode: ModeInspect, TurnID: "turn-parallel-fail", Input: "inspect",
+	})
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want atomic batch append failure")
+	}
+	if executed.Load() != 0 {
+		t.Fatalf("parallel executor calls = %d, want whole batch 0", executed.Load())
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), "session-parallel-fail", "turn-parallel-fail")
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolProposed) != 2 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 0 {
+		t.Fatalf("events = %v, want two proposals and no partial dispatched fact", canonicalRolloutKindsForTest(events))
+	}
+}
+
+func TestRuntimeKernelApprovalRolloutOrdersRequestedDecisionDispatchAndResult(t *testing.T) {
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID: "call-approval", Type: "function",
+			Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{"path":"/tmp/approval-secret-canary"}`},
+		}}),
+		schema.AssistantMessage("approved complete", nil),
+	}}
+	toolDef := rolloutApprovalTool(&executed)
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-approval-rollout", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-approval-rollout", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "file_absent", "aiops.userEvidence.rawExcerpt": "safe typed evidence",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" || executed != 0 {
+		t.Fatalf("RunTurn() = %#v, %v, executed=%d; want pending approval", blocked, err, executed)
+	}
+	session := kernel.sessions.Get("session-approval-rollout")
+	if session == nil || len(session.PendingApprovals) != 1 {
+		t.Fatalf("pending approval missing: %#v", session)
+	}
+	approvalID := session.PendingApprovals[0].ID
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: approvalID,
+		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err != nil || resumed.Status != "completed" || executed != 1 {
+		t.Fatalf("ResumeTurn() = %#v, %v, executed=%d; want completed/1", resumed, err, executed)
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	wantOrdered := []string{
+		modeltrace.CanonicalRolloutKindToolProposed,
+		modeltrace.CanonicalRolloutKindToolDispatched,
+		modeltrace.CanonicalRolloutKindApprovalRequested,
+		modeltrace.CanonicalRolloutKindApprovalDecided,
+		modeltrace.CanonicalRolloutKindToolDispatched,
+		modeltrace.CanonicalRolloutKindToolResult,
+	}
+	if got := canonicalRolloutFilteredKindsForTest(events, wantOrdered); !equalCanonicalRolloutKinds(got, wantOrdered) {
+		t.Fatalf("tool/approval sequence = %v, want %v; all=%v", got, wantOrdered, canonicalRolloutKindsForTest(events))
+	}
+	encoded, _ := json.Marshal(events)
+	if strings.Contains(string(encoded), "/tmp/approval-secret-canary") || strings.Contains(string(encoded), "approved complete") {
+		t.Fatalf("approval rollout leaked raw payload: %s", encoded)
+	}
+}
+
+func TestRuntimeKernelNilActionTokenReissueRecordsFreshApprovalRequest(t *testing.T) {
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-stale", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-stale-token", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-stale-token", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn() = %#v, %v, want pending approval", blocked, err)
+	}
+	session := kernel.sessions.Get("session-stale-token")
+	oldID := session.PendingApprovals[0].ID
+	session.PendingApprovals[0].ActionToken = nil
+	session.CurrentTurn.PendingApprovals[0].ActionToken = nil
+	stale, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: oldID,
+		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err != nil || stale.Status != "blocked" || executed != 0 {
+		t.Fatalf("ResumeTurn() = %#v, %v, executed=%d; want stale blocked/0", stale, err, executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if len(session.PendingApprovals) != 1 || session.PendingApprovals[0].ID == oldID || session.PendingApprovals[0].ActionToken == nil {
+		t.Fatalf("fresh approval missing: %#v", session.PendingApprovals)
+	}
+	events, err := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if err != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", err)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindApprovalRequested) != 2 || events[len(events)-1].Kind != modeltrace.CanonicalRolloutKindApprovalRequested {
+		t.Fatalf("events = %v, want fresh approval_requested tail", canonicalRolloutKindsForTest(events))
+	}
+	if got := events[len(events)-1].Payload["approvalId"]; got != session.PendingApprovals[0].ID {
+		t.Fatalf("fresh approval_requested id = %#v, want %q", got, session.PendingApprovals[0].ID)
+	}
+}
+
+func TestRuntimeKernelReissuedApprovalAppendFailureLeavesOldCheckpointAndLedger(t *testing.T) {
+	store := newNthKindFailingRolloutStore(modeltrace.CanonicalRolloutKindApprovalRequested, 2)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-stale-fail", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	kernel.rolloutRecorder = recorder
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-stale-append-fail", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-stale-append-fail", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn() = %#v, %v, want pending approval", blocked, err)
+	}
+	session := kernel.sessions.Get("session-stale-append-fail")
+	oldID := session.PendingApprovals[0].ID
+	oldCheckpointID := session.LatestCheckpoint.ID
+	session.PendingApprovals[0].ActionToken = nil
+	session.CurrentTurn.PendingApprovals[0].ActionToken = nil
+	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: oldID,
+		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err == nil {
+		t.Fatal("ResumeTurn() error = nil, want reissued approval append failure")
+	}
+	if executed != 0 {
+		t.Fatalf("executor calls = %d, want 0", executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if session.LatestCheckpoint == nil || session.LatestCheckpoint.ID != oldCheckpointID || session.CurrentTurn.LatestCheckpoint == nil || session.CurrentTurn.LatestCheckpoint.ID != oldCheckpointID {
+		t.Fatalf("checkpoint changed before critical append: session=%#v turn=%#v want=%q", session.LatestCheckpoint, session.CurrentTurn.LatestCheckpoint, oldCheckpointID)
+	}
+	if len(session.PendingApprovals) != 1 || session.PendingApprovals[0].ID != oldID {
+		t.Fatalf("approval ledger changed before critical append: %#v", session.PendingApprovals)
+	}
+}
+
+func TestRuntimeKernelApprovalDecisionAppendFailurePrecedesGrantAndExecution(t *testing.T) {
+	store := newKindFailingRolloutStore(modeltrace.CanonicalRolloutKindApprovalDecided)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-decision-fail", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	kernel.rolloutRecorder = recorder
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-decision-fail", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-decision-fail", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn() = %#v, %v, want pending approval", blocked, err)
+	}
+	session := kernel.sessions.Get("session-decision-fail")
+	approvalID := session.PendingApprovals[0].ID
+	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: approvalID,
+		Decision: "approved_for_session", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err == nil {
+		t.Fatal("ResumeTurn() error = nil, want approval_decided append failure")
+	}
+	if executed != 0 || len(session.ApprovalGrants) != 0 {
+		t.Fatalf("append failure crossed decision commit: executor=%d grants=%#v", executed, session.ApprovalGrants)
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindApprovalDecided) != 0 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolResult) != 0 {
+		t.Fatalf("events = %v, want no false decision/result", canonicalRolloutKindsForTest(events))
+	}
+}
+
+func TestRuntimeKernelApprovedResumeDispatchAppendFailureCallsExecutorZeroTimes(t *testing.T) {
+	store := newNthKindFailingRolloutStore(modeltrace.CanonicalRolloutKindToolDispatched, 2)
+	recorder, err := NewRolloutRecorder(RolloutRecorderConfig{Store: store, FailurePolicy: RolloutFailurePolicyFailClosed})
+	if err != nil {
+		t.Fatalf("NewRolloutRecorder() error = %v", err)
+	}
+	executed := 0
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("", []schema.ToolCall{{
+		ID: "call-resume-dispatch-fail", Type: "function", Function: schema.FunctionCall{Name: "rollout_mutation", Arguments: `{}`},
+	}})}}
+	kernel := newLoopKernel(t, model, []tooling.Tool{rolloutApprovalTool(&executed)}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	kernel.rolloutRecorder = recorder
+	blocked, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: "session-resume-dispatch-fail", SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-resume-dispatch-fail", HostID: "host-a", Input: "mutate",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "safe", "aiops.userEvidence.rawExcerpt": "safe",
+		},
+	})
+	if err != nil || blocked.Status != "blocked" {
+		t.Fatalf("RunTurn() = %#v, %v, want pending approval", blocked, err)
+	}
+	session := kernel.sessions.Get("session-resume-dispatch-fail")
+	_, err = kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: session.PendingApprovals[0].ID,
+		Decision: "approved", ResumeState: TurnResumeStatePendingApproval,
+	})
+	if err == nil {
+		t.Fatal("ResumeTurn() error = nil, want approved dispatch append failure")
+	}
+	if executed != 0 {
+		t.Fatalf("approved executor calls = %d, want 0", executed)
+	}
+	events, readErr := kernel.CanonicalRolloutEvents(context.Background(), session.ID, session.CurrentTurn.ID)
+	if readErr != nil {
+		t.Fatalf("CanonicalRolloutEvents() error = %v", readErr)
+	}
+	if countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindApprovalDecided) != 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolDispatched) != 1 || countCanonicalRolloutKind(events, modeltrace.CanonicalRolloutKindToolResult) != 0 {
+		t.Fatalf("events = %v, want decision plus only pre-approval dispatch", canonicalRolloutKindsForTest(events))
 	}
 }
 
@@ -662,6 +1029,34 @@ func (s *failKindAndMarkerRolloutStore) Events(ctx context.Context, sessionID, t
 	return s.memory.Events(ctx, sessionID, turnID)
 }
 
+type nthKindFailingRolloutStore struct {
+	mu       sync.Mutex
+	failKind string
+	failAt   int
+	seen     int
+	memory   *MemoryRolloutStore
+}
+
+func newNthKindFailingRolloutStore(kind string, failAt int) *nthKindFailingRolloutStore {
+	return &nthKindFailingRolloutStore{failKind: kind, failAt: failAt, memory: NewMemoryRolloutStore()}
+}
+
+func (s *nthKindFailingRolloutStore) Append(ctx context.Context, event modeltrace.CanonicalRolloutEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if event.Kind == s.failKind {
+		s.seen++
+		if s.seen == s.failAt {
+			return errors.New("injected nth canonical rollout append failure")
+		}
+	}
+	return s.memory.Append(ctx, event)
+}
+
+func (s *nthKindFailingRolloutStore) Events(ctx context.Context, sessionID, turnID string) ([]modeltrace.CanonicalRolloutEvent, error) {
+	return s.memory.Events(ctx, sessionID, turnID)
+}
+
 func newKindFailingRolloutStore(kind string) *kindFailingRolloutStore {
 	return &kindFailingRolloutStore{failKind: kind, memory: NewMemoryRolloutStore()}
 }
@@ -707,4 +1102,68 @@ func equalCanonicalRolloutKinds(got, want []string) bool {
 		}
 	}
 	return true
+}
+
+func firstCanonicalRolloutEventForTest(events []modeltrace.CanonicalRolloutEvent, kind string) modeltrace.CanonicalRolloutEvent {
+	for _, event := range events {
+		if event.Kind == kind {
+			return event
+		}
+	}
+	return modeltrace.CanonicalRolloutEvent{}
+}
+
+func canonicalRolloutFilteredKindsForTest(events []modeltrace.CanonicalRolloutEvent, allowed []string) []string {
+	allowedSet := make(map[string]bool, len(allowed))
+	for _, kind := range allowed {
+		allowedSet[kind] = true
+	}
+	filtered := make([]string, 0, len(events))
+	for _, event := range events {
+		if allowedSet[event.Kind] {
+			filtered = append(filtered, event.Kind)
+		}
+	}
+	return filtered
+}
+
+func rolloutReadTool(name string, executed *atomic.Int32, concurrencySafe bool) *tooling.StaticTool {
+	return &tooling.StaticTool{
+		Meta:       tooling.ToolMetadata{Name: name, Description: "read typed state"},
+		Visibility: tooling.Visibility{SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeInspect)}},
+		ReadOnlyFunc: func(json.RawMessage) bool {
+			return true
+		},
+		ConcurrencySafeFunc: func(json.RawMessage) bool {
+			return concurrencySafe
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed.Add(1)
+			return tooling.ToolResult{Content: `{"status":"healthy"}`}, nil
+		},
+	}
+}
+
+func rolloutApprovalTool(executed *int) *tooling.StaticTool {
+	return &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "rollout_mutation", Description: "mutate typed state"},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return false },
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			return tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval,
+				Reason: "mutation requires approval",
+				Approval: &tooling.PermissionApprovalPayload{
+					Risk: "high", Source: "rollout_test", ExpectedEffect: "mutate state",
+					Rollback: "restore state", Validation: "verify state",
+				},
+			}
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			*executed++
+			return tooling.ToolResult{Content: `{"status":"changed","evidenceRefs":["evidence://postcheck"]}`}, nil
+		},
+	}
 }
