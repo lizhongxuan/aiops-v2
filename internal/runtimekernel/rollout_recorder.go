@@ -12,6 +12,7 @@ import (
 
 var (
 	ErrRolloutStoreRequired         = errors.New("rollout store is required")
+	ErrRolloutReaderUnavailable     = errors.New("rollout reader is unavailable")
 	ErrRolloutSequenceNotIncreasing = errors.New("rollout sequence must be strictly increasing")
 )
 
@@ -154,6 +155,21 @@ func (r *RolloutRecorder) Append(ctx context.Context, event modeltrace.Canonical
 	} else {
 		return r.appendDegradedMarker(ctx, key, frozen, err)
 	}
+}
+
+// Events returns immutable copies for replay and tests. Recording stores remain
+// write-only unless they explicitly implement RolloutReader.
+func (r *RolloutRecorder) Events(ctx context.Context, sessionID, turnID string) ([]modeltrace.CanonicalRolloutEvent, error) {
+	if r == nil || r.store == nil {
+		return nil, ErrRolloutStoreRequired
+	}
+	reader, ok := r.store.(RolloutReader)
+	if !ok {
+		return nil, ErrRolloutReaderUnavailable
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return reader.Events(ctx, sessionID, turnID)
 }
 
 func (r *RolloutRecorder) appendDegradedMarker(

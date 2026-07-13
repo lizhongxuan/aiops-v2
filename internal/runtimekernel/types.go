@@ -1,14 +1,17 @@
 package runtimekernel
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
@@ -17,6 +20,46 @@ import (
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
+
+// CanonicalRolloutHeadRef is the typed, model-input-inert reference to the
+// latest durable rollout event for a turn.
+type CanonicalRolloutHeadRef struct {
+	SchemaVersion string              `json:"schemaVersion"`
+	EventID       string              `json:"eventId"`
+	Hash          string              `json:"hash"`
+	Sequence      int64               `json:"sequence"`
+	Status        RolloutRecordStatus `json:"status"`
+}
+
+func (ref CanonicalRolloutHeadRef) Validate() error {
+	if ref.SchemaVersion != modeltrace.CanonicalRolloutSchemaVersion {
+		return fmt.Errorf("invalid canonical rollout schema version")
+	}
+	if err := validateCanonicalRolloutRef(ref.EventID, "event:", "event id"); err != nil {
+		return err
+	}
+	if err := validateCanonicalRolloutRef(ref.Hash, "sha256:", "hash"); err != nil {
+		return err
+	}
+	if ref.Sequence <= 0 {
+		return fmt.Errorf("canonical rollout sequence must be greater than zero")
+	}
+	if ref.Status != RolloutRecordStatusRecorded && ref.Status != RolloutRecordStatusDegraded {
+		return fmt.Errorf("invalid canonical rollout status %q", ref.Status)
+	}
+	return nil
+}
+
+func validateCanonicalRolloutRef(value, prefix, name string) error {
+	encoded := strings.TrimPrefix(value, prefix)
+	if encoded == value || len(encoded) != 64 {
+		return fmt.Errorf("invalid canonical rollout %s", name)
+	}
+	if _, err := hex.DecodeString(encoded); err != nil {
+		return fmt.Errorf("invalid canonical rollout %s", name)
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // SessionState carries the full state of a session.
@@ -682,6 +725,7 @@ type TurnSnapshot struct {
 	CompletedAt             *time.Time                         `json:"completedAt,omitempty"`
 	StablePromptHash        string                             `json:"stablePromptHash,omitempty"`
 	StableToolFingerprint   string                             `json:"stableToolFingerprint,omitempty"`
+	CanonicalRolloutHead    *CanonicalRolloutHeadRef           `json:"canonicalRolloutHead,omitempty"`
 	TurnAssembly            *agentassembly.TurnAssembly        `json:"turnAssembly,omitempty"`
 	TurnAssemblyShadow      *TurnAssemblyShadowTrace           `json:"turnAssemblyShadow,omitempty"`
 	SpecialInputReadPlan    *specialinputmemory.MemoryReadPlan `json:"specialInputReadPlan,omitempty"`
@@ -728,6 +772,11 @@ func (s TurnSnapshot) Validate() error {
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if s.CanonicalRolloutHead != nil {
+		if err := s.CanonicalRolloutHead.Validate(); err != nil {
+			return fmt.Errorf("canonical rollout head: %w", err)
+		}
 	}
 	if s.TurnAssembly != nil {
 		if err := s.TurnAssembly.Validate(); err != nil {

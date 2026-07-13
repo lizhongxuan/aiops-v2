@@ -145,6 +145,7 @@ type RuntimeKernel struct {
 	artifactRepo     ContextArtifactRepository
 	skillRegistry    *skills.Registry
 	evidenceService  *evidencecore.Service
+	rolloutRecorder  *RolloutRecorder
 	featureFlags     func(context.Context) featureflag.Flags
 	debugConfig      func(context.Context) RuntimeDebugConfig
 
@@ -173,6 +174,7 @@ type RuntimeKernelConfig struct {
 	ArtifactRepo     ContextArtifactRepository
 	SkillRegistry    *skills.Registry
 	EvidenceService  *evidencecore.Service
+	RolloutRecorder  *RolloutRecorder
 	FeatureFlags     func(context.Context) featureflag.Flags
 	DebugConfig      func(context.Context) RuntimeDebugConfig
 }
@@ -210,6 +212,17 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 	if debugConfig == nil {
 		debugConfig = func(context.Context) RuntimeDebugConfig { return DefaultRuntimeDebugConfig() }
 	}
+	rolloutRecorder := cfg.RolloutRecorder
+	if rolloutRecorder == nil {
+		var err error
+		rolloutRecorder, err = NewRolloutRecorder(RolloutRecorderConfig{
+			Store:         NewMemoryRolloutStore(),
+			FailurePolicy: RolloutFailurePolicyFailClosed,
+		})
+		if err != nil {
+			panic("create default canonical rollout recorder: " + err.Error())
+		}
+	}
 	return &RuntimeKernel{
 		tools:              cfg.ToolSource,
 		compiler:           cfg.Compiler,
@@ -228,11 +241,64 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 		artifactRepo:       cfg.ArtifactRepo,
 		skillRegistry:      cfg.SkillRegistry,
 		evidenceService:    cfg.EvidenceService,
+		rolloutRecorder:    rolloutRecorder,
 		featureFlags:       featureFlags,
 		debugConfig:        debugConfig,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
 	}
+}
+
+// CanonicalRolloutEvents exposes immutable replay facts without routing them
+// through turn metadata, external references, or model input.
+func (k *RuntimeKernel) CanonicalRolloutEvents(ctx context.Context, sessionID, turnID string) ([]modeltrace.CanonicalRolloutEvent, error) {
+	if k == nil || k.rolloutRecorder == nil {
+		return nil, ErrRolloutStoreRequired
+	}
+	return k.rolloutRecorder.Events(ctx, sessionID, turnID)
+}
+
+func (k *RuntimeKernel) appendCanonicalRolloutEvent(
+	ctx context.Context,
+	snapshot *TurnSnapshot,
+	event modeltrace.CanonicalRolloutEvent,
+) error {
+	if k == nil || k.rolloutRecorder == nil || snapshot == nil {
+		return ErrRolloutStoreRequired
+	}
+	event.SessionID = snapshot.SessionID
+	event.TurnID = snapshot.ID
+	if head := snapshot.CanonicalRolloutHead; head != nil {
+		event.SourceRefs = append(event.SourceRefs, head.EventID)
+	}
+	// Audit persistence must outlive an execution cancellation so the terminal
+	// provider outcome remains observable instead of being misclassified as a
+	// recorder failure. Store failure policy still governs the append itself.
+	result, err := k.rolloutRecorder.Append(context.WithoutCancel(ctx), event)
+	if err != nil {
+		return err
+	}
+	if result.Status == RolloutRecordStatusDegraded && !result.MarkerPersisted {
+		return fmt.Errorf("canonical rollout degraded marker was not persisted")
+	}
+	if result.Status != RolloutRecordStatusRecorded && result.Status != RolloutRecordStatusDegraded {
+		return fmt.Errorf("canonical rollout append failed closed")
+	}
+	if err := result.Event.Validate(); err != nil {
+		return fmt.Errorf("canonical rollout result validation failed: %w", err)
+	}
+	head := CanonicalRolloutHeadRef{
+		SchemaVersion: result.Event.SchemaVersion,
+		EventID:       result.Event.EventID,
+		Hash:          result.Event.Hash,
+		Sequence:      result.Event.Sequence,
+		Status:        result.Status,
+	}
+	if err := head.Validate(); err != nil {
+		return err
+	}
+	snapshot.CanonicalRolloutHead = &head
+	return nil
 }
 
 func (k *RuntimeKernel) runtimeFeatureFlags(ctx context.Context) featureflag.Flags {
@@ -2140,6 +2206,17 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			return "", nil, fmt.Errorf("turn admission context: %w", admissionErr)
 		}
 		admissionFacts = admissionContext.AdmissionFacts
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			Kind: modeltrace.CanonicalRolloutKindAdmission,
+			Payload: map[string]any{
+				"factsHash":   admissionFacts.Hash,
+				"intentKind":  admissionFacts.Intent.Kind,
+				"targetCount": len(admissionFacts.TargetRefs),
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record turn admission: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		if admissionContext.AdmissionError == runtimeAdmissionErrorTargetRequired {
 			finalText, completeErr := k.completeAdmissionTargetRequiredTurn(session, snapshot)
 			return finalText, nil, completeErr
@@ -2279,6 +2356,16 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				return "", nil, assemblyErr
 			}
 			snapshot.TurnAssembly = assembly
+			if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+				Kind:             modeltrace.CanonicalRolloutKindAssembly,
+				TurnAssemblyHash: assembly.Hash,
+				Payload: map[string]any{
+					"schemaVersion":        assembly.SchemaVersion,
+					"capabilityPolicyHash": assembly.CapabilityPolicy.Hash,
+				},
+			}); recordErr != nil {
+				return "", nil, fmt.Errorf("record turn assembly: %w", recordErr)
+			}
 			k.persistTurnSnapshot(session, snapshot)
 			k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")
 		} else if assemblyErr := snapshot.TurnAssembly.Validate(); assemblyErr != nil {
@@ -2364,6 +2451,20 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		frozenStepReference := cloneStepReference(stepReference)
 		snapshot.LatestStepReference = &frozenStepReference
 		snapshot.PendingStepCause = nil
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindPrompt,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"modelInputHash":     stepCtx.ProviderRequest.ModelInputHash,
+				"promptSectionCount": len(compiled.PromptSections),
+				"visibleToolCount":   len(visibleToolNames),
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record compiled prompt: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		var promptInputDiff *promptinput.TraceDiff
 		if previousPromptInputTrace != nil {
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)
@@ -2497,6 +2598,21 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		if validationErr != nil {
 			return "", nil, fmt.Errorf("runtime step validation failed")
 		}
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindProviderRequest,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"iteration":             iteration,
+				"modelInputHash":        stepCtx.ProviderRequest.ModelInputHash,
+				"requestPropertiesHash": stepCtx.ProviderRequest.RequestPropertiesHash,
+				"toolCount":             len(stepCtx.ProviderRequest.Tools),
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record provider request: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		reasoningSummaries := map[string]modelrouter.ReasoningStreamEvent{}
 		reasoningOrder := make([]string, 0, 2)
 		modelCtx := ctx
@@ -2589,6 +2705,29 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				"foldable":     true,
 			})
 		})
+		providerStatus := "completed"
+		if genErr != nil {
+			providerStatus = "failed"
+		}
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindProviderResponse,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"finishReason":  canonicalRolloutProviderFinishReason(providerResponse),
+				"iteration":     iteration,
+				"outputHash":    promptContentHash(iterationAssistantOutput),
+				"status":        providerStatus,
+				"toolCallCount": len(providerResponse.ToolCalls),
+			},
+		}); recordErr != nil {
+			finishObservedSpan(modelSpan, "failed", "canonical rollout provider response append failed", nil)
+			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, "canonical rollout provider response append failed")
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, fmt.Errorf("record provider response: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		modelCallDuration := time.Since(modelCallStartedAt)
 		if !firstDeltaAt.IsZero() {
 			streamEnd := time.Now()
@@ -5276,6 +5415,17 @@ func finalCompletenessFailureError(decision FinalCompletenessDecision) error {
 
 func providerResponseFinishReason(response modelrouter.ProviderResponse) string {
 	return strings.TrimSpace(response.FinishReason)
+}
+
+func canonicalRolloutProviderFinishReason(response modelrouter.ProviderResponse) string {
+	switch reason := strings.ToLower(providerResponseFinishReason(response)); reason {
+	case "stop", "tool_calls", "length", "content_filter", "cancelled", "error":
+		return reason
+	case "":
+		return "unspecified"
+	default:
+		return "unknown"
+	}
 }
 
 func compactStringList(values []string) []string {
