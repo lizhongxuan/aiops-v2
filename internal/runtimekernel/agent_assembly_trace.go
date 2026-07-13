@@ -1,6 +1,7 @@
 package runtimekernel
 
 import (
+	"fmt"
 	"strings"
 
 	"aiops-v2/internal/agentassembly"
@@ -10,10 +11,124 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+type runtimeTurnAssemblyInput struct {
+	TurnContext            RuntimeTurnContext
+	CompileContext         promptcompiler.CompileContext
+	ToolSurfacePolicy      tooling.ToolSurfacePolicySnapshot
+	ToolSurfaceFingerprint string
+	ResourceBindings       []resourcebinding.ResourceBindingSnapshot
+	Mode                   Mode
+	MaxIterations          int
+}
+
+func buildRuntimeTurnAssembly(input runtimeTurnAssemblyInput) (*agentassembly.TurnAssembly, error) {
+	modelVisible := toolMetadataFromPromptTools(input.CompileContext.AssembledTools)
+	capabilityPolicy := agentassembly.BuildToolSurfaceSnapshot(agentassembly.ToolSurfaceInput{
+		ResourceBindings:  input.ResourceBindings,
+		RegisteredTools:   modelVisible,
+		ModelVisibleTools: modelVisible,
+		DispatchableTools: modelVisible,
+		HiddenTools:       hiddenToolInputsFromPolicy(input.ToolSurfacePolicy),
+		PolicyHash:        input.ToolSurfacePolicy.Hash,
+		Fingerprint:       input.ToolSurfaceFingerprint,
+	})
+	sourceRefs := []string{"runtimekernel:pre_prompt"}
+	if hash := strings.TrimSpace(input.ToolSurfacePolicy.Hash); hash != "" {
+		sourceRefs = append(sourceRefs, "tool-surface-policy:"+hash)
+	}
+	assembly, err := agentassembly.BuildTurnAssembly(agentassembly.TurnAssemblyInput{
+		AdmissionFacts: input.TurnContext.AdmissionFacts,
+		AdmissionError: input.TurnContext.AdmissionError,
+		PermissionProfile: firstNonBlankRuntimeString(
+			input.TurnContext.AdmissionFacts.PermissionProfile,
+			input.TurnContext.Permission.PermissionHash,
+			input.ToolSurfacePolicy.PermissionHash,
+			input.TurnContext.Permission.ApprovalPolicy,
+			input.ToolSurfacePolicy.ApprovalPolicy,
+			input.ToolSurfacePolicy.Hash,
+		),
+		CapabilityPolicy: capabilityPolicy,
+		ContextPolicy: agentassembly.ContextSelectorSnapshot{
+			Lifecycle: agentassembly.LifecycleRequestScope,
+			Policy: firstNonBlankRuntimeString(
+				input.CompileContext.EvidencePolicy,
+				input.CompileContext.PlanningPolicy,
+			),
+			Budget: input.CompileContext.ToolBudget,
+		},
+		LoopPolicy: agentassembly.LoopPolicySnapshot{
+			Lifecycle:      agentassembly.LifecycleRequestScope,
+			MaxIterations:  input.MaxIterations,
+			ToolCallPolicy: string(input.Mode),
+		},
+		FinalContractPolicy: agentassembly.FinalContractSnapshot{
+			Lifecycle: agentassembly.LifecycleRequestScope,
+			Shape:     firstNonBlankRuntimeString(input.CompileContext.AnswerStyle, "default"),
+		},
+		RollbackPolicy: ActionRollbackContractSchemaVersion,
+		SourceRefs:     sourceRefs,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("build turn assembly: %w", err)
+	}
+	return &assembly, nil
+}
+
 func buildAgentAssemblySnapshotForTrace(input agentAssemblyTraceInput) *agentassembly.AgentAssemblySnapshot {
+	result, err := buildAgentAssemblyTraceSnapshots(input)
+	if err != nil {
+		return nil
+	}
+	return result.Projected
+}
+
+type agentAssemblyTraceSnapshots struct {
+	Projected *agentassembly.AgentAssemblySnapshot
+	Legacy    *agentassembly.AgentAssemblySnapshot
+	Shadow    *TurnAssemblyShadowTrace
+}
+
+type TurnAssemblyShadowTrace struct {
+	AssemblyHash      string                  `json:"assemblyHash"`
+	LegacySpecHash    string                  `json:"legacySpecHash"`
+	ProjectedSpecHash string                  `json:"projectedSpecHash"`
+	Match             bool                    `json:"match"`
+	Warning           string                  `json:"warning,omitempty"`
+	SourceRefs        []string                `json:"sourceRefs,omitempty"`
+	FieldDiffs        []TurnAssemblyFieldDiff `json:"fieldDiffs,omitempty"`
+}
+
+type TurnAssemblyFieldDiff struct {
+	Field         string `json:"field"`
+	LegacyHash    string `json:"legacyHash"`
+	ProjectedHash string `json:"projectedHash"`
+	Match         bool   `json:"match"`
+}
+
+func buildAgentAssemblyTraceSnapshots(input agentAssemblyTraceInput) (agentAssemblyTraceSnapshots, error) {
+	buildInput := agentAssemblySnapshotBuildInput(input)
+	legacy := agentassembly.Build(buildInput)
+	result := agentAssemblyTraceSnapshots{
+		Projected: ptrAgentAssemblySnapshot(legacy),
+		Legacy:    ptrAgentAssemblySnapshot(legacy),
+	}
+	if input.TurnAssembly == nil {
+		return result, nil
+	}
+	projected, err := agentassembly.BuildSnapshotFromTurnAssembly(*input.TurnAssembly, buildInput)
+	if err != nil {
+		return agentAssemblyTraceSnapshots{}, fmt.Errorf("project turn assembly snapshot: %w", err)
+	}
+	shadow := compareAgentAssemblySnapshots(*input.TurnAssembly, legacy, projected)
+	result.Projected = ptrAgentAssemblySnapshot(projected)
+	result.Shadow = &shadow
+	return result, nil
+}
+
+func agentAssemblySnapshotBuildInput(input agentAssemblyTraceInput) agentassembly.BuildInput {
 	modelVisible := toolMetadataFromPromptTools(input.CompileContext.AssembledTools)
 	hidden := hiddenToolInputsFromPolicy(input.ToolSurfacePolicy)
-	return ptrAgentAssemblySnapshot(agentassembly.Build(agentassembly.BuildInput{
+	return agentassembly.BuildInput{
 		AgentKind:         strings.TrimSpace(string(input.AgentKind)),
 		Profile:           firstNonBlankRuntimeString(input.CompileContext.Profile, input.Metadata["profile"], input.Metadata["toolProfile"]),
 		RuntimeRole:       string(input.SessionType) + "." + string(input.Mode),
@@ -47,7 +162,45 @@ func buildAgentAssemblySnapshotForTrace(input agentAssemblyTraceInput) *agentass
 			"session":    string(input.SessionType),
 			"mode":       string(input.Mode),
 		},
-	}))
+	}
+}
+
+func compareAgentAssemblySnapshots(assembly agentassembly.TurnAssembly, legacy, projected agentassembly.AgentAssemblySnapshot) TurnAssemblyShadowTrace {
+	fields := []struct {
+		name      string
+		legacy    any
+		projected any
+	}{
+		{name: "agentKind", legacy: legacy.AgentKind, projected: projected.AgentKind},
+		{name: "profile", legacy: legacy.Profile, projected: projected.Profile},
+		{name: "routeReason", legacy: legacy.RouteReason, projected: projected.RouteReason},
+		{name: "resourceBindings", legacy: legacy.ResourceBindings, projected: projected.ResourceBindings},
+		{name: "sessionTargets", legacy: legacy.SessionTargets, projected: projected.SessionTargets},
+		{name: "roleBindings", legacy: legacy.RoleBindings, projected: projected.RoleBindings},
+		{name: "toolSurface", legacy: legacy.ToolSurface, projected: projected.ToolSurface},
+		{name: "contextSelector", legacy: legacy.ContextSelector, projected: projected.ContextSelector},
+		{name: "loopPolicy", legacy: legacy.LoopPolicy, projected: projected.LoopPolicy},
+		{name: "finalContract", legacy: legacy.FinalContract, projected: projected.FinalContract},
+	}
+	diffs := make([]TurnAssemblyFieldDiff, 0, len(fields))
+	allMatch := true
+	for _, field := range fields {
+		legacyHash := agentassembly.StableHash("turn-assembly-shadow."+field.name, field.legacy)
+		projectedHash := agentassembly.StableHash("turn-assembly-shadow."+field.name, field.projected)
+		match := legacyHash == projectedHash
+		allMatch = allMatch && match
+		diffs = append(diffs, TurnAssemblyFieldDiff{
+			Field: field.name, LegacyHash: legacyHash, ProjectedHash: projectedHash, Match: match,
+		})
+	}
+	shadow := TurnAssemblyShadowTrace{
+		AssemblyHash: assembly.Hash, LegacySpecHash: legacy.SpecHash, ProjectedSpecHash: projected.SpecHash,
+		Match: allMatch, SourceRefs: append([]string(nil), assembly.SourceRefs...), FieldDiffs: diffs,
+	}
+	if !allMatch {
+		shadow.Warning = "turn_assembly_shadow_mismatch"
+	}
+	return shadow
 }
 
 type agentAssemblyTraceInput struct {
@@ -62,6 +215,7 @@ type agentAssemblyTraceInput struct {
 	ResourceBindings       []resourcebinding.ResourceBindingSnapshot
 	SessionTargetSnapshot  *resourcebinding.SessionTargetSnapshot
 	RoleBindings           []resourcebinding.ResourceRoleBinding
+	TurnAssembly           *agentassembly.TurnAssembly
 }
 
 func toolMetadataFromPromptTools(tools []promptcompiler.Tool) []tooling.ToolMetadata {

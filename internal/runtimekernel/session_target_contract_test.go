@@ -48,7 +48,15 @@ func TestRunTurnPersistsSessionTargetSnapshotForHostCarryover(t *testing.T) {
 }
 
 func TestRunTurnPersistsSessionTargetRoleBindingsAndConflicts(t *testing.T) {
-	binding := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+	resource := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{
+		Type: resourcebinding.ResourceTypeHost,
+		ID:   "host-a",
+	}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		VerifiedBy: resourcebinding.HostVerifierHostopsResolver,
+		TrustLevel: resourcebinding.TrustLevelVerified,
+	})
+	roleBinding := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
 		ResourceRef:  resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
 		Role:         "primary",
 		SourceTurnID: "turn-host-target-conflict",
@@ -70,7 +78,8 @@ func TestRunTurnPersistsSessionTargetRoleBindingsAndConflicts(t *testing.T) {
 		Mode:                 ModeChat,
 		TurnID:               "turn-host-target-conflict",
 		Input:                "继续检查主机",
-		ResourceRoleBindings: []resourcebinding.ResourceRoleBinding{binding},
+		ResourceBindings:     []resourcebinding.ResourceBindingSnapshot{resource},
+		ResourceRoleBindings: []resourcebinding.ResourceRoleBinding{roleBinding},
 		RoleBindingConflicts: []resourcebinding.RoleBindingConflict{conflict},
 	})
 	if err != nil {

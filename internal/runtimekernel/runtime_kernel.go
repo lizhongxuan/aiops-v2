@@ -258,6 +258,18 @@ func (k *RuntimeKernel) runtimeObserver() Observer {
 	return k.observer
 }
 
+func (k *RuntimeKernel) observeRuntimeStage(ctx context.Context, sessionID, turnID string, iteration int, stage string) {
+	_, span := k.runtimeObserver().StartStage(ctx, StageSpanAttrs{
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Stage:     stage,
+		Iteration: iteration,
+	})
+	if span != nil {
+		span.End()
+	}
+}
+
 func turnExecutionKey(sessionID, turnID string) string {
 	return strings.TrimSpace(sessionID) + ":" + strings.TrimSpace(turnID)
 }
@@ -2219,12 +2231,60 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence, session.RejectedApprovals)
 		compileCtx.VisibleToolFingerprint = assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
 		compileCtx = applyRuntimeStateMetadata(compileCtx, turnMetadata, session, snapshot)
+		if snapshot.TurnAssembly == nil {
+			turnReq := req
+			turnReq.SessionID = session.ID
+			turnReq.TurnID = turnID
+			turnReq.HostID = firstNonBlankRuntimeString(turnReq.HostID, session.HostID)
+			turnReq.Metadata = turnMetadata
+			modelCaps := modelrouter.ModelCapabilities{
+				Provider:         string(agentKind),
+				Model:            modelNameForTrace(chatModel),
+				MaxContextTokens: thresholds.MaxContextTokens,
+				MaxOutputTokens:  thresholds.ReservedOutputTokens,
+			}
+			if k.modelRouter != nil {
+				modelCaps = k.modelRouter.ResolveModelCapabilities(agentKind, modelrouter.ProviderConfig{})
+			}
+			turnContext, turnContextErr := BuildRuntimeTurnContext(turnReq, session, RuntimeTurnContextOptions{
+				Model: modelCaps,
+				ContextBudget: RuntimeContextBudgetSnapshot{
+					MaxTokens:    thresholds.MaxContextTokens,
+					TargetTokens: thresholds.EffectiveContextWindow,
+				},
+				ToolPolicyHash: surfacePolicy.Hash,
+				Lineage:        RuntimeLineageSnapshot{AgentKind: string(agentKind)},
+			})
+			if turnContextErr != nil {
+				return "", nil, fmt.Errorf("turn assembly context: %w", turnContextErr)
+			}
+			assembly, assemblyErr := buildRuntimeTurnAssembly(runtimeTurnAssemblyInput{
+				TurnContext:            turnContext,
+				CompileContext:         compileCtx,
+				ToolSurfacePolicy:      surfacePolicy,
+				ToolSurfaceFingerprint: compileCtx.VisibleToolFingerprint,
+				ResourceBindings:       req.ResourceBindings,
+				Mode:                   req.Mode,
+				MaxIterations:          maxIterations,
+			})
+			if assemblyErr != nil {
+				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "turn assembly validation failed", nil))
+				k.persistTurnSnapshot(session, snapshot)
+				return "", nil, assemblyErr
+			}
+			snapshot.TurnAssembly = assembly
+			k.persistTurnSnapshot(session, snapshot)
+			k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")
+		} else if assemblyErr := snapshot.TurnAssembly.Validate(); assemblyErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
 		compiled, compileErr := k.compiler.Compile(compileCtx)
 		if compileErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("compile prompt: %w", compileErr)
 		}
+		k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")
 		var retentionDecisions []ContextRetentionDecision
 		compiled.PromptSections, retentionDecisions, compileErr = ApplyPromptSectionRetentionPolicy(compiled.PromptSections, DefaultContextRetentionPolicy())
 		if compileErr != nil {
@@ -2291,6 +2351,24 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
 		uxProgressTrace := BuildUXProgressTrace(snapshot)
 		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
+		assemblyTrace, assemblyTraceErr := buildAgentAssemblyTraceSnapshots(agentAssemblyTraceInput{
+			AgentKind:              agentKind,
+			SessionType:            req.SessionType,
+			Mode:                   req.Mode,
+			Metadata:               turnMetadata,
+			CompileContext:         compileCtx,
+			Compiled:               compiled,
+			ToolSurfacePolicy:      surfacePolicy,
+			ToolSurfaceFingerprint: toolFingerprint,
+			ResourceBindings:       toolTraceFields.ResourceBindings,
+			SessionTargetSnapshot:  req.SessionTargetSnapshot,
+			RoleBindings:           toolTraceFields.ResourceRoleBindings,
+			TurnAssembly:           snapshot.TurnAssembly,
+		})
+		if assemblyTraceErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
+		snapshot.TurnAssemblyShadow = assemblyTrace.Shadow
 		debugConfig := k.runtimeDebugConfig(ctx)
 		tracePath, _ := writeRuntimeStepTrace(modeltrace.Config{
 			Enabled: debugConfig.ModelInputTrace,
@@ -2344,23 +2422,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			SpecialInputWorldState:        toolTraceFields.SpecialInputWorldState,
 			SessionTargetSnapshot:         req.SessionTargetSnapshot,
 			RoleBindingConflicts:          req.RoleBindingConflicts,
-			AgentAssemblySnapshot: buildAgentAssemblySnapshotForTrace(agentAssemblyTraceInput{
-				AgentKind:              agentKind,
-				SessionType:            req.SessionType,
-				Mode:                   req.Mode,
-				Metadata:               turnMetadata,
-				CompileContext:         compileCtx,
-				Compiled:               compiled,
-				ToolSurfacePolicy:      surfacePolicy,
-				ToolSurfaceFingerprint: toolFingerprint,
-				ResourceBindings:       toolTraceFields.ResourceBindings,
-				SessionTargetSnapshot:  req.SessionTargetSnapshot,
-				RoleBindings:           toolTraceFields.ResourceRoleBindings,
-			}),
-			ResourceLocks:       toolTraceFields.ResourceLocks,
-			OwnerWriteTraces:    toolTraceFields.OwnerWriteTraces,
-			FailedToolSummaries: toolTraceFields.FailedToolSummaries,
-			FinalEvidenceState:  &finalEvidenceTrace,
+			AgentAssemblySnapshot:         assemblyTrace.Projected,
+			LegacyAgentAssemblySnapshot:   assemblyTrace.Legacy,
+			TurnAssembly:                  snapshot.TurnAssembly,
+			TurnAssemblyShadow:            assemblyTrace.Shadow,
+			ResourceLocks:                 toolTraceFields.ResourceLocks,
+			OwnerWriteTraces:              toolTraceFields.OwnerWriteTraces,
+			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
+			FinalEvidenceState:            &finalEvidenceTrace,
 		})
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
@@ -2413,6 +2482,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		var lastDeltaAt time.Time
 		effectiveProviderConfig := k.modelRouter.ResolveEffectiveProviderConfig(agentKind, modelrouter.ProviderConfig{})
 		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool), modelrouter.WithEinoRequestTimeoutMs(effectiveProviderConfig.RequestTimeoutMs))
+		k.observeRuntimeStage(modelCtx, session.ID, turnID, iteration, "provider_request_started")
 		providerResponse, genErr := providerAdapter.Call(modelCtx, stepCtx.ProviderRequest, func(delta string) {
 			if delta != "" {
 				now := time.Now()

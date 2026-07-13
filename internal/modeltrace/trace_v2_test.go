@@ -56,6 +56,33 @@ func TestWriteTraceDocumentV2WritesSummaryRawRefsAndHarnessTurn(t *testing.T) {
 	}
 }
 
+func TestWriteTraceDocumentV2CarriesTurnAssemblyShadow(t *testing.T) {
+	dir := t.TempDir()
+	path, err := WriteTraceDocumentV2(dir, TraceDocumentV2{
+		SessionID: "session-assembly", TurnID: "turn-assembly",
+		TurnAssembly:                map[string]any{"hash": "assembly-hash"},
+		LegacyAgentAssemblySnapshot: map[string]any{"specHash": "legacy-hash"},
+		TurnAssemblyShadow: map[string]any{
+			"assemblyHash": "assembly-hash",
+			"fieldDiffs":   []any{map[string]any{"field": "loopPolicy", "legacyHash": "a", "projectedHash": "b"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("WriteTraceDocumentV2() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["turnAssembly"] == nil || payload["legacyAgentAssemblySnapshot"] == nil || payload["turnAssemblyShadow"] == nil {
+		t.Fatalf("trace assembly fields = %#v", payload)
+	}
+}
+
 func TestWriteTraceDocumentV2FromRequestWritesV2Schema(t *testing.T) {
 	dir := t.TempDir()
 

@@ -77,6 +77,9 @@ type RuntimeTraceDebugRequest struct {
 	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot
 	RoleBindingConflicts          []resourcebinding.RoleBindingConflict
 	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot
+	LegacyAgentAssemblySnapshot   *agentassembly.AgentAssemblySnapshot
+	TurnAssembly                  *agentassembly.TurnAssembly
+	TurnAssemblyShadow            *TurnAssemblyShadowTrace
 	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection
 	ResourceLocks                 []promptinput.ResourceLockTrace
 	OwnerWriteTraces              []OwnerWriteTrace

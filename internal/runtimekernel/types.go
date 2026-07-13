@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
 	"aiops-v2/internal/mcp"
@@ -668,6 +669,8 @@ type TurnSnapshot struct {
 	CompletedAt             *time.Time                         `json:"completedAt,omitempty"`
 	StablePromptHash        string                             `json:"stablePromptHash,omitempty"`
 	StableToolFingerprint   string                             `json:"stableToolFingerprint,omitempty"`
+	TurnAssembly            *agentassembly.TurnAssembly        `json:"turnAssembly,omitempty"`
+	TurnAssemblyShadow      *TurnAssemblyShadowTrace           `json:"turnAssemblyShadow,omitempty"`
 	SpecialInputReadPlan    *specialinputmemory.MemoryReadPlan `json:"specialInputReadPlan,omitempty"`
 	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef            `json:"toolSurfaceSnapshot,omitempty"`
 	GovernanceSnapshot      string                             `json:"governanceSnapshot,omitempty"`
@@ -710,6 +713,11 @@ func (s TurnSnapshot) Validate() error {
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if s.TurnAssembly != nil {
+		if err := s.TurnAssembly.Validate(); err != nil {
+			return fmt.Errorf("turn assembly: %w", err)
+		}
 	}
 	if s.LatestCheckpoint != nil {
 		if err := s.LatestCheckpoint.Validate(); err != nil {

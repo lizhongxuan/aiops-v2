@@ -232,6 +232,7 @@ func TestRunTurnVerificationCompletionGateRetriesProseApprovalForScopedMutation(
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeExecute,
 		TurnID:      "turn-prose-approval-mutation",
+		HostID:      "host-a",
 		Input:       "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
 		Metadata: map[string]string{
 			"taskDepth":                       "operations",
