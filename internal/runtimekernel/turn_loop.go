@@ -108,23 +108,24 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 }
 
 func runtimeToolRouterSnapshotFromCompile(tools []promptcompiler.Tool, visibleToolNames []string, fingerprint string, policy tooling.ToolSurfacePolicySnapshot) RuntimeToolRouterSnapshot {
-	return RuntimeToolRouterSnapshotFromPolicy(toolNames(tools), policy, visibleToolNames, nil, fingerprint)
+	return RuntimeToolRouterSnapshotFromPolicy(toolNames(tools), policy, visibleToolNames, append([]string{}, visibleToolNames...), fingerprint)
 }
 
-func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) []modelrouter.ProviderToolSpec {
+func providerToolSpecsFromStepToolRouter(surface StepToolRouter) []modelrouter.ProviderToolSpec {
 	names := surface.ModelVisibleTools
-	if len(names) == 0 {
-		names = surface.DispatchableTools
-	}
 	out := make([]modelrouter.ProviderToolSpec, 0, len(names))
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
-		out = append(out, modelrouter.ProviderToolSpec{Name: name, Hash: surface.Fingerprint})
+		out = append(out, modelrouter.ProviderToolSpec{Name: tooling.ProviderSafeToolName(name), Hash: surface.Fingerprint})
 	}
 	return out
+}
+
+func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) []modelrouter.ProviderToolSpec {
+	return providerToolSpecsFromStepToolRouter(surface)
 }
 
 func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContext, req RuntimeTraceDebugRequest) (string, error) {

@@ -81,7 +81,7 @@ type ToolDispatcher struct {
 	toolSurfaceFP       string
 	permissionHash      string
 	surfacePolicy       *tooling.ToolSurfacePolicySnapshot
-	runtimeToolSurface  *RuntimeToolRouterSnapshot
+	stepToolRouter      *StepToolRouter
 	deferredCatalog     DeferredToolCatalogLookup
 	visibleTools        []tooling.ToolMetadata
 	retryConfig         ReadOnlyRetryConfig
@@ -178,20 +178,17 @@ func (d *ToolDispatcher) WithToolSurfacePolicySnapshot(snapshot *tooling.ToolSur
 	return d
 }
 
-func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRouterSnapshot) *ToolDispatcher {
-	cp := RuntimeToolRouterSnapshot{
-		RegisteredTools:   append([]string(nil), snapshot.RegisteredTools...),
-		ModelVisibleTools: append([]string(nil), snapshot.ModelVisibleTools...),
-		DispatchableTools: append([]string(nil), snapshot.DispatchableTools...),
-		HiddenReasons:     copyRuntimeToolHiddenReasons(snapshot.HiddenReasons),
-		PolicyHash:        strings.TrimSpace(snapshot.PolicyHash),
-		Fingerprint:       strings.TrimSpace(snapshot.Fingerprint),
-	}
-	d.runtimeToolSurface = &cp
+func (d *ToolDispatcher) WithStepToolRouter(snapshot StepToolRouter) *ToolDispatcher {
+	cp := cloneStepToolRouter(snapshot)
+	d.stepToolRouter = &cp
 	if cp.Fingerprint != "" {
 		d.toolSurfaceFP = cp.Fingerprint
 	}
 	return d
+}
+
+func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRouterSnapshot) *ToolDispatcher {
+	return d.WithStepToolRouter(snapshot)
 }
 
 func (d *ToolDispatcher) WithDeferredCatalogLookup(lookup DeferredToolCatalogLookup) *ToolDispatcher {
@@ -304,6 +301,9 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			result.DecisionTrace = decisionTrace
 		}
 	}()
+	if blocked, reject := d.rejectModelToolOutsideStep(sessionID, turnID, tc); reject {
+		return blocked
+	}
 
 	// Create tool span if span source is available
 	var toolSpanID string
@@ -328,14 +328,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		}
 		return errResult
 	}
-	if hidden, ok := d.hiddenByRuntimeToolSurface(tc, desc.Metadata); ok {
-		result := d.hiddenToolUnavailableResult(tc, hidden, d.runtimeToolSurfacePolicySnapshot(), desc.Metadata)
-		result.Blocked = true
-		result.Reason = firstNonEmpty(hidden.Reason, "tool_not_dispatchable")
-		return result
-	}
-	if hidden, ok := d.hiddenByToolSurfacePolicy(tc, desc.Metadata, approved || d.hasSessionApprovalGrant(tc, desc)); ok {
-		return d.hiddenToolUnavailableResult(tc, hidden, d.surfacePolicy, desc.Metadata)
+	if d.stepToolRouter == nil {
+		if hidden, ok := d.hiddenByToolSurfacePolicy(tc, desc.Metadata, approved || d.hasSessionApprovalGrant(tc, desc)); ok {
+			return d.hiddenToolUnavailableResult(tc, hidden, d.surfacePolicy, desc.Metadata)
+		}
 	}
 	if errMsg, blocked := toolMCPUnavailableError(tc.Name, desc.Metadata); blocked {
 		errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "mcp", "tool_failed", desc.Metadata)
@@ -940,71 +936,55 @@ func (d *ToolDispatcher) hiddenByToolSurfacePolicy(tc ToolCall, meta tooling.Too
 	return tooling.ToolHiddenBySurfacePolicy(*d.surfacePolicy, meta, tc.Name)
 }
 
-func (d *ToolDispatcher) hiddenByRuntimeToolSurface(tc ToolCall, meta tooling.ToolMetadata) (tooling.ToolHiddenReason, bool) {
-	if d == nil || d.runtimeToolSurface == nil || !runtimeToolSurfaceDispatchGuardEnabled(*d.runtimeToolSurface) {
-		return tooling.ToolHiddenReason{}, false
+func (d *ToolDispatcher) rejectModelToolOutsideStep(sessionID, turnID string, tc ToolCall) (DispatchResult, bool) {
+	if d == nil || d.stepToolRouter == nil {
+		return DispatchResult{}, false
 	}
-	if runtimeToolSurfaceContains(d.runtimeToolSurface.DispatchableTools, meta, tc.Name) {
-		return tooling.ToolHiddenReason{}, false
+	if err := d.stepToolRouter.Validate(); err != nil {
+		return d.stepToolRouterUnavailableResult(tc, "step_tool_router_invalid", "step_tool_router_invalid", true), true
 	}
-	reason := "tool_not_dispatchable"
-	for _, candidate := range runtimeToolSurfaceNameCandidates(meta, tc.Name) {
-		if reasons := d.runtimeToolSurface.HiddenReasons[candidate]; len(reasons) > 0 && strings.TrimSpace(reasons[0]) != "" {
-			reason = strings.TrimSpace(reasons[0])
-			break
+	if d.stepToolRouter.AllowsModelDispatch(tc.Name) {
+		return DispatchResult{}, false
+	}
+	if !stepToolListContains(d.stepToolRouter.RegisteredTools, tc.Name) {
+		errMsg, meta := d.structuredMissingToolError(tc.Name)
+		if meta.Name != "" {
+			return d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", meta), true
 		}
+		return d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed"), true
 	}
-	return tooling.ToolHiddenReason{Name: firstNonEmpty(tc.Name, meta.Name), Reason: reason}, true
+	return d.stepToolRouterUnavailableResult(tc, "tool_not_visible_in_step", d.stepToolRouter.hiddenReason(tc.Name), false), true
 }
 
-func (d *ToolDispatcher) runtimeToolSurfacePolicySnapshot() *tooling.ToolSurfacePolicySnapshot {
-	if d == nil || d.runtimeToolSurface == nil || strings.TrimSpace(d.runtimeToolSurface.PolicyHash) == "" {
-		return nil
+func (d *ToolDispatcher) stepToolRouterUnavailableResult(tc ToolCall, errorType, policyReason string, blocked bool) DispatchResult {
+	if policyReason == "" {
+		policyReason = errorType
 	}
-	return &tooling.ToolSurfacePolicySnapshot{Hash: strings.TrimSpace(d.runtimeToolSurface.PolicyHash)}
-}
-
-func runtimeToolSurfaceDispatchGuardEnabled(surface RuntimeToolRouterSnapshot) bool {
-	return len(surface.ModelVisibleTools) > 0 || len(surface.DispatchableTools) > 0 || len(surface.HiddenReasons) > 0
-}
-
-func runtimeToolSurfaceContains(names []string, meta tooling.ToolMetadata, called string) bool {
-	candidates := runtimeToolSurfaceNameCandidates(meta, called)
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		for _, candidate := range candidates {
-			if strings.EqualFold(name, candidate) {
-				return true
-			}
-		}
+	payload := map[string]any{
+		"schemaVersion":  "aiops.tool_unavailable/v1",
+		"errorType":      errorType,
+		"toolName":       strings.TrimSpace(tc.Name),
+		"reason":         errorType,
+		"policyReason":   policyReason,
+		"retryable":      false,
+		"requiredAction": "continue_without_tool_or_start_a_new_step",
 	}
-	return false
-}
-
-func runtimeToolSurfaceNameCandidates(meta tooling.ToolMetadata, called string) []string {
-	values := []string{called, meta.Name, tooling.ProviderSafeToolName(called), tooling.ProviderSafeToolName(meta.Name)}
-	values = append(values, meta.Aliases...)
-	for _, alias := range meta.Aliases {
-		values = append(values, tooling.ProviderSafeToolName(alias))
+	if hash := strings.TrimSpace(d.stepToolRouter.PolicyHash); hash != "" {
+		payload["policySnapshotHash"] = hash
 	}
-	out := make([]string, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		key := strings.ToLower(value)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, value)
+	content, _ := json.Marshal(payload)
+	return DispatchResult{
+		ToolCallID: tc.ID,
+		Content:    string(content),
+		Blocked:    blocked,
+		Reason:     errorType,
+		Outcome:    map[bool]string{true: "blocked", false: "tool_unavailable"}[blocked],
+		Source:     "step_tool_router",
+		Result: tooling.ToolResult{
+			ToolCallID: tc.ID,
+			Content:    string(content),
+		},
 	}
-	return out
 }
 
 func copyRuntimeToolHiddenReasons(in map[string][]string) map[string][]string {

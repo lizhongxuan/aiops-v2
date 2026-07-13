@@ -253,6 +253,7 @@ type ToolSurfaceSnapshotRef struct {
 	ID                 string                             `json:"id"`
 	Fingerprint        string                             `json:"fingerprint"`
 	ToolNames          []string                           `json:"toolNames,omitempty"`
+	StepRouter         *StepToolRouter                    `json:"stepRouter,omitempty"`
 	PolicySnapshotHash string                             `json:"policySnapshotHash,omitempty"`
 	PolicySnapshot     *tooling.ToolSurfacePolicySnapshot `json:"policySnapshot,omitempty"`
 	CreatedAt          time.Time                          `json:"createdAt"`

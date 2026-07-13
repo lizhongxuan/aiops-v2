@@ -41,6 +41,9 @@ func (s RuntimeStepContext) Validate() error {
 	if s.ToolSurface.Fingerprint == "" {
 		return fmt.Errorf("tool router fingerprint is required")
 	}
+	if err := s.ToolSurface.Validate(); err != nil {
+		return fmt.Errorf("step tool router: %w", err)
+	}
 	for i := range s.ModelInput {
 		if err := s.ModelInput[i].Validate(); err != nil {
 			return fmt.Errorf("model input[%d]: %w", i, err)

@@ -2744,6 +2744,9 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 			Description:      "Write a file",
 			Mutating:         true,
 			RequiresApproval: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "argument_scoped",
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "synthetic_file",
 				ResourceID:    "/tmp/demo",
@@ -4333,6 +4336,9 @@ func TestRunTurn_MutatingToolsSerializeEvenWhenPolicyAllowsExecution(t *testing.
 			Name:        "mutate_a",
 			Description: "mutate A",
 			Mutating:    true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "argument_scoped",
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "synthetic_resource",
 				ResourceID:    "a",
@@ -4353,6 +4359,9 @@ func TestRunTurn_MutatingToolsSerializeEvenWhenPolicyAllowsExecution(t *testing.
 			Name:        "mutate_b",
 			Description: "mutate B",
 			Mutating:    true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				PermissionScope: "argument_scoped",
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "synthetic_resource",
 				ResourceID:    "b",

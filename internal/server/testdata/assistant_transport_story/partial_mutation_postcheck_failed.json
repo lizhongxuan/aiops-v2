@@ -130,15 +130,15 @@
         "compilerVersion": "prompt-fingerprint-v1",
         "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
-        "runtimePolicyHash": "5847f715ab46acaafa05cb6daf5bccd509af8153f8b381b36f4e9c96ba449f34",
+        "runtimePolicyHash": "6cb2c6dffbf6ee0f3c04c6804704c98058ae32abbc8a151506967e44da923aee",
         "stableHash": "80993299db196c508d0dff8c72bd35e5123d9798360ba46abcb84b0b2afc81ef",
         "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
         "toolRegistryHash": "a33901c648f0a678582faceb4ed16fb2469792cb7ff66c4356ebbd002b1632d7",
         "version": "prompt-fingerprint-v1"
       },
       "stablePromptHash": "80993299db196c508d0dff8c72bd35e5123d9798360ba46abcb84b0b2afc81ef",
-      "stableToolFingerprint": "c2694b378a7422863b9263307f0a99cdd20a7179aab05544e6600a67bddfc96c",
-      "toolSurfaceFingerprints": ["c2694b378a7422863b9263307f0a99cdd20a7179aab05544e6600a67bddfc96c"],
+      "stableToolFingerprint": "sha256:4c93519c47f06282b897824d942646b3059995b500bd0ca9dd0aee1737638a0e",
+      "toolSurfaceFingerprints": ["sha256:4c93519c47f06282b897824d942646b3059995b500bd0ca9dd0aee1737638a0e"],
       "toolPolicyHashes": ["709b36b41bcc89e6a9c7f6fc17a8b4484fa9a2d10d00e88625cebc784533aadd"],
       "governanceSnapshot": ""
     }

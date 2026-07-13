@@ -2229,7 +2229,19 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx.EvidenceReminders = compileEvidenceReminders(req.Mode, session.PendingEvidence)
 		compileCtx.ToolDelta = iterationToolDelta(snapshot, compileCtx.AssembledTools)
 		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence, session.RejectedApprovals)
-		compileCtx.VisibleToolFingerprint = assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		sourceToolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		stepToolRouter, routerErr := BuildStepToolRouter(StepToolRouterInput{
+			Registered:        toolNames(dispatchTools),
+			ModelVisible:      toolNames(compileCtx.AssembledTools),
+			Dispatchable:      toolNames(compileCtx.AssembledTools),
+			HiddenReasons:     hiddenReasonsFromToolSurfacePolicy(surfacePolicy),
+			PolicyHash:        surfacePolicy.Hash,
+			SourceFingerprint: sourceToolFingerprint,
+		})
+		if routerErr != nil {
+			return "", nil, fmt.Errorf("step tool router: %w", routerErr)
+		}
+		compileCtx.VisibleToolFingerprint = stepToolRouter.Fingerprint
 		compileCtx = applyRuntimeStateMetadata(compileCtx, turnMetadata, session, snapshot)
 		if snapshot.TurnAssembly == nil {
 			turnReq := req
@@ -2308,10 +2320,12 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
 		toolFingerprint := compileCtx.VisibleToolFingerprint
 		visibleToolNames := toolNames(compileCtx.AssembledTools)
+		frozenStepToolRouter := cloneStepToolRouter(stepToolRouter)
 		toolSurfaceSnapshot := ToolSurfaceSnapshotRef{
 			ID:                 fmt.Sprintf("toolsurface-%s-%d", turnID, iteration),
 			Fingerprint:        toolFingerprint,
 			ToolNames:          append([]string(nil), visibleToolNames...),
+			StepRouter:         &frozenStepToolRouter,
 			PolicySnapshotHash: surfacePolicy.Hash,
 			PolicySnapshot:     &surfacePolicy,
 			CreatedAt:          time.Now(),
@@ -2320,9 +2334,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
-		toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
+		modelVisibleStepTools := modelVisibleToolsForStep(dispatchTools, stepToolRouter)
+		toolPool := tooling.AssembleEinoToolPool(modelVisibleStepTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "call_model", turnSpanID)
-		runtimeToolSurface := runtimeToolRouterSnapshotFromCompile(compileCtx.AssembledTools, visibleToolNames, toolFingerprint, surfacePolicy)
+		runtimeToolSurface := stepToolRouter
 		checkpointRef := ""
 		if snapshot.LatestCheckpoint != nil {
 			checkpointRef = snapshot.LatestCheckpoint.ID
@@ -5308,6 +5323,7 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 }
 
 func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot) *ToolDispatcher {
+	runtimeToolSurface = hydrateStepToolRouterForDispatch(tools, runtimeToolSurface)
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
 		if toolDef == nil {
@@ -5330,8 +5346,7 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithUnexpectedStateSignals(collectUnexpectedStateSignalsFromSession(session)).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
-		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
-		WithRuntimeToolRouterSnapshot(runtimeToolSurface).
+		WithStepToolRouter(runtimeToolSurface).
 		WithVisibleToolMetadata(toolMetadataList(tools)).
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(k.runtimeFeatureFlags(context.Background()))).
 		WithExecutionScopeGuard(executionScopeGuardConfigFromSnapshot(snapshot)).

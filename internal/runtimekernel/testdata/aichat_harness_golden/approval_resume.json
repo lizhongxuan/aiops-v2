@@ -12,6 +12,11 @@
         }
       },
       "riskLevel": "high",
+      "approval": {
+        "reason": "protected secret access requires approval",
+        "risk": "high",
+        "source": "golden"
+      },
       "result": "secret"
     }
   ],
