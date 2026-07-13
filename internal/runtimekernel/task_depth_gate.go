@@ -36,7 +36,26 @@ func depthProfileFromAdmissionFacts(req TurnRequest, facts runtimecontract.Admis
 	if admissionIntentHasNoControlFacts(facts.Intent) {
 		return depthProfileFromTurnRequest(req)
 	}
-	return depthProfileFromIntentFrame(req, facts.Intent)
+	profile := depthProfileFromIntentFrame(req, facts.Intent)
+	if admissionIntentIsNoTargetAnalysis(facts) {
+		profile.AnalysisOnly = true
+		profile.ExecutionProhibited = true
+		profile.RequiresApproval = false
+		profile.RequiresValidation = false
+	}
+	return profile
+}
+
+func admissionIntentIsNoTargetAnalysis(facts runtimecontract.AdmissionFacts) bool {
+	if len(facts.TargetRefs) > 0 || !facts.SessionTarget.IsZero() {
+		return false
+	}
+	switch facts.Intent.Kind {
+	case runtimecontract.IntentKindDiagnose, runtimecontract.IntentKindVerify:
+		return true
+	default:
+		return false
+	}
 }
 
 func admissionIntentHasNoControlFacts(frame runtimecontract.IntentFrame) bool {

@@ -87,6 +87,36 @@ func TestDepthProfileFromAdmissionFactsPreservesLegacyDepthPolicyWithoutTypedInt
 	}
 }
 
+func TestDepthProfileFromAdmissionFactsTreatsNoTargetDiagnosisAsAnalysisOnly(t *testing.T) {
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent: &runtimecontract.IntentFrame{
+			Kind:       runtimecontract.IntentKindDiagnose,
+			DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopePublicWeb},
+			RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskNetwork},
+			Evidence: runtimecontract.EvidenceEnvelope{
+				HasUserProvidedEvidence: true,
+				EvidenceKinds:           []string{"log"},
+			},
+			Confidence: runtimecontract.ConfidenceHigh,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	profile := depthProfileFromAdmissionFacts(TurnRequest{
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		Input:       "只基于日志分析，不要连接主机",
+	}, facts)
+
+	if !profile.AnalysisOnly || !profile.ExecutionProhibited {
+		t.Fatalf("profile = %+v, want no-target diagnosis to be analysis-only and execution-prohibited", profile)
+	}
+	if profile.RequiresApproval || profile.RequiresValidation {
+		t.Fatalf("profile = %+v, want no approval/validation for no-target analysis", profile)
+	}
+}
+
 func TestDepthProfileFromAdmissionFactsPrefersTypedIntentOverConflictingMetadata(t *testing.T) {
 	conflictingMetadata := map[string]string{
 		runtimecontract.MetadataIntentFrame:      `{"kind":"change","risk_budget":["write"],"confidence":"high"}`,
