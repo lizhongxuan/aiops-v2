@@ -35,8 +35,6 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	if turnReq.TurnID == "" && session.CurrentTurn != nil {
 		turnReq.TurnID = session.CurrentTurn.ID
 	}
-	turnReq.HostID = firstNonBlankRuntimeString(turnReq.HostID, session.HostID)
-
 	modelCaps := modelrouter.ModelCapabilities{
 		Provider:         string(agentKind),
 		Model:            strings.TrimSpace(modelName),

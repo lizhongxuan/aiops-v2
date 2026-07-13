@@ -81,8 +81,9 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 	}
 	admissionControlHash := StableHash("turn-assembly.admission-control", map[string]any{
 		"intent": assembly.AdmissionFacts.Intent, "userConstraints": assembly.AdmissionFacts.UserConstraints,
-		"sessionTarget": assembly.AdmissionFacts.SessionTarget, "resourceBindings": assembly.AdmissionFacts.ResourceBindings,
-		"roleBindings": assembly.AdmissionFacts.RoleBindings, "agentKind": assembly.AdmissionFacts.AgentKind,
+		"sessionTarget": assembly.AdmissionFacts.SessionTarget, "targetRefs": assembly.AdmissionFacts.TargetRefs,
+		"resourceBindings": assembly.AdmissionFacts.ResourceBindings,
+		"roleBindings":     assembly.AdmissionFacts.RoleBindings, "agentKind": assembly.AdmissionFacts.AgentKind,
 		"profile": assembly.AdmissionFacts.Profile, "permissionProfile": assembly.AdmissionFacts.PermissionProfile,
 		"sourceRefs": assembly.AdmissionFacts.SourceRefs,
 	})

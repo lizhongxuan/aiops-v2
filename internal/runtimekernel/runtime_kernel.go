@@ -590,12 +590,7 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 			Status:          "pending_input",
 		}, nil
 	}
-	if hostID := strings.TrimSpace(req.HostID); hostID != "" {
-		session.HostID = hostID
-		req.HostID = hostID
-	} else if hostID := strings.TrimSpace(session.HostID); hostID != "" {
-		req.HostID = hostID
-	}
+	req.HostID = strings.TrimSpace(req.HostID)
 	persistSessionTargetRequestState(session, req)
 	runCtx, runCancel := context.WithCancel(ctx)
 	if observedCtx, span := k.runtimeObserver().StartTurn(runCtx, TurnSpanAttrs{
@@ -1503,12 +1498,25 @@ func persistSessionTargetRequestState(session *SessionState, req TurnRequest) {
 	}
 	if req.SessionTargetSnapshot != nil {
 		session.SessionTargetSnapshot = req.SessionTargetSnapshot
-	}
-	if len(req.ResourceRoleBindings) > 0 {
 		session.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
-	}
-	if len(req.RoleBindingConflicts) > 0 {
 		session.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	} else {
+		if len(req.ResourceRoleBindings) > 0 {
+			session.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+		}
+		if len(req.RoleBindingConflicts) > 0 {
+			session.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+		}
+	}
+
+	session.HostID = strings.TrimSpace(req.HostID)
+	if snapshot := session.SessionTargetSnapshot; snapshot != nil && !snapshot.Expired() && !snapshot.RequiresConfirmation && snapshot.Confidence > 0 {
+		hostIDs := resourcebinding.HostIDsFromSessionTarget(snapshot)
+		if len(hostIDs) == 1 {
+			session.HostID = hostIDs[0]
+		} else {
+			session.HostID = ""
+		}
 	}
 }
 
@@ -2210,7 +2218,6 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			turnReq := req
 			turnReq.SessionID = session.ID
 			turnReq.TurnID = turnID
-			turnReq.HostID = firstNonBlankRuntimeString(turnReq.HostID, session.HostID)
 			turnReq.Metadata = turnMetadata
 			modelCaps := modelrouter.ModelCapabilities{
 				Provider:         string(agentKind),

@@ -62,6 +62,31 @@ func TestTurnAssemblyHashChangesWithPermissionProfileAndResource(t *testing.T) {
 	}
 }
 
+func TestTurnAssemblyHashCoversTypedTargetRefs(t *testing.T) {
+	baseFacts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:     &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		Profile:    "advisor",
+		TargetRefs: []resourcebinding.ResourceRef{{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}},
+	})
+	changedFacts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:     &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		Profile:    "advisor",
+		TargetRefs: []resourcebinding.ResourceRef{{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}},
+	})
+	base := mustTurnAssembly(t, validTurnAssemblyInput(baseFacts))
+	changed := mustTurnAssembly(t, validTurnAssemblyInput(changedFacts))
+
+	if base.Hash == changed.Hash {
+		t.Fatalf("typed target refs did not change TurnAssembly hash: %q", base.Hash)
+	}
+
+	tampered := base
+	tampered.AdmissionFacts = changedFacts
+	if err := tampered.Validate(); err == nil {
+		t.Fatal("TurnAssembly.Validate() accepted replacement typed target refs with the old assembly hash")
+	}
+}
+
 func TestTurnAssemblyRejectsMutationWithoutTargetPermissionOrRollback(t *testing.T) {
 	missingTarget, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
 		Intent:            &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}},
