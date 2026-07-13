@@ -90,6 +90,8 @@ func TestWriteTraceDocumentV2RedactsSensitiveKeysWithoutCorruptingTokenCounters(
 		SessionID: "session-redaction", TurnID: "turn-redaction",
 		TurnContext: map[string]any{"metadata": map[string]any{
 			"apiKey": "secret-canary-v2", "note": "token=secret-canary-v2",
+			"secretRef": "secret-canary-v2", "secret_ref": "secret-canary-v2",
+			"authorizationHeader": "secret-canary-v2", "accessTokenValue": "secret-canary-v2",
 		}},
 		SpecialInputWorldState: &specialinputmemory.SpecialInputWorldStateSection{ModelSummary: "token=secret-canary-v2"},
 		PromptInputTrace: map[string]any{"contextUsage": map[string]any{

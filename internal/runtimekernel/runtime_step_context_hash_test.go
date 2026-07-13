@@ -89,6 +89,14 @@ func TestRuntimeStepContextHashDeepFreezesAndRejectsProviderTamper(t *testing.T)
 	if err := tamperedHash.Validate(); err == nil {
 		t.Fatal("Validate() accepted tampered provider model input hash")
 	}
+	tamperedMetadata, err := cloneRuntimeStepContext(frozen)
+	if err != nil {
+		t.Fatalf("cloneRuntimeStepContext() error = %v", err)
+	}
+	tamperedMetadata.ProviderRequest.ClientMetadata["turnId"] = "tampered"
+	if err := tamperedMetadata.Validate(); err == nil {
+		t.Fatal("Validate() accepted tampered provider client metadata")
+	}
 
 	providerRequest, err := frozen.ValidatedProviderRequest()
 	if err != nil {

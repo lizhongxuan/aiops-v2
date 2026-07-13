@@ -112,6 +112,21 @@ describe("parsePromptTrace", () => {
     expect(vm.summary.messageCount).toBe(1);
   });
 
+  it("reads top-level modelInput when stepContext is hash-only", () => {
+    const vm = parsePromptTrace({
+      schemaVersion: "aiops.trace/v2",
+      sessionId: "session-step-hash",
+      turnId: "turn-step-hash",
+      stepContext: { hash: "step-hash", turnAssemblyHash: "assembly-hash" },
+      modelInput: [{ id: "user-1", providerRole: "user", semanticRole: "user", content: "hello" }],
+      toolSurface: { modelVisibleTools: [], dispatchableTools: [] },
+    });
+
+    expect(vm.layers).toHaveLength(1);
+    expect(vm.layers[0].content).toBe("hello");
+    expect(vm.warnings.some((item) => item.message.includes("没有 modelInput"))).toBe(false);
+  });
+
   it("parses a real-shaped prompt trace into summary, layers, tools, and fingerprints", () => {
     const vm = parsePromptTrace(sampleTrace());
 

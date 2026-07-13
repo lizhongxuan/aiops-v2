@@ -70,6 +70,7 @@ func ComputeRuntimeStepContextHash(step RuntimeStepContext) string {
 			"providerMessagesHash":  step.ProviderRequest.ProviderMessagesHash,
 			"requestPropertiesHash": step.ProviderRequest.RequestPropertiesHash,
 			"promptCacheKey":        step.ProviderRequest.PromptCacheKey,
+			"clientMetadata":        step.ProviderRequest.ClientMetadata,
 		},
 	})
 }

@@ -47,8 +47,10 @@ export function parsePromptTrace(input) {
   const stepContext = isPlainObject(payload.stepContext) ? payload.stepContext : {};
   const modelInput = Array.isArray(stepContext.modelInput)
     ? stepContext.modelInput
+    : Array.isArray(payload.modelInput)
+      ? payload.modelInput
     : [];
-  if (!Array.isArray(stepContext.modelInput)) {
+  if (!Array.isArray(stepContext.modelInput) && !Array.isArray(payload.modelInput)) {
     warnings.push(warning("warning", "trace 中没有 modelInput[]，只能展示空输入。"));
   }
 

@@ -194,7 +194,9 @@ func traceV2SensitiveKey(key string) bool {
 			return true
 		}
 	}
-	if strings.HasPrefix(key, "secret") && (strings.HasSuffix(key, "key") || strings.HasSuffix(key, "value")) {
+	if strings.Contains(key, "secretref") || strings.HasPrefix(key, "authorization") || strings.HasSuffix(key, "authorization") ||
+		strings.Contains(key, "accesstoken") || strings.Contains(key, "refreshtoken") ||
+		(strings.HasPrefix(key, "secret") && (strings.HasSuffix(key, "key") || strings.HasSuffix(key, "value") || strings.HasSuffix(key, "ref"))) {
 		return true
 	}
 	return false
