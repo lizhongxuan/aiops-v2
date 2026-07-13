@@ -5,6 +5,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/tooling"
 )
 
@@ -24,4 +25,11 @@ type Config interface {
 	RuntimeSessionID() string
 	RuntimeInput() string
 	RuntimeMetadata() map[string]string
+}
+
+// PromptEnvelopeV2Config is the typed prompt extension for child-agent
+// configs. Keeping it separate preserves compatibility with legacy Config
+// implementations while allowing the runtime to prefer validated envelopes.
+type PromptEnvelopeV2Config interface {
+	RuntimePromptEnvelopeV2() promptcompiler.PromptEnvelopeV2
 }

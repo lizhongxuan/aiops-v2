@@ -5,6 +5,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/tooling"
 )
 
@@ -27,6 +28,13 @@ func (c *AgentConfig) RuntimeInstructions() []*schema.Message {
 		return nil
 	}
 	return c.Instructions
+}
+
+func (c *AgentConfig) RuntimePromptEnvelopeV2() promptcompiler.PromptEnvelopeV2 {
+	if c == nil {
+		return promptcompiler.PromptEnvelopeV2{}
+	}
+	return clonePromptEnvelopeV2(c.PromptEnvelopeV2)
 }
 
 func (c *AgentConfig) RuntimeTools() []tool.BaseTool {

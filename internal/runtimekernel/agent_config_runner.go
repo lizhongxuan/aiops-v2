@@ -92,7 +92,10 @@ func (r *AgentConfigRunner) Run(ctx context.Context, config agentruntime.Config)
 		model:           firstNonEmpty(strings.TrimSpace(config.RuntimeKind()), "child-agent"),
 		reasoningEffort: firstMetadataValue(runtimeMetadata, "reasoningEffort", "reasoning_effort"),
 	})
-	instructionContext := classifyFixedAgentInstructions(config.RuntimeInstructions())
+	instructionContext, err := fixedAgentInstructionContextForConfig(config)
+	if err != nil {
+		return "", err
+	}
 
 	kernel := NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:       fixedAgentToolSource{sessionType: sessionType, mode: mode, assembledTools: assembledTools, runtimeTools: config.RuntimeTools(), metadata: runtimeMetadata, config: config},
@@ -262,6 +265,56 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 type fixedAgentInstructionContext struct {
 	Role    string
 	Dynamic string
+}
+
+func fixedAgentInstructionContextForConfig(config agentruntime.Config) (fixedAgentInstructionContext, error) {
+	if typed, ok := config.(agentruntime.PromptEnvelopeV2Config); ok {
+		envelope := typed.RuntimePromptEnvelopeV2()
+		if promptEnvelopeV2IsPresent(envelope) {
+			if err := envelope.Validate(); err != nil {
+				return fixedAgentInstructionContext{}, fmt.Errorf("validate child prompt envelope v2: %w", err)
+			}
+			return classifyFixedAgentPromptEnvelopeV2(envelope), nil
+		}
+	}
+	return classifyFixedAgentInstructions(config.RuntimeInstructions()), nil
+}
+
+func promptEnvelopeV2IsPresent(envelope promptcompiler.PromptEnvelopeV2) bool {
+	return strings.TrimSpace(envelope.SchemaVersion) != "" || len(envelope.Sections) > 0 || len(envelope.DynamicContext) > 0
+}
+
+func classifyFixedAgentPromptEnvelopeV2(envelope promptcompiler.PromptEnvelopeV2) fixedAgentInstructionContext {
+	role := make([]string, 0, 1)
+	dynamic := make([]string, 0, len(envelope.DynamicContext))
+	for _, section := range envelope.Sections {
+		content := strings.TrimSpace(section.Content)
+		if content == "" {
+			continue
+		}
+		switch section.LogicalLayer {
+		case promptcompiler.LayerRoleProfileCore:
+			role = append(role, content)
+		case promptcompiler.LayerStepDynamicContext:
+			if fixedAgentTypedSectionIsCurrentStepFact(section) {
+				continue
+			}
+			dynamic = append(dynamic, content)
+		}
+	}
+	return fixedAgentInstructionContext{
+		Role:    strings.Join(role, "\n\n"),
+		Dynamic: strings.Join(dynamic, "\n\n"),
+	}
+}
+
+func fixedAgentTypedSectionIsCurrentStepFact(section promptcompiler.PromptCompiledSection) bool {
+	switch strings.TrimSpace(section.Source) {
+	case promptcompiler.DynamicContextSourceRuntimeState, promptcompiler.DynamicContextSourceToolSurface:
+		return true
+	default:
+		return false
+	}
 }
 
 func classifyFixedAgentInstructions(messages []*schema.Message) fixedAgentInstructionContext {
