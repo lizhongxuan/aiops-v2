@@ -86,17 +86,7 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 		}
 		facts.UserConstraints = uniqueSortedAdmissionStrings(append(facts.UserConstraints, value))
 	}
-	facts.Hash = resourcebinding.StableTraceHash("runtimecontract.admission-facts", map[string]any{
-		"intent":            facts.Intent,
-		"userConstraints":   facts.UserConstraints,
-		"sessionTarget":     facts.SessionTarget,
-		"resourceBindings":  facts.ResourceBindings,
-		"roleBindings":      facts.RoleBindings,
-		"agentKind":         facts.AgentKind,
-		"profile":           facts.Profile,
-		"permissionProfile": facts.PermissionProfile,
-		"sourceRefs":        facts.SourceRefs,
-	})
+	facts.Hash = AdmissionFactsControlHash(facts)
 	if intentErr != nil {
 		return facts, intentErr
 	}
@@ -104,6 +94,37 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 		return facts, err
 	}
 	return facts, nil
+}
+
+func AdmissionFactsControlHash(facts AdmissionFacts) string {
+	return resourcebinding.StableTraceHash("runtimecontract.admission-facts", map[string]any{
+		"intent":            facts.Intent,
+		"userConstraints":   admissionHashSlice(facts.UserConstraints),
+		"sessionTarget":     facts.SessionTarget,
+		"resourceBindings":  admissionHashSlice(facts.ResourceBindings),
+		"roleBindings":      admissionHashSlice(facts.RoleBindings),
+		"agentKind":         facts.AgentKind,
+		"profile":           facts.Profile,
+		"permissionProfile": facts.PermissionProfile,
+		"sourceRefs":        admissionHashSlice(facts.SourceRefs),
+	})
+}
+
+func admissionHashSlice[T any](values []T) []T {
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+func ValidateAdmissionFactsIntegrity(facts AdmissionFacts) error {
+	if err := ValidateAdmissionFacts(facts); err != nil {
+		return err
+	}
+	if strings.TrimSpace(facts.Hash) == "" || facts.Hash != AdmissionFactsControlHash(facts) {
+		return fmt.Errorf("admission facts hash mismatch")
+	}
+	return nil
 }
 
 func ValidateAdmissionFacts(facts AdmissionFacts) error {

@@ -3,6 +3,7 @@ package agentassembly
 import (
 	"testing"
 
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 )
@@ -38,14 +39,20 @@ func TestTurnAssemblyHashChangesWithPermissionProfileAndResource(t *testing.T) {
 	permissionInput.PermissionProfile = "restricted"
 	permission := mustTurnAssembly(t, permissionInput)
 
-	profileFacts := baseFacts
-	profileFacts.Profile = "host-worker"
+	profileFacts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:        &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		Profile:       "host-worker",
+		SessionTarget: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+	})
 	profileInput := baseInput
 	profileInput.AdmissionFacts = profileFacts
 	profile := mustTurnAssembly(t, profileInput)
 
-	resourceFacts := baseFacts
-	resourceFacts.SessionTarget.ID = "host-b"
+	resourceFacts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:        &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		Profile:       "advisor",
+		SessionTarget: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"},
+	})
 	resourceInput := baseInput
 	resourceInput.AdmissionFacts = resourceFacts
 	resource := mustTurnAssembly(t, resourceInput)
@@ -136,6 +143,57 @@ func TestTurnAssemblyCompatibilityProjectionRejectsHashMismatch(t *testing.T) {
 	assembly.AdmissionFacts.Profile = "tampered-profile"
 	if _, err := BuildSnapshotFromTurnAssembly(assembly, BuildInput{}); err == nil {
 		t.Fatal("BuildSnapshotFromTurnAssembly() error = nil, want hash mismatch rejection")
+	}
+}
+
+func TestTurnAssemblyRejectsStaleAdmissionFactsHash(t *testing.T) {
+	facts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:  &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose},
+		Profile: "advisor",
+	})
+	facts.Profile = "tampered-profile"
+	if _, err := BuildTurnAssembly(validTurnAssemblyInput(facts)); err == nil {
+		t.Fatal("BuildTurnAssembly() error = nil, want stale admission hash rejection")
+	}
+}
+
+func TestTurnAssemblyCompatibilitySpecHashCoversPreservedFields(t *testing.T) {
+	facts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{Intent: &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose}})
+	assembly := mustTurnAssembly(t, validTurnAssemblyInput(facts))
+	baseInput := BuildInput{
+		RuntimeRole:       "workspace.advisor",
+		ProfilePromptHash: "sha256:profile-a",
+		PromptSections:    []promptcompiler.PromptSectionTrace{{ID: "base", Hash: "sha256:base-a"}},
+		TraceTags:         map[string]string{"route": "advisor"},
+	}
+	base, err := BuildSnapshotFromTurnAssembly(assembly, baseInput)
+	if err != nil {
+		t.Fatalf("BuildSnapshotFromTurnAssembly(base) error = %v", err)
+	}
+	variants := []BuildInput{baseInput, baseInput, baseInput, baseInput}
+	variants[0].RuntimeRole = "workspace.worker"
+	variants[1].ProfilePromptHash = "sha256:profile-b"
+	variants[2].PromptSections = []promptcompiler.PromptSectionTrace{{ID: "base", Hash: "sha256:base-b"}}
+	variants[3].TraceTags = map[string]string{"route": "worker"}
+	for index, input := range variants {
+		snapshot, err := BuildSnapshotFromTurnAssembly(assembly, input)
+		if err != nil {
+			t.Fatalf("variant %d BuildSnapshotFromTurnAssembly() error = %v", index, err)
+		}
+		if snapshot.SpecHash == base.SpecHash {
+			t.Fatalf("variant %d preserved field missing from SpecHash %q", index, snapshot.SpecHash)
+		}
+	}
+}
+
+func TestLegacyBuildPreservesCallerProvidedNestedHashSemantics(t *testing.T) {
+	empty := Build(BuildInput{ContextSelector: ContextSelectorSnapshot{Policy: "bounded"}, FinalContract: FinalContractSnapshot{Shape: "typed"}})
+	prefilled := Build(BuildInput{
+		ContextSelector: ContextSelectorSnapshot{Policy: "bounded", Hash: "sha256:caller-context"},
+		FinalContract:   FinalContractSnapshot{Shape: "typed", Hash: "sha256:caller-final"},
+	})
+	if empty.ContextSelector.Hash == prefilled.ContextSelector.Hash || empty.FinalContract.Hash == prefilled.FinalContract.Hash {
+		t.Fatalf("legacy nested hash semantics drifted: empty=%#v prefilled=%#v", empty, prefilled)
 	}
 }
 

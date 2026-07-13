@@ -60,7 +60,12 @@ func Build(input BuildInput) AgentAssemblySnapshot {
 		TraceTags:         cloneStringMap(input.TraceTags),
 		Lifecycle:         LifecycleTurnScope,
 	}
-	snapshot.SpecHash = StableHash("agent-assembly.snapshot", map[string]any{
+	snapshot.SpecHash = agentAssemblySnapshotSpecHash(snapshot, "")
+	return snapshot
+}
+
+func agentAssemblySnapshotSpecHash(snapshot AgentAssemblySnapshot, turnAssemblyHash string) string {
+	payload := map[string]any{
 		"agentKind":         snapshot.AgentKind,
 		"profile":           snapshot.Profile,
 		"runtimeRole":       snapshot.RuntimeRole,
@@ -75,8 +80,11 @@ func Build(input BuildInput) AgentAssemblySnapshot {
 		"finalHash":         snapshot.FinalContract.Hash,
 		"profilePromptHash": snapshot.ProfilePromptHash,
 		"traceTags":         snapshot.TraceTags,
-	})
-	return snapshot
+	}
+	if turnAssemblyHash = strings.TrimSpace(turnAssemblyHash); turnAssemblyHash != "" {
+		payload["turnAssemblyHash"] = turnAssemblyHash
+	}
+	return StableHash("agent-assembly.snapshot", payload)
 }
 
 func BuildSnapshotFromTurnAssembly(assembly TurnAssembly, input BuildInput) (AgentAssemblySnapshot, error) {
@@ -105,7 +113,7 @@ func BuildSnapshotFromTurnAssembly(assembly TurnAssembly, input BuildInput) (Age
 	snapshot.ContextSelector = frozen.ContextPolicy
 	snapshot.LoopPolicy = frozen.LoopPolicy
 	snapshot.FinalContract = frozen.FinalContractPolicy
-	snapshot.SpecHash = frozen.Hash
+	snapshot.SpecHash = agentAssemblySnapshotSpecHash(snapshot, frozen.Hash)
 	snapshot.Lifecycle = LifecycleTurnScope
 	return snapshot, nil
 }
@@ -116,7 +124,6 @@ func normalizeContextSelector(input ContextSelectorSnapshot) ContextSelectorSnap
 	if input.Lifecycle == "" {
 		input.Lifecycle = LifecycleRequestScope
 	}
-	input.Hash = ""
 	input.Hash = StableHash("context-selector.snapshot", input)
 	return input
 }
@@ -139,7 +146,6 @@ func normalizeFinalContract(input FinalContractSnapshot) FinalContractSnapshot {
 	if input.Lifecycle == "" {
 		input.Lifecycle = LifecycleRequestScope
 	}
-	input.Hash = ""
 	input.Hash = StableHash("final-contract.snapshot", input)
 	return input
 }

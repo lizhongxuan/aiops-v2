@@ -42,7 +42,7 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 	if err != nil {
 		return TurnAssembly{}, fmt.Errorf("clone turn assembly input: %w", err)
 	}
-	if err := runtimecontract.ValidateAdmissionFacts(frozen.AdmissionFacts); err != nil {
+	if err := runtimecontract.ValidateAdmissionFactsIntegrity(frozen.AdmissionFacts); err != nil {
 		return TurnAssembly{}, fmt.Errorf("invalid admission facts: %w", err)
 	}
 	if strings.TrimSpace(frozen.AdmissionError) != "" {
@@ -58,6 +58,8 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 	if err != nil {
 		return TurnAssembly{}, err
 	}
+	frozen.ContextPolicy.Hash = ""
+	frozen.FinalContractPolicy.Hash = ""
 	assembly := TurnAssembly{
 		SchemaVersion:       TurnAssemblySchemaVersion,
 		AdmissionFacts:      frozen.AdmissionFacts,

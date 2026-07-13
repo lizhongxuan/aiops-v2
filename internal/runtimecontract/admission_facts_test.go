@@ -200,6 +200,26 @@ func TestAdmissionFactsDoesNotUpgradeFailClosedResourceBinding(t *testing.T) {
 	}
 }
 
+func TestAdmissionFactsIntegrityRejectsStaleOrTamperedHash(t *testing.T) {
+	facts, err := BuildAdmissionFacts(AdmissionInput{
+		Intent:  &IntentFrame{Kind: IntentKindDiagnose},
+		Profile: "advisor",
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	tamperedField := facts
+	tamperedField.Profile = "host-worker"
+	if err := ValidateAdmissionFactsIntegrity(tamperedField); err == nil {
+		t.Fatal("ValidateAdmissionFactsIntegrity(field tamper) error = nil")
+	}
+	tamperedHash := facts
+	tamperedHash.Hash = "sha256:tampered"
+	if err := ValidateAdmissionFactsIntegrity(tamperedHash); err == nil {
+		t.Fatal("ValidateAdmissionFactsIntegrity(hash tamper) error = nil")
+	}
+}
+
 func verifiedAdmissionBinding(ref resourcebinding.ResourceRef) resourcebinding.ResourceBindingSnapshot {
 	return resourcebinding.NewBindingSnapshot(ref, resourcebinding.BindingOptions{
 		Source:     resourcebinding.BindingSourceMention,
