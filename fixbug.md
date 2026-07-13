@@ -161,3 +161,12 @@
 - 修复方式：ToolResult 增加 typed `TargetIdentityHash`，在统一 `materializeToolResult` 入口从当时已验证的 TurnAssembly 写入，普通与 approval-resume 路径自动复用；历史去重只读取每条 ToolResult 自身的 hash，不再接受当前 turn 的批量覆盖。旧记录没有该字段时保留空 namespace，不猜测为当前目标。
 - 验证结果：RED 使用同一 session 的 `[host-A tool message, host-B tool message]` 组合历史复现两条记录落入同一 namespace；修复后两个 miss、两个 target namespace 与各自 source/content 独立，重复 B 才命中 B。生产 writer 测试同时验证物化结果写入 host-A 冻结 identity；`go test ./internal/runtimekernel ./internal/server -count=1` 通过。
 - 风险与后续：升级前持久化的旧 ToolResult 没有 target hash，会继续位于空 namespace；这是安全兼容降级，不会把旧记录冒充为新 target。若未来迁移旧数据，只能依据当时的 canonical TurnAssembly/rollout 回填，不能根据当前 session target 推断。
+
+## 2026-07-14 03:16 - Permission、ActionToken 与 FinalContract 的兼容回退可绕过冻结事实
+
+- 修复时间：2026-07-14 03:16
+- Bug 现象：ToolDispatcher 未显式配置 permission binding 时，mutation 会跳过 hash 校验；旧 PendingApproval 缺少 ActionToken 时，ResumeTurn 会就地重建 token 并在同一次请求执行；持久化 AgentItem 中伪造的 `FinalContract.status=verified` 即使没有 evidence 或仍有未完成 post-check，也会被 Transport/UI 直接显示为 verified。
+- 根因：permission binding 被设计为由 caller 可选启用，dispatcher 为 legacy 单测保留了 mutation fail-open；approval resume 把 tokenless 旧记录当作可透明迁移数据，而不是缺失权威事实；`BuildFinalContract` 虽已保证新写入事实一致，hydration/projector 边界却只按 schemaVersion 反序列化并信任 status，没有复验 typed invariant。
+- 修复方式：所有 mutation 在 dispatcher 内默认要求 expected/current permission hash 且完全一致，未绑定、缺失、current-only 或 mismatch 均在 executor 前返回 `permission_binding_invalid`，read-only 保持兼容；普通 approval 与 pending-evidence 缺 ActionToken 时统一返回 `approval_context_stale(token)` 并重发带服务端 token 的新 approval，第一次 resume 的 executor 调用为 0，只有第二次 fresh resume 可执行；FinalContract 增加 typed `Validate` / `NormalizeForProjection`，persisted verified 若缺 checked evidence、存在 unchecked requirement 或 required post-check 未完成，会在 hydration 边界降为 `needs_evidence` 并附加 `invalid_verified_contract_facts`，不解析回答文本。
+- 验证结果：RED 分别复现 unbound mutation 未返回 permission binding 错误、nil-token 首次 resume 直接执行、三类 malformed verified 被 UI 接受；修复后 focused permission/approval/final/transport 测试和 `go test ./internal/runtimekernel ./internal/appui -count=1` 全部通过。AssistantTransport `approval_denied` story 的 typed process 状态由旧 `completed` 更新为 `rejected`，focused 连跑 3 次通过；完整 hardening gate 在该更新后通过，包含 Go、Web 117+18 tests 与 boundary self-test。
+- 风险与后续：旧 tokenless approval 不再透明升级，客户端需要处理一次 stale/reissue 后再提交 fresh approval；旧 malformed verified 记录会显示 needs-evidence 而不是中断整条 turn。未绑定的 mutation 生产扩展点不再具有兼容通道，新增 dispatcher caller 必须显式提供 frozen permission binding。
