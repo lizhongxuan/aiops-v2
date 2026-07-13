@@ -213,9 +213,6 @@ func shouldGuardPrematureFinal(profile taskdepth.Profile, snapshot *TurnSnapshot
 	if !finalAttempt {
 		return false
 	}
-	if finalLooksLikeBlocker(assistantContent) {
-		return false
-	}
 	return true
 }
 

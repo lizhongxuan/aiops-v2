@@ -15,7 +15,7 @@ type MandatorySkillDecision struct {
 	Reasons        []string `json:"reasons,omitempty"`
 }
 
-func EvaluateMandatorySkillActivation(defs []skills.Definition, input, answer string, state SkillActivationSessionState) MandatorySkillDecision {
+func EvaluateMandatorySkillActivation(defs []skills.Definition, input, _ string, state SkillActivationSessionState) MandatorySkillDecision {
 	required := map[string][]string{}
 	for _, def := range defs {
 		defName := strings.TrimSpace(def.Name)
@@ -58,10 +58,7 @@ func EvaluateMandatorySkillActivation(defs []skills.Definition, input, answer st
 		reasons = append(reasons, reason)
 	}
 	sort.Strings(reasons)
-	if answerClaimsFinalCertainty(answer) {
-		return MandatorySkillDecision{Action: "require_skill_read", RequiredSkills: names, Reasons: reasons}
-	}
-	return MandatorySkillDecision{Action: "warn", RequiredSkills: names, Reasons: reasons}
+	return MandatorySkillDecision{Action: "require_skill_read", RequiredSkills: names, Reasons: reasons}
 }
 
 func mandatorySkillMatchReasons(def skills.Definition, input string) []string {
@@ -114,21 +111,6 @@ func mandatorySearchMatchReasons(match SkillSearchMatchSnapshot, input string) [
 		reasons = append(reasons, "search_result_match")
 	}
 	return uniqueSortedReasons(reasons)
-}
-
-func answerClaimsFinalCertainty(answer string) bool {
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	if answer == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"root cause", "definitely", "confirmed", "final answer", "结论", "根因", "确定", "确认",
-	} {
-		if strings.Contains(answer, marker) {
-			return true
-		}
-	}
-	return true
 }
 
 func mandatorySkillRetryPrompt(decision MandatorySkillDecision) string {

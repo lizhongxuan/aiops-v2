@@ -116,30 +116,12 @@ func verificationRequirementFromTaskDepth(profile taskdepth.Profile) verificatio
 	return verification.VerificationAnalysisAllowed
 }
 
-func verificationCompletionGateAllowsFinal(answer string, decision VerificationCompletionDecision, snapshot *TurnSnapshot) bool {
-	switch decision.Action {
-	case "", VerificationCompletionActionAllow:
-		return true
-	case VerificationCompletionActionRequireBlockerFinal, VerificationCompletionActionBlockSuccessFinal:
-		if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
-			return safeTerminal.Valid
-		}
-		if verificationCompletionMissingReport(decision) && verificationCompletionMissingRuntimeApprovalGate(decision) {
-			return false
-		}
-		if verificationCompletionMissingReport(decision) && !finalAnswerClaimsVerificationCompletion(answer) {
-			return true
-		}
-		if verificationCompletionMissingReport(decision) && finalAnswerHasEvidenceBackedVerification(answer, snapshot) {
-			return true
-		}
-		return finalLooksLikeVerificationBlocker(answer)
-	default:
-		if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
-			return safeTerminal.Valid
-		}
-		return finalLooksLikeVerificationBlocker(answer)
-	}
+func verificationCompletionGateAllowsFinal(_ string, decision VerificationCompletionDecision, _ *TurnSnapshot) bool {
+	// A non-allow decision blocks a success classification in FinalRuntimeFacts;
+	// it does not block committing an honest display answer. Prose cannot repair
+	// a missing or failed typed VerificationReport, so retrying on wording would
+	// only recreate the text-driven bypass this gate is meant to prevent.
+	return !verificationCompletionMissingRuntimeApprovalGate(decision)
 }
 
 func verificationCompletionMissingReport(decision VerificationCompletionDecision) bool {
@@ -259,135 +241,6 @@ func verificationCompletionRuntimeApprovalGateObserved(snapshot *TurnSnapshot) b
 		}
 	}
 	return false
-}
-
-func finalAnswerClaimsVerificationCompletion(answer string) bool {
-	text := strings.ToLower(strings.TrimSpace(answer))
-	for _, marker := range []string{
-		"已完成", "完成了", "修复完成", "已修复", "已验证", "验证通过", "全部通过", "问题已解决",
-		"verified", "fixed", "resolved", "all checks passed",
-	} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalLooksLikeVerificationBlocker(answer string) bool {
-	if finalLooksLikeBlocker(answer) {
-		return true
-	}
-	text := strings.ToLower(strings.TrimSpace(answer))
-	for _, marker := range []string{"不能", "未完成", "未通过", "失败", "阻塞", "缺失", "partial", "failed", "incomplete", "cannot complete", "missing verification"} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalAnswerHasEvidenceBackedVerification(answer string, snapshot *TurnSnapshot) bool {
-	if snapshot == nil || !finalAnswerClaimsVerificationCompletion(answer) {
-		return false
-	}
-	terms := successfulVerificationEvidenceTerms(snapshot)
-	if len(terms) == 0 {
-		return false
-	}
-	answerText := normalizeVerificationEvidenceText(answer)
-	matches := 0
-	for _, term := range terms {
-		term = normalizeVerificationEvidenceText(term)
-		if term == "" {
-			continue
-		}
-		if strings.Contains(answerText, term) {
-			matches++
-		}
-	}
-	return matches >= 2
-}
-
-func successfulVerificationEvidenceTerms(snapshot *TurnSnapshot) []string {
-	if snapshot == nil {
-		return nil
-	}
-	seen := map[string]bool{}
-	var terms []string
-	addTerm := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		key := normalizeVerificationEvidenceText(value)
-		if key == "" || seen[key] {
-			return
-		}
-		seen[key] = true
-		terms = append(terms, value)
-	}
-	for _, iter := range snapshot.Iterations {
-		calls := map[string]ToolCall{}
-		for _, call := range iter.ToolCalls {
-			calls[call.ID] = call
-		}
-		for _, result := range iter.ToolResults {
-			if strings.TrimSpace(result.Error) != "" {
-				continue
-			}
-			if env := terminalEnvelopeFromToolResultContent(result.Content); env != nil {
-				for _, term := range verificationEvidenceTermsFromCommand(env.Command) {
-					addTerm(term)
-				}
-			}
-			if call, ok := calls[result.ToolCallID]; ok {
-				for _, term := range verificationEvidenceTermsFromToolCall(call) {
-					addTerm(term)
-				}
-			}
-		}
-	}
-	return terms
-}
-
-func verificationEvidenceTermsFromToolCall(call ToolCall) []string {
-	var terms []string
-	command := approvalCommandForToolCall(call)
-	terms = append(terms, verificationEvidenceTermsFromCommand(command)...)
-	name := strings.TrimSpace(call.Name)
-	switch name {
-	case "", "exec_command", "tool_search", "list_mcp_resources", "read_mcp_resource", "web_search", "browse_url":
-	default:
-		terms = append(terms, name)
-	}
-	return terms
-}
-
-func verificationEvidenceTermsFromCommand(command string) []string {
-	fields := strings.Fields(strings.TrimSpace(command))
-	if len(fields) == 0 {
-		return nil
-	}
-	base := fields[0]
-	var terms []string
-	if len(fields) >= 2 {
-		terms = append(terms, base+" "+fields[1])
-	}
-	for _, field := range fields {
-		if strings.HasPrefix(field, "http://") || strings.HasPrefix(field, "https://") {
-			terms = append(terms, base+" "+field, field)
-			break
-		}
-	}
-	if base != "exec_command" && base != "tool_search" {
-		terms = append(terms, base)
-	}
-	return terms
-}
-
-func normalizeVerificationEvidenceText(value string) string {
-	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func verificationCompletionGateTrace(decision VerificationCompletionDecision) *promptinput.CompletionGateTrace {

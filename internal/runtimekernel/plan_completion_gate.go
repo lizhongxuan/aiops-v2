@@ -82,11 +82,11 @@ func planCompletionGateTrace(decision planning.CompletionGateDecision, present b
 	}
 }
 
-func planCompletionGateAllowsFinal(answer string, decision planning.CompletionGateDecision) bool {
-	if decision.Action == planning.CompletionGateAllow {
-		return true
-	}
-	return finalLooksLikeBlocker(answer)
+func planCompletionGateAllowsFinal(_ string, decision planning.CompletionGateDecision) bool {
+	// The decision is projected into FinalRuntimeFacts and can prevent a success
+	// contract. A prose retry cannot complete typed plan steps by itself.
+	_ = decision
+	return true
 }
 
 func planCompletionGateRetryPrompt(decision planning.CompletionGateDecision) string {

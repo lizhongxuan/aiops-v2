@@ -207,7 +207,7 @@ func EvaluateEvidenceCoverageGate(snapshot *TurnSnapshot) EvidenceCoverageDecisi
 	return decision
 }
 
-func EvaluateManagerSynthesisGate(snapshot *TurnSnapshot, answer string) ManagerSynthesisGate {
+func EvaluateManagerSynthesisGate(snapshot *TurnSnapshot, _ string) ManagerSynthesisGate {
 	workerRefs := splitCSV(snapshotMetadata(snapshot, "managerSynthesis.workerOutputRefs", "workerOutputRefs"))
 	managerRef := snapshotMetadata(snapshot, "managerSynthesis.managerAnswerRef", "managerAnswerRef")
 	gate := ManagerSynthesisGate{
@@ -218,22 +218,14 @@ func EvaluateManagerSynthesisGate(snapshot *TurnSnapshot, answer string) Manager
 	if len(workerRefs) == 0 {
 		return gate
 	}
-	answerLower := strings.ToLower(answer)
-	for _, ref := range workerRefs {
-		if ref != "" && strings.Contains(answerLower, strings.ToLower(ref)) {
-			gate.Action = "block_worker_dump"
-			gate.Reasons = appendUniqueSorted(gate.Reasons, "worker_output_dump_detected")
-			return gate
-		}
-	}
-	if managerRef != "" && !strings.Contains(answerLower, strings.ToLower(managerRef)) {
+	if managerRef == "" {
 		gate.Action = "require_manager_synthesis"
-		gate.Reasons = appendUniqueSorted(gate.Reasons, "final_answer_must_use_manager_synthesis")
+		gate.Reasons = appendUniqueSorted(gate.Reasons, "missing_manager_answer_ref")
 	}
 	return gate
 }
 
-func EvaluateCompletionReadiness(snapshot *TurnSnapshot, answer string) CompletionReadinessDecision {
+func EvaluateCompletionReadiness(snapshot *TurnSnapshot, _ string) CompletionReadinessDecision {
 	coverage := EvaluateEvidenceCoverageGate(snapshot)
 	decision := CompletionReadinessDecision{
 		Action:             "allow_success_final",
@@ -241,22 +233,9 @@ func EvaluateCompletionReadiness(snapshot *TurnSnapshot, answer string) Completi
 		OpenQuestions:      coverage.OpenQuestions,
 		VerificationStatus: coverage.VerificationStatus,
 	}
-	safeTerminal := EvaluateSafeTerminalFinal(answer)
-	if len(safeTerminal.TerminalStates) > 0 {
-		decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.Reasons...)
-		if safeTerminal.Valid {
-			decision.Action = "allow_blocker_final"
-			decision.Reasons = appendUniqueSorted(decision.Reasons, "safe_terminal_final")
-			decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.TerminalStates...)
-			return decision
-		}
-		decision.Action = "block_success_final"
-		decision.Reasons = appendUniqueSorted(decision.Reasons, safeTerminal.MissingFields...)
-		return decision
-	}
-	if coverage.Action == "blocker_final_allowed" && finalLooksLikeBlocker(answer) {
+	if coverage.Action == "blocker_final_allowed" {
 		decision.Action = "allow_blocker_final"
-		decision.Reasons = appendUniqueSorted(decision.Reasons, "explicit_blocker_final")
+		decision.Reasons = appendUniqueSorted(decision.Reasons, "typed_blocker_final")
 		return decision
 	}
 	if coverage.Action == "continue_gathering" || coverage.Action == "block_success_final" {
@@ -267,7 +246,7 @@ func EvaluateCompletionReadiness(snapshot *TurnSnapshot, answer string) Completi
 		}
 		return decision
 	}
-	if len(snapshotPendingApprovals(snapshot)) > 0 && !finalLooksLikeBlocker(answer) {
+	if len(snapshotPendingApprovals(snapshot)) > 0 {
 		decision.Action = "block_success_final"
 		decision.Reasons = appendUniqueSorted(decision.Reasons, "pending_approval")
 	}

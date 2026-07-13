@@ -2,7 +2,7 @@ package runtimekernel
 
 import "testing"
 
-func TestUXModelGeneralityAllowsSafeTerminalFinalStates(t *testing.T) {
+func TestCompletionReadinessIgnoresSafeTerminalAnswerMarkers(t *testing.T) {
 	snapshot := &TurnSnapshot{
 		ID: "turn-safe-terminal",
 		Metadata: map[string]string{
@@ -13,36 +13,31 @@ func TestUXModelGeneralityAllowsSafeTerminalFinalStates(t *testing.T) {
 	cases := []struct {
 		name   string
 		answer string
-		want   string
 	}{
-		{name: "insufficient_evidence", answer: "insufficient_evidence: metrics evidence is missing, so I cannot confirm health.", want: "insufficient_evidence"},
-		{name: "user_denied_action", answer: "user_denied_action: approval denied, no command was executed.", want: "user_denied_action"},
-		{name: "tool_unavailable", answer: "tool_unavailable: metrics tool unavailable; next action is to restore that evidence source.", want: "tool_unavailable"},
-		{name: "multi_host_partial", answer: "multi_host_partial: host-a completed, some hosts are unknown and need follow-up.", want: "multi_host_partial"},
-		{name: "partial_mutation", answer: "partial_mutation: what may have partially executed: service restart request reached the tool; known evidence refs: evidence-1; unknown state: service process state; required post-check: systemctl status.", want: "partial_mutation"},
+		{name: "insufficient_evidence", answer: "insufficient_evidence: metrics evidence is missing, so I cannot confirm health."},
+		{name: "user_denied_action", answer: "user_denied_action: approval denied, no command was executed."},
+		{name: "tool_unavailable", answer: "tool_unavailable: metrics tool unavailable; next action is to restore that evidence source."},
+		{name: "multi_host_partial", answer: "multi_host_partial: host-a completed, some hosts are unknown and need follow-up."},
+		{name: "partial_mutation", answer: "partial_mutation: what may have partially executed: service restart request reached the tool; known evidence refs: evidence-1; unknown state: service process state; required post-check: systemctl status."},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			decision := EvaluateCompletionReadiness(snapshot, tc.answer)
-			if decision.Action != "allow_blocker_final" {
-				t.Fatalf("Action = %q reasons=%v, want allow_blocker_final", decision.Action, decision.Reasons)
-			}
-			if !containsString(decision.Reasons, tc.want) {
-				t.Fatalf("Reasons = %v, missing %q", decision.Reasons, tc.want)
+			if decision.Action != "block_success_final" || !containsString(decision.Reasons, "missing_coverage_dimension") {
+				t.Fatalf("Action = %q reasons=%v, want typed coverage block", decision.Action, decision.Reasons)
 			}
 		})
 	}
 }
 
 func TestFinalEvidenceGatePartialMutationRequiresPostCheckFields(t *testing.T) {
-	state := FinalEvidenceState{Confidence: FinalEvidenceConfidenceLow}
-	missing := VerifyFinalEvidence("partial_mutation: command may have partially executed.", state)
-	if missing.Action != FinalEvidenceActionBlock || !containsString(missing.Reasons, "partial_mutation_missing_required_fields") {
+	missing := EvaluateSafeTerminalFinal("partial_mutation: command may have partially executed.")
+	if missing.Valid || !containsString(missing.Reasons, "partial_mutation_missing_required_fields") {
 		t.Fatalf("missing partial mutation fields decision = %#v, want block", missing)
 	}
 
-	complete := VerifyFinalEvidence("partial_mutation: what may have partially executed: package install; known evidence refs: evidence-1; unknown state: package database lock; required post-check: rpm -q package.", state)
-	if complete.Action != FinalEvidenceActionAllow || !containsString(complete.Reasons, "partial_mutation") {
+	complete := EvaluateSafeTerminalFinal("partial_mutation: what may have partially executed: package install; known evidence refs: evidence-1; unknown state: package database lock; required post-check: rpm -q package.")
+	if !complete.Valid || !containsString(complete.Reasons, "partial_mutation") {
 		t.Fatalf("complete partial mutation decision = %#v, want allow safe terminal", complete)
 	}
 }
@@ -54,9 +49,9 @@ func TestFinalVerificationGateAllowsSafeTerminalBlockerFinal(t *testing.T) {
 	}
 	answer := "tool_unavailable: verification tool unavailable, cannot claim completion; next action is restoring tool access."
 	if !verificationCompletionGateAllowsFinal(answer, decision, nil) {
-		t.Fatal("safe terminal blocker final should be allowed")
+		t.Fatal("typed verification decision should allow display commit")
 	}
-	if verificationCompletionGateAllowsFinal("partial_mutation: maybe ran.", decision, nil) {
-		t.Fatal("partial mutation without required fields should not be allowed")
+	if !verificationCompletionGateAllowsFinal("partial_mutation: maybe ran.", decision, nil) {
+		t.Fatal("answer wording must not change display commit decision")
 	}
 }
