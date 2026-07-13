@@ -128,7 +128,7 @@ func agentAssemblySnapshotBuildInput(input agentAssemblyTraceInput) agentassembl
 	hidden := hiddenToolInputsFromPolicy(input.ToolSurfacePolicy)
 	return agentassembly.BuildInput{
 		AgentKind:         strings.TrimSpace(string(input.AgentKind)),
-		Profile:           firstNonBlankRuntimeString(input.CompileContext.Profile, input.Metadata["profile"], input.Metadata["toolProfile"]),
+		Profile:           firstNonBlankRuntimeString(input.CompileContext.Profile, admissionProfileFromTurnAssembly(input.TurnAssembly)),
 		RuntimeRole:       string(input.SessionType) + "." + string(input.Mode),
 		RouteReason:       routeReasonsFromMetadata(input.Metadata),
 		ResourceBindings:  input.ResourceBindings,
@@ -161,6 +161,13 @@ func agentAssemblySnapshotBuildInput(input agentAssemblyTraceInput) agentassembl
 			"mode":       string(input.Mode),
 		},
 	}
+}
+
+func admissionProfileFromTurnAssembly(assembly *agentassembly.TurnAssembly) string {
+	if assembly == nil {
+		return ""
+	}
+	return strings.TrimSpace(assembly.AdmissionFacts.Profile)
 }
 
 func compareAgentAssemblySnapshots(assembly agentassembly.TurnAssembly, legacy, projected agentassembly.AgentAssemblySnapshot) TurnAssemblyShadowTrace {

@@ -2108,12 +2108,38 @@ func (k *RuntimeKernel) runHostIterationLoop(
 	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, session.HostID)
 	req.Metadata = turnMetadata
 	snapshot.Metadata = turnMetadata
-	depthProfile := depthProfileFromTurnRequest(TurnRequest{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		Input:       req.Input,
-		Metadata:    turnMetadata,
-	})
+	depthReq := TurnRequest{
+		SessionID:             session.ID,
+		TurnID:                turnID,
+		SessionType:           req.SessionType,
+		Mode:                  req.Mode,
+		Input:                 req.Input,
+		HostID:                req.HostID,
+		PermissionProfile:     req.PermissionProfile,
+		Metadata:              turnMetadata,
+		ResourceBindings:      req.ResourceBindings,
+		ResourceRoleBindings:  req.ResourceRoleBindings,
+		SessionTargetSnapshot: req.SessionTargetSnapshot,
+		RoleBindingConflicts:  req.RoleBindingConflicts,
+	}
+	var admissionContext RuntimeTurnContext
+	var admissionFacts runtimecontract.AdmissionFacts
+	if snapshot.TurnAssembly != nil {
+		if assemblyErr := snapshot.TurnAssembly.Validate(); assemblyErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
+		admissionFacts = snapshot.TurnAssembly.AdmissionFacts
+	} else {
+		var admissionErr error
+		admissionContext, admissionErr = BuildRuntimeTurnContext(depthReq, session, RuntimeTurnContextOptions{
+			Lineage: RuntimeLineageSnapshot{AgentKind: string(agentKind)},
+		})
+		if admissionErr != nil {
+			return "", nil, fmt.Errorf("turn admission context: %w", admissionErr)
+		}
+		admissionFacts = admissionContext.AdmissionFacts
+	}
+	depthProfile := depthProfileFromAdmissionFacts(depthReq, admissionFacts)
 	if snapshot.TaskDepth.Level == "" {
 		snapshot.TaskDepth = depthProfile
 	}
@@ -2215,10 +2241,6 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx.VisibleToolFingerprint = stepToolRouter.Fingerprint
 		compileCtx = applyRuntimeStateMetadata(compileCtx, turnMetadata, session, snapshot)
 		if snapshot.TurnAssembly == nil {
-			turnReq := req
-			turnReq.SessionID = session.ID
-			turnReq.TurnID = turnID
-			turnReq.Metadata = turnMetadata
 			modelCaps := modelrouter.ModelCapabilities{
 				Provider:         string(agentKind),
 				Model:            modelNameForTrace(chatModel),
@@ -2228,18 +2250,13 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if k.modelRouter != nil {
 				modelCaps = k.modelRouter.ResolveModelCapabilities(agentKind, modelrouter.ProviderConfig{})
 			}
-			turnContext, turnContextErr := BuildRuntimeTurnContext(turnReq, session, RuntimeTurnContextOptions{
-				Model: modelCaps,
-				ContextBudget: RuntimeContextBudgetSnapshot{
-					MaxTokens:    thresholds.MaxContextTokens,
-					TargetTokens: thresholds.EffectiveContextWindow,
-				},
-				ToolPolicyHash: surfacePolicy.Hash,
-				Lineage:        RuntimeLineageSnapshot{AgentKind: string(agentKind)},
-			})
-			if turnContextErr != nil {
-				return "", nil, fmt.Errorf("turn assembly context: %w", turnContextErr)
+			turnContext := admissionContext
+			turnContext.Model = modelCaps
+			turnContext.ContextBudget = RuntimeContextBudgetSnapshot{
+				MaxTokens:    thresholds.MaxContextTokens,
+				TargetTokens: thresholds.EffectiveContextWindow,
 			}
+			turnContext.ToolPolicyHash = surfacePolicy.Hash
 			assembly, assemblyErr := buildRuntimeTurnAssembly(runtimeTurnAssemblyInput{
 				TurnContext:            turnContext,
 				CompileContext:         compileCtx,

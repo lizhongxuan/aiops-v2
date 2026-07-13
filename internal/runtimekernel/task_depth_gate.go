@@ -1,7 +1,6 @@
 package runtimekernel
 
 import (
-	"encoding/json"
 	"strings"
 
 	"aiops-v2/internal/promptcompiler"
@@ -21,14 +20,10 @@ type PlanRequirementDecision struct {
 	Missing       []string `json:"missing,omitempty"`
 }
 
+// depthProfileFromTurnRequest is the text-based compatibility entry for callers
+// that do not yet have frozen typed admission facts. It intentionally does not
+// reinterpret aiops.intent.* metadata.
 func depthProfileFromTurnRequest(req TurnRequest) taskdepth.Profile {
-	if frame, ok := intentFrameFromTurnMetadata(req.Metadata); ok {
-		return taskdepth.ClassifyFromIntentFrame(frame, taskdepth.Options{
-			Input:    req.Input,
-			Mode:     string(req.Mode),
-			Metadata: req.Metadata,
-		})
-	}
 	return taskdepth.Classify(taskdepth.Options{
 		Input:    req.Input,
 		Mode:     string(req.Mode),
@@ -36,61 +31,34 @@ func depthProfileFromTurnRequest(req TurnRequest) taskdepth.Profile {
 	})
 }
 
-func intentFrameFromTurnMetadata(metadata map[string]string) (runtimecontract.IntentFrame, bool) {
-	if len(metadata) == 0 {
-		return runtimecontract.IntentFrame{}, false
+// depthProfileFromAdmissionFacts treats the frozen typed intent as authoritative.
+func depthProfileFromAdmissionFacts(req TurnRequest, facts runtimecontract.AdmissionFacts) taskdepth.Profile {
+	if admissionIntentHasNoControlFacts(facts.Intent) {
+		return depthProfileFromTurnRequest(req)
 	}
-	if raw := strings.TrimSpace(metadata[runtimecontract.MetadataIntentFrame]); raw != "" {
-		var frame runtimecontract.IntentFrame
-		if err := json.Unmarshal([]byte(raw), &frame); err == nil {
-			return runtimecontract.NormalizeIntentFrame(frame), true
-		}
-	}
-	frame := runtimecontract.IntentFrame{
-		Kind:       runtimecontract.IntentKind(strings.TrimSpace(metadata[runtimecontract.MetadataIntentKind])),
-		DataScopes: metadataDataScopes(metadata[runtimecontract.MetadataIntentDataScopes]),
-		RiskBudget: metadataActionRisks(metadata[runtimecontract.MetadataIntentRiskBudget]),
-		Confidence: strings.TrimSpace(metadata[runtimecontract.MetadataIntentConfidence]),
-	}
-	if frame.Kind == "" && len(frame.DataScopes) == 0 && len(frame.RiskBudget) == 0 {
-		return runtimecontract.IntentFrame{}, false
-	}
-	return runtimecontract.NormalizeIntentFrame(frame), true
+	return depthProfileFromIntentFrame(req, facts.Intent)
 }
 
-func metadataDataScopes(raw string) []runtimecontract.DataScope {
-	fields := splitRuntimeMetadataList(raw)
-	out := make([]runtimecontract.DataScope, 0, len(fields))
-	for _, field := range fields {
-		out = append(out, runtimecontract.DataScope(field))
-	}
-	return out
+func admissionIntentHasNoControlFacts(frame runtimecontract.IntentFrame) bool {
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	return frame.Kind == runtimecontract.IntentKindUnknown &&
+		len(frame.DataScopes) == 0 &&
+		len(frame.RiskBudget) == 0 &&
+		len(frame.Constraints) == 0 &&
+		len(frame.Capabilities) == 0 &&
+		!frame.Evidence.HasUserProvidedEvidence &&
+		len(frame.Evidence.EvidenceKinds) == 0 &&
+		len(frame.Evidence.DataScopes) == 0 &&
+		len(frame.Evidence.WeakSignals) == 0
 }
 
-func metadataActionRisks(raw string) []runtimecontract.ActionRisk {
-	fields := splitRuntimeMetadataList(raw)
-	out := make([]runtimecontract.ActionRisk, 0, len(fields))
-	for _, field := range fields {
-		out = append(out, runtimecontract.ActionRisk(field))
-	}
-	return out
-}
-
-func splitRuntimeMetadataList(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	fields := strings.FieldsFunc(raw, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+// depthProfileFromIntentFrame is the typed entry for callers that freeze only the
+// intent frame rather than the complete admission contract.
+func depthProfileFromIntentFrame(req TurnRequest, frame runtimecontract.IntentFrame) taskdepth.Profile {
+	return taskdepth.ClassifyFromIntentFrame(frame, taskdepth.Options{
+		Input: req.Input,
+		Mode:  string(req.Mode),
 	})
-	values := make([]string, 0, len(fields))
-	for _, field := range fields {
-		if value := strings.TrimSpace(field); value != "" {
-			values = append(values, value)
-		}
-	}
-	return values
 }
 
 func applyDepthProfileToCompileContext(ctx promptcompiler.CompileContext, profile taskdepth.Profile, reasoningEffort string) promptcompiler.CompileContext {
