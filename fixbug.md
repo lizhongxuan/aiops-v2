@@ -152,3 +152,12 @@
 - 修复方式：AdmissionFacts 新增规范化、带完整性 hash 的 role conflicts，TurnAssembly admission-control hash 同步覆盖；只有当前 request 未替换 target/role 且有效 typed session target 被继承时，才把 session role facts带入 admission。dispatcher role guard 对每个有效 frozen assembly 默认启用，从该 assembly 读取 bindings/conflicts；缺失或无效 assembly 对 mutation 保持 fail closed。
 - 验证结果：RED 证明 role conflicts 不存在于 typed schema、同会话 carryover 丢失且无 metadata 时 guard 关闭；实现后运行 `go test ./internal/runtimecontract ./internal/agentassembly ./internal/runtimekernel ./internal/server -count=1` 全部通过，并验证 conflict 会改变 TurnAssembly hash、阻止 mutation，历史 session role 不会覆盖当前 frozen facts。
 - 风险与后续：role conflict 目前允许冻结用于只读诊断，但所有 mutating/approval-required tool 都会被 dispatcher 拒绝；调用方必须通过新的、无冲突的 typed role facts 开启后续变更，不能靠清除 metadata 开关绕过。
+
+## 2026-07-14 02:43 - 历史 ResourceIdentity 被当前 Turn target 重新命名
+
+- 修复时间：2026-07-14 02:43
+- Bug 现象：同一会话先读取 host-A 资源、再切换到 host-B 时，模型输入去重会把当前 B 的 target hash 套到整段历史 tool messages；旧 A 资源可能被重新登记进 B namespace，导致跨主机错误去重或复用 source/content。
+- 根因：`TargetIdentityHash` 在读取历史时才由当前 TurnAssembly 批量注入，ToolResult 产生和持久化时没有记录其所属冻结 target；组合历史因此丢失每条 resource 的来源 namespace。
+- 修复方式：ToolResult 增加 typed `TargetIdentityHash`，在统一 `materializeToolResult` 入口从当时已验证的 TurnAssembly 写入，普通与 approval-resume 路径自动复用；历史去重只读取每条 ToolResult 自身的 hash，不再接受当前 turn 的批量覆盖。旧记录没有该字段时保留空 namespace，不猜测为当前目标。
+- 验证结果：RED 使用同一 session 的 `[host-A tool message, host-B tool message]` 组合历史复现两条记录落入同一 namespace；修复后两个 miss、两个 target namespace 与各自 source/content 独立，重复 B 才命中 B。生产 writer 测试同时验证物化结果写入 host-A 冻结 identity；`go test ./internal/runtimekernel ./internal/server -count=1` 通过。
+- 风险与后续：升级前持久化的旧 ToolResult 没有 target hash，会继续位于空 namespace；这是安全兼容降级，不会把旧记录冒充为新 target。若未来迁移旧数据，只能依据当时的 canonical TurnAssembly/rollout 回填，不能根据当前 session target 推断。

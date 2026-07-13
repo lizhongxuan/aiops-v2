@@ -2175,7 +2175,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("context pipeline: %w", contextErr)
 		}
-		contextMessages, observationEvents := modelVisibleMessagesWithObservationDedupe(session, contextState.Messages, resourceTargetIdentityHash(admissionFacts))
+		contextMessages, observationEvents := modelVisibleMessagesWithObservationDedupe(session, contextState.Messages)
 		contextState.GovernanceEvents = append(contextState.GovernanceEvents, observationEvents...)
 		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, contextState.GovernanceEvents...)
 		appendContextGovernanceEvents(&session.ContextGovernanceEvents, contextState.GovernanceEvents...)
@@ -5642,12 +5642,13 @@ const (
 
 func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, toolResult tooling.ToolResult) (ToolResult, error) {
 	result := ToolResult{
-		ToolCallID: tc.ID,
-		Content:    toolResult.Content,
-		Display:    copyToolDisplay(toolResult.Display),
-		Error:      toolResult.Error,
-		Outcome:    toolResult.Outcome,
-		References: normalizeToolResultReferences(toolResult.References, toolResult.Display),
+		ToolCallID:         tc.ID,
+		TargetIdentityHash: frozenResourceTargetIdentityHashFromSnapshot(snapshot),
+		Content:            toolResult.Content,
+		Display:            copyToolDisplay(toolResult.Display),
+		Error:              toolResult.Error,
+		Outcome:            toolResult.Outcome,
+		References:         normalizeToolResultReferences(toolResult.References, toolResult.Display),
 	}
 	defaultInlineBytes := defaultInlineResultBytesForContext(k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())
 	budget := mergeResultBudget(meta.EffectiveResultBudget(defaultInlineBytes), toolResult.ResultBudget, defaultInlineBytes)
@@ -5701,6 +5702,13 @@ func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *T
 	appendExternalReferences(&result.ExternalReferences, ref)
 	finalizeToolResultMaterialization(session, snapshot, iteration, tc, &result, tier, inlineBytes)
 	return result, nil
+}
+
+func frozenResourceTargetIdentityHashFromSnapshot(snapshot *TurnSnapshot) string {
+	if snapshot == nil || snapshot.TurnAssembly == nil || snapshot.TurnAssembly.Validate() != nil {
+		return ""
+	}
+	return resourceTargetIdentityHash(snapshot.TurnAssembly.AdmissionFacts)
 }
 
 func (k *RuntimeKernel) persistToolResultSpill(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, spill *tooling.ResultSpill) (ExternalReference, error) {

@@ -195,21 +195,14 @@ func runtimeContinuationInstruction(iteration int, cause *StepRevisionCause) str
 	}
 }
 
-func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []Message, explicitTargetIdentityHash ...string) ([]Message, []ContextGovernanceEvent) {
+func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []Message) ([]Message, []ContextGovernanceEvent) {
 	if session == nil {
 		return append([]Message(nil), history...), nil
-	}
-	targetIdentityHash := ""
-	if len(explicitTargetIdentityHash) > 0 {
-		targetIdentityHash = strings.TrimSpace(explicitTargetIdentityHash[0])
-	}
-	if targetIdentityHash == "" {
-		targetIdentityHash = frozenResourceTargetIdentityHash(session.CurrentTurn)
 	}
 	out := append([]Message(nil), history...)
 	var events []ContextGovernanceEvent
 	for i, msg := range out {
-		resourceRecord, resourceOK := resourceReadRecordFromMessage(msg, targetIdentityHash)
+		resourceRecord, resourceOK := resourceReadRecordFromMessage(msg)
 		if resourceOK {
 			result := session.ObservationState.CheckResource(resourceRecord)
 			if result.Event.Layer != "" && result.Event.Kind != "" {
@@ -250,7 +243,7 @@ func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []
 	return out, events
 }
 
-func resourceReadRecordFromMessage(msg Message, targetIdentityHash string) (ResourceReadRecord, bool) {
+func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
 	if msg.ToolResult == nil || len(msg.ToolResult.ExternalReferences) != 1 {
 		return ResourceReadRecord{}, false
 	}
@@ -264,7 +257,7 @@ func resourceReadRecordFromMessage(msg Message, targetIdentityHash string) (Reso
 			URI:                uri,
 			Version:            firstNonBlankRuntimeString(ref.Version, ref.ID),
 			Digest:             ref.Digest,
-			TargetIdentityHash: strings.TrimSpace(targetIdentityHash),
+			TargetIdentityHash: strings.TrimSpace(msg.ToolResult.TargetIdentityHash),
 			Range:              ref.Range,
 		},
 		SourceRef:      firstNonBlankRuntimeString(ref.ID, uri),
@@ -274,13 +267,6 @@ func resourceReadRecordFromMessage(msg Message, targetIdentityHash string) (Reso
 		ContentType:    ref.ContentType,
 		Bytes:          ref.Bytes,
 	}, true
-}
-
-func frozenResourceTargetIdentityHash(snapshot *TurnSnapshot) string {
-	if snapshot == nil || snapshot.TurnAssembly == nil || snapshot.TurnAssembly.Validate() != nil {
-		return ""
-	}
-	return resourceTargetIdentityHash(snapshot.TurnAssembly.AdmissionFacts)
 }
 
 func resourceTargetIdentityHash(facts runtimecontract.AdmissionFacts) string {

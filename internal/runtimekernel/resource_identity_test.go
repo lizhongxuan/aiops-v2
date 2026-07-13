@@ -8,6 +8,7 @@ import (
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
 	"aiops-v2/internal/runtimecontract"
+	"aiops-v2/internal/tooling"
 )
 
 func TestResourceIdentityRepeatedReadReturnsUnchangedStub(t *testing.T) {
@@ -270,7 +271,8 @@ func TestModelVisibleMessagesDedupeReportsDigestChange(t *testing.T) {
 
 func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing.T) {
 	session := &SessionState{ID: "sess-target-namespaced-dedupe"}
-	session.CurrentTurn = resourceIdentityFrozenTargetTurn(t, "turn-host-a", "host-a")
+	hostAHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}.IdentityHash()
+	hostBHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}.IdentityHash()
 	hostA := resourceToolMessage(
 		"msg-host-a",
 		"resource://shared/system-status",
@@ -278,11 +280,7 @@ func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing
 		resourceio.Range{Offset: 0, Limit: 20},
 		"host-a full status",
 	)
-	_, firstEvents := modelVisibleMessagesWithObservationDedupe(session, []Message{hostA})
-	if len(firstEvents) != 1 || firstEvents[0].Kind != "resource.dedupe.miss" {
-		t.Fatalf("first target events = %#v, want miss", firstEvents)
-	}
-
+	hostA.ToolResult.TargetIdentityHash = hostAHash
 	session.CurrentTurn = resourceIdentityFrozenTargetTurn(t, "turn-host-b", "host-b")
 	hostB := resourceToolMessage(
 		"msg-host-b",
@@ -291,18 +289,17 @@ func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing
 		resourceio.Range{Offset: 0, Limit: 20},
 		"host-b full status",
 	)
-	out, secondEvents := modelVisibleMessagesWithObservationDedupe(session, []Message{hostB})
-	if len(secondEvents) != 1 || secondEvents[0].Kind != "resource.dedupe.miss" {
-		t.Fatalf("different frozen target events = %#v, want independent miss", secondEvents)
+	hostB.ToolResult.TargetIdentityHash = hostBHash
+	out, combinedEvents := modelVisibleMessagesWithObservationDedupe(session, []Message{hostA, hostB})
+	if len(combinedEvents) != 2 || combinedEvents[0].Kind != "resource.dedupe.miss" || combinedEvents[1].Kind != "resource.dedupe.miss" {
+		t.Fatalf("combined cross-turn history events = %#v, want independent misses", combinedEvents)
 	}
-	if out[0].ToolResult == nil || out[0].ToolResult.Content != "host-b full status" {
-		t.Fatalf("different frozen target reused prior content/source: %#v", out[0].ToolResult)
+	if out[0].ToolResult == nil || out[0].ToolResult.Content != "host-a full status" || out[1].ToolResult == nil || out[1].ToolResult.Content != "host-b full status" {
+		t.Fatalf("cross-turn history reused wrong target content: %#v", out)
 	}
 	if len(session.ObservationState.ResourceRecords) != 2 {
 		t.Fatalf("resource records = %#v, want one namespace per frozen target", session.ObservationState.ResourceRecords)
 	}
-	hostAHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}.IdentityHash()
-	hostBHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}.IdentityHash()
 	seen := map[string]string{}
 	for _, record := range session.ObservationState.ResourceRecords {
 		seen[record.Identity.TargetIdentityHash] = record.SourceRef
@@ -317,6 +314,25 @@ func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing
 	}
 	if repeated[0].ToolResult == nil || !strings.Contains(repeated[0].ToolResult.Content, "msg-host-b-ref") {
 		t.Fatalf("same target did not reuse its own source ref: %#v", repeated[0].ToolResult)
+	}
+}
+
+func TestMaterializeToolResultCapturesFrozenTargetIdentity(t *testing.T) {
+	snapshot := resourceIdentityFrozenTargetTurn(t, "turn-materialize-host-a", "host-a")
+	session := &SessionState{ID: snapshot.SessionID, Type: SessionTypeHost, Mode: ModeInspect, Context: ContextWindow{MaxTokens: DefaultMaxTokens}, CurrentTurn: snapshot}
+	kernel := &RuntimeKernel{}
+	result, err := kernel.materializeToolResult(session, snapshot, 0, ToolCall{ID: "call-resource", Name: "resource.read"}, tooling.ToolMetadata{Name: "resource.read"}, tooling.ToolResult{
+		Content: "host-a status",
+		References: []tooling.ResultReference{{
+			Kind: tooling.ResultReferenceKindMCPResource, URI: "resource://shared/system-status", Digest: "sha256:same",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("materializeToolResult() error = %v", err)
+	}
+	want := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}.IdentityHash()
+	if result.TargetIdentityHash != want {
+		t.Fatalf("TargetIdentityHash = %q, want frozen target %q", result.TargetIdentityHash, want)
 	}
 }
 

@@ -211,6 +211,7 @@ type ToolCall struct {
 // ToolResult represents the result of a tool execution.
 type ToolResult struct {
 	ToolCallID          string                    `json:"toolCallId"`
+	TargetIdentityHash  string                    `json:"targetIdentityHash,omitempty"`
 	Content             string                    `json:"content"`
 	Summary             string                    `json:"summary,omitempty"`
 	Display             *ToolDisplayPayload       `json:"display,omitempty"`
