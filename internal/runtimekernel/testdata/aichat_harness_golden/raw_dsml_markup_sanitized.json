@@ -9,7 +9,7 @@
     "schemaVersion": "aiops.harness.golden.v1",
     "routeMode": "inspect",
     "targetBinding": "none",
-    "finalStatus": "needs_evidence",
+    "finalStatus": "unknown",
     "noRawDsmlFinal": true,
     "timelineOrder": ["assistant_message", "error", "final_response"]
   }

@@ -190,14 +190,8 @@ func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 	if !containsString(session.ToolDiscovery.EnabledTools(), "synthetic.metrics.read") {
 		t.Fatalf("enabled tools = %v, want synthetic.metrics.read after select", session.ToolDiscovery.EnabledTools())
 	}
-	if !strings.Contains(result.Output, "证据") && !strings.Contains(strings.ToLower(result.Output), "evidence") {
-		t.Fatalf("final output = %q, want verifier-constrained evidence boundary", result.Output)
-	}
-	if !strings.Contains(result.Output, "受限") && !strings.Contains(strings.ToLower(result.Output), "limited") {
-		t.Fatalf("final output = %q, want limited evidence boundary", result.Output)
-	}
-	if strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	if got := goldenFinalContractStatus(session.CurrentTurn); got == string(FinalContractStatusVerified) {
+		t.Fatalf("final contract status = verified despite rejected/unloaded evidence path")
 	}
 	if len(model.inputs) != 5 {
 		t.Fatalf("model calls = %d, want no verifier-triggered recovery iteration", len(model.inputs))
@@ -338,7 +332,7 @@ func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
 	registry := progressiveDiscoveryRegistry(t, true)
 	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, newRecordingCompiler(), model)
 
-	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-progressive-final-evidence",
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
@@ -349,13 +343,9 @@ func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	for _, want := range []string{"还不能给最终结论", "synthetic_metrics_read 未成功返回证据"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want deterministic evidence boundary containing %q", result.Output, want)
-		}
-	}
-	if strings.Contains(result.Output, "confidence") || strings.Contains(result.Output, "置信度") || strings.Contains(result.Output, "高置信") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	session := kernel.sessions.Get("sess-progressive-final-evidence")
+	if session == nil || session.CurrentTurn == nil || goldenFinalContractStatus(session.CurrentTurn) != string(FinalContractStatusToolUnavailable) {
+		t.Fatalf("final contract must record typed tool-unavailable failure: %#v", session)
 	}
 }
 

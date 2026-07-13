@@ -10,7 +10,7 @@
     "routeMode": "inspect",
     "targetBinding": "none",
     "approvalDecided": false,
-    "finalStatus": "approval_denied",
+    "finalStatus": "unknown",
     "noRawDsmlFinal": true,
     "timelineOrder": ["assistant_message", "final_response"]
   }

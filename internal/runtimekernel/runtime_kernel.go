@@ -1355,7 +1355,8 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
-	finalContract := BuildTerminalFinalContract(finalText, FinalContractStatusApprovalDenied, []string{firstNonEmpty(strings.TrimSpace(reason), approval.Reason, "approval_denied")})
+	finalRuntimeFacts := BuildFinalRuntimeFacts(snapshot, session)
+	finalContract := BuildFinalContract(finalText, finalRuntimeFacts)
 	finalData := assistantMessageData{
 		MessageID:        message.ID,
 		Iteration:        snapshot.Iteration,
@@ -2858,91 +2859,22 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 				return "", nil, incompleteErr
 			}
-			finalEvidence := BuildFinalEvidenceState(snapshot, session)
-			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
+			finalRuntimeFacts := BuildFinalRuntimeFacts(snapshot, session)
+			finalEvidenceDecision := finalRuntimeFacts.EvidenceDecision
+			boundaryDecision := finalMessageBoundaryDecision{
+				Action:           FinalMessageBoundaryAllow,
+				EvidenceBoundary: finalEvidenceBoundaryFromFacts(finalRuntimeFacts),
+			}
 			if sanitized, changed := sanitizeFinalAssistantContentForCommit(assistantContent, finalEvidenceDecision); changed {
 				recordRawToolCallMarkupFinalSanitized(snapshot, turnID, iteration, assistantContent)
 				fields := debugTextFacts(assistantContent)
 				fields["replaceReason"] = "raw_tool_call_markup_final"
 				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				assistantContent = sanitized
-				finalEvidenceDecision = VerifyFinalEvidence(assistantContent, finalEvidence)
+				boundaryDecision.Action = FinalMessageBoundaryConstrain
+				boundaryDecision.Reasons = []string{"raw_tool_call_markup_sanitized"}
 			}
-			boundaryDecision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
-				Text:                assistantContent,
-				FinishReason:        providerResponseFinishReason(providerResponse),
-				PendingToolIntent:   finalMessageHasProcessIntent(assistantContent),
-				FinalEvidenceAction: finalEvidenceDecision.Action,
-				RequiresEvidence:    len(finalEvidence.FailedTools) > 0 || len(finalEvidence.NotChecked) > 0,
-			})
-			finalEvidenceBlocked := false
-			if boundaryDecision.Action == FinalMessageBoundaryBlock {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalEvidenceBlocked"] = "true"
-				if len(finalEvidenceDecision.Reasons) > 0 {
-					snapshot.Metadata["finalEvidenceBlockReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
-				}
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "final_message_boundary_block"
-				fields["decisionAction"] = string(finalEvidenceDecision.Action)
-				fields["decisionReasons"] = finalEvidenceDecision.Reasons
-				fields["boundaryAction"] = string(boundaryDecision.Action)
-				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				if finalMessageHasProcessIntent(assistantContent) {
-					assistantContent = incompleteFinalFromEvidenceDecision(finalEvidenceDecision)
-				} else {
-					assistantContent = finalEvidenceBlockedFallback(finalEvidenceDecision)
-				}
-				finalEvidenceBlocked = true
-			} else if boundaryDecision.Action == FinalMessageBoundaryConstrain {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalEvidenceConstrained"] = "true"
-				if len(finalEvidenceDecision.Reasons) > 0 {
-					snapshot.Metadata["finalEvidenceConstrainReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
-				}
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "final_message_boundary_constrain"
-				fields["decisionAction"] = string(finalEvidenceDecision.Action)
-				fields["decisionReasons"] = finalEvidenceDecision.Reasons
-				fields["boundaryAction"] = string(boundaryDecision.Action)
-				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				assistantContent = constrainFinalMessageForEvidenceBoundary(assistantContent, finalEvidenceDecision)
-			}
-			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); !finalEvidenceBlocked && blocked {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["taskDepth.missingEvidenceFinalBlocked"] = "true"
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "missing_evidence_final_blocker"
-				fields["blockerHash"] = debugTextHash(blocker)
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				assistantContent = blocker
-				boundaryDecision.Action = FinalMessageBoundaryBlock
-				boundaryDecision.EvidenceBoundary = "blocked"
-				finalEvidenceDecision.Action = FinalEvidenceActionBlock
-				finalEvidenceDecision.Confidence = FinalEvidenceConfidenceLow
-				finalEvidenceDecision.Reasons = appendFinalEvidenceReason(finalEvidenceDecision.Reasons, "missing_evidence_final_blocker")
-			}
-			if boundaryDecision.Action == "" {
-				boundaryDecision.Action = FinalMessageBoundaryAllow
-			}
-			if strings.TrimSpace(boundaryDecision.EvidenceBoundary) == "" {
-				boundaryDecision.EvidenceBoundary = "sufficient"
-			}
-			finalContract := BuildFinalContract(assistantContent, finalEvidenceDecision)
-			if boundaryDecision.Action == FinalMessageBoundaryBlock &&
-				(finalContract.Status == FinalContractStatusUnknown || finalContract.Status == FinalContractStatusVerified) {
-				finalContract.Status = FinalContractStatusBlocked
-				finalContract.Confidence = FinalEvidenceConfidenceLow
-				finalContract.Limitations = uniqueSortedHarnessStrings(append(finalContract.Limitations, boundaryDecision.Reasons...))
-			}
+			finalContract := BuildFinalContract(assistantContent, finalRuntimeFacts)
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
 			}

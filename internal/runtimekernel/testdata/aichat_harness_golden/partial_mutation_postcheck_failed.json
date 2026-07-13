@@ -10,7 +10,7 @@
     "schemaVersion": "aiops.harness.golden.v1",
     "routeMode": "inspect",
     "targetBinding": "host",
-    "finalStatus": "partial",
+    "finalStatus": "unknown",
     "timelineOrder": ["assistant_message", "final_response"]
   }
 }

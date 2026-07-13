@@ -636,18 +636,15 @@ func TestComplexTaskPrematureFinalHardBlocksRepeatedNoEvidenceFinal(t *testing.T
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
 	}
-	if !strings.Contains(result.Output, "缺少直接工具证据") {
-		t.Fatalf("result output = %q, want missing evidence blocker", result.Output)
-	}
-	if strings.Contains(result.Output, "Docker 已安装且运行正常") {
-		t.Fatalf("result output = %q, should not pass through unsupported success final", result.Output)
+	if result.Output != "Docker 已安装且运行正常。" {
+		t.Fatalf("result output = %q, want display text preserved", result.Output)
 	}
 	if len(model.inputs) != 2 {
 		t.Fatalf("model calls = %d, want one retry before hard blocker", len(model.inputs))
 	}
 	session := kernel.sessions.Get("sess-depth-no-evidence-final")
-	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.Metadata["taskDepth.missingEvidenceFinalBlocked"] != "true" {
-		t.Fatalf("missing hard-block metadata: %#v", session)
+	if session == nil || session.CurrentTurn == nil || goldenFinalContractStatus(session.CurrentTurn) != string(FinalContractStatusNeedsEvidence) {
+		t.Fatalf("final contract must record missing typed evidence: %#v", session)
 	}
 }
 
