@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 
 	"aiops-v2/internal/actionproposal"
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
 	evidencecore "aiops-v2/internal/evidence"
@@ -2334,9 +2335,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		if snapshot.LatestCheckpoint != nil {
 			checkpointRef = snapshot.LatestCheckpoint.ID
 		}
+		stepPermissionHash := k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, surfacePolicy)
 		stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, RuntimeStepControlFacts{
 			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
-			PermissionHash:   runtimeStepPermissionHash(snapshot.TurnAssembly, surfacePolicy),
+			PermissionHash:   stepPermissionHash,
 			CheckpointRef:    checkpointRef,
 		}, thresholds, modelNameForTrace(chatModel), snapshot.TurnAssembly)
 		if modelErr != nil {
@@ -3000,7 +3002,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 		}
 
-		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface)
+		dispatchExpectedPermissionHash := stepPermissionHash
+		if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
+			dispatchExpectedPermissionHash = k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, *snapshot.ToolSurfaceSnapshot.PolicySnapshot)
+		}
+		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface, dispatcherPermissionBinding{
+			expected: dispatchExpectedPermissionHash,
+			current:  stepCtx.PermissionHash,
+		})
 		k.emitIterationStage(session.ID, turnID, iteration, "dispatch_tools", turnSpanID)
 
 		appendToolCallState := func(tc ToolCall) string {
@@ -4920,7 +4929,11 @@ func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapsh
 		return approvalCurrentWorld{}, err
 	}
 	compileCtx.VisibleToolFingerprint = currentRouter.Fingerprint
-	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, currentRouter)
+	currentPermissionHash := k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, surfacePolicy)
+	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, currentRouter, dispatcherPermissionBinding{
+		expected: currentPermissionHash,
+		current:  currentPermissionHash,
+	})
 	decision := dispatcher.dispatchDecisionTrace(toolCall)
 	meta := toolMetadataForToolCall(compileCtx.AssembledTools, toolCall)
 	resourceScopes := pendingApprovalResourceScopes(meta)
@@ -5497,7 +5510,34 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 	return nil
 }
 
-func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot) *ToolDispatcher {
+type dispatcherPermissionBinding struct {
+	expected string
+	current  string
+}
+
+func (k *RuntimeKernel) runtimePermissionSnapshotHash(assembly *agentassembly.TurnAssembly, policy tooling.ToolSurfacePolicySnapshot) string {
+	if assembly == nil || assembly.Validate() != nil {
+		return ""
+	}
+	base := runtimeStepPermissionHash(assembly, policy)
+	if base == "" {
+		return ""
+	}
+	var rules []permissions.Rule
+	if k != nil && k.permissions != nil {
+		rules = k.permissions.Rules()
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turnPermissionHash": base,
+		"permissionRules":    rules,
+	})
+	if err != nil {
+		return ""
+	}
+	return toolArgumentsHash(payload)
+}
+
+func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot, permissionBindings ...dispatcherPermissionBinding) *ToolDispatcher {
 	runtimeToolSurface = hydrateStepToolRouterForDispatch(tools, runtimeToolSurface)
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
@@ -5528,6 +5568,10 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithRoleBindingGuard(roleBindingGuardConfigFromSession(session, snapshot)).
 		WithResourceLockGate(k.resourceLockGate).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
+	if len(permissionBindings) > 0 {
+		binding := permissionBindings[0]
+		dispatcher = dispatcher.WithPermissionBinding(binding.expected, binding.current)
+	}
 	if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
 		dispatcher = dispatcher.WithToolSurfacePolicySnapshot(snapshot.ToolSurfaceSnapshot.PolicySnapshot)
 	}

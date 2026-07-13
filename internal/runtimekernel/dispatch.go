@@ -65,30 +65,32 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup              ToolLookup
-	policy              *policyengine.Engine
-	permissions         *permissions.Engine
-	hooks               *hooks.Registry
-	projector           EventEmitter
-	spanSource          SpanStreamSource // optional: span tracking for tool calls
-	observer            Observer
-	progressSink        ToolProgressSink
-	approvalGrants      []SessionApprovalGrant
-	planMode            PlanModeState
-	planScopes          []PlanApprovalScope
-	unexpectedStates    []UnexpectedStateSignal
-	resourceLockGate    ToolResourceLockGate
-	toolSurfaceFP       string
-	permissionHash      string
-	surfacePolicy       *tooling.ToolSurfacePolicySnapshot
-	stepToolRouter      *StepToolRouter
-	deferredCatalog     DeferredToolCatalogLookup
-	visibleTools        []tooling.ToolMetadata
-	retryConfig         ReadOnlyRetryConfig
-	roleBindingGuard    RoleBindingGuardConfig
-	executionScopeGuard ExecutionScopeGuardConfig
-	retryMu             sync.Mutex
-	retriesThisTurn     int
+	lookup                 ToolLookup
+	policy                 *policyengine.Engine
+	permissions            *permissions.Engine
+	hooks                  *hooks.Registry
+	projector              EventEmitter
+	spanSource             SpanStreamSource // optional: span tracking for tool calls
+	observer               Observer
+	progressSink           ToolProgressSink
+	approvalGrants         []SessionApprovalGrant
+	planMode               PlanModeState
+	planScopes             []PlanApprovalScope
+	unexpectedStates       []UnexpectedStateSignal
+	resourceLockGate       ToolResourceLockGate
+	toolSurfaceFP          string
+	permissionHash         string
+	expectedPermissionHash string
+	permissionBindingSet   bool
+	surfacePolicy          *tooling.ToolSurfacePolicySnapshot
+	stepToolRouter         *StepToolRouter
+	deferredCatalog        DeferredToolCatalogLookup
+	visibleTools           []tooling.ToolMetadata
+	retryConfig            ReadOnlyRetryConfig
+	roleBindingGuard       RoleBindingGuardConfig
+	executionScopeGuard    ExecutionScopeGuardConfig
+	retryMu                sync.Mutex
+	retriesThisTurn        int
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -163,6 +165,16 @@ func (d *ToolDispatcher) WithToolSurfaceFingerprint(fingerprint string) *ToolDis
 
 func (d *ToolDispatcher) WithPermissionSnapshotHash(hash string) *ToolDispatcher {
 	d.permissionHash = strings.TrimSpace(hash)
+	d.permissionBindingSet = true
+	return d
+}
+
+// WithPermissionBinding binds the dispatcher's current immutable step hash to
+// the permission hash independently derived from the frozen turn assembly.
+func (d *ToolDispatcher) WithPermissionBinding(expected, current string) *ToolDispatcher {
+	d.expectedPermissionHash = strings.TrimSpace(expected)
+	d.permissionHash = strings.TrimSpace(current)
+	d.permissionBindingSet = true
 	return d
 }
 
@@ -278,7 +290,7 @@ func (d *ToolDispatcher) effectivePermissionSnapshotHash() string {
 	if d == nil {
 		return "sha256:dispatcher-nil"
 	}
-	if strings.TrimSpace(d.permissionHash) != "" {
+	if d.permissionBindingSet || strings.TrimSpace(d.permissionHash) != "" {
 		return strings.TrimSpace(d.permissionHash)
 	}
 	var permissionRules []permissions.Rule
@@ -290,6 +302,38 @@ func (d *ToolDispatcher) effectivePermissionSnapshotHash() string {
 		"planMode": d.planMode.State, "planScopes": d.planScopes,
 	})
 	return toolArgumentsHash(payload)
+}
+
+func (d *ToolDispatcher) validateMutationPermissionBinding(tc ToolCall, desc ToolDescriptor, executor ToolExecutor) (string, bool) {
+	if !toolExecutionRequiresMutationSafety(desc, executor, tc.Arguments) {
+		return "", false
+	}
+	expected := strings.TrimSpace(d.expectedPermissionHash)
+	current := strings.TrimSpace(d.permissionHash)
+	// Direct legacy test dispatchers predate step-scoped permission bindings.
+	// Production dispatchers always opt into the binding, even when a hash is
+	// unexpectedly missing, so missing production facts still fail closed.
+	if !d.permissionBindingSet {
+		return "", false
+	}
+	status := ""
+	switch {
+	case expected == "":
+		status = "missing expected"
+	case current == "":
+		status = "missing current"
+	case expected != current:
+		status = "mismatch"
+	default:
+		return "", false
+	}
+	payload, _ := json.Marshal(map[string]string{
+		"errorType":      "permission_binding_invalid",
+		"toolName":       firstNonEmpty(tc.Name, desc.Metadata.Name, "tool"),
+		"reason":         "denied: permission binding invalid: " + status,
+		"requiredAction": "rebuild the immutable runtime step from the frozen turn assembly before dispatch",
+	})
+	return string(payload), true
 }
 
 func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool, authorization *VerifiedActionToken) (result DispatchResult) {
@@ -396,8 +440,17 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
 	}
+	mutatingDispatch := toolExecutionRequiresMutationSafety(desc, executor, tc.Arguments)
+	if reason, blocked := d.validateMutationPermissionBinding(tc, desc, executor); blocked {
+		return d.emitToolFailed(sessionID, turnID, tc, reason, "runtime", "permission_binding_invalid", desc.Metadata)
+	}
 	if explicitApproval {
-		if err := authorization.revalidateDispatch(turnID, tc.ID, tc.Name, toolArgumentsHash(tc.Arguments), d.toolSurfaceFP, d.effectivePermissionSnapshotHash(), time.Now()); err != nil {
+		permissionHash := d.effectivePermissionSnapshotHash()
+		if mutatingDispatch {
+			// Mutation authorization never accepts the compatibility/display fallback.
+			permissionHash = strings.TrimSpace(d.permissionHash)
+		}
+		if err := authorization.revalidateDispatch(turnID, tc.ID, tc.Name, toolArgumentsHash(tc.Arguments), d.toolSurfaceFP, permissionHash, time.Now()); err != nil {
 			return approvalContextStaleDispatchResult(tc, err)
 		}
 	}
