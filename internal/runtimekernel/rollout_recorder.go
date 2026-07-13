@@ -360,6 +360,9 @@ func (k *RuntimeKernel) recordCanonicalApprovalRequested(ctx context.Context, sn
 	if err := token.Validate(); err != nil {
 		return fmt.Errorf("approval_requested ActionToken: %w", err)
 	}
+	if err := k.captureReplayApprovalActionToken(ctx, snapshot, token); err != nil {
+		return err
+	}
 	payload := map[string]any{
 		"approvalId": token.ApprovalID, "toolCallId": token.ToolCallID, "toolName": token.ToolName,
 		"argsHash": token.ArgumentsHash, "targetRefs": append([]string(nil), token.TargetRefs...), "status": "pending",
@@ -449,6 +452,9 @@ func (k *RuntimeKernel) recordCanonicalCheckpoint(ctx context.Context, snapshot 
 }
 
 func (k *RuntimeKernel) recordCanonicalFinalFacts(ctx context.Context, snapshot *TurnSnapshot, facts FinalRuntimeFacts, contract FinalContract) error {
+	if err := k.captureReplayFinalFacts(ctx, snapshot, facts, contract); err != nil {
+		return err
+	}
 	failureHashes, err := canonicalRolloutStringHashes(facts.FailureCodes)
 	if err != nil {
 		return err

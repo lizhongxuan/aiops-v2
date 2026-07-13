@@ -128,26 +128,27 @@ type AgentManagerSource interface {
 // RuntimeKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
 type RuntimeKernel struct {
-	tools            ToolAssemblySource
-	compiler         promptcompiler.Compiler
-	policy           *policyengine.Engine
-	permissions      *permissions.Engine
-	hooks            *hooks.Registry
-	projector        EventEmitter
-	modelRouter      *modelrouter.Router
-	sessions         *SessionManager
-	agentMgr         AgentManagerSource
-	spanSource       SpanStreamSource // optional: span tree integration for conversation tracking
-	observer         Observer
-	resourceLockGate ToolResourceLockGate
-	compressor       *spanstream.ContextCompressor
-	spillRepo        ToolResultSpillRepository
-	artifactRepo     ContextArtifactRepository
-	skillRegistry    *skills.Registry
-	evidenceService  *evidencecore.Service
-	rolloutRecorder  *RolloutRecorder
-	featureFlags     func(context.Context) featureflag.Flags
-	debugConfig      func(context.Context) RuntimeDebugConfig
+	tools              ToolAssemblySource
+	compiler           promptcompiler.Compiler
+	policy             *policyengine.Engine
+	permissions        *permissions.Engine
+	hooks              *hooks.Registry
+	projector          EventEmitter
+	modelRouter        *modelrouter.Router
+	sessions           *SessionManager
+	agentMgr           AgentManagerSource
+	spanSource         SpanStreamSource // optional: span tree integration for conversation tracking
+	observer           Observer
+	resourceLockGate   ToolResourceLockGate
+	compressor         *spanstream.ContextCompressor
+	spillRepo          ToolResultSpillRepository
+	artifactRepo       ContextArtifactRepository
+	skillRegistry      *skills.Registry
+	evidenceService    *evidencecore.Service
+	rolloutRecorder    *RolloutRecorder
+	replayArtifactSink ReplayArtifactSink
+	featureFlags       func(context.Context) featureflag.Flags
+	debugConfig        func(context.Context) RuntimeDebugConfig
 
 	turnCancelMu       sync.Mutex
 	inFlightTurnCancel map[string]context.CancelFunc
@@ -156,27 +157,28 @@ type RuntimeKernel struct {
 
 // RuntimeKernelConfig holds the dependencies for creating an RuntimeKernel.
 type RuntimeKernelConfig struct {
-	ToolSource       ToolAssemblySource
-	Compiler         promptcompiler.Compiler
-	Policy           *policyengine.Engine
-	Permissions      *permissions.Engine
-	Hooks            *hooks.Registry
-	Projector        EventEmitter
-	ModelRouter      *modelrouter.Router
-	AgentMgr         AgentManagerSource
-	Sessions         *SessionManager
-	SessionRepo      SessionRepository
-	SpanSource       SpanStreamSource // optional: if nil, span tracking is disabled
-	Observer         Observer
-	ResourceLockGate ToolResourceLockGate
-	Compressor       *spanstream.ContextCompressor
-	SpillRepo        ToolResultSpillRepository
-	ArtifactRepo     ContextArtifactRepository
-	SkillRegistry    *skills.Registry
-	EvidenceService  *evidencecore.Service
-	RolloutRecorder  *RolloutRecorder
-	FeatureFlags     func(context.Context) featureflag.Flags
-	DebugConfig      func(context.Context) RuntimeDebugConfig
+	ToolSource         ToolAssemblySource
+	Compiler           promptcompiler.Compiler
+	Policy             *policyengine.Engine
+	Permissions        *permissions.Engine
+	Hooks              *hooks.Registry
+	Projector          EventEmitter
+	ModelRouter        *modelrouter.Router
+	AgentMgr           AgentManagerSource
+	Sessions           *SessionManager
+	SessionRepo        SessionRepository
+	SpanSource         SpanStreamSource // optional: if nil, span tracking is disabled
+	Observer           Observer
+	ResourceLockGate   ToolResourceLockGate
+	Compressor         *spanstream.ContextCompressor
+	SpillRepo          ToolResultSpillRepository
+	ArtifactRepo       ContextArtifactRepository
+	SkillRegistry      *skills.Registry
+	EvidenceService    *evidencecore.Service
+	RolloutRecorder    *RolloutRecorder
+	ReplayArtifactSink ReplayArtifactSink
+	FeatureFlags       func(context.Context) featureflag.Flags
+	DebugConfig        func(context.Context) RuntimeDebugConfig
 }
 
 type RuntimeDebugConfig struct {
@@ -242,6 +244,7 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 		skillRegistry:      cfg.SkillRegistry,
 		evidenceService:    cfg.EvidenceService,
 		rolloutRecorder:    rolloutRecorder,
+		replayArtifactSink: cfg.ReplayArtifactSink,
 		featureFlags:       featureFlags,
 		debugConfig:        debugConfig,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
@@ -2433,6 +2436,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				k.persistTurnSnapshot(session, snapshot)
 				return "", nil, assemblyErr
 			}
+			if captureErr := k.captureReplayTurnAssembly(ctx, snapshot, assembly); captureErr != nil {
+				return "", nil, captureErr
+			}
 			snapshot.TurnAssembly = assembly
 			if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
 				Kind:             modeltrace.CanonicalRolloutKindAssembly,
@@ -2510,6 +2516,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, modelErr
+		}
+		if captureErr := k.captureReplayStepContext(ctx, stepCtx); captureErr != nil {
+			return "", nil, captureErr
 		}
 		compiled.Fingerprint = stepCtx.ProviderRequest.PromptFingerprint
 		promptFingerprint = promptFingerprintMap(stepCtx.ProviderRequest.PromptFingerprint)
