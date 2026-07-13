@@ -102,6 +102,48 @@ check_required() {
 }
 
 check_absent \
+	"agent eval legacy state endpoint" \
+	"eval AssistantTransport adapter" \
+	'/api/v1/state' \
+	internal/eval cmd/agent-eval
+
+check_absent \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts" \
+	'(?i)(strings\.Contains\(\s*(finalText|FinalOutput|assistantText|markdown)\s*,\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|(finalText|FinalOutput|assistantText|markdown)\.(includes|match|test)\(\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
+	internal/runtimekernel internal/appui web/src
+
+check_required \
+	"TurnAssembly before prompt production marker" \
+	"runtimekernel turn admission" \
+	'turn_assembly_built' \
+	internal/runtimekernel/runtime_kernel.go
+
+check_required \
+	"StepToolRouter provider surface marker" \
+	"runtimekernel step builder" \
+	'providerToolSpecsFromStepToolRouter\(' \
+	internal/runtimekernel/step_builder.go
+
+check_required \
+	"StepToolRouter dispatcher binding marker" \
+	"runtimekernel dispatcher" \
+	'WithStepToolRouter\(runtimeToolSurface\)' \
+	internal/runtimekernel/runtime_kernel.go
+
+check_required \
+	"model input L0/L1 first validator" \
+	"promptinput model input validator" \
+	'model input must begin with L0 then L1' \
+	internal/promptinput/model_input_validation.go
+
+check_required \
+	"model input L6 last validator" \
+	"promptinput model input validator" \
+	'model input L6 must be last' \
+	internal/promptinput/model_input_validation.go
+
+check_absent \
   "markdown-derived runtime process or status" \
   "frontend transport/appui" \
   '(?i)((parse|extract|infer|derive)[A-Za-z0-9_]*(process|tool|approval|verified|status)[A-Za-z0-9_]*(markdown|finalText|final_markdown)|(markdown|finalText|final_markdown)[A-Za-z0-9_]*(parse|extract|infer|derive)[A-Za-z0-9_]*(process|tool|approval|verified|status))' \

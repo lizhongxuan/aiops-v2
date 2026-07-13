@@ -5,6 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
+scripts/test-aiops-harness-contract-boundaries.sh
+scripts/check-aiops-harness-contract-boundaries.sh
+go test ./internal/runtimekernel -run 'TestTurnAssemblyShadowBuildsOnceBeforePromptAndProvider|TestStepToolRouterProviderAndDispatcherShareFingerprint' -count=1
+go test ./internal/promptinput -run 'TestBuildFirstStepUsesL0L6OrderAndCurrentUserLast' -count=1
+go test ./internal/promptcompiler -run 'TestPromptEnvelopeV2ValidatesLogicalLayerOrder|TestApplyPromptSectionCacheMarksHitMissAndInvalidated' -count=1
+
 go test ./internal/runtimekernel/toolfailure -count=1
 go test ./internal/runtimekernel/state -count=1
 go test ./internal/runtimekernel -run 'TestAIChatHarnessGoldenCases|Test.*HarnessContract|Test.*FinalContract|Test.*FinalEvidence|Test.*RollbackContract|TestRawToolCallsFromAssistantText|Test.*SessionTarget' -count=1
@@ -20,8 +26,6 @@ if rg -n '/api/v1/state|/api/v1/chat/message' internal/eval cmd/agent-eval -g '!
 fi
 npm --prefix web run test -- src/transport/aiopsTransportConverter.test.ts src/chat/components/ProcessTranscript.test.tsx
 npm --prefix web run test -- src/transport/aiopsTransportRuntime.test.ts src/chat/inputMentions.test.ts src/chat/components/SpecialInputContextBar.test.tsx src/chat/components/HostMentionInlineOverlay.css.test.ts
-scripts/test-aiops-harness-contract-boundaries.sh
-scripts/check-aiops-harness-contract-boundaries.sh
 scripts/check-aiops-single-assistant-message.sh
 
 if rg -n 'specialInputContext.*(final|markdown)|markdown.*specialInputContext|final(Text|Output).*specialInputContext' web/src internal -g '!**/*_test.go' -g '!*.test.*'; then

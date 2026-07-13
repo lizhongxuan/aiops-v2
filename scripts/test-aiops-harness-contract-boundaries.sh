@@ -11,6 +11,7 @@ fail=0
 create_fixture() {
 	local root="$1"
 	mkdir -p \
+		"${root}/cmd/agent-eval" \
 		"${root}/internal/appui" \
 		"${root}/internal/eval" \
 		"${root}/internal/promptinput" \
@@ -27,16 +28,12 @@ create_fixture() {
 		'func runTurn() {' \
 		'  observeRuntimeStage("turn_assembly_built")' \
 		'  observeRuntimeStage("prompt_compiled")' \
+		'  NewToolDispatcher().WithStepToolRouter(runtimeToolSurface)' \
 		'}' >"${root}/internal/runtimekernel/runtime_kernel.go"
 	printf '%s\n' \
 		'package runtimekernel' \
 		'func providerToolSpecsFromStepToolRouter(surface StepToolRouter) {}' \
 		>"${root}/internal/runtimekernel/step_builder.go"
-	printf '%s\n' \
-		'package runtimekernel' \
-		'func bindDispatcher() {' \
-		'  NewToolDispatcher().WithStepToolRouter(runtimeToolSurface)' \
-		'}' >"${root}/internal/runtimekernel/dispatch.go"
 	printf '%s\n' \
 		'package promptinput' \
 		'func validateModelInput() {' \
