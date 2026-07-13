@@ -63,6 +63,7 @@ func TestToolDispatcherRoleBindingGuardBlocksWrongTargetRole(t *testing.T) {
 func TestToolDispatcherRoleBindingGuardBlocksMutationWhenConflictExists(t *testing.T) {
 	executor := &mockToolExecutor{result: "should-not-run"}
 	dispatcher := NewToolDispatcher(roleBindingGuardLookup(executor, tooling.ToolMetadata{Name: "host.mutate", Mutating: true, RiskLevel: tooling.ToolRiskHigh}), nil, &testMockEventEmitter{}).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithRoleBindingGuard(RoleBindingGuardConfig{
 			Enabled:         true,
 			BoundHostID:     "host-a",

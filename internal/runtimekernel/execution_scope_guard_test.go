@@ -140,6 +140,7 @@ func TestToolDispatcherExecutionScopeGuardBlocksHostToolWithoutActiveGrant(t *te
 func TestToolDispatcherExecutionScopeGuardBlocksMutationWithoutMutationGrant(t *testing.T) {
 	executor := &mockToolExecutor{result: "should-not-run"}
 	dispatcher := NewToolDispatcher(executionScopeGuardLookup(executor, tooling.ToolMetadata{Name: "host.mutate", Mutating: true, RiskLevel: tooling.ToolRiskHigh}), nil, &testMockEventEmitter{}).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithExecutionScopeGuard(ExecutionScopeGuardConfig{
 			Enabled: true,
 			Grants:  []specialinputmemory.ExecutionScopeGrant{executionScopeGrant("host-a", []string{specialinputmemory.ActionExecLowRisk})},

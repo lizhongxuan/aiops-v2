@@ -848,7 +848,8 @@ func TestToolDispatcher_MutatingMetadataDeniedInInspectMode(t *testing.T) {
 			},
 		},
 	}
-	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter)
+	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test")
 
 	result := dispatcher.Dispatch(context.Background(), "sess-mut", "turn-mut", ToolCall{
 		ID:   "call-mut",

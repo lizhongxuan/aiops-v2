@@ -310,12 +310,6 @@ func (d *ToolDispatcher) validateMutationPermissionBinding(tc ToolCall, desc Too
 	}
 	expected := strings.TrimSpace(d.expectedPermissionHash)
 	current := strings.TrimSpace(d.permissionHash)
-	// Direct legacy test dispatchers predate step-scoped permission bindings.
-	// Production dispatchers always opt into the binding, even when a hash is
-	// unexpectedly missing, so missing production facts still fail closed.
-	if !d.permissionBindingSet {
-		return "", false
-	}
 	status := ""
 	switch {
 	case expected == "":

@@ -47,6 +47,19 @@ func TestToolDispatcherPermissionBindingFailClosedForMutation(t *testing.T) {
 	}
 }
 
+func TestToolDispatcherMutationWithoutPermissionBindingFailsClosed(t *testing.T) {
+	executor := &permissionBindingExecutor{}
+	dispatcher := NewToolDispatcher(permissionBindingLookup(executor, true), nil, &testMockEventEmitter{})
+
+	result := dispatcher.Dispatch(context.Background(), "sess-permission-unbound", "turn-permission-unbound", ToolCall{
+		ID: "call-mutate", Name: "synthetic.mutate", Arguments: json.RawMessage(`{"value":"next"}`),
+	}, SessionTypeHost, ModeExecute)
+
+	if result.Outcome != "permission_binding_invalid" || !strings.Contains(result.Error, "missing expected") || executor.calls != 0 {
+		t.Fatalf("Dispatch() = %#v, executor calls = %d; want unbound mutation rejected", result, executor.calls)
+	}
+}
+
 func TestToolDispatcherPermissionBindingKeepsReadOnlyCompatibility(t *testing.T) {
 	executor := &permissionBindingExecutor{readOnly: true}
 	dispatcher := NewToolDispatcher(permissionBindingLookup(executor, false), nil, &testMockEventEmitter{})
