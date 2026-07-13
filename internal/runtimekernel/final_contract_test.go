@@ -299,3 +299,78 @@ func TestBuildFinalContractSucceededFactsRequireCompleteTypedVerification(t *tes
 		})
 	}
 }
+
+func TestFinalContractValidateAndNormalizeVerifiedInvariant(t *testing.T) {
+	tests := []struct {
+		name       string
+		contract   FinalContract
+		wantValid  bool
+		wantStatus FinalContractStatus
+	}{
+		{
+			name: "verified without evidence is downgraded",
+			contract: FinalContract{
+				SchemaVersion: FinalContractSchemaVersion,
+				Status:        FinalContractStatusVerified,
+			},
+			wantStatus: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "verified with unchecked requirement is downgraded",
+			contract: FinalContract{
+				SchemaVersion:         FinalContractSchemaVersion,
+				Status:                FinalContractStatusVerified,
+				CheckedEvidenceRefs:   []string{"evidence://health"},
+				UncheckedRequirements: []string{"metrics:unavailable"},
+			},
+			wantStatus: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "verified with outstanding postcheck is downgraded",
+			contract: FinalContract{
+				SchemaVersion:       FinalContractSchemaVersion,
+				Status:              FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://precheck"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantStatus: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "verified with complete typed facts stays verified",
+			contract: FinalContract{
+				SchemaVersion:       FinalContractSchemaVersion,
+				Status:              FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://health"},
+				PostChecks:          []string{"service_health"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantValid:  true,
+			wantStatus: FinalContractStatusVerified,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.contract.Validate()
+			if (err == nil) != tt.wantValid {
+				t.Fatalf("Validate() error = %v, wantValid = %t", err, tt.wantValid)
+			}
+			normalized := tt.contract.NormalizeForProjection()
+			if normalized.Status != tt.wantStatus {
+				t.Fatalf("normalized status = %q, want %q: %#v", normalized.Status, tt.wantStatus, normalized)
+			}
+			if tt.wantValid {
+				if len(normalized.Limitations) != 0 {
+					t.Fatalf("valid contract limitations = %#v, want none", normalized.Limitations)
+				}
+				return
+			}
+			if !containsString(normalized.Limitations, FinalContractLimitationInvalidVerifiedFacts) {
+				t.Fatalf("normalized limitations = %#v, want %q", normalized.Limitations, FinalContractLimitationInvalidVerifiedFacts)
+			}
+			if tt.contract.Status != FinalContractStatusVerified || len(tt.contract.Limitations) != 0 {
+				t.Fatalf("NormalizeForProjection mutated source contract: %#v", tt.contract)
+			}
+		})
+	}
+}

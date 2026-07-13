@@ -1,8 +1,13 @@
 package runtimekernel
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 const FinalContractSchemaVersion = "aiops.harness.final.v1"
+
+const FinalContractLimitationInvalidVerifiedFacts = "invalid_verified_contract_facts"
 
 type FinalContractStatus string
 
@@ -31,6 +36,49 @@ type FinalContract struct {
 	PostChecks            []string            `json:"postChecks,omitempty"`
 	RequiredPostChecks    []string            `json:"requiredPostChecks,omitempty"`
 	Limitations           []string            `json:"limitations,omitempty"`
+}
+
+func (contract FinalContract) Validate() error {
+	failures := finalContractVerifiedInvariantFailures(contract)
+	if len(failures) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s: %s", FinalContractLimitationInvalidVerifiedFacts, strings.Join(failures, ","))
+}
+
+// NormalizeForProjection fails closed without making a malformed persisted
+// contract prevent the rest of the turn from being hydrated.
+func (contract FinalContract) NormalizeForProjection() FinalContract {
+	if len(finalContractVerifiedInvariantFailures(contract)) == 0 {
+		return contract
+	}
+	contract.Status = FinalContractStatusNeedsEvidence
+	contract.Limitations = uniqueSortedHarnessStrings(append(
+		append([]string(nil), contract.Limitations...),
+		FinalContractLimitationInvalidVerifiedFacts,
+	))
+	return contract
+}
+
+func finalContractVerifiedInvariantFailures(contract FinalContract) []string {
+	if contract.Status != FinalContractStatusVerified {
+		return nil
+	}
+	var failures []string
+	if len(uniqueSortedHarnessStrings(contract.CheckedEvidenceRefs)) == 0 {
+		failures = append(failures, "missing_checked_evidence")
+	}
+	if len(uniqueSortedHarnessStrings(contract.UncheckedRequirements)) > 0 {
+		failures = append(failures, "unchecked_requirements_present")
+	}
+	state := FinalEvidenceState{
+		PostChecks:         contract.PostChecks,
+		RequiredPostChecks: contract.RequiredPostChecks,
+	}
+	if len(outstandingRequiredPostChecks(state)) > 0 {
+		failures = append(failures, "required_postchecks_incomplete")
+	}
+	return failures
 }
 
 func BuildFinalContract(answer string, facts FinalRuntimeFacts) FinalContract {

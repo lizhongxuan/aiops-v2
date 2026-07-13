@@ -2390,6 +2390,99 @@ func TestTransportProjectorTypedFactsOnlyFinalStatusIgnoresVerificationProse(t *
 	}
 }
 
+func TestTransportProjectorNormalizesPersistedVerifiedContractInvariant(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		contract   runtimekernel.FinalContract
+		wantStatus AiopsTransportFinalStatus
+	}{
+		{
+			name: "missing evidence is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+				Status:        runtimekernel.FinalContractStatusVerified,
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "unchecked requirement is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:         runtimekernel.FinalContractSchemaVersion,
+				Status:                runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs:   []string{"evidence://health"},
+				UncheckedRequirements: []string{"metrics:unavailable"},
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "outstanding postcheck is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://precheck"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "complete verified contract stays verified",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://health"},
+				PostChecks:          []string{"service_health"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantStatus: AiopsTransportFinalStatusVerified,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{
+				"displayKind":   "assistant.message",
+				"phase":         "final_answer",
+				"streamState":   "complete",
+				"finalContract": tt.contract,
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			turn := &runtimekernel.TurnSnapshot{
+				ID:        "turn-persisted-final-" + strings.ReplaceAll(tt.name, " ", "-"),
+				SessionID: "session-persisted-final",
+				Lifecycle: runtimekernel.TurnLifecycleCompleted,
+				StartedAt: now,
+				UpdatedAt: now,
+				AgentItems: []agentstate.TurnItem{{
+					ID:     "persisted-final",
+					Type:   agentstate.TurnItemTypeAssistantMessage,
+					Status: agentstate.ItemStatusCompleted,
+					Payload: agentstate.PayloadEnvelope{
+						Summary: "显示文本不得改变结构化状态。",
+						Data:    data,
+					},
+				}},
+			}
+			projected, err := NewTransportProjector().ProjectTurnSnapshot(
+				NewAiopsTransportState(turn.SessionID, "thread-persisted-final"),
+				turn,
+			)
+			if err != nil {
+				t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+			}
+			final := projected.Turns[turn.ID].Final
+			if final == nil || final.Status != tt.wantStatus {
+				t.Fatalf("projected final = %#v, want status %q", final, tt.wantStatus)
+			}
+			if tt.wantStatus == AiopsTransportFinalStatusNeedsEvidence && !containsString(final.Limitations, "invalid_verified_contract_facts") {
+				t.Fatalf("projected limitations = %#v, want invalid verified facts limitation", final.Limitations)
+			}
+		})
+	}
+}
+
 func TestTransportProjectorTypedFactsOnlyMarkdownDoesNotChangeApprovalToolEvidenceStatus(t *testing.T) {
 	now := time.Date(2026, 7, 14, 9, 10, 0, 0, time.UTC)
 	contract := runtimekernel.FinalContract{

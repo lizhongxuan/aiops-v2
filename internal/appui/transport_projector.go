@@ -968,6 +968,7 @@ func transportFinalFromAgentItem(id string, text string, fallbackStatus AiopsTra
 	if strings.TrimSpace(contract.SchemaVersion) == "" {
 		return final
 	}
+	contract = contract.NormalizeForProjection()
 	final.SchemaVersion = strings.TrimSpace(contract.SchemaVersion)
 	final.Status = mapFinalContractStatusToTransportStatus(contract.Status, fallbackStatus)
 	final.Confidence = strings.TrimSpace(contract.Confidence)
