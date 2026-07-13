@@ -12,12 +12,22 @@ import (
 )
 
 func ModelInputItemsToEinoMessages(items []promptinput.ModelInputItem) ([]*schema.Message, ProviderMessageAudit, error) {
-	messages := make([]*schema.Message, 0, len(items))
-	auditItems := make([]ProviderMessageAuditItem, 0, len(items))
 	for idx, item := range items {
 		if err := item.Validate(); err != nil {
 			return nil, ProviderMessageAudit{}, fmt.Errorf("item[%d]: %w", idx, err)
 		}
+	}
+	if promptinput.HasTypedModelInputLayers(items) {
+		if err := promptinput.ValidateModelInputCausalOrder(items); err != nil {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("canonical model input causal order: %w", err)
+		}
+		if err := promptinput.ValidateModelInputLogicalOrder(items, true); err != nil {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("canonical model input logical order: %w", err)
+		}
+	}
+	messages := make([]*schema.Message, 0, len(items))
+	auditItems := make([]ProviderMessageAuditItem, 0, len(items))
+	for _, item := range items {
 		msg := einoMessageFromModelInputItem(item)
 		messages = append(messages, msg)
 		auditItems = append(auditItems, ProviderMessageAuditItem{

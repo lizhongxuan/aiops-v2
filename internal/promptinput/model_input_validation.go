@@ -157,6 +157,15 @@ func ValidateModelInputLogicalOrder(items []ModelInputItem, requireComplete bool
 	return nil
 }
 
+func HasTypedModelInputLayers(items []ModelInputItem) bool {
+	for _, item := range items {
+		if _, typed := modelInputLogicalLayerRank(item.Source.Layer); typed {
+			return true
+		}
+	}
+	return false
+}
+
 func modelInputLogicalLayerRank(layer string) (int, bool) {
 	layers := []promptcompiler.PromptLogicalLayer{
 		promptcompiler.LayerAbsoluteSystemCore, promptcompiler.LayerRoleProfileCore,
