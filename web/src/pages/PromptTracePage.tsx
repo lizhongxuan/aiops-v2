@@ -35,8 +35,9 @@ type TraceUsage = {
   totalTokens?: number;
 };
 
-type TraceListPayload = { traces?: TraceItem[]; rootDir?: string; selectedId?: string };
+type TraceListPayload = { traces?: TraceItem[]; rootDir?: string; selectedId?: string; controlChain?: ControlChainPayload };
 type FilePayload = { content?: string };
+type ControlChainPayload = Record<string, unknown> & { available?: boolean; unavailableReason?: string };
 type AgentUiSourceUserRequest = {
   turnId?: string;
   content?: string;
@@ -144,6 +145,7 @@ export function PromptTracePage() {
   const [activeView, setActiveView] = useState(initialQuery.view || "overview");
   const [activeRaw, setActiveRaw] = useState(initialQuery.raw || "markdown");
   const [fileCache, setFileCache] = useState<Record<string, string>>({});
+  const [controlChainCache, setControlChainCache] = useState<Record<string, ControlChainPayload>>({});
   const [error, setError] = useState("");
   const [detailOpen, setDetailOpen] = useState(Boolean(initialQuery.path));
   const directPath = initialQuery.path;
@@ -183,6 +185,8 @@ export function PromptTracePage() {
   const selectedTrace = filteredTraces.find((item) => item.id === selectedId) || sessionGroups[0]?.traces[0] || null;
   const selectedSessionGroup = selectedTrace ? sessionGroups.find((group) => group.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
   const selectedTurnGroup = selectedTrace && selectedSessionGroup ? selectedSessionGroup.turns.find((turn) => turn.traces.some((trace) => trace.id === selectedTrace.id)) || null : null;
+  const controlChainKey = selectedTrace?.sessionId && selectedTrace?.turnId ? `${selectedTrace.sessionId}:${selectedTrace.turnId}` : "";
+  const selectedControlChain = controlChainKey ? controlChainCache[controlChainKey] : undefined;
   const rawPath = selectedTrace ? (activeRaw === "markdown" ? selectedTrace.markdownPath : selectedTrace.jsonPath) || "" : "";
   const activePath = activeView === "raw"
     ? directPath || rawPath
@@ -203,11 +207,29 @@ export function PromptTracePage() {
     void loadFile();
   }, [activePath, fileCache]);
 
+  useEffect(() => {
+    if (!selectedTrace?.sessionId || !selectedTrace.turnId || !controlChainKey || selectedControlChain) return;
+    let cancelled = false;
+    const params = new URLSearchParams({
+      includeControlChain: "true",
+      sessionId: selectedTrace.sessionId,
+      turnId: selectedTrace.turnId,
+    });
+    void requestJson<TraceListPayload>(`/api/v1/debug/model-input-traces?${params.toString()}`)
+      .then((payload) => {
+        if (!cancelled) setControlChainCache((current) => ({ ...current, [controlChainKey]: payload.controlChain || { available: false, unavailableReason: "控制链未返回" } }));
+      })
+      .catch(() => {
+        if (!cancelled) setControlChainCache((current) => ({ ...current, [controlChainKey]: { available: false, unavailableReason: "控制链读取失败" } }));
+      });
+    return () => { cancelled = true; };
+  }, [controlChainKey, selectedControlChain, selectedTrace?.sessionId, selectedTrace?.turnId]);
+
   const jsonContent = selectedTrace?.jsonPath ? fileCache[selectedTrace.jsonPath] || "" : "";
   const rawContentPath = activeView === "raw" ? activePath : rawPath;
   const rawContent = rawContentPath ? fileCache[rawContentPath] || "" : "";
   const diffContent = selectedTrace?.diffPath ? fileCache[selectedTrace.diffPath] || "" : "";
-  const traceViewModel = useMemo(() => jsonContent ? parsePromptTrace(jsonContent) : null, [jsonContent]);
+  const traceViewModel = useMemo(() => jsonContent ? parsePromptTrace(jsonContent, selectedControlChain) : null, [jsonContent, selectedControlChain]);
   const sourceUserRequests = ((traceViewModel?.agentUiSources as AgentUiSources | undefined)?.userRequests || []);
   const directJsonPath = isPromptMarkdownDirectView(directPath, activeView, activeRaw) ? selectedTrace?.jsonPath || "" : "";
 
@@ -239,6 +261,7 @@ export function PromptTracePage() {
 
   const views = [
     ["overview", "概览"],
+    ["control_chain", "控制链"],
     ["layers", "提示层"],
     ["messages", "消息"],
     ["tools", "工具"],
@@ -383,7 +406,7 @@ function readPromptTraceQuery() {
   const raw = params.get("raw") || "";
   return {
     path: normalizeModelInputTracePath(params.get("path") || ""),
-    view: ["overview", "layers", "messages", "tools", "diff", "raw"].includes(view) ? view : "",
+    view: ["overview", "control_chain", "layers", "messages", "tools", "diff", "raw"].includes(view) ? view : "",
     raw: ["markdown", "json"].includes(raw) ? raw : "",
   };
 }
@@ -680,6 +703,7 @@ function PromptTraceDetailDialog({
               </section>
             ) : null}
 
+            {activeView === "control_chain" ? <ControlChainPanel trace={traceViewModel} /> : null}
             {activeView === "layers" ? <section className="grid gap-3">{(traceViewModel?.layers || []).map((layer) => <Card key={layer.id} className="rounded-lg bg-slate-50"><CardHeader><CardTitle>{layer.title}</CardTitle><CardDescription>{layer.providerRole} / {layer.promptLayer}</CardDescription></CardHeader><CardContent><pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{layer.content}</pre></CardContent></Card>)}</section> : null}
             {activeView === "messages" ? <section className="grid gap-3">{(traceViewModel?.messages || []).map((message) => <Card key={message.id} className="rounded-lg bg-slate-50"><CardHeader><CardTitle>{message.providerRole || message.semanticRole || "message"}</CardTitle><CardDescription>{message.charCount} chars</CardDescription></CardHeader><CardContent><pre className="max-h-72 overflow-auto whitespace-pre-wrap text-xs">{message.content}</pre></CardContent></Card>)}</section> : null}
             {activeView === "tools" ? (
@@ -703,6 +727,110 @@ function PromptTraceDetailDialog({
 type ContextGovernanceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["contextGovernance"]>;
 type ToolSurfaceViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["toolSurface"]>;
 type SpecialInputViewModel = NonNullable<ReturnType<typeof parsePromptTrace>["specialInput"]>;
+type PromptTraceViewModel = ReturnType<typeof parsePromptTrace>;
+
+function ControlChainPanel({ trace }: { trace: PromptTraceViewModel | null }) {
+  const chain = trace?.controlChain;
+  const facts = trace?.controlFacts;
+  const divergence = chain?.firstDivergence;
+  const approval = trace?.approvalControl;
+  const tools = trace?.toolControl;
+  if (!trace) return <EmptyGovernanceState text="正在读取控制链…" />;
+  return (
+    <section data-testid="prompt-trace-control-chain" className="grid gap-4">
+      <div className={`rounded-lg border p-4 ${divergence ? "border-amber-300 bg-amber-50" : "border-slate-200 bg-white"}`}>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs font-medium uppercase tracking-[0.16em] text-slate-500">First divergence</p>
+            <h3 className="mt-1 text-lg font-semibold text-slate-950">{divergence ? `#${divergence.sequence} ${controlKindLabel(divergence.kind)}` : "未记录权威分歧"}</h3>
+          </div>
+          <div data-testid="prompt-trace-first-divergence-owner" className="rounded-md bg-slate-950 px-3 py-2 font-mono text-sm text-white">
+            {divergence?.ownerModule || "owner: -"}
+          </div>
+        </div>
+        <p className="mt-2 text-xs text-slate-600">
+          {chain?.available === false ? chain.unavailableReason || "Canonical rollout 不可用" : divergence?.mismatchFields?.length ? `不一致字段：${divergence.mismatchFields.join("、")}` : "只依据 typed divergence / mismatch/hash 对比，不从错误文案推断。"}
+        </p>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-3">
+        <ControlFact label="TurnAssembly" value={facts?.turnAssemblyHash} />
+        <ControlFact label="StepContext" value={facts?.stepContextHash} />
+        <ControlFact label="Step Revision" value={facts?.stepRevisionKind} hash={false} />
+      </div>
+
+      <ContextPanel title="Canonical sequence">
+        {chain?.events?.length ? (
+          <div data-testid="prompt-trace-control-strip" className="flex gap-2 overflow-x-auto pb-2">
+            {chain.events.map((event) => (
+              <div key={event.eventId || `${event.sequence}-${event.kind}`} className={`min-w-40 rounded-lg border p-3 ${event.isDivergence ? "border-amber-400 bg-amber-50" : "border-slate-200 bg-slate-50"}`}>
+                <div className="flex items-center justify-between gap-2 text-xs"><span className="font-mono text-slate-500">#{event.sequence}</span><ToneBadge>{event.ownerModule}</ToneBadge></div>
+                <div className="mt-2 text-sm font-medium text-slate-950">{controlKindLabel(event.kind)}</div>
+                <div className="mt-2 truncate font-mono text-[11px] text-slate-500" title={event.hash}>{shortHash(event.hash) || "hash -"}</div>
+                {controlEventRef(event) ? <div className="mt-1 truncate font-mono text-[11px] text-slate-400" title={controlEventRef(event)}>{controlEventRef(event)}</div> : null}
+              </div>
+            ))}
+          </div>
+        ) : <EmptyGovernanceState text={chain?.unavailableReason || "暂无 canonical rollout events"} />}
+      </ContextPanel>
+
+      <div data-testid="prompt-trace-control-prompt-hashes" className="grid gap-3 lg:grid-cols-2">
+        <PromptHashGroup title="稳定前缀 · L0-L3" items={trace.promptHashes.stable} />
+        <PromptHashGroup title="动态后缀 · L4-L6" items={trace.promptHashes.dynamic} />
+      </div>
+
+      <div data-testid="prompt-trace-control-bindings" className="grid gap-3 lg:grid-cols-2">
+        <ContextPanel title="Tool surface / policy">
+          <div className="grid gap-3 text-xs sm:grid-cols-3">
+            <ToolRefList label="Model-visible" values={tools?.modelVisible || []} />
+            <ToolRefList label="Dispatchable" values={tools?.dispatchable || []} />
+            <ToolRefList label="Hidden" values={(tools?.hidden || []).map((item) => `${item.tool} · ${item.reason}`)} />
+          </div>
+          <div className="mt-3 font-mono text-xs text-slate-500">policy {shortHash(tools?.policyHash) || "-"} · surface {shortHash(tools?.fingerprint) || "-"}</div>
+          {tools?.diff.visibleNotDispatchable.length || tools?.diff.dispatchableNotVisible.length ? <p className="mt-2 text-xs text-amber-700">差异：visible-only [{tools.diff.visibleNotDispatchable.join(", ") || "-"}] · dispatch-only [{tools.diff.dispatchableNotVisible.join(", ") || "-"}]</p> : null}
+        </ContextPanel>
+        <ContextPanel title="Approval binding">
+          <div className="grid gap-2 text-xs">
+            <ControlRefLine label="Approval" value={approval?.approvalId} />
+            <ControlRefLine label="Token" value={approval?.actionTokenHash} />
+            <ControlRefLine label="Mismatch" value={approval?.mismatchFields?.join(", ")} hash={false} />
+            <ControlRefLine label="Checkpoint" value={approval?.checkpointRef || facts?.checkpointRef} hash={false} />
+            <ControlRefLine label="Rollout" value={approval?.rolloutRef || facts?.rolloutRef} hash={false} />
+          </div>
+        </ContextPanel>
+      </div>
+    </section>
+  );
+}
+
+function ControlFact({ label, value, hash = true }: { label: string; value?: string; hash?: boolean }) {
+  return <div className="rounded-lg border border-slate-200 bg-slate-50 p-3"><div className="text-xs text-slate-500">{label}</div><div className="mt-1 truncate font-mono text-sm text-slate-950" title={value || ""}>{hash ? shortHash(value) : value || "-"}</div></div>;
+}
+
+function PromptHashGroup({ title, items }: { title: string; items: PromptTraceViewModel["promptHashes"]["all"] }) {
+  return <ContextPanel title={title}><div className="grid gap-2">{items.map((item) => <div key={item.key} data-testid={`prompt-trace-hash-${item.key}`} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2 text-xs"><span className="inline-flex min-w-12 shrink-0 justify-center rounded-md bg-slate-900 px-2 py-1 font-mono text-[11px] font-semibold text-white">{item.layer}</span><span className="min-w-32 text-slate-600">{item.label}</span><span className="min-w-0 flex-1 truncate font-mono" title={item.value}>{shortHash(item.value) || "-"}</span><ToneBadge>{controlChangeLabel(item.change)}</ToneBadge></div>)}</div></ContextPanel>;
+}
+
+function ToolRefList({ label, values }: { label: string; values: string[] }) {
+  return <div><div className="mb-2 font-medium text-slate-600">{label}</div><div className="grid gap-1">{values.length ? values.map((value) => <span key={value} className="truncate rounded bg-slate-100 px-2 py-1 font-mono" title={value}>{value}</span>) : <span className="text-slate-400">-</span>}</div></div>;
+}
+
+function ControlRefLine({ label, value, hash = true }: { label: string; value?: unknown; hash?: boolean }) {
+  const display = displayControlRef(value, hash);
+  return <div data-testid={`prompt-trace-control-ref-${label.toLowerCase()}`} title={display} className="flex min-w-0 gap-3"><span className="w-20 shrink-0 text-slate-500">{label}</span><span className="truncate font-mono text-slate-800">{display || "未记录"}</span></div>;
+}
+
+function controlChangeLabel(change: string) { return change === "changed" ? "changed" : change === "unchanged" ? "unchanged" : "unknown"; }
+function controlKindLabel(kind = "") { return kind ? kind.replaceAll("_", " ") : "unknown"; }
+function controlEventRef(event: PromptTraceViewModel["controlChain"]["events"][number]) { return event.sourceRefs[0] || (event.payloadRefs[0] ? `${event.payloadRefs[0].key}:${shortHash(event.payloadRefs[0].ref)}` : ""); }
+function displayControlRef(value: unknown, hash: boolean) {
+  if (value && typeof value === "object") {
+    const ref = value as { sequence?: number | null; eventId?: string; hash?: string; ref?: string };
+    return [ref.sequence == null ? "" : `#${ref.sequence}`, ref.eventId, shortHash(ref.hash || ref.ref)].filter(Boolean).join(" · ");
+  }
+  const text = typeof value === "string" ? value : "";
+  return text && hash ? shortHash(text) : text;
+}
 
 function CompactMetricCard({ label, value }: { label: string; value: ReactNode }) {
   const title = `${label}: ${String(value ?? "")}`;
