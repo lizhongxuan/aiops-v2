@@ -1640,34 +1640,6 @@ func (k *RuntimeKernel) CancelTurn(ctx context.Context, req CancelRequest) (Turn
 	}, nil
 }
 
-func persistSessionTargetRequestState(session *SessionState, req TurnRequest) {
-	if session == nil {
-		return
-	}
-	if req.SessionTargetSnapshot != nil {
-		session.SessionTargetSnapshot = req.SessionTargetSnapshot
-		session.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
-		session.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
-	} else {
-		if len(req.ResourceRoleBindings) > 0 {
-			session.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
-		}
-		if len(req.RoleBindingConflicts) > 0 {
-			session.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
-		}
-	}
-
-	session.HostID = strings.TrimSpace(req.HostID)
-	if snapshot := session.SessionTargetSnapshot; snapshot != nil && !snapshot.Expired() && !snapshot.RequiresConfirmation && snapshot.Confidence > 0 {
-		hostIDs := resourcebinding.HostIDsFromSessionTarget(snapshot)
-		if len(hostIDs) == 1 {
-			session.HostID = hostIDs[0]
-		} else {
-			session.HostID = ""
-		}
-	}
-}
-
 // RunTurnWithRecorder executes RunTurn while recording pipeline steps for testing.
 func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, recorder *PipelineRecorder) (result TurnResult, err error) {
 	// Panic recovery

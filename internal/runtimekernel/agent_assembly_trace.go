@@ -11,67 +11,6 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-type runtimeTurnAssemblyInput struct {
-	TurnContext            RuntimeTurnContext
-	CompileContext         promptcompiler.CompileContext
-	ToolSurfacePolicy      tooling.ToolSurfacePolicySnapshot
-	ToolSurfaceFingerprint string
-	ResourceBindings       []resourcebinding.ResourceBindingSnapshot
-	RollbackPolicy         string
-	Mode                   Mode
-	MaxIterations          int
-}
-
-func buildRuntimeTurnAssembly(input runtimeTurnAssemblyInput) (*agentassembly.TurnAssembly, error) {
-	modelVisible := toolMetadataFromPromptTools(input.CompileContext.AssembledTools)
-	capabilityPolicy := agentassembly.BuildToolSurfaceSnapshot(agentassembly.ToolSurfaceInput{
-		ResourceBindings:  input.ResourceBindings,
-		RegisteredTools:   modelVisible,
-		ModelVisibleTools: modelVisible,
-		DispatchableTools: modelVisible,
-		HiddenTools:       hiddenToolInputsFromPolicy(input.ToolSurfacePolicy),
-		PolicyHash:        input.ToolSurfacePolicy.Hash,
-		Fingerprint:       input.ToolSurfaceFingerprint,
-	})
-	sourceRefs := []string{"runtimekernel:pre_prompt"}
-	if hash := strings.TrimSpace(input.ToolSurfacePolicy.Hash); hash != "" {
-		sourceRefs = append(sourceRefs, "tool-surface-policy:"+hash)
-	}
-	assembly, err := agentassembly.BuildTurnAssembly(agentassembly.TurnAssemblyInput{
-		AdmissionFacts: input.TurnContext.AdmissionFacts,
-		AdmissionError: input.TurnContext.AdmissionError,
-		PermissionProfile: firstNonBlankRuntimeString(
-			input.TurnContext.AdmissionFacts.PermissionProfile,
-			input.ToolSurfacePolicy.PermissionHash,
-			input.ToolSurfacePolicy.ApprovalPolicy,
-		),
-		CapabilityPolicy: capabilityPolicy,
-		ContextPolicy: agentassembly.ContextSelectorSnapshot{
-			Lifecycle: agentassembly.LifecycleRequestScope,
-			Policy: firstNonBlankRuntimeString(
-				input.CompileContext.EvidencePolicy,
-				input.CompileContext.PlanningPolicy,
-			),
-			Budget: input.CompileContext.ToolBudget,
-		},
-		LoopPolicy: agentassembly.LoopPolicySnapshot{
-			Lifecycle:      agentassembly.LifecycleRequestScope,
-			MaxIterations:  input.MaxIterations,
-			ToolCallPolicy: string(input.Mode),
-		},
-		FinalContractPolicy: agentassembly.FinalContractSnapshot{
-			Lifecycle: agentassembly.LifecycleRequestScope,
-			Shape:     firstNonBlankRuntimeString(input.CompileContext.AnswerStyle, "default"),
-		},
-		RollbackPolicy: input.RollbackPolicy,
-		SourceRefs:     sourceRefs,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build turn assembly: %w", err)
-	}
-	return &assembly, nil
-}
-
 func buildAgentAssemblySnapshotForTrace(input agentAssemblyTraceInput) *agentassembly.AgentAssemblySnapshot {
 	result, err := buildAgentAssemblyTraceSnapshots(input)
 	if err != nil {
