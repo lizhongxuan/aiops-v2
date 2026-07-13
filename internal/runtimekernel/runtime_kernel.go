@@ -2465,6 +2465,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			},
 		))
 		k.persistTurnSnapshot(session, snapshot)
+		validatedProviderRequest, validationErr := stepCtx.ValidatedProviderRequest()
+		if validationErr != nil {
+			return "", nil, fmt.Errorf("runtime step validation failed")
+		}
 		reasoningSummaries := map[string]modelrouter.ReasoningStreamEvent{}
 		reasoningOrder := make([]string, 0, 2)
 		modelCtx := ctx
@@ -2491,10 +2495,6 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		var lastDeltaAt time.Time
 		effectiveProviderConfig := k.modelRouter.ResolveEffectiveProviderConfig(agentKind, modelrouter.ProviderConfig{})
 		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool), modelrouter.WithEinoRequestTimeoutMs(effectiveProviderConfig.RequestTimeoutMs))
-		validatedProviderRequest, validationErr := stepCtx.ValidatedProviderRequest()
-		if validationErr != nil {
-			return "", nil, fmt.Errorf("runtime step validation failed")
-		}
 		k.observeRuntimeStage(modelCtx, session.ID, turnID, iteration, "provider_request_started")
 		providerResponse, genErr := providerAdapter.Call(modelCtx, validatedProviderRequest, func(delta string) {
 			if delta != "" {
