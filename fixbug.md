@@ -143,3 +143,12 @@
 - 修复方式：把 active-route 修正后的 `IntentFrame` 直接写入 `TurnRequest` 并传到 `AdmissionInput`；Final、verification 和资源去重只消费已验证的 `TurnAssembly`。为 `mutation + no verified target` 增加稳定 admission sentinel，首轮在 Prompt/provider 前生成 `FinalContract.status=blocked` 的结构化安全结果；P0 story 显式断言 provider 调用为 0、无 iteration 和无 Prompt hash。
 - 验证结果：RED 分别复现了 typed intent 字段缺失、部署未分类、最终门禁被 metadata/prose 改写以及 no-target mutation 仍调用 provider；修复后 `go test ./internal/runtimekernel -count=1` 与 `go test ./internal/server -run '^TestAssistantTransportStories/mutation_missing_target$|^TestAssistantTransportStoryCorpusCoversP0Contract$' -count=1` 通过，公开 AssistantTransport 中保留 user/final timeline 和三个稳定 limitation，provider 调用为 0。
 - 风险与后续：自然语言候选分类仍位于 AppUI admission adapter，Runtime 不包含业务关键词；未识别或低置信意图不会被 Final 文本启发式升级为变更。其他 assembly failure（例如缺少 rollback policy）仍需复用相同的 typed structured-failure 模式，不能恢复文本补判。
+
+## 2026-07-14 02:35 - Role scope 约束受 metadata 开关控制且同会话继承时丢失
+
+- 修复时间：2026-07-14 02:35
+- Bug 现象：当前 turn 即使已经冻结 resource role binding，dispatcher 的 role guard 仍可能因 metadata/env 开关未启用而完全关闭；同会话只继承 typed target、未重复提交 role 字段时，新的 TurnAssembly 会丢失已有 role 与 conflict 约束，形成权限范围放宽。
+- 根因：`RoleBindingConflicts` 只保存在可变 SessionState，没有进入 AdmissionFacts/TurnAssembly/hash；`BuildRuntimeTurnContext` 只读取当前 request 的 role bindings；dispatcher guard 的 Enabled 又由兼容 metadata/env 决定，而不是冻结控制事实。
+- 修复方式：AdmissionFacts 新增规范化、带完整性 hash 的 role conflicts，TurnAssembly admission-control hash 同步覆盖；只有当前 request 未替换 target/role 且有效 typed session target 被继承时，才把 session role facts带入 admission。dispatcher role guard 对每个有效 frozen assembly 默认启用，从该 assembly 读取 bindings/conflicts；缺失或无效 assembly 对 mutation 保持 fail closed。
+- 验证结果：RED 证明 role conflicts 不存在于 typed schema、同会话 carryover 丢失且无 metadata 时 guard 关闭；实现后运行 `go test ./internal/runtimecontract ./internal/agentassembly ./internal/runtimekernel ./internal/server -count=1` 全部通过，并验证 conflict 会改变 TurnAssembly hash、阻止 mutation，历史 session role 不会覆盖当前 frozen facts。
+- 风险与后续：role conflict 目前允许冻结用于只读诊断，但所有 mutating/approval-required tool 都会被 dispatcher 拒绝；调用方必须通过新的、无冲突的 typed role facts 开启后续变更，不能靠清除 metadata 开关绕过。

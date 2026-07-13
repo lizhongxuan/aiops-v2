@@ -88,7 +88,38 @@ func TestTypedRoleBindingGuardMissingFrozenAssemblyBlocksMutation(t *testing.T) 
 	}
 }
 
-func typedRoleBindingGuardSnapshot(t *testing.T, hostID string, role resourcebinding.ResourceRoleBinding) *TurnSnapshot {
+func TestTypedRoleBindingGuardUsesFrozenConflictsWithoutMetadataFlag(t *testing.T) {
+	role := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+		ResourceRef:  resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-conflict"},
+		Role:         "primary",
+		SourceTurnID: "turn-conflict",
+		Confidence:   1,
+	})
+	conflict := resourcebinding.RoleBindingConflict{
+		ResourceID: "host-conflict",
+		Role:       "primary",
+		Reasons:    []string{"needs_confirmation"},
+	}
+	withConflict := typedRoleBindingGuardSnapshot(t, "host-conflict", role, conflict)
+	withoutConflict := typedRoleBindingGuardSnapshot(t, "host-conflict", role)
+	delete(withConflict.Metadata, metadataRoleBindingGuardEnabled)
+
+	config := roleBindingGuardConfigFromSession(nil, withConflict)
+	if !config.Enabled || len(config.RoleConflicts) != 1 {
+		t.Fatalf("guard config = %#v, want frozen conflict enabled without metadata", config)
+	}
+	if withConflict.TurnAssembly.Hash == withoutConflict.TurnAssembly.Hash {
+		t.Fatal("TurnAssembly hash ignored frozen role conflicts")
+	}
+	reason, blocked := (&ToolDispatcher{roleBindingGuard: config}).checkRoleBindingGuard(ToolCall{
+		Arguments: json.RawMessage(`{"hostId":"host-conflict"}`),
+	}, tooling.ToolMetadata{Mutating: true})
+	if !blocked || reason == "" {
+		t.Fatalf("mutation allowed with frozen role conflict: blocked=%v reason=%q", blocked, reason)
+	}
+}
+
+func typedRoleBindingGuardSnapshot(t *testing.T, hostID string, role resourcebinding.ResourceRoleBinding, conflicts ...resourcebinding.RoleBindingConflict) *TurnSnapshot {
 	t.Helper()
 	target := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: hostID}
 	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
@@ -96,6 +127,7 @@ func typedRoleBindingGuardSnapshot(t *testing.T, hostID string, role resourcebin
 		SessionTarget: target,
 		TargetRefs:    []resourcebinding.ResourceRef{target},
 		RoleBindings:  []resourcebinding.ResourceRoleBinding{role},
+		RoleConflicts: conflicts,
 		SourceRefs:    []string{"typed-role-binding-guard-test"},
 	})
 	if err != nil {

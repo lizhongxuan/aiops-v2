@@ -76,6 +76,7 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 	}
 	metadata := copyRuntimeMetadata(req.Metadata)
 	targetRefs := runtimeTurnTargetRefs(req, session)
+	roleBindings, roleConflicts := runtimeTurnRoleFacts(req, session, targetRefs)
 	target := resourcebinding.ResourceRef{}
 	if len(targetRefs) == 1 {
 		target = targetRefs[0]
@@ -85,7 +86,8 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		SessionTarget:     target,
 		TargetRefs:        targetRefs,
 		ResourceBindings:  req.ResourceBindings,
-		RoleBindings:      req.ResourceRoleBindings,
+		RoleBindings:      roleBindings,
+		RoleConflicts:     roleConflicts,
 		AgentKind:         opts.Lineage.AgentKind,
 		DefaultProfile:    RuntimePromptProfileAdvisor,
 		PermissionProfile: strings.TrimSpace(req.PermissionProfile),
@@ -121,6 +123,30 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		AdmissionError:   admissionErrorText(admissionErr),
 		TurnAssemblyHash: strings.TrimSpace(opts.TurnAssemblyHash),
 	}, nil
+}
+
+func runtimeTurnRoleFacts(req TurnRequest, session *SessionState, targetRefs []resourcebinding.ResourceRef) ([]resourcebinding.ResourceRoleBinding, []resourcebinding.RoleBindingConflict) {
+	bindings := append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+	conflicts := append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	if req.SessionTargetSnapshot != nil || len(bindings) > 0 || len(conflicts) > 0 || session == nil || session.SessionTargetSnapshot == nil {
+		return bindings, conflicts
+	}
+	snapshot := session.SessionTargetSnapshot
+	if snapshot.Expired() || snapshot.RequiresConfirmation || snapshot.Confidence <= 0 || len(targetRefs) == 0 {
+		return bindings, conflicts
+	}
+	allowed := make(map[string]struct{}, len(targetRefs))
+	for _, ref := range targetRefs {
+		if hash := resourcebinding.NormalizeRef(ref).IdentityHash(); hash != "" {
+			allowed[hash] = struct{}{}
+		}
+	}
+	for _, binding := range session.ResourceRoleBindings {
+		if _, ok := allowed[resourcebinding.NormalizeRef(binding.ResourceRef).IdentityHash()]; !ok {
+			return nil, nil
+		}
+	}
+	return append([]resourcebinding.ResourceRoleBinding(nil), session.ResourceRoleBindings...), append([]resourcebinding.RoleBindingConflict(nil), session.RoleBindingConflicts...)
 }
 
 func runtimeTurnTargetRefs(req TurnRequest, session *SessionState) []resourcebinding.ResourceRef {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -17,6 +18,7 @@ type AdmissionInput struct {
 	TargetRefs        []resourcebinding.ResourceRef
 	ResourceBindings  []resourcebinding.ResourceBindingSnapshot
 	RoleBindings      []resourcebinding.ResourceRoleBinding
+	RoleConflicts     []resourcebinding.RoleBindingConflict
 	AgentKind         string
 	Profile           string
 	DefaultProfile    string
@@ -32,6 +34,7 @@ type AdmissionFacts struct {
 	TargetRefs            []resourcebinding.ResourceRef             `json:"targetRefs,omitempty"`
 	ResourceBindings      []resourcebinding.ResourceBindingSnapshot `json:"resourceBindings,omitempty"`
 	RoleBindings          []resourcebinding.ResourceRoleBinding     `json:"roleBindings,omitempty"`
+	RoleConflicts         []resourcebinding.RoleBindingConflict     `json:"roleConflicts,omitempty"`
 	AgentKind             string                                    `json:"agentKind,omitempty"`
 	Profile               string                                    `json:"profile,omitempty"`
 	PermissionProfile     string                                    `json:"permissionProfile,omitempty"`
@@ -89,6 +92,7 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 		TargetRefs:            targetRefs,
 		ResourceBindings:      normalizeAdmissionResourceBindings(input.ResourceBindings),
 		RoleBindings:          normalizeAdmissionRoleBindings(input.RoleBindings),
+		RoleConflicts:         normalizeAdmissionRoleConflicts(input.RoleConflicts),
 		AgentKind:             firstAdmissionValue(input.AgentKind, compatibility.AgentKind),
 		Profile:               firstAdmissionValue(input.Profile, compatibility.Profile, input.DefaultProfile),
 		PermissionProfile:     firstAdmissionValue(input.PermissionProfile, compatibility.PermissionProfile),
@@ -120,6 +124,7 @@ func AdmissionFactsControlHash(facts AdmissionFacts) string {
 		"targetRefs":        admissionHashSlice(facts.TargetRefs),
 		"resourceBindings":  admissionHashSlice(facts.ResourceBindings),
 		"roleBindings":      admissionHashSlice(facts.RoleBindings),
+		"roleConflicts":     admissionHashSlice(facts.RoleConflicts),
 		"agentKind":         facts.AgentKind,
 		"profile":           facts.Profile,
 		"permissionProfile": facts.PermissionProfile,
@@ -153,6 +158,9 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 	}
 	if conflicts := resourcebinding.DetectRoleBindingConflicts(facts.RoleBindings); len(conflicts) > 0 {
 		return fmt.Errorf("%w: conflicting role/resource bindings", ErrAdmissionRoleScopeConflict)
+	}
+	if normalized := normalizeAdmissionRoleConflicts(facts.RoleConflicts); !reflect.DeepEqual(normalized, facts.RoleConflicts) {
+		return fmt.Errorf("%w: invalid role conflict facts", ErrAdmissionRoleScopeConflict)
 	}
 	known := map[string]struct{}{}
 	if hash := facts.SessionTarget.IdentityHash(); hash != "" {
@@ -383,6 +391,23 @@ func normalizeAdmissionRoleBindings(values []resourcebinding.ResourceRoleBinding
 			RoleAlias: append([]string(nil), value.RoleAlias...), SourceTurnID: value.SourceTurnID,
 			SourceSpan: value.SourceSpan, Confidence: value.Confidence, ConflictPolicy: value.ConflictPolicy,
 		}))
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].TraceHash < out[j].TraceHash })
+	return out
+}
+
+func normalizeAdmissionRoleConflicts(values []resourcebinding.RoleBindingConflict) []resourcebinding.RoleBindingConflict {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.RoleBindingConflict, 0, len(values))
+	for _, value := range values {
+		value.ResourceID = strings.TrimSpace(value.ResourceID)
+		value.Role = resourcebinding.NormalizeRole(value.Role)
+		value.Reasons = uniqueSortedAdmissionStrings(value.Reasons)
+		value.TraceHash = ""
+		value.TraceHash = resourcebinding.StableTraceHash("resource-role-binding.conflict", value)
+		out = append(out, value)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].TraceHash < out[j].TraceHash })
 	return out

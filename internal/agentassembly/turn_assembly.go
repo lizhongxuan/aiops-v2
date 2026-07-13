@@ -83,7 +83,8 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 		"intent": assembly.AdmissionFacts.Intent, "userConstraints": assembly.AdmissionFacts.UserConstraints,
 		"sessionTarget": assembly.AdmissionFacts.SessionTarget, "targetRefs": assembly.AdmissionFacts.TargetRefs,
 		"resourceBindings": assembly.AdmissionFacts.ResourceBindings,
-		"roleBindings":     assembly.AdmissionFacts.RoleBindings, "agentKind": assembly.AdmissionFacts.AgentKind,
+		"roleBindings":     assembly.AdmissionFacts.RoleBindings,
+		"roleConflicts":    assembly.AdmissionFacts.RoleConflicts, "agentKind": assembly.AdmissionFacts.AgentKind,
 		"profile": assembly.AdmissionFacts.Profile, "permissionProfile": assembly.AdmissionFacts.PermissionProfile,
 		"sourceRefs": assembly.AdmissionFacts.SourceRefs,
 	})

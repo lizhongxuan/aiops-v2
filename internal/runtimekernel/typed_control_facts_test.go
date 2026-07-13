@@ -209,3 +209,44 @@ func TestTypedControlFactsSameSessionCarryoverRequiresTypedSessionTarget(t *test
 		}
 	})
 }
+
+func TestTypedControlFactsSameSessionTargetCarriesTypedRoleFacts(t *testing.T) {
+	target := resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:           []string{"host-role-carryover"},
+		SourceTurnID:      "turn-role-source",
+		SourceMentionIDs:  []string{"mention-role-source"},
+		ExpiresAfterTurns: 5,
+		Confidence:        1,
+	})
+	role := resourcebinding.NewRoleBinding(resourcebinding.RoleBindingInput{
+		ResourceRef:  resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-role-carryover"},
+		Role:         "primary",
+		SourceTurnID: "turn-role-source",
+		Confidence:   1,
+	})
+	conflict := resourcebinding.RoleBindingConflict{
+		ResourceID: "host-role-carryover",
+		Role:       "primary",
+		Reasons:    []string{"needs_confirmation"},
+	}
+	ctx, err := BuildRuntimeTurnContext(TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		SessionID:   "session-role-carryover",
+		TurnID:      "turn-role-carryover",
+	}, &SessionState{
+		ID:                    "session-role-carryover",
+		SessionTargetSnapshot: target,
+		ResourceRoleBindings:  []resourcebinding.ResourceRoleBinding{role},
+		RoleBindingConflicts:  []resourcebinding.RoleBindingConflict{conflict},
+	}, RuntimeTurnContextOptions{})
+	if err != nil {
+		t.Fatalf("BuildRuntimeTurnContext() error = %v", err)
+	}
+	if len(ctx.AdmissionFacts.RoleBindings) != 1 || ctx.AdmissionFacts.RoleBindings[0].TraceHash != role.TraceHash {
+		t.Fatalf("carried role bindings = %#v, want frozen session role", ctx.AdmissionFacts.RoleBindings)
+	}
+	if len(ctx.AdmissionFacts.RoleConflicts) != 1 || ctx.AdmissionFacts.RoleConflicts[0].Role != resourcebinding.NormalizeRole("primary") {
+		t.Fatalf("carried role conflicts = %#v, want frozen session conflict", ctx.AdmissionFacts.RoleConflicts)
+	}
+}

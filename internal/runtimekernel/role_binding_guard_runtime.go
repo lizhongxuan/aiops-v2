@@ -1,7 +1,6 @@
 package runtimekernel
 
 import (
-	"os"
 	"strings"
 
 	"aiops-v2/internal/resourcebinding"
@@ -9,17 +8,9 @@ import (
 
 const (
 	metadataRoleBindingGuardEnabled = "aiops.roleBinding.guard.enabled"
-	envRoleBindingGuardEnabled      = "AIOPS_ROLE_BINDING_GUARD"
 )
 
 func roleBindingGuardConfigFromSession(_ *SessionState, snapshot *TurnSnapshot) RoleBindingGuardConfig {
-	metadata := map[string]string{}
-	if snapshot != nil && len(snapshot.Metadata) > 0 {
-		metadata = snapshot.Metadata
-	}
-	if !roleBindingGuardEnabled(metadata) {
-		return RoleBindingGuardConfig{}
-	}
 	config := RoleBindingGuardConfig{Enabled: true}
 	if snapshot == nil || snapshot.TurnAssembly == nil || snapshot.TurnAssembly.Validate() != nil {
 		config.RoleConflicts = []resourcebinding.RoleBindingConflict{{
@@ -40,6 +31,7 @@ func roleBindingGuardConfigFromSession(_ *SessionState, snapshot *TurnSnapshot) 
 		}
 	}
 	config.RoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), facts.RoleBindings...)
+	config.RoleConflicts = append([]resourcebinding.RoleBindingConflict(nil), facts.RoleConflicts...)
 	config.BoundRole, config.RoleBindingHash = frozenRoleBindingAuthority(config.BoundHostID, config.RoleBindings)
 	return normalizeRoleBindingGuardConfig(config)
 }
@@ -60,11 +52,4 @@ func frozenRoleBindingAuthority(hostID string, bindings []resourcebinding.Resour
 		return "", ""
 	}
 	return resourcebinding.NormalizeRole(matched[0].Role), strings.TrimSpace(matched[0].TraceHash)
-}
-
-func roleBindingGuardEnabled(metadata map[string]string) bool {
-	if metadataBool(metadata[metadataRoleBindingGuardEnabled]) {
-		return true
-	}
-	return metadataBool(os.Getenv(envRoleBindingGuardEnabled))
 }
