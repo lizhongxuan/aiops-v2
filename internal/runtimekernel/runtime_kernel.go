@@ -1040,6 +1040,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 
 	resumeInput := resumeInputFromMetadata(req.Metadata)
 	if resumeInput != "" {
+		snapshot.PendingStepCause = &StepRevisionCause{Kind: StepRevisionKindUserInputResumed, CheckpointID: checkpointIDForStepCause(snapshot)}
 		appendResumeInputMessage(session, resumeInput)
 		updateRuntimeEnvironmentContext(session, TurnRequest{
 			SessionType: session.Type,
@@ -1053,7 +1054,11 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if err := k.markSnapshotResuming(session, snapshot, "resume_user_input"); err != nil {
 			return TurnResult{}, err
 		}
-	} else if toolCall, ok := pendingToolCall(snapshot); ok {
+	} else if toolCall, ok := gatedPendingToolCall(snapshot); ok {
+		snapshot.PendingStepCause = &StepRevisionCause{
+			Kind: StepRevisionKindApprovalResumed, ApprovalID: firstNonEmpty(decisionApproval.ID, req.ApprovalID),
+			ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
+		}
 		if isSessionApprovalResumeDecision(req.Decision) {
 			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
 		}
@@ -1066,6 +1071,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 			return *blocked, nil
 		}
 	} else {
+		if snapshot.LatestCheckpoint != nil && strings.EqualFold(strings.TrimSpace(snapshot.LatestCheckpoint.Kind), "model_timeout") {
+			snapshot.PendingStepCause = &StepRevisionCause{Kind: StepRevisionKindModelRetryResumed, CheckpointID: snapshot.LatestCheckpoint.ID}
+		}
 		if err := k.markSnapshotResuming(session, snapshot, "resume_checkpoint"); err != nil {
 			return TurnResult{}, err
 		}
@@ -1123,6 +1131,13 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		Status:          "completed",
 		Output:          agentOutput,
 	}, nil
+}
+
+func checkpointIDForStepCause(snapshot *TurnSnapshot) string {
+	if snapshot == nil || snapshot.LatestCheckpoint == nil {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.LatestCheckpoint.ID)
 }
 
 func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) {
@@ -2346,12 +2361,27 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
 			PermissionHash:   runtimeStepPermissionHash(snapshot.TurnAssembly, surfacePolicy),
 			CheckpointRef:    checkpointRef,
-		}, thresholds, modelNameForTrace(chatModel))
+		}, thresholds, modelNameForTrace(chatModel), snapshot.TurnAssembly)
 		if modelErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, modelErr
 		}
+		stepRevisionFacts, revisionErr := BuildRuntimeStepRevisionFacts(snapshot.TurnAssembly, stepCtx, session, snapshot)
+		if revisionErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, revisionErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, revisionErr
+		}
+		stepReference, revisionErr := BuildStepReference(snapshot.LatestStepReference, stepCtx, stepRevisionFacts)
+		if revisionErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, revisionErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, revisionErr
+		}
+		frozenStepReference := cloneStepReference(stepReference)
+		snapshot.LatestStepReference = &frozenStepReference
+		snapshot.PendingStepCause = nil
 		var promptInputDiff *promptinput.TraceDiff
 		if previousPromptInputTrace != nil {
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)
@@ -2454,7 +2484,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			OwnerWriteTraces:              toolTraceFields.OwnerWriteTraces,
 			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
 			FinalEvidenceState:            &finalEvidenceTrace,
-		})
+		}, &stepReference)
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
 		if promptInputDiff != nil {
@@ -2682,6 +2712,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			ModelInputTraceFile:     tracePath,
 			TokenBudget:             session.Context.MaxTokens,
 			Checkpoint:              checkpoint,
+			StepReference:           &stepReference,
 			CompactedSegments:       append([]CompactedSegment(nil), contextState.CompactedSegments...),
 			ExternalReferences:      append([]ExternalReference(nil), contextState.ExternalReferences...),
 			ContextGovernanceEvents: append([]ContextGovernanceEvent(nil), contextState.GovernanceEvents...),
@@ -7027,6 +7058,13 @@ func pendingToolCall(snapshot *TurnSnapshot) (ToolCall, bool) {
 		}
 	}
 	return ToolCall{}, false
+}
+
+func gatedPendingToolCall(snapshot *TurnSnapshot) (ToolCall, bool) {
+	if snapshot == nil || (len(snapshot.PendingApprovals) == 0 && len(snapshot.PendingEvidence) == 0) {
+		return ToolCall{}, false
+	}
+	return pendingToolCall(snapshot)
 }
 
 func resumeInputFromMetadata(metadata map[string]string) string {

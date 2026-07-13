@@ -89,3 +89,12 @@
 - 修复方式：新增兼容默认值的 typed `ToolResultOutcome`；hostops wait 按 child typed status 写入 complete/partial，仍保留完整 JSON 且不伪造 Go error。Runtime 无损物化 outcome、写入 canonical tool_result AgentItem，并把 invocation 标为 terminal `partial/partial_result`；FinalContract 从 invocation 事实降为 `partial/medium`。
 - 验证结果：RED public story 真实观察到 failed child 与 `verified/high` 同时存在；新增 `RunTurn` 回归证明 partial 内容继续反馈模型、canonical item/invocation/final 三处一致。`go test ./internal/hostops ./internal/runtimekernel -count=1` 和新增路径 race 测试通过；后续 AssistantTransport story负责验证 manager/child/transport 全链。
 - 风险与后续：未知 outcome 归一化为 partial 以 fail safe；旧工具未写 outcome 时保持空值并按 complete 兼容，不向所有旧 AgentItem 注入新字段。当前 partial impact 通用文案仍偏向普通工具失败，另以独立小阶段调整为聚合结果语义。
+
+## 2026-07-13 16:20 - 模型超时恢复误走旧工具审批分支
+
+- 修复时间：2026-07-13 16:20
+- Bug 现象：turn 已完成一次只读工具调用、下一次模型调用超时后，从 `model_timeout` checkpoint 恢复会把历史 iteration 中已完成的 tool call 当作 pending approval tool call，可能重复派发旧工具；引入 typed Step cause 校验后该错误被 fail-closed 为“approval resume cause 缺少 approval/tool-call id”。
+- 根因：`ResumeTurn` 只要 `pendingToolCall(snapshot)` 能从历史 iteration 找到任意 tool call 就进入 approval 分支；该 helper 在没有 `PendingApprovals` / `PendingEvidence` target 时会返回最新历史调用，没有先验证当前 snapshot 确实存在待恢复 gate。
+- 修复方式：新增 `gatedPendingToolCall`，只有 snapshot 存在 pending approval 或 pending evidence 时才允许进入工具恢复分支；普通 `model_timeout` checkpoint 进入模型重试分支，并以 `model_retry_resumed` typed StepRevision 连接 provider 调用前已持久化的失败 Step。
+- 验证结果：RED 由 `go test ./internal/runtimekernel -count=1` 的 `TestRunTurn_ModelTimeoutBecomesRecoverableAndResumeContinues` 复现；修复后该测试与 `TestRunTurn_BlockedToolCallCanResume`、StepRevision 聚焦测试和 runtimekernel 全包均通过，并断言 retry previous/next hash、TurnAssembly hash 与 `model_retry_resumed` revision。
+- 风险与后续：旧 snapshot 若只保留历史 tool call、却丢失 pending approval/evidence typed state，将不再猜测并重放该工具，按 fail-closed 进入对应 checkpoint 恢复或校验失败；暂无已知审批绕过风险。

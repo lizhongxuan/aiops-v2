@@ -63,6 +63,33 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 	if !containsString(compiler.contexts[2].ToolDelta.NewlyAvailable, "synthetic.metrics.read") {
 		t.Fatalf("third tool delta = %#v, want selected tool delta", compiler.contexts[2].ToolDelta)
 	}
+	session := kernel.sessions.Get("sess-progressive-search-select")
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.TurnAssembly == nil {
+		t.Fatalf("missing progressive discovery turn state: %#v", session)
+	}
+	assemblyHash := session.CurrentTurn.TurnAssembly.Hash
+	foundToolSurfaceRevision := false
+	for i := range session.CurrentTurn.Iterations {
+		ref := session.CurrentTurn.Iterations[i].StepReference
+		if ref == nil {
+			t.Fatalf("iteration[%d] missing step reference", i)
+		}
+		if ref.TurnAssemblyHash != assemblyHash {
+			t.Fatalf("iteration[%d] turn assembly hash = %q, want %q", i, ref.TurnAssemblyHash, assemblyHash)
+		}
+		if i > 0 {
+			previous := session.CurrentTurn.Iterations[i-1].StepReference
+			if ref.Transition.PreviousHash != previous.StepHash || ref.Transition.NextHash != ref.StepHash {
+				t.Fatalf("iteration[%d] broken step chain: previous=%#v current=%#v", i, previous, ref)
+			}
+		}
+		if stepTransitionHasKind(ref.Transition, StepRevisionKindToolSurfaceChanged) && containsString(ref.Facts.LoadedToolRefs, "tool:synthetic.metrics.read") {
+			foundToolSurfaceRevision = true
+		}
+	}
+	if !foundToolSurfaceRevision {
+		t.Fatalf("iterations missing selected deferred-tool revision: %#v", session.CurrentTurn.Iterations)
+	}
 }
 
 func TestProgressiveDiscoverySelectablePackRecordsLoadedPacksDeltaInToolSurfaceSnapshot(t *testing.T) {

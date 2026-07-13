@@ -26,6 +26,7 @@ func appendMCPInstructionContext(compileCtx promptcompiler.CompileContext, sessi
 		})
 		return compileCtx
 	}
+	session.MCPInstructions.LastDelta = nil
 	if reminder := renderMCPSparseReminder(session.MCPInstructions); reminder != "" {
 		compileCtx.ExtraSections = append(compileCtx.ExtraSections, promptcompiler.PromptSection{
 			Title:   "MCP Instruction Reminder",

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
@@ -23,6 +24,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	control RuntimeStepControlFacts,
 	thresholds ContextBudgetThresholds,
 	modelName string,
+	assemblies ...*agentassembly.TurnAssembly,
 ) (RuntimeStepContext, promptinput.BuildResult, error) {
 	if session == nil {
 		return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("session is required")
@@ -63,6 +65,19 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	})
 	if err != nil {
 		return RuntimeStepContext{}, promptinput.BuildResult{}, err
+	}
+	if len(assemblies) > 0 && assemblies[0] != nil {
+		assembly := assemblies[0]
+		if err := assembly.Validate(); err != nil {
+			return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("turn assembly: %w", err)
+		}
+		if assembly.Hash != control.TurnAssemblyHash {
+			return RuntimeStepContext{}, promptinput.BuildResult{}, fmt.Errorf("turn assembly hash drift")
+		}
+		turnCtx.AdmissionFacts = assembly.AdmissionFacts
+		turnCtx.AdmissionError = ""
+		turnCtx.Profile = assembly.AdmissionFacts.Profile
+		turnCtx.Route.Profile = assembly.AdmissionFacts.Profile
 	}
 	promptBuild, err := buildPromptInputWithContextGovernance(contextMessages, compiled, append([]ContextGovernanceEvent(nil), session.ContextGovernanceEvents...))
 	if err != nil {
@@ -128,7 +143,7 @@ func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) 
 	return providerToolSpecsFromStepToolRouter(surface)
 }
 
-func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContext, req RuntimeTraceDebugRequest) (string, error) {
+func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContext, req RuntimeTraceDebugRequest, references ...*StepReference) (string, error) {
 	if !traceConfig.Enabled {
 		return "", nil
 	}
@@ -141,6 +156,11 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 	}
 	traceReq := buildModelInputTraceRequest(req)
 	finalEvidenceState, _ := traceReq.FinalEvidenceState.(FinalEvidenceState)
+	var stepReference *StepReference
+	if len(references) > 0 && references[0] != nil {
+		cloned := cloneStepReference(*references[0])
+		stepReference = &cloned
+	}
 	harnessTurn := BuildHarnessTurnTrace(nil, step, FinalEvidenceVerification{
 		Action:     FinalEvidenceActionAllow,
 		Confidence: finalEvidenceState.Confidence,
@@ -186,6 +206,7 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 			PromptInputTrace: traceReq.PromptInputTrace,
 			PromptInputDiff:  traceReq.PromptInputDiff,
 			DiagnosticTrace:  traceReq.DiagnosticTrace,
+			StepReference:    stepReference,
 		},
 		ProviderRequest: modeltrace.ProviderRequestTrace{
 			ModelInputHash:        step.ProviderRequest.ModelInputHash,
@@ -220,6 +241,7 @@ type runtimeStepTraceDocumentV2 struct {
 	PromptInputTrace       any                             `json:"promptInputTrace,omitempty"`
 	PromptInputDiff        any                             `json:"promptInputDiff,omitempty"`
 	DiagnosticTrace        any                             `json:"diagnosticTrace,omitempty"`
+	StepReference          *StepReference                  `json:"stepReference,omitempty"`
 }
 
 type runtimeProviderRequestTraceDocumentV2 struct {

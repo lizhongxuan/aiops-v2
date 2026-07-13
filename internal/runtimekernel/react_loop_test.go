@@ -2818,6 +2818,11 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 		t.Fatalf("pending approvals = %d, want 1", len(session.PendingApprovals))
 	}
 	pendingApproval := session.PendingApprovals[0]
+	if session.CurrentTurn.LatestStepReference == nil || session.CurrentTurn.TurnAssembly == nil {
+		t.Fatalf("blocked turn missing step reference or turn assembly: %#v", session.CurrentTurn)
+	}
+	firstStepReference := cloneStepReference(*session.CurrentTurn.LatestStepReference)
+	turnAssemblyHash := session.CurrentTurn.TurnAssembly.Hash
 	if pendingApproval.ArgumentsHash == "" || pendingApproval.InputHash != pendingApproval.ArgumentsHash {
 		t.Fatalf("pending approval hashes = input:%q args:%q, want populated matching hashes", pendingApproval.InputHash, pendingApproval.ArgumentsHash)
 	}
@@ -2874,6 +2879,33 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	}
 	if executed != 1 {
 		t.Fatalf("tool executions after resume = %d, want 1", executed)
+	}
+	session = kernel.sessions.Get("sess-approval")
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.LatestStepReference == nil {
+		t.Fatalf("resumed turn missing latest step reference: %#v", session)
+	}
+	resumedReference := session.CurrentTurn.LatestStepReference
+	if resumedReference.TurnAssemblyHash != turnAssemblyHash || session.CurrentTurn.TurnAssembly.Hash != turnAssemblyHash {
+		t.Fatalf("approval resume mutated turn assembly: first=%q latest=%q", turnAssemblyHash, resumedReference.TurnAssemblyHash)
+	}
+	if resumedReference.Transition.PreviousHash != firstStepReference.StepHash || resumedReference.Transition.NextHash != resumedReference.StepHash {
+		t.Fatalf("approval resume step chain = %#v, first=%#v", resumedReference.Transition, firstStepReference)
+	}
+	if !stepTransitionHasKind(resumedReference.Transition, StepRevisionKindApprovalResumed) {
+		t.Fatalf("approval resume revisions = %#v, want %q", resumedReference.Transition.Revisions, StepRevisionKindApprovalResumed)
+	}
+	var approvalRevision StepRevision
+	for _, revision := range resumedReference.Transition.Revisions {
+		if revision.Kind == StepRevisionKindApprovalResumed {
+			approvalRevision = revision
+			break
+		}
+	}
+	if !containsString(approvalRevision.SourceRefs, pendingApproval.ID) || !containsString(approvalRevision.SourceRefs, "call-approval") {
+		t.Fatalf("approval resume source refs = %v, want approval and tool-call causes", approvalRevision.SourceRefs)
+	}
+	if session.CurrentTurn.PendingStepCause != nil {
+		t.Fatalf("approval resume cause was not consumed: %#v", session.CurrentTurn.PendingStepCause)
 	}
 	foundApprovalApproved := false
 	foundTurnCompleteAfterApproval := false
@@ -3884,6 +3916,11 @@ func TestRunTurn_ModelTimeoutBecomesRecoverableAndResumeContinues(t *testing.T) 
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		t.Fatalf("timeout snapshot should be recoverable: %v", err)
 	}
+	if snapshot.LatestStepReference == nil || snapshot.TurnAssembly == nil {
+		t.Fatalf("timeout snapshot missing failed-attempt step reference: %#v", snapshot)
+	}
+	timedOutStepReference := cloneStepReference(*snapshot.LatestStepReference)
+	timeoutAssemblyHash := snapshot.TurnAssembly.Hash
 
 	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID:    session.ID,
@@ -3902,6 +3939,17 @@ func TestRunTurn_ModelTimeoutBecomesRecoverableAndResumeContinues(t *testing.T) 
 	}
 	if !model.sawTool {
 		t.Fatalf("resume model input did not preserve prior tool evidence; last input:\n%s", schemaMessagesText(model.inputs[len(model.inputs)-1]))
+	}
+	session = kernel.sessions.Get("sess-model-timeout")
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.LatestStepReference == nil {
+		t.Fatalf("timeout resume missing latest step reference: %#v", session)
+	}
+	resumedStepReference := session.CurrentTurn.LatestStepReference
+	if resumedStepReference.Transition.PreviousHash != timedOutStepReference.StepHash || resumedStepReference.TurnAssemblyHash != timeoutAssemblyHash {
+		t.Fatalf("timeout retry step chain = %#v, timed out=%#v", resumedStepReference, timedOutStepReference)
+	}
+	if !stepTransitionHasKind(resumedStepReference.Transition, StepRevisionKindModelRetryResumed) {
+		t.Fatalf("timeout retry revisions = %#v, want %q", resumedStepReference.Transition.Revisions, StepRevisionKindModelRetryResumed)
 	}
 }
 
