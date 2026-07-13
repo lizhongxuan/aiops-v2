@@ -91,6 +91,7 @@ func TestWriteTraceDocumentV2RedactsSensitiveKeysWithoutCorruptingTokenCounters(
 		TurnContext: map[string]any{"metadata": map[string]any{
 			"apiKey": "secret-canary-v2", "note": "token=secret-canary-v2",
 		}},
+		SpecialInputWorldState: &specialinputmemory.SpecialInputWorldStateSection{ModelSummary: "token=secret-canary-v2"},
 		PromptInputTrace: map[string]any{"contextUsage": map[string]any{
 			"categories": []any{map[string]any{"name": "prompt", "tokensEstimate": 42}},
 		}},

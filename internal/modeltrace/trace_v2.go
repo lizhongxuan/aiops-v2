@@ -106,11 +106,28 @@ func redactTraceDocumentV2(doc TraceDocumentV2) TraceDocumentV2 {
 	} else {
 		doc.LLMRequests = nil
 	}
+	doc.SpecialInputWorldState = redactTraceV2WorldState(doc.SpecialInputWorldState)
 	doc.PromptInputTrace = redactTraceV2Value(doc.PromptInputTrace)
 	doc.PromptInputDiff = redactTraceV2Value(doc.PromptInputDiff)
 	doc.DiagnosticTrace = redactTraceV2Value(doc.DiagnosticTrace)
 	doc.FinalEvidenceState = redactTraceV2Value(doc.FinalEvidenceState)
 	return doc
+}
+
+func redactTraceV2WorldState(input *specialinputmemory.SpecialInputWorldStateSection) *specialinputmemory.SpecialInputWorldStateSection {
+	if input == nil {
+		return nil
+	}
+	redacted := redactTraceV2Value(input)
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		return nil
+	}
+	var out specialinputmemory.SpecialInputWorldStateSection
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return &out
 }
 
 func redactTraceV2StringMap(input map[string]string) map[string]string {
