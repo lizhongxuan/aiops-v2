@@ -62,6 +62,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		Lineage: RuntimeLineageSnapshot{
 			AgentKind: string(agentKind),
 		},
+		TurnAssemblyHash: control.TurnAssemblyHash,
 	})
 	if err != nil {
 		return RuntimeStepContext{}, promptinput.BuildResult{}, err
@@ -77,7 +78,9 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		turnCtx.AdmissionFacts = assembly.AdmissionFacts
 		turnCtx.AdmissionError = ""
 		turnCtx.Profile = assembly.AdmissionFacts.Profile
-		turnCtx.Route.Profile = assembly.AdmissionFacts.Profile
+		turnCtx.HostID = runtimeTurnHostID(assembly.AdmissionFacts.TargetRefs)
+		turnCtx.Route = deriveRuntimeRouteSnapshot(assembly.AdmissionFacts, turnCtx.SessionType, turnCtx.HostID)
+		turnCtx.TurnAssemblyHash = assembly.Hash
 	}
 	promptBuild, err := buildRuntimePromptInputV2WithContextGovernance(
 		contextMessages,

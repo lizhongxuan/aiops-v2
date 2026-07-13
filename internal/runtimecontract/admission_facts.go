@@ -2,6 +2,7 @@ package runtimecontract
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -13,10 +14,12 @@ type AdmissionInput struct {
 	Intent            *IntentFrame
 	UserConstraints   []string
 	SessionTarget     resourcebinding.ResourceRef
+	TargetRefs        []resourcebinding.ResourceRef
 	ResourceBindings  []resourcebinding.ResourceBindingSnapshot
 	RoleBindings      []resourcebinding.ResourceRoleBinding
 	AgentKind         string
 	Profile           string
+	DefaultProfile    string
 	PermissionProfile string
 	SourceRefs        []string
 	Metadata          map[string]string
@@ -26,6 +29,7 @@ type AdmissionFacts struct {
 	Intent                IntentFrame                               `json:"intent"`
 	UserConstraints       []string                                  `json:"userConstraints,omitempty"`
 	SessionTarget         resourcebinding.ResourceRef               `json:"sessionTarget,omitempty"`
+	TargetRefs            []resourcebinding.ResourceRef             `json:"targetRefs,omitempty"`
 	ResourceBindings      []resourcebinding.ResourceBindingSnapshot `json:"resourceBindings,omitempty"`
 	RoleBindings          []resourcebinding.ResourceRoleBinding     `json:"roleBindings,omitempty"`
 	AgentKind             string                                    `json:"agentKind,omitempty"`
@@ -44,6 +48,15 @@ type admissionMetadataFacts struct {
 	PermissionProfile string
 	SourceRefs        []string
 	CompatibilityOnly []string
+}
+
+var (
+	ErrAdmissionTargetConflict    = errors.New("admission target conflict")
+	ErrAdmissionRoleScopeConflict = errors.New("admission role scope conflict")
+)
+
+func IsAdmissionControlConflict(err error) bool {
+	return errors.Is(err, ErrAdmissionTargetConflict) || errors.Is(err, ErrAdmissionRoleScopeConflict)
 }
 
 func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
@@ -67,14 +80,16 @@ func BuildAdmissionFacts(input AdmissionInput) (AdmissionFacts, error) {
 		validationIntent.Confidence = ConfidenceLow
 	}
 	intentErr := validateAdmissionIntent(validationIntent)
+	targetRefs := normalizeAdmissionTargetRefs(input.TargetRefs, input.SessionTarget)
 	facts := AdmissionFacts{
 		Intent:                normalizeAdmissionIntent(*intent),
 		UserConstraints:       uniqueSortedAdmissionStrings(append(append([]string(nil), compatibility.UserConstraints...), input.UserConstraints...)),
 		SessionTarget:         resourcebinding.NormalizeRef(input.SessionTarget),
+		TargetRefs:            targetRefs,
 		ResourceBindings:      normalizeAdmissionResourceBindings(input.ResourceBindings),
 		RoleBindings:          normalizeAdmissionRoleBindings(input.RoleBindings),
 		AgentKind:             firstAdmissionValue(input.AgentKind, compatibility.AgentKind),
-		Profile:               firstAdmissionValue(input.Profile, compatibility.Profile),
+		Profile:               firstAdmissionValue(input.Profile, compatibility.Profile, input.DefaultProfile),
 		PermissionProfile:     firstAdmissionValue(input.PermissionProfile, compatibility.PermissionProfile),
 		SourceRefs:            uniqueSortedAdmissionStrings(append(append([]string(nil), input.SourceRefs...), compatibility.SourceRefs...)),
 		CompatibilityOnlyKeys: append([]string(nil), compatibility.CompatibilityOnly...),
@@ -101,6 +116,7 @@ func AdmissionFactsControlHash(facts AdmissionFacts) string {
 		"intent":            facts.Intent,
 		"userConstraints":   admissionHashSlice(facts.UserConstraints),
 		"sessionTarget":     facts.SessionTarget,
+		"targetRefs":        admissionHashSlice(facts.TargetRefs),
 		"resourceBindings":  admissionHashSlice(facts.ResourceBindings),
 		"roleBindings":      admissionHashSlice(facts.RoleBindings),
 		"agentKind":         facts.AgentKind,
@@ -135,11 +151,16 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 		return fmt.Errorf("mutation admission requires a verified target")
 	}
 	if conflicts := resourcebinding.DetectRoleBindingConflicts(facts.RoleBindings); len(conflicts) > 0 {
-		return fmt.Errorf("conflicting role/resource bindings")
+		return fmt.Errorf("%w: conflicting role/resource bindings", ErrAdmissionRoleScopeConflict)
 	}
 	known := map[string]struct{}{}
 	if hash := facts.SessionTarget.IdentityHash(); hash != "" {
 		known[hash] = struct{}{}
+	}
+	for _, ref := range facts.TargetRefs {
+		if hash := resourcebinding.NormalizeRef(ref).IdentityHash(); hash != "" {
+			known[hash] = struct{}{}
+		}
 	}
 	for _, binding := range facts.ResourceBindings {
 		if hash := resourcebinding.NormalizeRef(binding.Ref).IdentityHash(); hash != "" && binding.Verified() {
@@ -149,10 +170,10 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 	for _, binding := range facts.RoleBindings {
 		hash := resourcebinding.NormalizeRef(binding.ResourceRef).IdentityHash()
 		if hash == "" {
-			return fmt.Errorf("role binding is missing a resource identity")
+			return fmt.Errorf("%w: role binding is missing a resource identity", ErrAdmissionRoleScopeConflict)
 		}
 		if _, ok := known[hash]; !ok {
-			return fmt.Errorf("role binding references an unbound resource")
+			return fmt.Errorf("%w: role binding references an unbound resource", ErrAdmissionRoleScopeConflict)
 		}
 	}
 	return nil
@@ -161,6 +182,13 @@ func ValidateAdmissionFacts(facts AdmissionFacts) error {
 func adaptAdmissionMetadata(input AdmissionInput) (admissionMetadataFacts, error) {
 	metadata := input.Metadata
 	metadataIntentFrame := input.Intent == nil && strings.TrimSpace(metadata[MetadataIntentFrame]) != ""
+	if legacyHostID := strings.TrimSpace(metadata[MetadataTargetHostID]); legacyHostID != "" {
+		legacy := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: legacyHostID}
+		targets := normalizeAdmissionTargetRefs(input.TargetRefs, input.SessionTarget)
+		if len(targets) > 0 && !admissionTargetRefsContain(targets, legacy) {
+			return admissionMetadataFacts{}, fmt.Errorf("%w", ErrAdmissionTargetConflict)
+		}
+	}
 	out := admissionMetadataFacts{}
 	for key, value := range metadata {
 		key = strings.TrimSpace(key)
@@ -219,6 +247,36 @@ func adaptAdmissionMetadata(input AdmissionInput) (admissionMetadataFacts, error
 	out.CompatibilityOnly = uniqueSortedAdmissionStrings(out.CompatibilityOnly)
 	out.SourceRefs = uniqueSortedAdmissionStrings(out.SourceRefs)
 	return out, nil
+}
+
+func normalizeAdmissionTargetRefs(values []resourcebinding.ResourceRef, sessionTarget resourcebinding.ResourceRef) []resourcebinding.ResourceRef {
+	out := make([]resourcebinding.ResourceRef, 0, len(values)+1)
+	seen := map[string]bool{}
+	appendRef := func(ref resourcebinding.ResourceRef) {
+		ref = resourcebinding.NormalizeRef(ref)
+		hash := ref.IdentityHash()
+		if hash == "" || seen[hash] {
+			return
+		}
+		seen[hash] = true
+		out = append(out, ref)
+	}
+	appendRef(sessionTarget)
+	for _, ref := range values {
+		appendRef(ref)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].IdentityHash() < out[j].IdentityHash() })
+	return out
+}
+
+func admissionTargetRefsContain(values []resourcebinding.ResourceRef, want resourcebinding.ResourceRef) bool {
+	wantHash := resourcebinding.NormalizeRef(want).IdentityHash()
+	for _, ref := range values {
+		if resourcebinding.NormalizeRef(ref).IdentityHash() == wantHash {
+			return true
+		}
+	}
+	return false
 }
 
 func admissionMetadataShadowed(key string, input AdmissionInput, metadataIntentFrame bool) bool {

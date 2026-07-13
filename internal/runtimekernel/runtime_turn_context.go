@@ -33,30 +33,32 @@ type RuntimeLineageSnapshot struct {
 }
 
 type RuntimeTurnContext struct {
-	SessionID       string                         `json:"sessionId"`
-	TurnID          string                         `json:"turnId"`
-	ClientTurnID    string                         `json:"clientTurnId,omitempty"`
-	ClientMessageID string                         `json:"clientMessageId,omitempty"`
-	SessionType     SessionType                    `json:"sessionType"`
-	Mode            Mode                           `json:"mode"`
-	Route           RuntimeRouteSnapshot           `json:"route"`
-	Profile         string                         `json:"profile,omitempty"`
-	HostID          string                         `json:"hostId,omitempty"`
-	Model           modelrouter.ModelCapabilities  `json:"model"`
-	Permission      RuntimePermissionSnapshot      `json:"permission"`
-	ContextBudget   RuntimeContextBudgetSnapshot   `json:"contextBudget"`
-	ToolPolicyHash  string                         `json:"toolPolicyHash,omitempty"`
-	Lineage         RuntimeLineageSnapshot         `json:"lineage,omitempty"`
-	Metadata        map[string]string              `json:"metadata,omitempty"`
-	AdmissionFacts  runtimecontract.AdmissionFacts `json:"admissionFacts"`
-	AdmissionError  string                         `json:"admissionError,omitempty"`
+	SessionID        string                         `json:"sessionId"`
+	TurnID           string                         `json:"turnId"`
+	ClientTurnID     string                         `json:"clientTurnId,omitempty"`
+	ClientMessageID  string                         `json:"clientMessageId,omitempty"`
+	SessionType      SessionType                    `json:"sessionType"`
+	Mode             Mode                           `json:"mode"`
+	Route            RuntimeRouteSnapshot           `json:"route"`
+	Profile          string                         `json:"profile,omitempty"`
+	HostID           string                         `json:"hostId,omitempty"`
+	Model            modelrouter.ModelCapabilities  `json:"model"`
+	Permission       RuntimePermissionSnapshot      `json:"permission"`
+	ContextBudget    RuntimeContextBudgetSnapshot   `json:"contextBudget"`
+	ToolPolicyHash   string                         `json:"toolPolicyHash,omitempty"`
+	Lineage          RuntimeLineageSnapshot         `json:"lineage,omitempty"`
+	Metadata         map[string]string              `json:"metadata,omitempty"`
+	AdmissionFacts   runtimecontract.AdmissionFacts `json:"admissionFacts"`
+	AdmissionError   string                         `json:"admissionError,omitempty"`
+	TurnAssemblyHash string                         `json:"turnAssemblyHash,omitempty"`
 }
 
 type RuntimeTurnContextOptions struct {
-	Model          modelrouter.ModelCapabilities
-	ContextBudget  RuntimeContextBudgetSnapshot
-	ToolPolicyHash string
-	Lineage        RuntimeLineageSnapshot
+	Model            modelrouter.ModelCapabilities
+	ContextBudget    RuntimeContextBudgetSnapshot
+	ToolPolicyHash   string
+	Lineage          RuntimeLineageSnapshot
+	TurnAssemblyHash string
 }
 
 func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts RuntimeTurnContextOptions) (RuntimeTurnContext, error) {
@@ -70,34 +72,28 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		return RuntimeTurnContext{}, fmt.Errorf("turn id is required")
 	}
 	metadata := copyRuntimeMetadata(req.Metadata)
-	profile := firstMetadataValue(metadata, runtimecontract.MetadataProfile, runtimecontract.MetadataToolProfile, runtimecontract.MetadataAgentProfile)
-	if profile == "" {
-		profile = RuntimePromptProfileAdvisor
-	}
-	hostID := strings.TrimSpace(req.HostID)
-	if hostID == "" && session != nil {
-		hostID = strings.TrimSpace(session.HostID)
-	}
-	route := strings.TrimSpace(metadata[runtimecontract.MetadataRuntimeRoute])
-	if route == "" {
-		route = string(req.SessionType)
-	}
+	targetRefs := runtimeTurnTargetRefs(req, session)
 	target := resourcebinding.ResourceRef{}
-	if hostID != "" {
-		target = resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: hostID}
-	} else if len(req.ResourceBindings) == 1 {
-		target = req.ResourceBindings[0].Ref
+	if len(targetRefs) == 1 {
+		target = targetRefs[0]
 	}
 	admission, admissionErr := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
 		SessionTarget:     target,
+		TargetRefs:        targetRefs,
 		ResourceBindings:  req.ResourceBindings,
 		RoleBindings:      req.ResourceRoleBindings,
 		AgentKind:         opts.Lineage.AgentKind,
-		Profile:           profile,
-		PermissionProfile: firstNonBlankRuntimeString(req.PermissionProfile, metadata[runtimecontract.MetadataPermissionProfile]),
+		DefaultProfile:    RuntimePromptProfileAdvisor,
+		PermissionProfile: strings.TrimSpace(req.PermissionProfile),
 		SourceRefs:        []string{"runtimekernel:turn_request"},
 		Metadata:          metadata,
 	})
+	if runtimecontract.IsAdmissionControlConflict(admissionErr) {
+		return RuntimeTurnContext{}, fmt.Errorf("runtime admission control conflict")
+	}
+	profile := firstNonBlankRuntimeString(admission.Profile, RuntimePromptProfileAdvisor)
+	hostID := runtimeTurnHostID(admission.TargetRefs)
+	route := deriveRuntimeRouteSnapshot(admission, req.SessionType, hostID)
 	return RuntimeTurnContext{
 		SessionID:       req.SessionID,
 		TurnID:          req.TurnID,
@@ -105,7 +101,7 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		ClientMessageID: req.ClientMessageID,
 		SessionType:     req.SessionType,
 		Mode:            req.Mode,
-		Route:           RuntimeRouteSnapshot{Route: route, HostID: hostID, Profile: profile},
+		Route:           route,
 		Profile:         profile,
 		HostID:          hostID,
 		Model:           opts.Model,
@@ -113,13 +109,79 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 			ApprovalPolicy: strings.TrimSpace(metadata[runtimecontract.MetadataApprovalPolicy]),
 			PermissionHash: strings.TrimSpace(metadata[runtimecontract.MetadataPermissionHash]),
 		},
-		ContextBudget:  opts.ContextBudget,
-		ToolPolicyHash: strings.TrimSpace(opts.ToolPolicyHash),
-		Lineage:        opts.Lineage,
-		Metadata:       metadata,
-		AdmissionFacts: admission,
-		AdmissionError: admissionErrorText(admissionErr),
+		ContextBudget:    opts.ContextBudget,
+		ToolPolicyHash:   strings.TrimSpace(opts.ToolPolicyHash),
+		Lineage:          opts.Lineage,
+		Metadata:         metadata,
+		AdmissionFacts:   admission,
+		AdmissionError:   admissionErrorText(admissionErr),
+		TurnAssemblyHash: strings.TrimSpace(opts.TurnAssemblyHash),
 	}, nil
+}
+
+func runtimeTurnTargetRefs(req TurnRequest, session *SessionState) []resourcebinding.ResourceRef {
+	var snapshot *resourcebinding.SessionTargetSnapshot
+	if req.SessionTargetSnapshot != nil {
+		snapshot = req.SessionTargetSnapshot
+	} else if session != nil {
+		snapshot = session.SessionTargetSnapshot
+	}
+	var refs []resourcebinding.ResourceRef
+	if snapshot != nil && !snapshot.Expired() && !snapshot.RequiresConfirmation && snapshot.Confidence > 0 {
+		for _, hostID := range resourcebinding.HostIDsFromSessionTarget(snapshot) {
+			refs = append(refs, resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: hostID})
+		}
+	} else if req.SessionTargetSnapshot == nil {
+		if hostID := strings.TrimSpace(req.HostID); hostID != "" {
+			refs = append(refs, resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: hostID})
+		} else {
+			for _, binding := range req.ResourceBindings {
+				if binding.Verified() {
+					refs = append(refs, binding.Ref)
+				}
+			}
+		}
+	}
+	return normalizeRuntimeTargetRefs(refs)
+}
+
+func normalizeRuntimeTargetRefs(values []resourcebinding.ResourceRef) []resourcebinding.ResourceRef {
+	seen := map[string]bool{}
+	out := make([]resourcebinding.ResourceRef, 0, len(values))
+	for _, ref := range values {
+		ref = resourcebinding.NormalizeRef(ref)
+		hash := ref.IdentityHash()
+		if hash == "" || seen[hash] {
+			continue
+		}
+		seen[hash] = true
+		out = append(out, ref)
+	}
+	return out
+}
+
+func runtimeTurnHostID(refs []resourcebinding.ResourceRef) string {
+	if len(refs) != 1 || refs[0].Type != resourcebinding.ResourceTypeHost {
+		return ""
+	}
+	return strings.TrimSpace(refs[0].ID)
+}
+
+func deriveRuntimeRouteSnapshot(facts runtimecontract.AdmissionFacts, sessionType SessionType, hostID string) RuntimeRouteSnapshot {
+	route := string(sessionType)
+	if len(facts.TargetRefs) > 1 {
+		route = "multi_host_manager"
+	} else if len(facts.TargetRefs) == 1 {
+		route = "host_bound_ops"
+	} else {
+		switch facts.Intent.Kind {
+		case runtimecontract.IntentKindResearch:
+			route = "research"
+		case runtimecontract.IntentKindDiagnose, runtimecontract.IntentKindVerify:
+			route = "evidence_rca"
+		}
+	}
+	return RuntimeRouteSnapshot{Route: route, HostID: strings.TrimSpace(hostID), Profile: facts.Profile}
 }
 
 func admissionErrorText(err error) string {

@@ -12,6 +12,10 @@ const (
 	MetadataRuntimeRoute      = "runtimeRoute"
 	MetadataApprovalPolicy    = "approvalPolicy"
 	MetadataPermissionHash    = "permissionHash"
+	MetadataTargetHostID      = "aiops.target.hostId"
+	MetadataTargetRefs        = "aiops.target.refs"
+	MetadataTargetBinding     = "aiops.target.binding"
+	MetadataRouteMode         = "aiops.route.mode"
 )
 
 type admissionMetadataUse uint8
@@ -41,6 +45,10 @@ var admissionMetadataRegistry = map[string]admissionMetadataUse{
 	MetadataLegacyRoute:       admissionMetadataCompatibility,
 	MetadataIntentRoute:       admissionMetadataCompatibility,
 	MetadataRouteDiff:         admissionMetadataCompatibility,
+	MetadataTargetHostID:      admissionMetadataCompatibility,
+	MetadataTargetRefs:        admissionMetadataCompatibility,
+	MetadataTargetBinding:     admissionMetadataCompatibility,
+	MetadataRouteMode:         admissionMetadataCompatibility,
 }
 
 func admissionMetadataKeyUse(key string) (admissionMetadataUse, bool) {

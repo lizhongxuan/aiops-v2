@@ -111,6 +111,49 @@ func TestResourceIdentitySameDigestDifferentVersionReturnsUnchanged(t *testing.T
 	}
 }
 
+func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing.T) {
+	state := NewObservationState()
+	baseIdentity := ResourceIdentity{
+		URI:    "resource://shared/system-status",
+		Digest: "sha256:same",
+		Range:  ResourceRange{Offset: 0, Limit: 20},
+	}
+	hostA := ResourceReadRecord{
+		Identity:  baseIdentity,
+		SourceRef: "artifact-host-a",
+		Summary:   "host-a status",
+		Content:   "host-a full status",
+	}
+	hostA.Identity.TargetIdentityHash = "resource-ref-hash:host-a"
+	state.CheckResource(hostA)
+
+	hostB := ResourceReadRecord{
+		Identity:  baseIdentity,
+		SourceRef: "artifact-host-b",
+		Summary:   "host-b status",
+		Content:   "host-b full status",
+	}
+	hostB.Identity.TargetIdentityHash = "resource-ref-hash:host-b"
+	differentTarget := state.CheckResource(hostB)
+	if !differentTarget.Miss || differentTarget.Unchanged || differentTarget.Changed {
+		t.Fatalf("different target result = %#v, want independent miss", differentTarget)
+	}
+	if differentTarget.Record.SourceRef != "artifact-host-b" {
+		t.Fatalf("different target reused source ref %q, want artifact-host-b", differentTarget.Record.SourceRef)
+	}
+	if len(state.ResourceRecords) != 2 {
+		t.Fatalf("resource records = %d, want separate records per typed target", len(state.ResourceRecords))
+	}
+
+	sameTarget := state.CheckResource(hostB)
+	if !sameTarget.Unchanged || sameTarget.Miss || sameTarget.Changed {
+		t.Fatalf("same target result = %#v, want unchanged dedupe hit", sameTarget)
+	}
+	if sameTarget.Record.SourceRef != "artifact-host-b" {
+		t.Fatalf("same target reused source ref %q, want artifact-host-b", sameTarget.Record.SourceRef)
+	}
+}
+
 func TestResourceIdentityRangeChangeMisses(t *testing.T) {
 	state := NewObservationState()
 	state.CheckResource(ResourceReadRecord{
