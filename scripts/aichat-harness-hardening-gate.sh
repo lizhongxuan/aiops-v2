@@ -7,7 +7,7 @@ cd "${REPO_ROOT}"
 
 scripts/test-aiops-harness-contract-boundaries.sh
 scripts/check-aiops-harness-contract-boundaries.sh
-go test ./internal/runtimekernel -run 'TestTurnAssemblyShadowBuildsOnceBeforePromptAndProvider|TestStepToolRouterProviderAndDispatcherShareFingerprint' -count=1
+go test ./internal/runtimekernel -run 'TestAssemblyBoundarySingleBuilder|TestRuntimeStepContextSingleProductionBuilder|TestTurnAssemblyShadowBuildsOnceBeforePromptAndProvider|TestStepToolRouterProviderAndDispatcherShareFingerprint|TestBuildRuntimeStepContextCreatesProviderRequestSnapshot|TestRuntimeStepContextOwnsModelInputProviderRequestAndToolSurface|TestRunTurn_RefreshesToolsBetweenIterations' -count=1
 go test ./internal/promptinput -run 'TestBuildFirstStepUsesL0L6OrderAndCurrentUserLast' -count=1
 go test ./internal/promptcompiler -run 'TestPromptEnvelopeV2ValidatesLogicalLayerOrder|TestApplyPromptSectionCacheMarksHitMissAndInvalidated' -count=1
 

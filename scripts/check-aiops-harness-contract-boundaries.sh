@@ -18,21 +18,29 @@ run_rg() {
   shift
 
   local -a scan_paths=()
+  local -a rg_args=(-n -P)
   local root
   local path
+  if [[ "${AIOPS_HARNESS_MULTILINE_SCAN:-0}" == "1" ]]; then
+    rg_args+=(-U)
+  fi
   for root in "${scan_roots[@]}"; do
     for path in "$@"; do
       scan_paths+=("${root%/}/${path}")
     done
   done
 
-  rg -n -P "$pattern" "${scan_paths[@]}" \
+  rg "${rg_args[@]}" "$pattern" "${scan_paths[@]}" \
     --glob '!**/*_test.go' \
     --glob '!**/*.test.ts' \
     --glob '!**/*.test.tsx' \
     --glob '!web/src/pages/debug/**' \
     --glob '!web/src/pages/PromptTracePage.tsx' \
     --glob '!scripts/check-aiops-harness-contract-boundaries.sh'
+}
+
+run_rg_multiline() {
+  AIOPS_HARNESS_MULTILINE_SCAN=1 run_rg "$@"
 }
 
 check_absent() {
@@ -44,6 +52,39 @@ check_absent() {
   local matches
   local rc
   if matches="$(run_rg "$pattern" "$@" 2>&1)"; then
+    rc=0
+  else
+    rc=$?
+  fi
+
+  case "${rc}" in
+    0)
+      echo "ERROR: forbidden harness boundary pattern found: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "${matches}" >&2
+      fail=1
+      ;;
+    1)
+      ;;
+    *)
+      echo "ERROR: harness boundary scan failed: ${name}" >&2
+      echo "owner: ${owner}" >&2
+      echo "rg exit code: ${rc}" >&2
+      echo "${matches}" >&2
+      fail=1
+      ;;
+  esac
+}
+
+check_absent_multiline() {
+  local name="$1"
+  local owner="$2"
+  local pattern="$3"
+  shift 3
+
+  local matches
+  local rc
+  if matches="$(run_rg_multiline "$pattern" "$@" 2>&1)"; then
     rc=0
   else
     rc=$?
@@ -110,25 +151,37 @@ check_absent \
 check_absent \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts" \
-	'(?i)(strings\.Contains\(\s*(finalText|FinalOutput|assistantText|markdown)\s*,\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|(finalText|FinalOutput|assistantText|markdown)\.(includes|match|test)\(\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
+	'(?i)^\s*if\s*(?:\(\s*)?(?:strings\.Contains\(\s*(finalText|FinalOutput|assistantText|markdown)\s*,\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|(finalText|FinalOutput|assistantText|markdown)\.(includes|match|test)\(\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
+	internal/runtimekernel internal/appui web/src
+
+check_absent_multiline \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts" \
+	'(?msx)^\h*(?:const\h+|let\h+|var\h+)?(?<control_alias>[A-Za-z_][A-Za-z0-9_]*)\h*(?::=|=)\h*(?:strings\.TrimSpace\(\h*)?(?:finalText|assistantText|markdown|(?:[A-Za-z_][A-Za-z0-9_]*\.)*FinalOutput)\h*\)?\h*;?\h*$(?:(?:\R)(?!\h*(?://|/\*|\*)).*){0,20}?\R\h*if\h*(?:\(\h*)?(?:strings\.Contains\(\h*\k<control_alias>\h*,\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|\k<control_alias>\.(?:includes|match|test)\(\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
 	internal/runtimekernel internal/appui web/src
 
 check_required \
 	"TurnAssembly before prompt production marker" \
 	"runtimekernel turn admission" \
-	'turn_assembly_built' \
+	'(?m)^\s*k\.observeRuntimeStage\([^\n]*"turn_assembly_built"\)\s*$' \
 	internal/runtimekernel/runtime_kernel.go
 
 check_required \
-	"StepToolRouter provider surface marker" \
+	"StepToolRouter provider request wiring" \
 	"runtimekernel step builder" \
-	'providerToolSpecsFromStepToolRouter\(' \
+	'(?m)^\s*Tools:\s+providerToolSpecsFromRuntimeToolSurface\(toolSurface\),?\s*$' \
+	internal/runtimekernel/step_builder.go
+
+check_required \
+	"StepToolRouter provider surface adapter" \
+	"runtimekernel step builder" \
+	'(?m)^\s*return\s+providerToolSpecsFromStepToolRouter\(surface\)\s*$' \
 	internal/runtimekernel/step_builder.go
 
 check_required \
 	"StepToolRouter dispatcher binding marker" \
 	"runtimekernel dispatcher" \
-	'WithStepToolRouter\(runtimeToolSurface\)' \
+	'(?m)^\s*WithStepToolRouter\(runtimeToolSurface\)\.\s*$' \
 	internal/runtimekernel/runtime_kernel.go
 
 check_required \

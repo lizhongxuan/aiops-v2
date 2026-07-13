@@ -26,13 +26,23 @@ create_fixture() {
 	printf '%s\n' \
 		'package runtimekernel' \
 		'func runTurn() {' \
-		'  observeRuntimeStage("turn_assembly_built")' \
-		'  observeRuntimeStage("prompt_compiled")' \
-		'  NewToolDispatcher().WithStepToolRouter(runtimeToolSurface)' \
+		'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")' \
+		'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+		'  dispatcher = dispatcher.' \
+		'    WithStepToolRouter(runtimeToolSurface).' \
+		'    Done()' \
 		'}' >"${root}/internal/runtimekernel/runtime_kernel.go"
 	printf '%s\n' \
 		'package runtimekernel' \
+		'func buildRuntimeStepContext() {' \
+		'  providerReq := ProviderRequestSnapshot{' \
+		'    Tools: providerToolSpecsFromRuntimeToolSurface(toolSurface),' \
+		'  }' \
+		'}' \
 		'func providerToolSpecsFromStepToolRouter(surface StepToolRouter) {}' \
+		'func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) {' \
+		'  return providerToolSpecsFromStepToolRouter(surface)' \
+		'}' \
 		>"${root}/internal/runtimekernel/step_builder.go"
 	printf '%s\n' \
 		'package promptinput' \
@@ -40,6 +50,12 @@ create_fixture() {
 		'  fail("model input must begin with L0 then L1")' \
 		'  fail("model input L6 must be last")' \
 		'}' >"${root}/internal/promptinput/model_input_validation.go"
+	printf '%s\n' \
+		'// if (markdown.includes("completed")) return { status: "completed" };' \
+		'/*' \
+		' * const candidate = markdown;' \
+		' * if (candidate.includes("approved")) return { status: "approved" };' \
+		' */' >"${root}/web/src/chat/control_comments.ts"
 }
 
 run_gate() {
@@ -98,6 +114,9 @@ assembly_marker_root="${FIXTURE_ROOT}/assembly-marker-missing"
 step_router_root="${FIXTURE_ROOT}/step-router-marker-missing"
 prompt_first_root="${FIXTURE_ROOT}/prompt-first-validator-missing"
 prompt_last_root="${FIXTURE_ROOT}/prompt-last-validator-missing"
+provider_call_root="${FIXTURE_ROOT}/provider-router-call-missing"
+dispatcher_binding_root="${FIXTURE_ROOT}/dispatcher-router-binding-missing"
+alias_final_root="${FIXTURE_ROOT}/aliased-final-control"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
@@ -112,6 +131,9 @@ create_fixture "${assembly_marker_root}"
 create_fixture "${step_router_root}"
 create_fixture "${prompt_first_root}"
 create_fixture "${prompt_last_root}"
+create_fixture "${provider_call_root}"
+create_fixture "${dispatcher_binding_root}"
+create_fixture "${alias_final_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -166,7 +188,10 @@ printf '%s\n' \
 printf '%s\n' \
 	'package runtimekernel' \
 	'func runTurn() {' \
-	'  observeRuntimeStage("prompt_compiled")' \
+	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+	'  dispatcher = dispatcher.' \
+	'    WithStepToolRouter(runtimeToolSurface).' \
+	'    Done()' \
 	'}' >"${assembly_marker_root}/internal/runtimekernel/runtime_kernel.go"
 
 printf '%s\n' \
@@ -185,6 +210,35 @@ printf '%s\n' \
 	'func validateModelInput() {' \
 	'  fail("model input must begin with L0 then L1")' \
 	'}' >"${prompt_last_root}/internal/promptinput/model_input_validation.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func providerToolSpecsFromStepToolRouter(surface StepToolRouter) {}' \
+	'func buildRuntimeStepContextWithoutProviderRouterCall() {}' \
+	>"${provider_call_root}/internal/runtimekernel/step_builder.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func runTurn() {' \
+	'  observeRuntimeStage("turn_assembly_built")' \
+	'  observeRuntimeStage("prompt_compiled")' \
+	'  // WithStepToolRouter(runtimeToolSurface)' \
+	'}' >"${dispatcher_binding_root}/internal/runtimekernel/runtime_kernel.go"
+
+printf '%s\n' \
+	'package appui' \
+	'func aliasControl(finalText string) string {' \
+	'  candidate := finalText' \
+	'  if strings.Contains(candidate, "approved") { return "approval_granted" }' \
+	'  return "pending"' \
+	'}' >"${alias_final_root}/internal/appui/alias_control.go"
+
+printf '%s\n' \
+	'export function aliasControl(markdown: string) {' \
+	'  const candidate = markdown;' \
+	'  if (candidate.includes("completed")) return { status: "completed" };' \
+	'  return { status: "running" };' \
+	'}' >"${alias_final_root}/web/src/chat/aliasControl.ts"
 
 expect_allowed "typed runtime state" "${legal_root}"
 expect_rejected \
@@ -235,7 +289,7 @@ expect_rejected \
 expect_rejected \
 	"shared StepToolRouter provider marker missing" \
 	"${step_router_root}" \
-	"StepToolRouter provider surface marker" \
+	"StepToolRouter provider request wiring" \
 	"runtimekernel step builder"
 expect_rejected \
 	"L0 L1 first validator missing" \
@@ -247,6 +301,21 @@ expect_rejected \
 	"${prompt_last_root}" \
 	"model input L6 last validator" \
 	"promptinput model input validator"
+expect_rejected \
+	"provider StepToolRouter call missing" \
+	"${provider_call_root}" \
+	"StepToolRouter provider request wiring" \
+	"runtimekernel step builder"
+expect_rejected \
+	"dispatcher StepToolRouter binding missing" \
+	"${dispatcher_binding_root}" \
+	"StepToolRouter dispatcher binding marker" \
+	"runtimekernel dispatcher"
+expect_rejected \
+	"aliased final text controls state" \
+	"${alias_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
 
 if [[ "${fail}" -ne 0 ]]; then
 	exit 1
