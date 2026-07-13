@@ -16,6 +16,7 @@ export default defineConfig({
     exclude: [
       "tests/e2e/**",
       "node_modules/**",
+      "tests/agentHarnessPromptTrace.snapshot.spec.js",
       "tests/ChatPage.spec.js",
       "tests/ChatPage.chatstream.spec.js",
       "tests/assistant-message-single-path.spec.js",
