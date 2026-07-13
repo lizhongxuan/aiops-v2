@@ -51,7 +51,14 @@ func TestApprovalActionTokenRejectsCurrentWorldDriftBeforeExecution(t *testing.T
 			},
 		},
 		{
-			name: "legacy arguments", mismatch: "arguments",
+			name: "missing token", mismatch: "token", reapprove: true,
+			mutate: func(_ *RuntimeKernel, session *SessionState) {
+				session.CurrentTurn.PendingApprovals[0].ActionToken = nil
+				session.PendingApprovals[0].ActionToken = nil
+			},
+		},
+		{
+			name: "legacy arguments", mismatch: "token",
 			mutate: func(_ *RuntimeKernel, session *SessionState) {
 				session.CurrentTurn.PendingApprovals[0].ActionToken = nil
 				session.PendingApprovals[0].ActionToken = nil
@@ -174,7 +181,7 @@ func TestApprovalActionTokenRejectsCurrentWorldDriftBeforeExecution(t *testing.T
 	}
 }
 
-func TestExpiredPendingEvidenceReissuesNormalApprovalAndCanResume(t *testing.T) {
+func TestPendingEvidenceWithoutActionTokenReissuesNormalApprovalAndCanResume(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("", []schema.ToolCall{{
 			ID: "call-expired-evidence", Type: "function",
@@ -213,16 +220,13 @@ func TestExpiredPendingEvidenceReissuesNormalApprovalAndCanResume(t *testing.T) 
 	}
 	session := kernel.sessions.Get("sess-expired-evidence")
 	oldEvidenceID := session.PendingEvidence[0].ID
-	old := time.Now().Add(-16 * time.Minute)
-	session.PendingEvidence[0].CreatedAt = old
-	session.CurrentTurn.PendingEvidence[0].CreatedAt = old
 
 	stale, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: oldEvidenceID,
 		Decision: "approved", ResumeState: TurnResumeStatePendingEvidence,
 	})
-	if err != nil || stale.Status != "blocked" || !strings.Contains(stale.Error, `"expiry"`) || executed != 0 {
-		t.Fatalf("expired evidence ResumeTurn() = %#v, %v, executed=%d", stale, err, executed)
+	if err != nil || stale.Status != "blocked" || !strings.Contains(stale.Error, `"token"`) || executed != 0 {
+		t.Fatalf("unbound evidence ResumeTurn() = %#v, %v, executed=%d", stale, err, executed)
 	}
 	session = kernel.sessions.Get(session.ID)
 	if len(session.PendingEvidence) != 0 || len(session.CurrentTurn.PendingEvidence) != 0 || len(session.PendingApprovals) != 1 {

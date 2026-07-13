@@ -4863,36 +4863,14 @@ func (k *RuntimeKernel) prepareApprovalResumeExecution(session *SessionState, sn
 	if session == nil || snapshot == nil {
 		return approvalResumeExecution{}, newApprovalContextStaleError("turn")
 	}
+	if approval.ActionToken == nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("token")
+	}
 	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
 	if err != nil {
 		return approvalResumeExecution{}, newApprovalContextStaleError("tool_router")
 	}
-	token := approval.ActionToken
-	if token == nil {
-		var frozen ActionToken
-		if approval.Source == "pending_evidence" {
-			expiresAt := time.Time{}
-			if approval.ExpiresAt != nil {
-				expiresAt = *approval.ExpiresAt
-			}
-			if expiresAt.IsZero() {
-				expiresAt = firstNonZeroTime(approval.CreatedAt, time.Now()).Add(15 * time.Minute)
-			}
-			frozen, err = FreezeActionToken(ActionToken{
-				ApprovalID: world.facts.ApprovalID, TurnID: world.facts.TurnID, ToolCallID: world.facts.ToolCallID, ToolName: world.facts.ToolName,
-				ArgumentsHash: world.facts.ArgumentsHash, TargetRefs: world.facts.TargetRefs,
-				ToolSurfaceFingerprint: world.facts.ToolSurfaceFingerprint, PermissionHash: world.facts.PermissionHash,
-				RollbackHash: world.facts.RollbackHash, CheckpointID: world.facts.CheckpointID, ExpiresAt: expiresAt,
-			})
-		} else {
-			frozen, err = BuildPendingApprovalActionToken(approval, world.facts.CheckpointID)
-		}
-		if err != nil {
-			return approvalResumeExecution{}, newApprovalContextStaleError("token")
-		}
-		token = &frozen
-	}
-	verified, err := VerifyActionToken(*token, world.facts, time.Now())
+	verified, err := VerifyActionToken(*approval.ActionToken, world.facts, time.Now())
 	if err != nil {
 		return approvalResumeExecution{}, err
 	}
@@ -4949,15 +4927,6 @@ func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapsh
 		RollbackHash: approvalRollbackContractHash(approval), CheckpointID: checkpointID,
 	}
 	return approvalCurrentWorld{compileContext: compileCtx, dispatcher: dispatcher, facts: current, resourceScopes: resourceScopes}, nil
-}
-
-func firstNonZeroTime(values ...time.Time) time.Time {
-	for _, value := range values {
-		if !value.IsZero() {
-			return value
-		}
-	}
-	return time.Time{}
 }
 
 func (k *RuntimeKernel) blockStaleApprovalContext(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, cause error) TurnResult {

@@ -3236,7 +3236,7 @@ func TestRunTurnResumesMatchingPendingEvidenceDecisionThroughRuntime(t *testing.
 	}
 	evidenceID := session.PendingEvidence[0].ID
 
-	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+	stale, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
 		SessionID:   session.ID,
 		TurnID:      session.CurrentTurn.ID,
 		ApprovalID:  evidenceID,
@@ -3246,8 +3246,23 @@ func TestRunTurnResumesMatchingPendingEvidenceDecisionThroughRuntime(t *testing.
 	if err != nil {
 		t.Fatalf("ResumeTurn pending evidence: %v", err)
 	}
-	if resumed.Status != "completed" || executed != 1 {
-		t.Fatalf("ResumeTurn = %#v, executed=%d, want completed execution", resumed, executed)
+	if stale.Status != "blocked" || !strings.Contains(stale.Error, ApprovalContextStaleCode) || executed != 0 {
+		t.Fatalf("ResumeTurn = %#v, executed=%d, want token-bound reapproval", stale, executed)
+	}
+	session = kernel.sessions.Get(session.ID)
+	if len(session.PendingEvidence) != 0 || len(session.PendingApprovals) != 1 || session.CurrentTurn.ResumeState != TurnResumeStatePendingApproval {
+		t.Fatalf("reissued session = %#v, want one fresh pending approval", session)
+	}
+	fresh := session.PendingApprovals[0]
+	if fresh.ID == evidenceID || fresh.ActionToken == nil {
+		t.Fatalf("fresh approval = %#v, want new server-issued action token", fresh)
+	}
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+		SessionID: session.ID, TurnID: session.CurrentTurn.ID, ApprovalID: fresh.ID,
+		ResumeState: TurnResumeStatePendingApproval, Decision: "approved",
+	})
+	if err != nil || resumed.Status != "completed" || executed != 1 {
+		t.Fatalf("fresh approval ResumeTurn = %#v, err=%v, executed=%d, want completed execution", resumed, err, executed)
 	}
 	session = kernel.sessions.Get(session.ID)
 	if len(session.PendingEvidence) != 0 || session.CurrentTurn.ResumeState != TurnResumeStateNone || session.CurrentTurn.Lifecycle != TurnLifecycleCompleted {
