@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 )
 
 const (
@@ -187,44 +188,17 @@ func VerifyFinalEvidenceFacts(state FinalEvidenceState) FinalEvidenceVerificatio
 	return decision
 }
 
-func finalEvidenceExecCommandAllowed(snapshot *TurnSnapshot, session *SessionState) bool {
-	if snapshot != nil {
-		metadata := snapshot.Metadata
-		if metadataBool(metadata["aiops.tool.execCommandAllowed"]) || metadataBool(metadata["aiops.route.allowsExecCommand"]) {
-			return true
-		}
-		if snapshot.SessionType == SessionTypeHost && snapshot.Mode == ModeExecute && strings.TrimSpace(sessionHostID(session)) != "" {
-			return true
-		}
-	}
-	return false
+func finalEvidenceExecCommandAllowed(snapshot *TurnSnapshot, _ *SessionState) bool {
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && control.ExecAllowed
 }
 
-func finalEvidenceTargetBound(snapshot *TurnSnapshot, session *SessionState) bool {
-	if snapshot != nil {
-		metadata := snapshot.Metadata
-		binding := strings.ToLower(strings.TrimSpace(metadata["aiops.target.binding"]))
-		if binding == "host" || binding == "multi_host" || binding == "resource" {
-			return true
-		}
-		if strings.TrimSpace(metadata["aiops.target.hostId"]) != "" || strings.TrimSpace(metadata["aiops.target.refs"]) != "" {
-			return true
-		}
-		if snapshot.SessionType == SessionTypeHost && strings.TrimSpace(sessionHostID(session)) != "" {
-			return true
-		}
-	}
-	return strings.TrimSpace(sessionHostID(session)) != ""
+func finalEvidenceTargetBound(snapshot *TurnSnapshot, _ *SessionState) bool {
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && control.TargetBound
 }
 
-func sessionHostID(session *SessionState) string {
-	if session == nil {
-		return ""
-	}
-	return strings.TrimSpace(session.HostID)
-}
-
-func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, session *SessionState, state FinalEvidenceState) bool {
+func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, _ *SessionState, state FinalEvidenceState) bool {
 	if state.TargetBound || state.ExecCommandAllowed {
 		return false
 	}
@@ -234,54 +208,35 @@ func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, session *S
 	if !finalEvidenceNoTargetBindingGuardApplies(snapshot) {
 		return false
 	}
-	return finalEvidenceLatestUserMutationIntent(session)
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	if ok {
+		return frozenTurnMutationRequired(snapshot, control) && !control.TargetBound
+	}
+	return snapshot != nil && snapshot.TaskDepth.RequiresApproval
 }
 
 func finalEvidenceAnalysisOnlyOrUserEvidenceRCA(snapshot *TurnSnapshot) bool {
 	if snapshot == nil {
 		return false
 	}
-	metadata := snapshot.Metadata
-	if metadataBool(metadata["taskDepth.analysisOnly"]) ||
-		metadataBool(metadata["taskDepth.executionProhibited"]) ||
-		metadataBool(metadata["aiops.execution.prohibited"]) ||
-		metadataBool(metadata["aiops.route.userProhibitedHostExec"]) {
+	if snapshot.TaskDepth.AnalysisOnly || snapshot.TaskDepth.ExecutionProhibited {
 		return true
 	}
-	mode := strings.ToLower(strings.TrimSpace(metadata["aiops.route.mode"]))
-	if mode == "evidence_rca" && metadataBool(metadata["aiops.userEvidence.present"]) {
-		return true
+	if control, ok := frozenTurnControlFromSnapshot(snapshot); ok && !control.TargetBound && control.Admission.Intent.Evidence.HasUserProvidedEvidence {
+		switch control.Admission.Intent.Kind {
+		case runtimecontract.IntentKindDiagnose, runtimecontract.IntentKindVerify:
+			return true
+		}
 	}
 	return false
 }
 
 func finalEvidenceNoTargetBindingGuardApplies(snapshot *TurnSnapshot) bool {
-	if snapshot == nil {
-		return false
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	if ok {
+		return frozenTurnMutationRequired(snapshot, control) && !control.TargetBound
 	}
-	metadata := snapshot.Metadata
-	if strings.EqualFold(strings.TrimSpace(metadata["aiops.target.binding"]), "none") {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(metadata["aiops.route.mode"])) {
-	case "chat_advisory", "advisory":
-		return true
-	default:
-		return false
-	}
-}
-
-func finalEvidenceLatestUserMutationIntent(session *SessionState) bool {
-	if session == nil {
-		return false
-	}
-	for i := len(session.Messages) - 1; i >= 0; i-- {
-		msg := session.Messages[i]
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
-			return containsOperationalMutationIntent(msg.Content)
-		}
-	}
-	return false
+	return snapshot != nil && snapshot.TaskDepth.RequiresApproval
 }
 
 func containsOperationalMutationIntent(text string) bool {

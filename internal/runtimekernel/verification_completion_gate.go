@@ -150,67 +150,21 @@ func verificationCompletionRuntimeApprovalGateRequired(snapshot *TurnSnapshot) b
 	if snapshot == nil || snapshot.TaskDepth.AnalysisOnly || snapshot.TaskDepth.ExecutionProhibited {
 		return false
 	}
-	metadata := snapshot.Metadata
-	if metadataBool(metadata["aiops.route.userProhibitedHostExec"]) || metadataBool(metadata["aiops.execution.prohibited"]) {
-		return false
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	if !ok {
+		return snapshot.TaskDepth.RequiresApproval || snapshot.TaskDepth.RequiresValidation || taskdepth.AtLeast(snapshot.TaskDepth.Level, taskdepth.LevelOperations)
 	}
-	if !metadataBool(metadata["aiops.tool.execCommandAllowed"]) && !metadataBool(metadata["aiops.route.allowsExecCommand"]) {
-		return false
-	}
-	if !metadataBool(metadata["aiops.tool.hostMutationAllowed"]) {
-		return false
-	}
-	if !verificationCompletionHasTargetBinding(snapshot) {
-		return false
-	}
-	return verificationCompletionHasMutationSignal(snapshot)
+	return control.TargetBound && control.ExecAllowed && frozenTurnMutationRequired(snapshot, control)
 }
 
 func verificationCompletionHasMutationSignal(snapshot *TurnSnapshot) bool {
-	if snapshot == nil {
-		return false
-	}
-	metadata := snapshot.Metadata
-	if strings.EqualFold(strings.TrimSpace(metadata["aiops.intent.kind"]), "change") {
-		return true
-	}
-	for _, key := range []string{"aiops.intent.riskBudget", "intent.riskBudget"} {
-		if metadataListContains(metadata[key], "write") ||
-			metadataListContains(metadata[key], "host_exec") ||
-			metadataListContains(metadata[key], "destruct") {
-			return true
-		}
-	}
-	return verificationCompletionLatestUserMutationIntent(snapshot)
-}
-
-func verificationCompletionLatestUserMutationIntent(snapshot *TurnSnapshot) bool {
-	if snapshot == nil {
-		return false
-	}
-	for i := len(snapshot.Iterations) - 1; i >= 0; i-- {
-		messages := snapshot.Iterations[i].MessagesForModel
-		for j := len(messages) - 1; j >= 0; j-- {
-			msg := messages[j]
-			if strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
-				return containsOperationalMutationIntent(msg.Content)
-			}
-		}
-	}
-	return false
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && frozenTurnMutationRequired(snapshot, control)
 }
 
 func verificationCompletionHasTargetBinding(snapshot *TurnSnapshot) bool {
-	if snapshot == nil {
-		return false
-	}
-	metadata := snapshot.Metadata
-	switch strings.ToLower(strings.TrimSpace(metadata["aiops.target.binding"])) {
-	case "host", "multi_host", "resource":
-		return true
-	}
-	return strings.TrimSpace(metadata["aiops.target.hostId"]) != "" ||
-		strings.TrimSpace(metadata["aiops.target.refs"]) != ""
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && control.TargetBound
 }
 
 func verificationCompletionRuntimeApprovalGateObserved(snapshot *TurnSnapshot) bool {

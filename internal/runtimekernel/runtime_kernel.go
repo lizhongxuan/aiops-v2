@@ -2170,7 +2170,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("context pipeline: %w", contextErr)
 		}
-		contextMessages, observationEvents := modelVisibleMessagesWithObservationDedupe(session, contextState.Messages)
+		contextMessages, observationEvents := modelVisibleMessagesWithObservationDedupe(session, contextState.Messages, resourceTargetIdentityHash(admissionFacts))
 		contextState.GovernanceEvents = append(contextState.GovernanceEvents, observationEvents...)
 		appendContextGovernanceEvents(&snapshot.ContextGovernanceEvents, contextState.GovernanceEvents...)
 		appendContextGovernanceEvents(&session.ContextGovernanceEvents, contextState.GovernanceEvents...)
