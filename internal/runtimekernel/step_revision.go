@@ -149,6 +149,10 @@ func BuildStepReference(previous *StepReference, step RuntimeStepContext, facts 
 			previousHash = StepRevisionUnknownPreviousHash
 		}
 		revisions = append(revisions, newStepRevision(kind, []string{facts.TurnAssemblyHash}, previousHash, step.Hash, nil))
+		if facts.Cause.Kind != "" {
+			revisions = append(revisions, newStepRevision(facts.Cause.Kind, stepRevisionCauseRefs(facts.Cause), previousHash, step.Hash, []string{"resumeCause"}))
+			sort.Slice(revisions, func(i, j int) bool { return revisions[i].Kind < revisions[j].Kind })
+		}
 	} else {
 		if err := previous.Validate(); err != nil {
 			return StepReference{}, fmt.Errorf("previous step reference: %w", err)

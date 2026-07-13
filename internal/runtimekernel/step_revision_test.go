@@ -71,6 +71,27 @@ func TestStepRevisionRejectsImmutableTurnDrift(t *testing.T) {
 	}
 }
 
+func TestStepRevisionLegacySnapshotKeepsResumeCause(t *testing.T) {
+	input := validRuntimeStepContextForHashTest()
+	input.Iteration = 3
+	step := mustFreezeRuntimeStepContextForTest(t, input)
+	facts := mustFreezeStepRevisionFactsForTest(t, StepRevisionFacts{
+		TurnAssemblyHash: step.TurnAssemblyHash,
+		Cause: StepRevisionCause{
+			Kind: StepRevisionKindModelRetryResumed, CheckpointID: "checkpoint-timeout",
+		},
+	})
+	reference, err := BuildStepReference(nil, step, facts)
+	if err != nil {
+		t.Fatalf("BuildStepReference() error = %v", err)
+	}
+	for _, kind := range []string{StepRevisionKindLegacyPreviousUnknown, StepRevisionKindModelRetryResumed} {
+		if !stepTransitionHasKind(reference.Transition, kind) {
+			t.Fatalf("legacy revisions = %#v, missing %q", reference.Transition.Revisions, kind)
+		}
+	}
+}
+
 func mustFreezeStepRevisionFactsForTest(t *testing.T, facts StepRevisionFacts) StepRevisionFacts {
 	t.Helper()
 	frozen, err := FreezeStepRevisionFacts(facts)
