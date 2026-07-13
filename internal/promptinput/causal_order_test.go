@@ -120,18 +120,17 @@ func TestBuildResumedUserKeepsExistingTurnEvidenceAndMovesOnlyAnswerToL6(t *test
 	}
 }
 
-func TestBuildDoesNotOptIntoV2FromCompiledEnvelopeAlone(t *testing.T) {
+func TestBuildRejectsMissingEnvelopeV2EvenWhenCompiledContainsOne(t *testing.T) {
 	compiled := compiledPromptV2ForCausalTest(t)
-	result, err := Builder{}.Build(BuildRequest{
-		Compiled: compiled,
-		History:  []Message{{Role: "user", Content: "legacy-compatible request"}},
+	_, err := Builder{}.Build(BuildRequest{
+		Compiled:         compiled,
+		Iteration:        0,
+		CurrentInputKind: CurrentInputKindInitialUser,
+		CurrentUserInput: "canonical request",
+		History:          []Message{{Role: "user", Content: "canonical request"}},
 	})
-	if err != nil {
-		t.Fatalf("Build() error = %v", err)
-	}
-	last := result.Items[len(result.Items)-1]
-	if last.Source.Layer != "history" || last.Content != "legacy-compatible request" {
-		t.Fatalf("last item = %#v, want legacy history item", last)
+	if err == nil || !strings.Contains(err.Error(), "prompt envelope v2 is required") {
+		t.Fatalf("Build() error = %v, want missing envelope v2 rejection", err)
 	}
 }
 

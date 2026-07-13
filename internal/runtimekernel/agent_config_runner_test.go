@@ -12,7 +12,6 @@ import (
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
-	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
 
@@ -284,13 +283,11 @@ func TestFixedAgentCompilerReclassifiesLegacyAgentConfigInstructions(t *testing.
 	if err != nil {
 		t.Fatalf("upstream Compile() error = %v", err)
 	}
-	legacy, err := promptinput.Builder{}.Build(promptinput.BuildRequest{Compiled: upstream})
-	if err != nil {
-		t.Fatalf("legacy Builder.Build() error = %v", err)
-	}
-	instructions, _, err := modelrouter.ModelInputItemsToEinoMessages(legacy.Items)
-	if err != nil {
-		t.Fatalf("ModelInputItemsToEinoMessages() error = %v", err)
+	instructions := make([]*schema.Message, 0, len(upstream.Envelope.Sections))
+	for _, section := range upstream.Envelope.Sections {
+		message := schema.SystemMessage(section.Content)
+		message.Extra = map[string]any{"source_section_id": section.ID, "source_layer": section.Layer}
+		instructions = append(instructions, message)
 	}
 	instructionContext := classifyFixedAgentInstructions(instructions)
 	compiled, err := (fixedAgentCompiler{

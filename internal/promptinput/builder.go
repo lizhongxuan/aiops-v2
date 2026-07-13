@@ -11,36 +11,10 @@ import (
 // Build converts compiled prompt fragments plus current-turn conversation
 // context into provider-neutral model input items and a semantic trace.
 func (Builder) Build(req BuildRequest) (BuildResult, error) {
-	if hasPromptEnvelopeV2(req.Envelope) {
-		return buildPromptInputV2(req, req.Envelope)
+	if !hasPromptEnvelopeV2(req.Envelope) {
+		return BuildResult{}, fmt.Errorf("prompt envelope v2 is required")
 	}
-	return buildLegacyPromptInput(req)
-}
-
-func buildLegacyPromptInput(req BuildRequest) (BuildResult, error) {
-	promptItems := compiledPromptModelInputItems(req.Compiled)
-	opsContextItems := opsContextModelInputItems(req)
-	memoryItems := memoryModelInputItems(req)
-	history := MessagesForCurrentTurnModelInput(req.History)
-	runtimeItems, err := MessagesToModelInputItems(history)
-	if err != nil {
-		return BuildResult{}, fmt.Errorf("conversation messages: %w", err)
-	}
-
-	resultItems := make([]ModelInputItem, 0, len(promptItems)+len(opsContextItems)+len(memoryItems)+len(runtimeItems))
-	resultItems = append(resultItems, promptItems...)
-	resultItems = append(resultItems, opsContextItems...)
-	resultItems = append(resultItems, memoryItems...)
-	resultItems = append(resultItems, runtimeItems...)
-	for i := range resultItems {
-		if err := resultItems[i].Validate(); err != nil {
-			return BuildResult{}, fmt.Errorf("model input item[%d]: %w", i, err)
-		}
-	}
-	return BuildResult{
-		Items: resultItems,
-		Trace: buildTrace(req, resultItems, memoryMessagesFromRequest(req), history),
-	}, nil
+	return buildPromptInputV2(req, req.Envelope)
 }
 
 func buildPromptInputV2(req BuildRequest, envelope promptcompiler.PromptEnvelopeV2) (BuildResult, error) {
@@ -279,63 +253,6 @@ func currentInputModelItem(id string, role ProviderRole, semanticRole, content, 
 		Phase:  "current_input", CacheGroup: promptcompiler.PromptSectionKindDynamic,
 		Metadata: map[string]string{"prompt_layer": string(promptcompiler.LayerCurrentUserInput)},
 	}
-}
-
-func compiledPromptModelInputItems(compiled promptcompiler.CompiledPrompt) []ModelInputItem {
-	sections := compiled.Envelope.Sections
-	if len(sections) == 0 {
-		sections = fallbackCompiledPromptSections(compiled)
-	}
-	out := make([]ModelInputItem, 0, len(sections))
-	for _, section := range sections {
-		content := strings.TrimSpace(section.Content)
-		if content == "" {
-			continue
-		}
-		role := ProviderRoleSystem
-		if section.Role == "developer" {
-			role = ProviderRoleDeveloper
-		}
-		layer := firstNonBlankPromptInputString(section.Layer, section.ID)
-		out = append(out, ModelInputItem{
-			ID:           firstNonBlankPromptInputString(section.ID, section.Layer, section.Source),
-			ProviderRole: role,
-			SemanticRole: firstNonBlankPromptInputString(layer, section.ID, section.Source),
-			Content:      content,
-			Source: ModelInputSource{
-				Layer:     layer,
-				SectionID: section.ID,
-				Origin:    promptSource(layer),
-			},
-			Phase:      "prompt",
-			CacheGroup: firstNonBlankPromptInputString(section.Stability, "stable"),
-			Metadata: map[string]string{
-				"prompt_layer":      layer,
-				"prompt_section_id": section.ID,
-			},
-		})
-	}
-	return out
-}
-
-func fallbackCompiledPromptSections(compiled promptcompiler.CompiledPrompt) []promptcompiler.PromptCompiledSection {
-	out := make([]promptcompiler.PromptCompiledSection, 0, 5)
-	if content := strings.TrimSpace(compiled.System.Content); content != "" {
-		out = append(out, promptcompiler.PromptCompiledSection{ID: "system", Layer: "system", Role: "system", Content: content, Stability: "stable", Source: "system"})
-	}
-	if content := strings.TrimSpace(compiled.Developer.Content); content != "" {
-		out = append(out, promptcompiler.PromptCompiledSection{ID: "developer", Layer: "developer", Role: "developer", Content: content, Stability: "stable", Source: "developer"})
-	}
-	if content := strings.TrimSpace(compiled.Tools.Content); content != "" {
-		out = append(out, promptcompiler.PromptCompiledSection{ID: "tool_index", Layer: "tool_index", Role: "system", Content: content, Stability: "stable", Source: "tool"})
-	}
-	if content := strings.TrimSpace(compiled.Dynamic.Content); content != "" {
-		out = append(out, promptcompiler.PromptCompiledSection{ID: "dynamic_prompt", Layer: "dynamic_prompt", Role: "system", Content: content, Stability: "dynamic", Source: "runtime_context"})
-	}
-	if content := strings.TrimSpace(compiled.Policy.Content); content != "" {
-		out = append(out, promptcompiler.PromptCompiledSection{ID: "runtime_policy", Layer: "runtime_policy", Role: "system", Content: content, Stability: "dynamic", Source: "context"})
-	}
-	return out
 }
 
 func opsContextModelInputItems(req BuildRequest) []ModelInputItem {

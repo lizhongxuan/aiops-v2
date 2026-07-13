@@ -11,7 +11,7 @@ import (
 )
 
 func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System: promptcompiler.SystemPrompt{Content: "system layer"},
 			Tools:  promptcompiler.ToolPromptSet{Content: "tool index"},
@@ -39,8 +39,8 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	}
 	jsonTrace := string(data)
 	for _, want := range []string{
-		`"source":"stable_prompt"`,
-		`"semanticRole":"tool_index"`,
+		`"source":"runtime"`,
+		`"semanticRole":"L2_stable_runtime_contract"`,
 		`"providerRole":"system"`,
 		`"source":"protocol_state"`,
 		`"semanticRole":"tool_result"`,
@@ -53,8 +53,9 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	markdown := RenderMarkdown(result.Trace)
 	for _, want := range []string{
 		"# Prompt Input Trace",
-		"stable_prompt",
-		"tool_index",
+		"L0_absolute_system_core",
+		"L2_stable_runtime_contract",
+		"dynamic.tool_surface",
 		"protocol_state",
 		"tool_result",
 		"provider",
@@ -95,7 +96,7 @@ func TestPromptInputTraceIncludesSpecialInputWorldState(t *testing.T) {
 		ModelSummary: "active host host-a from previous confirmed mention",
 	}
 
-	result, err := Builder{}.Build(BuildRequest{SpecialInputWorldState: worldState})
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{SpecialInputWorldState: worldState})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
@@ -123,7 +124,7 @@ func TestPromptInputTraceIncludesSpecialInputWorldState(t *testing.T) {
 }
 
 func TestPromptInputTraceIncludesOpsContextBudgetMetrics(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System: promptcompiler.SystemPrompt{Content: "system layer"},
 		},
@@ -157,7 +158,7 @@ func TestPromptInputTraceIncludesOpsContextBudgetMetrics(t *testing.T) {
 }
 
 func TestPromptInputRendersCompactPlanModeAndTaskState(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			Dynamic: promptcompiler.DynamicPromptDelta{
 				ProtocolState: promptcompiler.ProtocolPromptState{
@@ -206,7 +207,7 @@ func TestPromptInputRendersCompactPlanModeAndTaskState(t *testing.T) {
 }
 
 func TestPromptInputRendersCompactVerificationSafetyState(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		VerificationReportRef: "artifact://synthetic/verification-report",
 		VerificationStatus:    "PARTIAL",
 		CompletionGate: &CompletionGateTrace{
@@ -266,7 +267,7 @@ func TestPromptInputRendersCompactVerificationSafetyState(t *testing.T) {
 }
 
 func TestPromptInputRendersGenericityTraceDepthAndCoverage(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		TaskDepth: &TaskDepthTrace{
 			Level:              "investigation",
 			Reasons:            []string{"cross_resource_evidence"},
@@ -352,7 +353,7 @@ func TestPromptInputTraceCarriesContextGovernance(t *testing.T) {
 			RetryMax:     3,
 		}},
 	}
-	result, err := Builder{}.Build(req)
+	result, err := buildCanonicalPromptInputForTest(t, req)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
@@ -388,7 +389,7 @@ func TestPromptInputTraceNormalizesPromptSectionHarnessMetadata(t *testing.T) {
 			}},
 		},
 	}
-	result, err := Builder{}.Build(req)
+	result, err := buildCanonicalPromptInputForTest(t, req)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}

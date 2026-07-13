@@ -11,8 +11,7 @@ import (
 )
 
 func TestBuilderDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t *testing.T) {
-	builder := Builder{}
-	result, err := builder.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		History: []Message{
 			{Role: "user", Content: "查看今天A股情况"},
 			{
@@ -69,8 +68,7 @@ func TestBuilderDropsPriorTurnToolNoiseButKeepsCurrentTurnToolContext(t *testing
 }
 
 func TestBuilderTraceIncludesPromptFragmentsAndProtocolState(t *testing.T) {
-	builder := Builder{}
-	result, err := builder.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System:    promptcompiler.SystemPrompt{Content: "system layer"},
 			Developer: promptcompiler.DeveloperInstructions{Content: "developer layer"},
@@ -106,14 +104,15 @@ func TestBuilderTraceIncludesPromptFragmentsAndProtocolState(t *testing.T) {
 		role   string
 		id     string
 	}{
-		{"stable_prompt", "system", ""},
-		{"stable_prompt", "developer", ""},
-		{"stable_prompt", "tool_index", ""},
-		{"dynamic_prompt", "runtime_policy", ""},
+		{"runtime", string(promptcompiler.LayerAbsoluteSystemCore), ""},
+		{"profile", string(promptcompiler.LayerRoleProfileCore), ""},
+		{"runtime_contract", string(promptcompiler.LayerStableRuntimeContract), ""},
+		{"turn", string(promptcompiler.LayerTurnStableFacts), ""},
+		{"dynamic.tool_surface", string(promptcompiler.LayerStepDynamicContext), ""},
 		{"protocol_state", "plan", "inspect"},
 		{"protocol_state", "approval", "approval-1"},
 		{"protocol_state", "evidence", "evidence-1"},
-		{"conversation", "user", ""},
+		{"conversation", "current_user_input", ""},
 	} {
 		if !traceHas(result.Trace, want.source, want.role, want.id) {
 			t.Fatalf("trace missing source=%s role=%s id=%s: %#v", want.source, want.role, want.id, result.Trace)
@@ -122,7 +121,7 @@ func TestBuilderTraceIncludesPromptFragmentsAndProtocolState(t *testing.T) {
 }
 
 func TestBuilderIncludesDynamicPromptContentInModelMessages(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System:    promptcompiler.SystemPrompt{Content: "system layer"},
 			Developer: promptcompiler.DeveloperInstructions{Content: "developer layer"},
@@ -184,8 +183,8 @@ func TestModelInputToolCallRoundTrip(t *testing.T) {
 	}
 }
 
-func TestBuilderInjectsLimitedMemoryWithTraceBeforeCurrentEvidence(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+func TestBuilderInjectsLimitedMemoryWithTraceAfterCausalEvidence(t *testing.T) {
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		MaxMemories: 1,
 		Memories: []MemoryItem{
 			{ID: "mem-1", Scope: "project", Text: "historical redis runbook"},
@@ -204,8 +203,8 @@ func TestBuilderInjectsLimitedMemoryWithTraceBeforeCurrentEvidence(t *testing.T)
 	if !strings.Contains(joined, "historical redis runbook") || strings.Contains(joined, "older redis note") {
 		t.Fatalf("memory injection did not respect limit:\n%s", joined)
 	}
-	if strings.Index(joined, "historical redis runbook") > strings.Index(joined, "current redis evidence") {
-		t.Fatalf("memory should be injected before current evidence:\n%s", joined)
+	if strings.Index(joined, "historical redis runbook") < strings.Index(joined, "current redis evidence") {
+		t.Fatalf("L5 memory should follow completed L4 causal evidence:\n%s", joined)
 	}
 	if !traceHas(result.Trace, "memory", "memory", "mem-1") {
 		t.Fatalf("trace missing memory item: %#v", result.Trace)
@@ -226,7 +225,7 @@ func TestPromptInputOpsManualContextDoesNotGrowLinearlyAcrossTurns(t *testing.T)
 	}
 	history = append(history, Message{Role: "user", Content: "继续检查 Redis"})
 
-	result, err := Builder{}.Build(BuildRequest{History: history})
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{History: history})
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
