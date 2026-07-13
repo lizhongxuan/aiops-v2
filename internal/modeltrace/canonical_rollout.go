@@ -242,32 +242,35 @@ func sanitizeCanonicalSourceRef(sourceRef string) string {
 	parsed, err := url.Parse(sourceRef)
 	if err != nil || parsed.Scheme == "" {
 		if hasInlineCanonicalCredential(sourceRef) {
-			digest := sha256.Sum256([]byte(sourceRef))
-			return "redacted:" + hex.EncodeToString(digest[:])
+			return hashCanonicalSourceRef(sourceRef)
 		}
 		return sourceRef
 	}
+	changed := false
 	if parsed.User != nil {
 		parsed.User = url.User("redacted")
+		changed = true
 	}
 	query := parsed.Query()
-	changed := false
 	for key := range query {
 		if !isCanonicalSensitiveKey(key) {
 			continue
 		}
-		query.Set(key, "[REDACTED]")
 		changed = true
 	}
 	if changed {
-		parsed.RawQuery = query.Encode()
+		return hashCanonicalSourceRef(sourceRef)
 	}
 	normalized := parsed.String()
 	if hasInlineCanonicalCredential(normalized) {
-		digest := sha256.Sum256([]byte(normalized))
-		return "redacted:" + hex.EncodeToString(digest[:])
+		return hashCanonicalSourceRef(sourceRef)
 	}
 	return normalized
+}
+
+func hashCanonicalSourceRef(sourceRef string) string {
+	digest := sha256.Sum256([]byte(sourceRef))
+	return "redacted:" + hex.EncodeToString(digest[:])
 }
 
 func cloneAndRedactCanonicalPayload(payload map[string]any) (map[string]any, error) {
@@ -295,8 +298,8 @@ func redactCanonicalValue(key string, value any) (any, error) {
 	if isCanonicalRedactionMarker(value) {
 		return value, nil
 	}
-	if key != "" && !isCanonicalReferenceKey(key) &&
-		(isCanonicalSensitiveKey(key) || isCanonicalActionArgsKey(key) || isCanonicalRawContentKey(key)) {
+	if key != "" && (isCanonicalSensitiveKey(key) || isCanonicalErrorKey(key) ||
+		isCanonicalActionArgsKey(key) || isCanonicalRawContentKey(key)) {
 		return canonicalRedactionMarker(value)
 	}
 	switch typed := value.(type) {
@@ -336,7 +339,11 @@ func isCanonicalRedactionMarker(value any) bool {
 		return false
 	}
 	digest, ok := marker["sha256"].(string)
-	return ok && strings.HasPrefix(digest, "sha256:") && len(digest) == len("sha256:")+sha256.Size*2
+	if !ok || !strings.HasPrefix(digest, "sha256:") || len(digest) != len("sha256:")+sha256.Size*2 {
+		return false
+	}
+	decoded, err := hex.DecodeString(strings.TrimPrefix(digest, "sha256:"))
+	return err == nil && len(decoded) == sha256.Size
 }
 
 func canonicalRedactionMarker(value any) (map[string]any, error) {
@@ -362,11 +369,17 @@ func normalizeCanonicalKey(key string) string {
 
 func isCanonicalReferenceKey(key string) bool {
 	normalized := normalizeCanonicalKey(key)
-	return strings.HasSuffix(normalized, "hash") ||
+	if strings.HasSuffix(normalized, "hash") ||
 		strings.HasSuffix(normalized, "digest") ||
-		strings.HasSuffix(normalized, "fingerprint") ||
-		strings.HasSuffix(normalized, "ref") ||
-		strings.HasSuffix(normalized, "refs")
+		strings.HasSuffix(normalized, "fingerprint") {
+		return true
+	}
+	switch normalized {
+	case "eventref", "eventrefs", "sourceref", "sourcerefs", "evidenceref", "evidencerefs", "rolloutref", "rolloutrefs", "checkpointref", "artifactref":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCanonicalSensitiveKey(key string) bool {
@@ -390,6 +403,15 @@ func isCanonicalSensitiveKey(key string) bool {
 		strings.HasSuffix(normalized, "idtoken") ||
 		strings.HasSuffix(normalized, "actiontoken") ||
 		strings.HasSuffix(normalized, "tokenvalue")
+}
+
+func isCanonicalErrorKey(key string) bool {
+	switch normalizeCanonicalKey(key) {
+	case "error", "err", "errormessage":
+		return true
+	default:
+		return false
+	}
 }
 
 func isCanonicalActionArgsKey(key string) bool {
@@ -425,6 +447,7 @@ func hasInlineCanonicalCredential(value string) bool {
 		"password=", "password:",
 		"token=", "token:",
 		"secret=", "secret:",
+		"secret_ref=", "secret-ref=", "secretref=", "secret_ref:", "secret-ref:", "secretref:",
 		"credential=", "credential:",
 	} {
 		if strings.Contains(normalized, marker) {
