@@ -61,6 +61,18 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	if step.ProviderRequest.ModelInputHash == "" || step.ProviderRequest.PromptCacheKey == "" {
 		t.Fatalf("provider request missing hashes: %#v", step.ProviderRequest)
 	}
+	if step.ProviderRequest.PromptFingerprint.StablePrefixHash == "" || step.ProviderRequest.PromptFingerprint.TurnPrefixHash == "" || step.ProviderRequest.PromptFingerprint.ModelInputHash != step.ProviderRequest.ModelInputHash {
+		t.Fatalf("provider request missing canonical prompt fingerprint: %#v", step.ProviderRequest.PromptFingerprint)
+	}
+	if step.Compiled.Fingerprint != step.ProviderRequest.PromptFingerprint {
+		t.Fatalf("step compiled/provider fingerprints diverged: compiled=%#v provider=%#v", step.Compiled.Fingerprint, step.ProviderRequest.PromptFingerprint)
+	}
+	tamperedCompiledFingerprint := step
+	tamperedCompiledFingerprint.Compiled.Fingerprint.ModelInputHash = "tampered"
+	tamperedCompiledFingerprint.Hash = ComputeRuntimeStepContextHash(tamperedCompiledFingerprint)
+	if err := tamperedCompiledFingerprint.Validate(); err == nil {
+		t.Fatal("Validate() accepted compiled/provider prompt fingerprint drift")
+	}
 	if len(step.ProviderRequest.Input) != len(promptBuild.Items) {
 		t.Fatalf("provider input len = %d, want %d", len(step.ProviderRequest.Input), len(promptBuild.Items))
 	}

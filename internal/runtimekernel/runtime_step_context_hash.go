@@ -31,17 +31,25 @@ func runtimeStepPermissionHash(assembly *agentassembly.TurnAssembly, policy tool
 }
 
 func FreezeRuntimeStepContext(input RuntimeStepContext) (RuntimeStepContext, error) {
+	if agentassembly.StableHash("runtime-step.model-input", input.ModelInput) != agentassembly.StableHash("runtime-step.model-input", input.ProviderRequest.Input) {
+		return RuntimeStepContext{}, fmt.Errorf("step and provider model input conflict")
+	}
 	input.Hash = ""
 	frozen, err := cloneRuntimeStepContext(input)
 	if err != nil {
 		return RuntimeStepContext{}, err
 	}
-	modelInput, err := cloneRuntimeStepModelInput(frozen.ModelInput)
+	providerInput, err := cloneRuntimeStepModelInput(frozen.ProviderRequest.Input)
 	if err != nil {
 		return RuntimeStepContext{}, err
 	}
-	frozen.ProviderRequest.Input = modelInput
-	audit, err := modelrouter.ProviderMessageAuditFromModelInputItems(modelInput)
+	modelInputMirror, err := cloneRuntimeStepModelInput(providerInput)
+	if err != nil {
+		return RuntimeStepContext{}, err
+	}
+	frozen.ProviderRequest.Input = providerInput
+	frozen.ModelInput = modelInputMirror
+	audit, err := modelrouter.ProviderMessageAuditFromModelInputItems(providerInput)
 	if err != nil {
 		return RuntimeStepContext{}, fmt.Errorf("provider message audit: %w", err)
 	}
@@ -70,6 +78,7 @@ func ComputeRuntimeStepContextHash(step RuntimeStepContext) string {
 			"providerMessagesHash":  step.ProviderRequest.ProviderMessagesHash,
 			"requestPropertiesHash": step.ProviderRequest.RequestPropertiesHash,
 			"promptCacheKey":        step.ProviderRequest.PromptCacheKey,
+			"promptFingerprint":     step.ProviderRequest.PromptFingerprint,
 			"clientMetadata":        step.ProviderRequest.ClientMetadata,
 		},
 	})
@@ -98,11 +107,15 @@ func validateRuntimeStepProviderRequest(step RuntimeStepContext) error {
 	if fromStep.ModelInputHash != step.ProviderRequest.ModelInputHash {
 		return fmt.Errorf("provider request model input hash does not match step model input")
 	}
+	if promptinput.HasTypedModelInputLayers(step.ProviderRequest.Input) && step.Compiled.Fingerprint != step.ProviderRequest.PromptFingerprint {
+		return fmt.Errorf("compiled and provider prompt fingerprints do not match")
+	}
 	recomputed := step.ProviderRequest
 	recomputed.ComputeHashes()
 	if recomputed.ModelInputHash != step.ProviderRequest.ModelInputHash ||
 		recomputed.RequestPropertiesHash != step.ProviderRequest.RequestPropertiesHash ||
-		recomputed.PromptCacheKey != step.ProviderRequest.PromptCacheKey {
+		recomputed.PromptCacheKey != step.ProviderRequest.PromptCacheKey ||
+		recomputed.PromptFingerprint != step.ProviderRequest.PromptFingerprint {
 		return fmt.Errorf("provider request hash mismatch")
 	}
 	audit, err := modelrouter.ProviderMessageAuditFromModelInputItems(step.ProviderRequest.Input)

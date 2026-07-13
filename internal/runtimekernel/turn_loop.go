@@ -94,11 +94,12 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		return RuntimeStepContext{}, promptinput.BuildResult{}, err
 	}
 	providerReq := modelrouter.ProviderRequestSnapshot{
-		Provider:        firstNonBlankRuntimeString(modelCaps.Provider, string(agentKind)),
-		Model:           firstNonBlankRuntimeString(modelCaps.Model, strings.TrimSpace(modelName)),
-		Input:           promptBuild.Items,
-		Tools:           providerToolSpecsFromRuntimeToolSurface(toolSurface),
-		ReasoningEffort: firstMetadataValue(turnReq.Metadata, "reasoningEffort", "reasoning_effort"),
+		Provider:          firstNonBlankRuntimeString(modelCaps.Provider, string(agentKind)),
+		Model:             firstNonBlankRuntimeString(modelCaps.Model, strings.TrimSpace(modelName)),
+		Input:             promptBuild.Items,
+		PromptFingerprint: compiled.Fingerprint,
+		Tools:             providerToolSpecsFromRuntimeToolSurface(toolSurface),
+		ReasoningEffort:   firstMetadataValue(turnReq.Metadata, "reasoningEffort", "reasoning_effort"),
 		ClientMetadata: map[string]string{
 			"sessionId":       turnCtx.SessionID,
 			"turnId":          turnCtx.TurnID,
@@ -109,6 +110,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 		MessageAudit:         &audit,
 	}
 	providerReq.ComputeHashes()
+	compiled.Fingerprint = providerReq.PromptFingerprint
 	step := RuntimeStepContext{
 		Turn:             turnCtx,
 		TurnAssemblyHash: control.TurnAssemblyHash,
@@ -165,6 +167,7 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 	req.TurnID = step.Turn.TurnID
 	req.Iteration = step.Iteration
 	req.Compiled = step.Compiled
+	req.ModelInput = append([]promptinput.ModelInputItem(nil), step.ProviderRequest.Input...)
 	if len(req.VisibleTools) == 0 {
 		req.VisibleTools = append([]string(nil), step.ToolSurface.ModelVisibleTools...)
 	}

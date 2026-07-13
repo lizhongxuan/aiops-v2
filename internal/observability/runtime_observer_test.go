@@ -103,19 +103,39 @@ func TestRuntimeObserverRecordsPromptFingerprintAttributes(t *testing.T) {
 		SessionID: "sess-1",
 		TurnID:    "turn-1",
 		PromptFingerprint: map[string]string{
-			"version":           "prompt-fingerprint-v1",
-			"systemHash":        "system-hash",
-			"developerHash":     "developer-hash",
-			"toolRegistryHash":  "tool-hash",
-			"runtimePolicyHash": "policy-hash",
-			"protocolStateHash": "protocol-hash",
+			"version":                   "prompt-fingerprint-v2",
+			"absoluteSystemHash":        "absolute-system-hash",
+			"roleProfileHash":           "role-profile-hash",
+			"stableRuntimeContractHash": "stable-runtime-contract-hash",
+			"stablePrefixHash":          "stable-prefix-hash",
+			"turnStableHash":            "turn-stable-hash",
+			"turnPrefixHash":            "turn-prefix-hash",
+			"conversationHistoryHash":   "conversation-history-hash",
+			"dynamicContextHash":        "dynamic-context-hash",
+			"currentUserInputHash":      "current-user-input-hash",
+			"modelInputHash":            "model-input-hash",
+			"systemHash":                "system-hash",
+			"developerHash":             "developer-hash",
+			"toolRegistryHash":          "tool-hash",
+			"runtimePolicyHash":         "policy-hash",
+			"protocolStateHash":         "protocol-hash",
 		},
 	})
 	model.End()
 	turn.End()
 
 	modelSpan := findEndedSpan(t, recorder.Ended(), "model_call")
-	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.version", "prompt-fingerprint-v1")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.version", "prompt-fingerprint-v2")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.absolute_system_hash", "absolute-system-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.role_profile_hash", "role-profile-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.stable_runtime_contract_hash", "stable-runtime-contract-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.stable_prefix_hash", "stable-prefix-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.turn_stable_hash", "turn-stable-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.turn_prefix_hash", "turn-prefix-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.conversation_history_hash", "conversation-history-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.dynamic_context_hash", "dynamic-context-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.current_user_input_hash", "current-user-input-hash")
+	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.model_input_hash", "model-input-hash")
 	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.system_hash", "system-hash")
 	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.developer_hash", "developer-hash")
 	assertSpanAttribute(t, modelSpan.Attributes(), "prompt.tool_registry_hash", "tool-hash")

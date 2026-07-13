@@ -155,6 +155,11 @@ func TestRuntimeStepContextOwnsModelInputProviderRequestAndToolSurface(t *testin
 		Iteration:        2,
 		Compiled:         promptcompiler.CompiledPrompt{},
 		ModelInput:       []promptinput.ModelInputItem{item},
+		ProviderRequest: modelrouter.ProviderRequestSnapshot{
+			Provider: "mock",
+			Model:    "mock",
+			Input:    []promptinput.ModelInputItem{item},
+		},
 		ToolSurface: RuntimeToolRouterSnapshot{
 			RegisteredTools:   []string{"exec_command"},
 			ModelVisibleTools: []string{"exec_command"},

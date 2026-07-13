@@ -2327,6 +2327,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, modelErr
 		}
+		compiled.Fingerprint = stepCtx.ProviderRequest.PromptFingerprint
+		promptFingerprint = promptFingerprintMap(stepCtx.ProviderRequest.PromptFingerprint)
+		stablePromptHash = firstNonBlankRuntimeString(stepCtx.ProviderRequest.PromptFingerprint.StablePrefixHash, stablePromptHash)
 		stepRevisionFacts, revisionErr := BuildRuntimeStepRevisionFacts(snapshot.TurnAssembly, stepCtx, session, snapshot)
 		if revisionErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, revisionErr.Error(), nil))
@@ -2389,7 +2392,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			RootDir: debugConfig.ModelInputTraceRoot,
 		}, stepCtx, RuntimeTraceDebugRequest{
 			Metadata:                      turnMetadata,
-			ModelInput:                    append([]promptinput.ModelInputItem(nil), promptBuild.Items...),
+			ModelInput:                    append([]promptinput.ModelInputItem(nil), stepCtx.ProviderRequest.Input...),
 			PromptInputTrace:              promptBuild.Trace,
 			PromptInputDiff:               promptInputDiff,
 			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),

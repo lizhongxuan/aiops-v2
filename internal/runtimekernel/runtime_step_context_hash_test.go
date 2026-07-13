@@ -61,6 +61,15 @@ func TestRuntimeStepContextHashChangesWithInputCheckpointAndRouter(t *testing.T)
 }
 
 func TestRuntimeStepContextHashDeepFreezesAndRejectsProviderTamper(t *testing.T) {
+	conflictingInput, err := cloneRuntimeStepContext(validRuntimeStepContextForHashTest())
+	if err != nil {
+		t.Fatalf("cloneRuntimeStepContext() error = %v", err)
+	}
+	conflictingInput.ModelInput[0].Content = "non-authoritative-shadow"
+	if _, err := FreezeRuntimeStepContext(conflictingInput); err == nil {
+		t.Fatal("FreezeRuntimeStepContext() accepted model/provider input conflict")
+	}
+
 	input := validRuntimeStepContextForHashTest()
 	frozen := mustFreezeRuntimeStepContextForTest(t, input)
 	input.ModelInput[0].Metadata["scope"] = "mutated"
@@ -68,6 +77,7 @@ func TestRuntimeStepContextHashDeepFreezesAndRejectsProviderTamper(t *testing.T)
 	input.ToolSurface.HiddenReasons["danger"][0] = "mutated"
 	input.ProviderRequest.ClientMetadata["sessionId"] = "mutated"
 	input.ProviderRequest.MessageAudit.Items[0].ItemHash = "mutated"
+	input.ProviderRequest.Input[0].Content = "mutated"
 	if err := frozen.Validate(); err != nil {
 		t.Fatalf("frozen.Validate() error after input mutation = %v", err)
 	}
@@ -88,6 +98,11 @@ func TestRuntimeStepContextHashDeepFreezesAndRejectsProviderTamper(t *testing.T)
 	tamperedHash.ProviderRequest.ModelInputHash = "tampered"
 	if err := tamperedHash.Validate(); err == nil {
 		t.Fatal("Validate() accepted tampered provider model input hash")
+	}
+	tamperedFingerprint := frozen
+	tamperedFingerprint.ProviderRequest.PromptFingerprint.ModelInputHash = "tampered"
+	if err := tamperedFingerprint.Validate(); err == nil {
+		t.Fatal("Validate() accepted tampered provider prompt fingerprint")
 	}
 	tamperedMetadata, err := cloneRuntimeStepContext(frozen)
 	if err != nil {
@@ -115,7 +130,9 @@ func TestRuntimeStepContextTraceStoresHashWithoutSecret(t *testing.T) {
 	input.ProviderRequest.Input[0].Content = "token=secret-canary-step"
 	step := mustFreezeRuntimeStepContextForTest(t, input)
 	dir := t.TempDir()
-	path, err := writeRuntimeStepTrace(modeltrace.Config{Enabled: true, RootDir: dir}, step, RuntimeTraceDebugRequest{})
+	path, err := writeRuntimeStepTrace(modeltrace.Config{Enabled: true, RootDir: dir}, step, RuntimeTraceDebugRequest{ModelInput: []promptinput.ModelInputItem{{
+		ID: "trace-shadow", ProviderRole: promptinput.ProviderRoleUser, Content: "trace-shadow-sentinel",
+	}}})
 	if err != nil {
 		t.Fatalf("writeRuntimeStepTrace() error = %v", err)
 	}
@@ -140,6 +157,9 @@ func TestRuntimeStepContextTraceStoresHashWithoutSecret(t *testing.T) {
 		}
 		if strings.Contains(string(content), "secret-canary-step") {
 			t.Fatalf("trace file %s leaked secret canary", path)
+		}
+		if strings.Contains(string(content), "trace-shadow-sentinel") {
+			t.Fatalf("trace file %s used non-authoritative caller model input", path)
 		}
 		return nil
 	})
