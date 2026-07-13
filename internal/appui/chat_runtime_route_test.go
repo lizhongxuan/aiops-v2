@@ -433,6 +433,9 @@ func TestApplyIntentFrameRouteMetadataWritesShadowDiffWithoutChangingLegacy(t *t
 
 	applyChatRuntimeRouteMetadata(&req, legacy)
 	applyIntentFrameRouteMetadata(&req, legacy, intentRoute, legacy, frame, intentFrameRoutingTraceOnly)
+	if req.IntentFrame == nil || req.IntentFrame.Kind != runtimecontract.IntentKindResearch {
+		t.Fatalf("typed intent frame = %#v, want research", req.IntentFrame)
+	}
 
 	if req.Metadata["aiops.route.mode"] != string(ChatRouteAdvisory) || req.Metadata["aiops.route.allowsWebLearn"] != "false" {
 		t.Fatalf("legacy metadata changed unexpectedly: %#v", req.Metadata)

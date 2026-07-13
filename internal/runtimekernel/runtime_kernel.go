@@ -2115,6 +2115,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		Mode:                  req.Mode,
 		Input:                 req.Input,
 		HostID:                req.HostID,
+		IntentFrame:           req.IntentFrame,
 		PermissionProfile:     req.PermissionProfile,
 		Metadata:              turnMetadata,
 		ResourceBindings:      req.ResourceBindings,

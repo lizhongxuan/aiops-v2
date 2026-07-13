@@ -132,6 +132,39 @@ func TestTypedControlFactsRouteIgnoresAnswerRAGAndLegacyRouteText(t *testing.T) 
 	}
 }
 
+func TestTypedControlFactsIntentFrameOverridesLegacyIntentMetadata(t *testing.T) {
+	target := resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:           []string{"host-typed-intent"},
+		SourceTurnID:      "turn-typed-intent",
+		SourceMentionIDs:  []string{"mention-typed-intent"},
+		ExpiresAfterTurns: 3,
+		Confidence:        1,
+	})
+	typed := runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindChange,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite},
+		Confidence: runtimecontract.ConfidenceHigh,
+	}
+	ctx, err := BuildRuntimeTurnContext(TurnRequest{
+		SessionType:           SessionTypeHost,
+		Mode:                  ModeExecute,
+		SessionID:             "session-typed-intent",
+		TurnID:                "turn-typed-intent",
+		IntentFrame:           &typed,
+		SessionTargetSnapshot: target,
+		Metadata: map[string]string{
+			runtimecontract.MetadataIntentKind:       string(runtimecontract.IntentKindExplain),
+			runtimecontract.MetadataIntentRiskBudget: string(runtimecontract.ActionRiskReadOnly),
+		},
+	}, nil, RuntimeTurnContextOptions{})
+	if err != nil {
+		t.Fatalf("BuildRuntimeTurnContext() error = %v", err)
+	}
+	if ctx.AdmissionFacts.Intent.Kind != runtimecontract.IntentKindChange || !runtimecontract.ContainsActionRisk(ctx.AdmissionFacts.Intent.RiskBudget, runtimecontract.ActionRiskWrite) {
+		t.Fatalf("AdmissionFacts.Intent = %#v, want typed change/write", ctx.AdmissionFacts.Intent)
+	}
+}
+
 func TestTypedControlFactsSameSessionCarryoverRequiresTypedSessionTarget(t *testing.T) {
 	t.Run("legacy session host is not inherited", func(t *testing.T) {
 		ctx, err := BuildRuntimeTurnContext(TurnRequest{

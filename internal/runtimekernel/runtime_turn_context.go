@@ -78,6 +78,7 @@ func BuildRuntimeTurnContext(req TurnRequest, session *SessionState, opts Runtim
 		target = targetRefs[0]
 	}
 	admission, admissionErr := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent:            req.IntentFrame,
 		SessionTarget:     target,
 		TargetRefs:        targetRefs,
 		ResourceBindings:  req.ResourceBindings,

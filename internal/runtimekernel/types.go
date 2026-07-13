@@ -12,6 +12,7 @@ import (
 	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
@@ -1088,6 +1089,7 @@ type TurnRequest struct {
 	ClientMessageID       string                                    `json:"clientMessageId,omitempty"`
 	Input                 string                                    `json:"input,omitempty"`
 	HostID                string                                    `json:"hostId,omitempty"`
+	IntentFrame           *runtimecontract.IntentFrame              `json:"intentFrame,omitempty"`
 	PermissionProfile     string                                    `json:"permissionProfile,omitempty"`
 	RollbackPolicy        string                                    `json:"rollbackPolicy,omitempty"`
 	Metadata              map[string]string                         `json:"metadata,omitempty"`

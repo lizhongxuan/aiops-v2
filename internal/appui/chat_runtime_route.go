@@ -486,6 +486,8 @@ func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute C
 		req.Metadata = map[string]string{}
 	}
 	frame = intentFrameForActiveRoute(frame, activeRoute)
+	typedFrame := runtimecontract.NormalizeIntentFrame(frame)
+	req.IntentFrame = &typedFrame
 	req.Metadata[runtimecontract.MetadataIntentKind] = string(frame.Kind)
 	req.Metadata[runtimecontract.MetadataIntentConfidence] = firstNonEmptyString(frame.Confidence, runtimecontract.ConfidenceLow)
 	req.Metadata["aiops.intent.routingMode"] = intentFrameRoutingMode(routingMode)

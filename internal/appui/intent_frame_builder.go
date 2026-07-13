@@ -238,7 +238,7 @@ func inferIntentKind(lower string, envelope runtimecontract.EvidenceEnvelope) ru
 		return runtimecontract.IntentKindPlan
 	case containsAnyIntentMarker(lower, "定位", "排查", "根因", "为什么", "异常", "故障", "diagnose", "rca"):
 		return runtimecontract.IntentKindDiagnose
-	case containsAnyIntentMarker(lower, "修复", "变更", "回滚", "重启", "执行修复", "change", "rollback", "restart"):
+	case intentMentionsMutation(lower):
 		return runtimecontract.IntentKindChange
 	case containsAnyIntentMarker(lower, "验证", "确认", "检查", "verify", "check"):
 		return runtimecontract.IntentKindVerify
@@ -323,7 +323,11 @@ func intentRequestsHostRuntime(lower string, metadata map[string]any) bool {
 }
 
 func intentMentionsMutation(lower string) bool {
-	return containsAnyIntentMarker(lower, "修复", "变更", "回滚", "迁移", "删除", "扩容", "缩容", "执行修复", "write", "change", "rollback", "delete", "migrate")
+	return containsAnyIntentMarker(lower,
+		"修复", "变更", "回滚", "重启", "启动", "停止", "部署", "安装", "升级", "更新",
+		"迁移", "删除", "扩容", "缩容", "执行修复",
+		"write", "change", "rollback", "restart", "start", "stop", "deploy", "install", "upgrade", "update", "delete", "migrate",
+	)
 }
 
 func containsAnyIntentMarker(text string, markers ...string) bool {
