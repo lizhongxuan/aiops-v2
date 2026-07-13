@@ -12,6 +12,8 @@ create_fixture() {
 	local root="$1"
 	mkdir -p \
 		"${root}/internal/appui" \
+		"${root}/internal/eval" \
+		"${root}/internal/promptinput" \
 		"${root}/internal/runtimekernel" \
 		"${root}/web/src/chat" \
 		"${root}/web/src/transport"
@@ -20,6 +22,27 @@ create_fixture() {
 		'func resumeApproval() {' \
 		'  ResumeTurn()' \
 		'}' >"${root}/internal/appui/approval_service.go"
+	printf '%s\n' \
+		'package runtimekernel' \
+		'func runTurn() {' \
+		'  observeRuntimeStage("turn_assembly_built")' \
+		'  observeRuntimeStage("prompt_compiled")' \
+		'}' >"${root}/internal/runtimekernel/runtime_kernel.go"
+	printf '%s\n' \
+		'package runtimekernel' \
+		'func providerToolSpecsFromStepToolRouter(surface StepToolRouter) {}' \
+		>"${root}/internal/runtimekernel/step_builder.go"
+	printf '%s\n' \
+		'package runtimekernel' \
+		'func bindDispatcher() {' \
+		'  NewToolDispatcher().WithStepToolRouter(runtimeToolSurface)' \
+		'}' >"${root}/internal/runtimekernel/dispatch.go"
+	printf '%s\n' \
+		'package promptinput' \
+		'func validateModelInput() {' \
+		'  fail("model input must begin with L0 then L1")' \
+		'  fail("model input L6 must be last")' \
+		'}' >"${root}/internal/promptinput/model_input_validation.go"
 }
 
 run_gate() {
@@ -70,12 +93,28 @@ dispatcher_root="${FIXTURE_ROOT}/dispatcher-bypass"
 approval_root="${FIXTURE_ROOT}/approval-rerun"
 multi_bad_root="${FIXTURE_ROOT}/multi-root-bypass"
 multi_missing_root="${FIXTURE_ROOT}/multi-root-missing-scan-surface"
+eval_state_root="${FIXTURE_ROOT}/eval-state-endpoint"
+runtime_final_root="${FIXTURE_ROOT}/runtime-final-control"
+appui_final_root="${FIXTURE_ROOT}/appui-final-control"
+web_final_root="${FIXTURE_ROOT}/web-final-control"
+assembly_marker_root="${FIXTURE_ROOT}/assembly-marker-missing"
+step_router_root="${FIXTURE_ROOT}/step-router-marker-missing"
+prompt_first_root="${FIXTURE_ROOT}/prompt-first-validator-missing"
+prompt_last_root="${FIXTURE_ROOT}/prompt-last-validator-missing"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
 create_fixture "${dispatcher_root}"
 create_fixture "${approval_root}"
 create_fixture "${multi_bad_root}"
+create_fixture "${eval_state_root}"
+create_fixture "${runtime_final_root}"
+create_fixture "${appui_final_root}"
+create_fixture "${web_final_root}"
+create_fixture "${assembly_marker_root}"
+create_fixture "${step_router_root}"
+create_fixture "${prompt_first_root}"
+create_fixture "${prompt_last_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -102,6 +141,54 @@ printf '%s\n' \
 	'  service.RunTurn()' \
 	'}' >"${approval_root}/internal/appui/approval_service.go"
 
+printf '%s\n' \
+	'package eval' \
+	'const legacyStateEndpoint = "/api/v1/state"' \
+	>"${eval_state_root}/internal/eval/legacy_state.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func finalControl(finalText string) string {' \
+	'  if strings.Contains(finalText, "approved") { return "approval_granted" }' \
+	'  return "pending"' \
+	'}' >"${runtime_final_root}/internal/runtimekernel/final_control.go"
+
+printf '%s\n' \
+	'package appui' \
+	'func finalControl(finalText string) string {' \
+	'  if strings.Contains(finalText, "blocked") { return "blocked" }' \
+	'  return "running"' \
+	'}' >"${appui_final_root}/internal/appui/final_control.go"
+
+printf '%s\n' \
+	'export function finalControl(markdown: string) {' \
+	'  if (markdown.includes("completed")) return { status: "completed" };' \
+	'  return { status: "running" };' \
+	'}' >"${web_final_root}/web/src/chat/finalControl.ts"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func runTurn() {' \
+	'  observeRuntimeStage("prompt_compiled")' \
+	'}' >"${assembly_marker_root}/internal/runtimekernel/runtime_kernel.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func buildProviderToolsWithoutSharedRouter() {}' \
+	>"${step_router_root}/internal/runtimekernel/step_builder.go"
+
+printf '%s\n' \
+	'package promptinput' \
+	'func validateModelInput() {' \
+	'  fail("model input L6 must be last")' \
+	'}' >"${prompt_first_root}/internal/promptinput/model_input_validation.go"
+
+printf '%s\n' \
+	'package promptinput' \
+	'func validateModelInput() {' \
+	'  fail("model input must begin with L0 then L1")' \
+	'}' >"${prompt_last_root}/internal/promptinput/model_input_validation.go"
+
 expect_allowed "typed runtime state" "${legal_root}"
 expect_rejected \
 	"final markdown inferred verified state" \
@@ -123,6 +210,46 @@ expect_rejected \
 	"${approval_root}" \
 	"approval decision fallback RunTurn" \
 	"appui approval service"
+expect_rejected \
+	"eval legacy state endpoint" \
+	"${eval_state_root}" \
+	"agent eval legacy state endpoint" \
+	"eval AssistantTransport adapter"
+expect_rejected \
+	"runtime control derived from final text" \
+	"${runtime_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"appui control derived from final text" \
+	"${appui_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"web control derived from markdown" \
+	"${web_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TurnAssembly before prompt marker missing" \
+	"${assembly_marker_root}" \
+	"TurnAssembly before prompt production marker" \
+	"runtimekernel turn admission"
+expect_rejected \
+	"shared StepToolRouter provider marker missing" \
+	"${step_router_root}" \
+	"StepToolRouter provider surface marker" \
+	"runtimekernel step builder"
+expect_rejected \
+	"L0 L1 first validator missing" \
+	"${prompt_first_root}" \
+	"model input L0/L1 first validator" \
+	"promptinput model input validator"
+expect_rejected \
+	"L6 last validator missing" \
+	"${prompt_last_root}" \
+	"model input L6 last validator" \
+	"promptinput model input validator"
 
 if [[ "${fail}" -ne 0 ]]; then
 	exit 1
