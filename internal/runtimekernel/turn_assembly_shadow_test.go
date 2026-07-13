@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -99,6 +100,21 @@ func TestTurnAssemblyShadowBuildsOnceBeforePromptAndProvider(t *testing.T) {
 		tracePayload.LegacyAgentAssemblySnapshot["specHash"] == nil ||
 		tracePayload.TurnAssemblyShadow["assemblyHash"] != session.CurrentTurn.TurnAssembly.Hash {
 		t.Fatalf("trace assembly projection missing: %#v", tracePayload)
+	}
+	secondTraceData, err := os.ReadFile(paths[1])
+	if err != nil {
+		t.Fatalf("ReadFile(second trace) error = %v", err)
+	}
+	var secondTrace modeltrace.TraceDocumentV2
+	if err := json.Unmarshal(secondTraceData, &secondTrace); err != nil {
+		t.Fatalf("json.Unmarshal(second trace) error = %v", err)
+	}
+	firstFingerprint := session.CurrentTurn.Iterations[0].PromptFingerprint
+	if len(firstFingerprint) == 0 {
+		t.Fatal("first iteration prompt fingerprint is empty")
+	}
+	if !reflect.DeepEqual(secondTrace.PreviousPromptFingerprint, firstFingerprint) {
+		t.Fatalf("second trace previousPromptFingerprint = %#v, want first iteration %#v", secondTrace.PreviousPromptFingerprint, firstFingerprint)
 	}
 }
 
