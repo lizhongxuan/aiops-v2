@@ -184,9 +184,10 @@ func SplitContextForCompaction(cw *ContextWindow, messages []Message) ContextCom
 	}
 
 	startIdx := 0
-	for totalTokens > cw.MaxTokens && startIdx < len(messages)-1 {
-		totalTokens -= EstimateTokens(messages[startIdx])
-		startIdx++
+	groups := causalMessageGroups(messages)
+	for groupIndex := 0; totalTokens > cw.MaxTokens && groupIndex < len(groups)-1; groupIndex++ {
+		totalTokens -= groups[groupIndex].Tokens
+		startIdx = groups[groupIndex].End
 	}
 
 	cw.UsedTokens = totalTokens
@@ -197,6 +198,87 @@ func SplitContextForCompaction(cw *ContextWindow, messages []Message) ContextCom
 	plan.Retained = append([]Message(nil), messages[startIdx:]...)
 	plan.TrimmedCount = startIdx
 	plan.Compacted = startIdx > 0
+	return plan
+}
+
+type causalMessageGroup struct {
+	Start  int
+	End    int
+	Tokens int
+}
+
+func causalMessageGroups(messages []Message) []causalMessageGroup {
+	groups := make([]causalMessageGroup, 0, len(messages))
+	for start := 0; start < len(messages); {
+		end := start + 1
+		callIDs := make(map[string]struct{}, len(messages[start].ToolCalls))
+		for _, call := range messages[start].ToolCalls {
+			if id := strings.TrimSpace(call.ID); id != "" {
+				callIDs[id] = struct{}{}
+			}
+		}
+		if len(callIDs) > 0 {
+			for end < len(messages) {
+				result := messages[end].ToolResult
+				if result == nil {
+					break
+				}
+				if _, matches := callIDs[strings.TrimSpace(result.ToolCallID)]; !matches {
+					break
+				}
+				end++
+			}
+		}
+		tokens := 0
+		for index := start; index < end; index++ {
+			tokens += EstimateTokens(messages[index])
+		}
+		groups = append(groups, causalMessageGroup{Start: start, End: end, Tokens: tokens})
+		start = end
+	}
+	return groups
+}
+
+func previousCausalGroupStart(messages []Message, boundary int) int {
+	if boundary <= 0 {
+		return 0
+	}
+	for _, group := range causalMessageGroups(messages) {
+		if group.End >= boundary {
+			return group.Start
+		}
+	}
+	return boundary - 1
+}
+
+func expandCompactionForSummaryBudget(plan ContextCompactionPlan, cw *ContextWindow, minRetained int) ContextCompactionPlan {
+	if cw == nil || len(plan.Retained) <= minRetained {
+		return plan
+	}
+	maxTokens := cw.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = DefaultMaxTokens
+	}
+	retainedTokens := 0
+	for _, message := range plan.Retained {
+		retainedTokens += EstimateTokens(message)
+	}
+	summaryReserveTokens := 16 + maxTokens/12
+	for retainedTokens+summaryReserveTokens > maxTokens && len(plan.Retained) > minRetained {
+		groups := causalMessageGroups(plan.Retained)
+		if len(groups) == 0 {
+			break
+		}
+		oldest := groups[0]
+		if len(plan.Retained)-oldest.End < minRetained {
+			break
+		}
+		plan.Compactable = append(plan.Compactable, plan.Retained[:oldest.End]...)
+		plan.Retained = append([]Message(nil), plan.Retained[oldest.End:]...)
+		plan.TrimmedCount = len(plan.Compactable)
+		plan.Compacted = plan.TrimmedCount > 0
+		retainedTokens -= oldest.Tokens
+	}
 	return plan
 }
 
@@ -231,13 +313,13 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		minRetained = len(messages)
 	}
 	if extra := minRetained - len(plan.Retained); extra > 0 && len(plan.Compactable) > 0 {
-		if extra > len(plan.Compactable) {
-			extra = len(plan.Compactable)
+		boundary := plan.TrimmedCount
+		for len(messages)-boundary < minRetained && boundary > 0 {
+			boundary = previousCausalGroupStart(messages, boundary)
 		}
-		start := len(plan.Compactable) - extra
-		plan.Retained = append(append([]Message(nil), plan.Compactable[start:]...), plan.Retained...)
-		plan.Compactable = append([]Message(nil), plan.Compactable[:start]...)
-		plan.TrimmedCount = len(plan.Compactable)
+		plan.Compactable = append([]Message(nil), messages[:boundary]...)
+		plan.Retained = append([]Message(nil), messages[boundary:]...)
+		plan.TrimmedCount = boundary
 	}
 	hardKeepReasons := compactHardKeepReasons(plan.Retained, opts, minRetained)
 	if len(hardKeepReasons) > 0 {
@@ -258,6 +340,7 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 		recomputeContextWindow(cw, result)
 		return ContextPipelineResult{Messages: result, GovernanceEvents: governanceEvents}, nil
 	}
+	plan = expandCompactionForSummaryBudget(plan, cw, minRetained)
 
 	refs := collectMessageReferences(plan.Compactable)
 	summary := heuristicCompactionSummary(plan.Compactable, opts, refs)
@@ -340,19 +423,6 @@ func ApplyContextPipeline(ctx context.Context, cw *ContextWindow, messages []Mes
 	retained := append([]Message(nil), plan.Retained...)
 	resultMessages := append([]Message{summaryMsg}, retained...)
 	if cw != nil {
-		maxTokens := cw.MaxTokens
-		if maxTokens <= 0 {
-			maxTokens = DefaultMaxTokens
-		}
-		totalTokens := 0
-		for _, msg := range resultMessages {
-			totalTokens += EstimateTokens(msg)
-		}
-		for totalTokens > maxTokens && len(retained) > minRetained {
-			totalTokens -= EstimateTokens(retained[0])
-			retained = retained[1:]
-		}
-		resultMessages = append([]Message{summaryMsg}, retained...)
 		recomputeContextWindow(cw, resultMessages)
 		cw.TruncatedAt = plan.TrimmedCount
 	}

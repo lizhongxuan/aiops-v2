@@ -98,3 +98,12 @@
 - 修复方式：新增 `gatedPendingToolCall`，只有 snapshot 存在 pending approval 或 pending evidence 时才允许进入工具恢复分支；普通 `model_timeout` checkpoint 进入模型重试分支，并以 `model_retry_resumed` typed StepRevision 连接 provider 调用前已持久化的失败 Step。
 - 验证结果：RED 由 `go test ./internal/runtimekernel -count=1` 的 `TestRunTurn_ModelTimeoutBecomesRecoverableAndResumeContinues` 复现；修复后该测试与 `TestRunTurn_BlockedToolCallCanResume`、StepRevision 聚焦测试和 runtimekernel 全包均通过，并断言 retry previous/next hash、TurnAssembly hash 与 `model_retry_resumed` revision。
 - 风险与后续：旧 snapshot 若只保留历史 tool call、却丢失 pending approval/evidence typed state，将不再猜测并重放该工具，按 fail-closed 进入对应 checkpoint 恢复或校验失败；暂无已知审批绕过风险。
+
+## 2026-07-13 16:25 - Context compaction 拆分工具因果组并静默丢消息
+
+- 修复时间：2026-07-13 16:25
+- Bug 现象：上下文压缩按单条消息移动边界时，可能把同一 assistant 的多个 tool call 与部分 tool result 分到摘要两侧，形成 orphan tool result；summary 加入后若再次超预算，旧逻辑还会从 retained 头部逐条删除，但不扩大 `CompactedSegment.EndIndex` 或重算摘要，导致消息既不在摘要覆盖范围也不在模型输入中。
+- 根因：`SplitContextForCompaction`、hard-keep 回填和 summary 后预算回退分别以消息数量为单位，没有统一的 tool causal group；最后一次回退发生在 refs、summary 和 segment 已生成之后，是第二个无事实记录的丢弃 writer。
+- 修复方式：在 `context.go` 集中构建 assistant tool calls + 紧随匹配 tool results 的原子 causal group；初始 split、hard-keep 边界与 summary 预算预留只移动完整 group。额外预算压缩在 refs/summary/segment 生成前扩大 compactable prefix，删除生成后的逐消息静默回退，确保 `TrimmedCount`、`TruncatedAt` 和 segment 范围覆盖所有被摘要替代的消息。
+- 验证结果：RED 分别复现了 `assistant-tools/tool-result-a` 被压缩而 `tool-result-b` 被保留，以及 `msg-3` 既未压缩也未保留；修复后运行 causal group 多预算性质测试、coverage 回归、全部 context compaction 聚焦测试和相关 race 测试均通过。
+- 风险与后续：当 hard-kept 最小后缀或单个 causal group 本身超过模型预算时，原子性优先，context window 可能暂时高于目标预算；后续应以独立任务增加 typed oversized-group spill/拒绝策略，禁止重新引入逐消息切割。
