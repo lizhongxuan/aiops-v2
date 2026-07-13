@@ -104,7 +104,13 @@ func classifyFinalContractStatus(facts FinalRuntimeFacts) FinalContractStatus {
 	}
 	switch facts.CompletionStatus {
 	case FinalCompletionStatusSucceeded:
-		if len(facts.EvidenceRefs) == 0 {
+		if facts.PostcheckStatus == FinalPostcheckStatusFailed {
+			return FinalContractStatusFailed
+		}
+		if facts.PostcheckStatus != FinalPostcheckStatusPassed && facts.PostcheckStatus != FinalPostcheckStatusNotRequired {
+			return FinalContractStatusNeedsEvidence
+		}
+		if len(facts.EvidenceRefs) == 0 || len(state.NotChecked) > 0 || len(outstandingRequiredPostChecks(state)) > 0 {
 			return FinalContractStatusNeedsEvidence
 		}
 		return FinalContractStatusVerified

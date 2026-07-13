@@ -200,3 +200,102 @@ func TestBuildTerminalFinalContractStatuses(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildFinalContractSucceededFactsRequireCompleteTypedVerification(t *testing.T) {
+	tests := []struct {
+		name  string
+		facts FinalRuntimeFacts
+		want  FinalContractStatus
+	}{
+		{
+			name: "missing evidence cannot be verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				PostcheckStatus:  FinalPostcheckStatusNotRequired,
+			},
+			want: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "pending postcheck cannot be verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://health"},
+				PostcheckStatus:  FinalPostcheckStatusPending,
+			},
+			want: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "failed postcheck is failed",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://health"},
+				PostcheckStatus:  FinalPostcheckStatusFailed,
+			},
+			want: FinalContractStatusFailed,
+		},
+		{
+			name: "unknown postcheck cannot be verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://health"},
+				PostcheckStatus:  "unknown",
+			},
+			want: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "outstanding required postcheck cannot be verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://precheck"},
+				PostcheckStatus:  FinalPostcheckStatusPassed,
+				EvidenceState: FinalEvidenceState{
+					RequiredPostChecks: []string{"service_health"},
+				},
+			},
+			want: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "not checked evidence cannot be verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://partial"},
+				PostcheckStatus:  FinalPostcheckStatusNotRequired,
+				EvidenceState: FinalEvidenceState{
+					NotChecked: []NotCheckedItem{{ToolName: "metrics", Reason: "unavailable"}},
+				},
+			},
+			want: FinalContractStatusNeedsEvidence,
+		},
+		{
+			name: "passed postcheck with evidence is verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://health"},
+				PostcheckStatus:  FinalPostcheckStatusPassed,
+				EvidenceState: FinalEvidenceState{
+					PostChecks:         []string{"service_health"},
+					RequiredPostChecks: []string{"service_health"},
+				},
+			},
+			want: FinalContractStatusVerified,
+		},
+		{
+			name: "not required postcheck with evidence is verified",
+			facts: FinalRuntimeFacts{
+				CompletionStatus: FinalCompletionStatusSucceeded,
+				EvidenceRefs:     []string{"evidence://read-only"},
+				PostcheckStatus:  FinalPostcheckStatusNotRequired,
+			},
+			want: FinalContractStatusVerified,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			contract := BuildFinalContract("same display text", tt.facts)
+			if contract.Status != tt.want {
+				t.Fatalf("status = %q, want %q for facts %#v", contract.Status, tt.want, tt.facts)
+			}
+		})
+	}
+}
