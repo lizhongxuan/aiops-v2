@@ -43,16 +43,21 @@ type FinalRuntimeFacts struct {
 	RollbackStatus   string   `json:"rollbackStatus"`
 	FailureCodes     []string `json:"failureCodes"`
 
-	EvidenceState    FinalEvidenceState        `json:"-"`
-	EvidenceDecision FinalEvidenceVerification `json:"-"`
+	EvidenceState    FinalEvidenceState          `json:"-"`
+	EvidenceDecision FinalEvidenceVerification   `json:"-"`
+	PolicyCompletion policyengine.PolicyDecision `json:"-"`
 }
 
-func BuildFinalRuntimeFacts(snapshot *TurnSnapshot, session *SessionState) FinalRuntimeFacts {
+func BuildFinalRuntimeFacts(snapshot *TurnSnapshot, session *SessionState, evaluators ...policyengine.CompletionEvaluator) FinalRuntimeFacts {
+	return BuildFinalRuntimeFactsWithContext(context.Background(), snapshot, session, evaluators...)
+}
+
+func BuildFinalRuntimeFactsWithContext(ctx context.Context, snapshot *TurnSnapshot, session *SessionState, evaluators ...policyengine.CompletionEvaluator) FinalRuntimeFacts {
 	state := BuildFinalEvidenceState(snapshot, session)
 	completion := EvaluateVerificationCompletionGate(taskDepthFromSnapshot(snapshot), snapshot)
 	planCompletion, planPresent := evaluateRuntimePlanCompletionGate(session, snapshot)
 	coverage := EvaluateEvidenceCoverageGate(snapshot)
-	policyCompletion := evaluateFinalPolicyCompletion(snapshot, session)
+	policyCompletion := evaluateFinalPolicyCompletion(ctx, snapshot, session, evaluators...)
 	state.PostChecks = completedPostchecksFromVerification(state.RequiredPostChecks, completion.Report)
 	state.Confidence = inferFinalEvidenceConfidence(state)
 	evidenceDecision := VerifyFinalEvidenceFacts(state)
@@ -66,10 +71,25 @@ func BuildFinalRuntimeFacts(snapshot *TurnSnapshot, session *SessionState) Final
 		RollbackStatus:   finalRollbackStatus(snapshot),
 		EvidenceState:    state,
 		EvidenceDecision: evidenceDecision,
+		PolicyCompletion: policyCompletion,
 	}
 	facts.FailureCodes = finalRuntimeFailureCodes(snapshot, session, completion, planCompletion.Action, planCompletion.Reasons, planPresent, coverage, policyCompletion, facts)
+	agentGate := EvaluateRuntimeAgentFinalGate("", runtimeAgentNotifications(snapshot))
+	switch agentGate.Action {
+	case "require_wait":
+		facts.FailureCodes = uniqueSortedHarnessStrings(append(facts.FailureCodes, "pending_worker_evidence"))
+	case "remove_unverified_claims":
+		facts.FailureCodes = uniqueSortedHarnessStrings(append(facts.FailureCodes, "non_completed_worker_evidence"))
+	}
 	facts.CompletionStatus = finalRuntimeCompletionStatus(completion, facts)
 	return facts
+}
+
+func (k *RuntimeKernel) finalCompletionEvaluator() policyengine.CompletionEvaluator {
+	if k != nil && k.policy != nil && k.policy.CompletionPolicy != nil {
+		return k.policy.CompletionPolicy
+	}
+	return &policyengine.DefaultCompletionEvaluator{}
 }
 
 func taskDepthFromSnapshot(snapshot *TurnSnapshot) taskdepth.Profile {
@@ -127,6 +147,9 @@ func finalApprovalOutcomes(snapshot *TurnSnapshot, session *SessionState) []stri
 			appendApproval(approval.ID, approval.Decision, approval.Status)
 		}
 		for _, rejected := range session.RejectedApprovals {
+			if snapshot == nil || strings.TrimSpace(rejected.TurnID) != strings.TrimSpace(snapshot.ID) {
+				continue
+			}
 			appendApproval(rejected.ID, rejected.Decision, "rejected")
 		}
 	}
@@ -396,14 +419,16 @@ func finalApprovalState(snapshot *TurnSnapshot, session *SessionState) (pending 
 		for _, approval := range session.PendingApprovals {
 			check(approval.Decision, approval.Status)
 		}
-		if len(session.RejectedApprovals) > 0 {
-			denied = true
+		for _, rejected := range session.RejectedApprovals {
+			if snapshot != nil && strings.TrimSpace(rejected.TurnID) == strings.TrimSpace(snapshot.ID) {
+				denied = true
+			}
 		}
 	}
 	return pending, denied
 }
 
-func evaluateFinalPolicyCompletion(snapshot *TurnSnapshot, session *SessionState) policyengine.PolicyDecision {
+func evaluateFinalPolicyCompletion(ctx context.Context, snapshot *TurnSnapshot, session *SessionState, evaluators ...policyengine.CompletionEvaluator) policyengine.PolicyDecision {
 	state := policyengine.TurnState{Completed: true}
 	if snapshot != nil {
 		state.SessionID = snapshot.SessionID
@@ -427,7 +452,14 @@ func evaluateFinalPolicyCompletion(snapshot *TurnSnapshot, session *SessionState
 			}
 		}
 	}
-	return (&policyengine.DefaultCompletionEvaluator{}).CheckCompletion(context.Background(), state)
+	var evaluator policyengine.CompletionEvaluator = &policyengine.DefaultCompletionEvaluator{}
+	if len(evaluators) > 0 && evaluators[0] != nil {
+		evaluator = evaluators[0]
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return evaluator.CheckCompletion(ctx, state)
 }
 
 func snapshotIterations(snapshot *TurnSnapshot) []IterationState {
@@ -443,6 +475,12 @@ func finalRuntimeCompletionStatus(completion VerificationCompletionDecision, fac
 	}
 	if completion.Status == verification.StatusFail || facts.PostcheckStatus == FinalPostcheckStatusFailed {
 		return FinalCompletionStatusFailed
+	}
+	if finalRuntimeFactsHaveHardBlocker(completion, facts) {
+		return FinalCompletionStatusBlocked
+	}
+	if containsFinalRuntimeCode(facts.FailureCodes, "non_completed_worker_evidence") {
+		return FinalCompletionStatusPartial
 	}
 	for _, failed := range facts.EvidenceState.FailedTools {
 		if strings.EqualFold(strings.TrimSpace(failed.FailureClass), "partial_result") {
@@ -467,6 +505,22 @@ func finalRuntimeCompletionStatus(completion VerificationCompletionDecision, fac
 		return FinalCompletionStatusSucceeded
 	}
 	return FinalCompletionStatusUnknown
+}
+
+func finalRuntimeFactsHaveHardBlocker(completion VerificationCompletionDecision, facts FinalRuntimeFacts) bool {
+	if completion.Action == VerificationCompletionActionRequireBlockerFinal || facts.EvidenceDecision.Action == FinalEvidenceActionBlock {
+		return true
+	}
+	for _, code := range facts.FailureCodes {
+		switch strings.ToLower(strings.TrimSpace(code)) {
+		case "approval_denied", "approval_pending", "plan_completion_blocked", "coverage_incomplete",
+			"completion_policy_deny", "completion_policy_need_approval", "completion_policy_need_evidence",
+			"mutation_intent_requires_explicit_target_binding", "no_explicit_target_binding", "missing_runtime_approval_gate",
+			"pending_worker_evidence":
+			return true
+		}
+	}
+	return false
 }
 
 func containsFinalRuntimeCode(codes []string, target string) bool {

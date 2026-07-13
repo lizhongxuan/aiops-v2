@@ -493,6 +493,7 @@ type PendingApproval struct {
 
 type RejectedApproval struct {
 	ID         string    `json:"id,omitempty"`
+	TurnID     string    `json:"turnId,omitempty"`
 	ToolName   string    `json:"toolName,omitempty"`
 	ToolCallID string    `json:"toolCallId,omitempty"`
 	Reason     string    `json:"reason,omitempty"`

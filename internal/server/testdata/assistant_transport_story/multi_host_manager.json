@@ -57,6 +57,10 @@
     },
     {
       "role": "assistant",
+      "content": "所有子任务已经完成。"
+    },
+    {
+      "role": "assistant",
       "toolCalls": [
         {
           "id": "call_wait_hosts",
@@ -141,6 +145,7 @@
         "execution_required",
         "failed_tool_requires_lower_confidence",
         "missing_verification_report",
+        "non_completed_worker_evidence",
         "partial_result",
         "wait_host_agents:partial_result"
       ]
@@ -152,10 +157,12 @@
       "processKinds": [
         "assistant",
         "subagent",
+        "evidence",
         "assistant",
         "subagent"
       ],
       "processStatuses": [
+        "completed",
         "completed",
         "completed",
         "completed",
@@ -167,6 +174,10 @@
         "assistant_message",
         "tool_call",
         "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "evidence",
         "model_call",
         "assistant_message",
         "tool_call",
@@ -185,7 +196,7 @@
       "promptFingerprint": {
         "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
         "compilerVersion": "prompt-fingerprint-v2",
-        "currentUserInputHash": "5ec794c00e4e3a95ab89a98595f0e9c378ef2f2f96902600b6e243e74e945f2d",
+        "currentUserInputHash": "295981f520116c1afc23c53c20ef3cd144081e158f7dc0cff2a89c6a59d8f399",
         "developerHash": "ff3f65d43c157a1da9a9993905fa687d2be99699ffbc29f59c770df9ea50dfb0",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
         "roleProfileHash": "694d1b3b95e6747afd231d96501fa6d34fefa6e7dd8894e89db0d112da8f6274",

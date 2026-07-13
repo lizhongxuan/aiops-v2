@@ -738,7 +738,8 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 		}
 		return TurnResult{}, fmt.Errorf("run agent: %w", runErr)
 	}
-	if blocked != nil {
+	completionPolicyBlocked := blocked != nil && session.CurrentTurn != nil && session.CurrentTurn.Lifecycle == TurnLifecycleCompleted
+	if blocked != nil && !completionPolicyBlocked {
 		return *blocked, nil
 	}
 
@@ -753,31 +754,16 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 		Timestamp: time.Now(),
 		Payload:   turnCompletePayload,
 	})
-
-	// Step 6: Final gate check via PolicyEngine.CompletionPolicy
-	if k.policy.CompletionPolicy != nil {
-		turnState := policyengine.TurnState{
-			SessionID: session.ID,
-			TurnID:    turnID,
-			Completed: true,
+	if completionPolicyBlocked {
+		if k.spanSource != nil && turnSpanID != "" {
+			k.spanSource.FailSpan(turnSpanID, "blocked: "+blocked.Error)
 		}
-		decision := k.policy.CompletionPolicy.CheckCompletion(runCtx, turnState)
-		if decision.Action != policyengine.PolicyActionAllow {
-			if k.spanSource != nil && turnSpanID != "" {
-				k.spanSource.FailSpan(turnSpanID, "blocked: "+decision.Reason)
-			}
-			return TurnResult{
-				SessionType:     req.SessionType,
-				Mode:            req.Mode,
-				SessionID:       session.ID,
-				TurnID:          turnID,
-				ClientTurnID:    req.ClientTurnID,
-				ClientMessageID: req.ClientMessageID,
-				Status:          "blocked",
-				Error:           decision.Reason,
-			}, nil
-		}
+		return *blocked, nil
 	}
+
+	// CompletionPolicy is evaluated once inside FinalRuntimeFacts before the
+	// final contract is committed. runHostIterationLoop returns the same typed
+	// decision as blocked when it is not allow.
 	if _, err := k.runTurnHook(runCtx, hooks.StagePostTurn, session, req, turnID, agentOutput, nil); err != nil {
 		if k.spanSource != nil && turnSpanID != "" {
 			k.spanSource.FailSpan(turnSpanID, "post_turn: "+err.Error())
@@ -984,7 +970,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
 		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
 		k.emitApprovalDecided(session, snapshot, approval, req.Decision, "denied", now)
-		return k.completeDeniedApprovalTurn(session, snapshot, approval, decisionReason, now)
+		return k.completeDeniedApprovalTurn(ctx, session, snapshot, approval, decisionReason, now)
 	}
 	agentKind := modelrouter.AgentKindWorker
 	if session.Type == SessionTypeWorkspace {
@@ -1291,6 +1277,7 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 	}
 	rejected := RejectedApproval{
 		ID:         strings.TrimSpace(approval.ID),
+		TurnID:     strings.TrimSpace(approval.TurnID),
 		ToolName:   strings.TrimSpace(approval.ToolName),
 		ToolCallID: strings.TrimSpace(approval.ToolCallID),
 		Reason:     firstNonEmpty(reason, approval.Reason, "approval denied"),
@@ -1313,7 +1300,7 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 	session.RejectedApprovals = append(session.RejectedApprovals, rejected)
 }
 
-func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
+func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
 	if session == nil || snapshot == nil {
 		return TurnResult{}, fmt.Errorf("session and snapshot are required")
 	}
@@ -1355,7 +1342,7 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
-	finalRuntimeFacts := BuildFinalRuntimeFacts(snapshot, session)
+	finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, snapshot, session, k.finalCompletionEvaluator())
 	finalContract := BuildFinalContract(finalText, finalRuntimeFacts)
 	finalData := assistantMessageData{
 		MessageID:        message.ID,
@@ -2817,6 +2804,26 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					TurnID:         turnID,
 				}, time.Now())
 			}
+			agentFinalGate := EvaluateRuntimeAgentFinalGate("", runtimeAgentNotifications(snapshot))
+			if agentFinalGate.Action == "require_wait" {
+				appendAgentItem(snapshot, newAgentItem(
+					fmt.Sprintf("%s-agent-final-gate-%d", turnID, iteration),
+					agentstate.TurnItemTypeEvidence,
+					agentstate.ItemStatusBlocked,
+					"worker completion gate: require_wait",
+					agentFinalGate,
+				))
+				if snapshot.Metadata[runtimeAgentFinalGateRetryMetadataKey] != "1" {
+					if snapshot.Metadata == nil {
+						snapshot.Metadata = map[string]string{}
+					}
+					snapshot.Metadata[runtimeAgentFinalGateRetryMetadataKey] = "1"
+					additionalContext = append(additionalContext, runtimeAgentFinalGateRetryPrompt(agentFinalGate))
+					markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "blocked", FinalMessageBoundaryRetryOnce)
+					k.persistTurnSnapshot(session, snapshot)
+					continue
+				}
+			}
 			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent, providerResponseFinishReason(providerResponse))
 			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
 				if snapshot.Metadata == nil {
@@ -2859,7 +2866,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 				return "", nil, incompleteErr
 			}
-			finalRuntimeFacts := BuildFinalRuntimeFacts(snapshot, session)
+			finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, snapshot, session, k.finalCompletionEvaluator())
 			finalEvidenceDecision := finalRuntimeFacts.EvidenceDecision
 			boundaryDecision := finalMessageBoundaryDecision{
 				Action:           FinalMessageBoundaryAllow,
@@ -2923,6 +2930,18 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "final_committed", snapshot, fields)
 			}
 			k.persistTurnSnapshot(session, snapshot)
+			if finalRuntimeFacts.PolicyCompletion.Action != policyengine.PolicyActionAllow {
+				return assistantContent, &TurnResult{
+					SessionType:     req.SessionType,
+					Mode:            req.Mode,
+					SessionID:       session.ID,
+					TurnID:          turnID,
+					ClientTurnID:    req.ClientTurnID,
+					ClientMessageID: req.ClientMessageID,
+					Status:          "blocked",
+					Error:           finalRuntimeFacts.PolicyCompletion.Reason,
+				}, nil
+			}
 			return assistantContent, nil, nil
 		}
 

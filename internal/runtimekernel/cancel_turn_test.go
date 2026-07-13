@@ -465,8 +465,12 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	if got := len(session.PendingApprovals); got != 0 {
 		t.Fatalf("pending approvals after denied decision = %d, want 0", got)
 	}
-	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" {
+	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" || session.RejectedApprovals[0].TurnID != "turn-denied" {
 		t.Fatalf("rejected approvals = %#v, want rejection reason recorded", session.RejectedApprovals)
+	}
+	nextFacts := BuildFinalRuntimeFacts(&TurnSnapshot{ID: "turn-after-denial", SessionID: session.ID}, session)
+	if containsFinalRuntimeCode(nextFacts.FailureCodes, "approval_denied") {
+		t.Fatalf("denied approval leaked into a later turn: %#v", nextFacts.FailureCodes)
 	}
 	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted || !strings.Contains(session.CurrentTurn.FinalOutput, `"status":"approval_denied"`) {
 		t.Fatalf("turn lifecycle=%q final=%q, want completed structured denial final", session.CurrentTurn.Lifecycle, session.CurrentTurn.FinalOutput)

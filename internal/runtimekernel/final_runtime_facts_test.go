@@ -1,8 +1,14 @@
 package runtimekernel
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/verification"
 )
@@ -257,5 +263,196 @@ func TestFinalRuntimeFactsTypedPartialResultPrecedesMissingVerificationReport(t 
 
 	if got := finalRuntimeCompletionStatus(completion, facts); got != FinalCompletionStatusPartial {
 		t.Fatalf("completion = %q, want partial from typed aggregate child outcome", got)
+	}
+}
+
+func TestFinalRuntimeFactsTypedPartialResultCannotOverrideHardBlockers(t *testing.T) {
+	tests := []struct {
+		name             string
+		failureCodes     []string
+		evidenceDecision FinalEvidenceVerification
+	}{
+		{
+			name: "mutation target binding",
+			evidenceDecision: FinalEvidenceVerification{
+				Action:  FinalEvidenceActionBlock,
+				Reasons: []string{"mutation_intent_requires_explicit_target_binding", "no_explicit_target_binding"},
+			},
+		},
+		{name: "approval denied", failureCodes: []string{"approval_denied"}},
+		{name: "approval pending", failureCodes: []string{"approval_pending"}},
+		{name: "plan completion", failureCodes: []string{"plan_completion_blocked"}},
+		{name: "coverage", failureCodes: []string{"coverage_incomplete"}},
+		{name: "completion policy deny", failureCodes: []string{"completion_policy_deny"}},
+		{name: "completion policy evidence", failureCodes: []string{"completion_policy_need_evidence"}},
+		{name: "runtime approval gate", failureCodes: []string{"missing_runtime_approval_gate"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := FinalRuntimeFacts{
+				FailureCodes:     tc.failureCodes,
+				EvidenceDecision: tc.evidenceDecision,
+				EvidenceState: FinalEvidenceState{FailedTools: []FailedToolImpact{{
+					ToolName:     "wait_host_agents",
+					FailureClass: "partial_result",
+				}}},
+			}
+			completion := VerificationCompletionDecision{Action: VerificationCompletionActionAllow}
+
+			if got := finalRuntimeCompletionStatus(completion, facts); got != FinalCompletionStatusBlocked {
+				t.Fatalf("completion = %q, want blocked because %s is a hard blocker: %#v", got, tc.name, facts)
+			}
+		})
+	}
+}
+
+func TestFinalRuntimeFactsIgnoresRejectedApprovalsFromOtherTurns(t *testing.T) {
+	snapshot := &TurnSnapshot{ID: "turn-current", SessionID: "session-rejection-history"}
+	session := &SessionState{
+		ID: snapshot.SessionID,
+		RejectedApprovals: []RejectedApproval{{
+			ID:       "approval-from-history",
+			TurnID:   "turn-history",
+			Decision: "denied",
+			Reason:   "historical operator decision",
+		}},
+	}
+
+	facts := BuildFinalRuntimeFacts(snapshot, session)
+
+	if containsFinalRuntimeCode(facts.FailureCodes, "approval_denied") {
+		t.Fatalf("historical rejection polluted current failure codes: %#v", facts.FailureCodes)
+	}
+	if facts.CompletionStatus == FinalCompletionStatusBlocked {
+		t.Fatalf("historical rejection blocked current turn: %#v", facts)
+	}
+	if len(facts.ApprovalOutcomes) != 0 {
+		t.Fatalf("current-turn approval outcomes include history: %#v", facts.ApprovalOutcomes)
+	}
+}
+
+func TestFinalRuntimeFactsUsesInjectedCompletionEvaluator(t *testing.T) {
+	tests := []struct {
+		name       string
+		decision   policyengine.PolicyDecision
+		wantCode   string
+		wantReason string
+	}{
+		{
+			name:       "deny",
+			decision:   policyengine.PolicyDecision{Action: policyengine.PolicyActionDeny, Reason: "synthetic completion deny"},
+			wantCode:   "completion_policy_deny",
+			wantReason: "synthetic completion deny",
+		},
+		{
+			name:       "need evidence",
+			decision:   policyengine.PolicyDecision{Action: policyengine.PolicyActionNeedEvidence, Reason: "synthetic completion evidence"},
+			wantCode:   "completion_policy_need_evidence",
+			wantReason: "synthetic completion evidence",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			evaluator := &recordingFinalCompletionEvaluator{decision: tc.decision}
+			snapshot := &TurnSnapshot{ID: "turn-injected-completion", SessionID: "session-injected-completion"}
+
+			facts := BuildFinalRuntimeFacts(snapshot, nil, evaluator)
+
+			if evaluator.calls != 1 {
+				t.Fatalf("completion evaluator calls = %d, want 1", evaluator.calls)
+			}
+			if evaluator.state.SessionID != snapshot.SessionID || evaluator.state.TurnID != snapshot.ID || !evaluator.state.Completed {
+				t.Fatalf("completion evaluator state = %#v, want current completed turn", evaluator.state)
+			}
+			if !containsFinalRuntimeCode(facts.FailureCodes, tc.wantCode) || !containsFinalRuntimeCode(facts.FailureCodes, tc.wantReason) {
+				t.Fatalf("failure codes = %#v, want %q and %q", facts.FailureCodes, tc.wantCode, tc.wantReason)
+			}
+			if facts.CompletionStatus != FinalCompletionStatusBlocked {
+				t.Fatalf("completion = %q, want blocked from injected evaluator: %#v", facts.CompletionStatus, facts)
+			}
+		})
+	}
+}
+
+type recordingFinalCompletionEvaluator struct {
+	decision policyengine.PolicyDecision
+	calls    int
+	state    policyengine.TurnState
+	ctxValue string
+}
+
+type finalCompletionContextKey struct{}
+
+func (e *recordingFinalCompletionEvaluator) CheckCompletion(ctx context.Context, state policyengine.TurnState) policyengine.PolicyDecision {
+	e.calls++
+	e.state = state
+	e.ctxValue, _ = ctx.Value(finalCompletionContextKey{}).(string)
+	return e.decision
+}
+
+func TestRunTurnFinalContractUsesKernelCompletionPolicy(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("执行已经完成。", nil),
+	}}
+	kernel := newLoopKernel(t, model, nil, nil, nil)
+	evaluator := &recordingFinalCompletionEvaluator{decision: policyengine.PolicyDecision{
+		Action: policyengine.PolicyActionDeny,
+		Reason: "synthetic kernel completion deny",
+	}}
+	kernel.policy.CompletionPolicy = evaluator
+	spanSource := &mockSpanStreamSource{}
+	kernel.spanSource = spanSource
+	runCtx := context.WithValue(context.Background(), finalCompletionContextKey{}, "runtime-final-context")
+
+	result, err := kernel.RunTurn(runCtx, TurnRequest{
+		SessionID: "session-kernel-completion", SessionType: SessionTypeWorkspace, Mode: ModeInspect,
+		TurnID: "turn-kernel-completion", Input: "explain current state",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "blocked" {
+		t.Fatalf("turn status = %q, want blocked from configured completion policy", result.Status)
+	}
+	session := kernel.sessions.Get("session-kernel-completion")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("current turn is missing")
+	}
+	var contract FinalContract
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type != agentstate.TurnItemTypeFinalResponse {
+			continue
+		}
+		var payload struct {
+			FinalContract FinalContract `json:"finalContract"`
+		}
+		if json.Unmarshal(item.Payload.Data, &payload) == nil {
+			contract = payload.FinalContract
+		}
+	}
+	if contract.Status != FinalContractStatusBlocked || !containsFinalRuntimeCode(contract.Limitations, "completion_policy_deny") {
+		t.Fatalf("final contract = %#v, want same configured policy blocker as TurnResult", contract)
+	}
+	if evaluator.calls != 1 {
+		t.Fatalf("completion evaluator calls = %d, want one authoritative finalization decision", evaluator.calls)
+	}
+	if evaluator.ctxValue != "runtime-final-context" {
+		t.Fatalf("completion evaluator context value = %q, want RunTurn context", evaluator.ctxValue)
+	}
+	emitter, ok := kernel.projector.(*testMockEventEmitter)
+	if !ok {
+		t.Fatalf("projector = %T, want test event emitter", kernel.projector)
+	}
+	foundTurnComplete := false
+	for _, event := range emitter.events {
+		if event.Type == EventTurnComplete && event.TurnID == "turn-kernel-completion" {
+			foundTurnComplete = true
+		}
+	}
+	if !foundTurnComplete {
+		t.Fatalf("events = %#v, want terminal EventTurnComplete", emitter.events)
+	}
+	if len(spanSource.failedIDs) != 1 || spanSource.failedIDs[0] != "turn-span-turn-kernel-completion" || len(spanSource.completedIDs) != 0 {
+		t.Fatalf("span failed=%#v completed=%#v, want one terminal failure", spanSource.failedIDs, spanSource.completedIDs)
 	}
 }
