@@ -1,6 +1,8 @@
 package runtimekernel
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"aiops-v2/internal/modelrouter"
@@ -66,6 +68,22 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	}
 	if step.Compiled.Fingerprint != step.ProviderRequest.PromptFingerprint {
 		t.Fatalf("step compiled/provider fingerprints diverged: compiled=%#v provider=%#v", step.Compiled.Fingerprint, step.ProviderRequest.PromptFingerprint)
+	}
+	if !step.PromptShadowParity.Passed || len(step.PromptShadowParity.GateViolations) != 0 || len(step.PromptShadowParity.Layers) != 7 {
+		t.Fatalf("prompt shadow parity = %#v, want passed L0-L6 report", step.PromptShadowParity)
+	}
+	if step.PromptShadowParity.LegacyFacts.ToolVisibilityHash != step.PromptShadowParity.V2Facts.ToolVisibilityHash || step.PromptShadowParity.LegacyFacts.PolicyHash != "policy-hash" {
+		t.Fatalf("prompt shadow control facts = legacy %#v v2 %#v", step.PromptShadowParity.LegacyFacts, step.PromptShadowParity.V2Facts)
+	}
+	shadowJSON, _ := json.Marshal(step.PromptShadowParity)
+	if strings.Contains(string(shadowJSON), "check nginx errors") {
+		t.Fatalf("prompt shadow parity leaked current user input: %s", shadowJSON)
+	}
+	tamperedShadow := step
+	tamperedShadow.PromptShadowParity.Passed = false
+	tamperedShadow.Hash = ComputeRuntimeStepContextHash(tamperedShadow)
+	if err := tamperedShadow.Validate(); err == nil {
+		t.Fatal("Validate() accepted rejected prompt shadow parity")
 	}
 	tamperedCompiledFingerprint := step
 	tamperedCompiledFingerprint.Compiled.Fingerprint.ModelInputHash = "tampered"

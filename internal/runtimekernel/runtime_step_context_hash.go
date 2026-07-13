@@ -65,15 +65,16 @@ func FreezeRuntimeStepContext(input RuntimeStepContext) (RuntimeStepContext, err
 
 func ComputeRuntimeStepContextHash(step RuntimeStepContext) string {
 	return agentassembly.StableHash("runtime-step-context", map[string]any{
-		"turnAssemblyHash": step.TurnAssemblyHash,
-		"permissionHash":   step.PermissionHash,
-		"checkpointRef":    step.CheckpointRef,
-		"iteration":        step.Iteration,
-		"turn":             step.Turn,
-		"contextState":     step.ContextState,
-		"compiled":         step.Compiled,
-		"modelInputHash":   step.ProviderRequest.ModelInputHash,
-		"toolRouter":       step.ToolSurface,
+		"turnAssemblyHash":   step.TurnAssemblyHash,
+		"permissionHash":     step.PermissionHash,
+		"checkpointRef":      step.CheckpointRef,
+		"iteration":          step.Iteration,
+		"turn":               step.Turn,
+		"contextState":       step.ContextState,
+		"compiled":           step.Compiled,
+		"promptShadowParity": step.PromptShadowParity,
+		"modelInputHash":     step.ProviderRequest.ModelInputHash,
+		"toolRouter":         step.ToolSurface,
 		"provider": map[string]any{
 			"providerMessagesHash":  step.ProviderRequest.ProviderMessagesHash,
 			"requestPropertiesHash": step.ProviderRequest.RequestPropertiesHash,

@@ -9,17 +9,18 @@ import (
 )
 
 type RuntimeStepContext struct {
-	Turn             RuntimeTurnContext                  `json:"turn"`
-	TurnAssemblyHash string                              `json:"turnAssemblyHash"`
-	PermissionHash   string                              `json:"permissionHash"`
-	CheckpointRef    string                              `json:"checkpointRef,omitempty"`
-	Iteration        int                                 `json:"iteration"`
-	ContextState     ContextPipelineResult               `json:"contextState"`
-	Compiled         promptcompiler.CompiledPrompt       `json:"compiled"`
-	ModelInput       []promptinput.ModelInputItem        `json:"modelInput"`
-	ToolSurface      RuntimeToolRouterSnapshot           `json:"toolSurface"`
-	ProviderRequest  modelrouter.ProviderRequestSnapshot `json:"providerRequest"`
-	Hash             string                              `json:"hash"`
+	Turn               RuntimeTurnContext                   `json:"turn"`
+	TurnAssemblyHash   string                               `json:"turnAssemblyHash"`
+	PermissionHash     string                               `json:"permissionHash"`
+	CheckpointRef      string                               `json:"checkpointRef,omitempty"`
+	Iteration          int                                  `json:"iteration"`
+	ContextState       ContextPipelineResult                `json:"contextState"`
+	Compiled           promptcompiler.CompiledPrompt        `json:"compiled"`
+	ModelInput         []promptinput.ModelInputItem         `json:"modelInput"`
+	ToolSurface        RuntimeToolRouterSnapshot            `json:"toolSurface"`
+	ProviderRequest    modelrouter.ProviderRequestSnapshot  `json:"providerRequest"`
+	PromptShadowParity promptinput.PromptShadowParityReport `json:"promptShadowParity"`
+	Hash               string                               `json:"hash"`
 }
 
 func (s RuntimeStepContext) Validate() error {
@@ -51,6 +52,14 @@ func (s RuntimeStepContext) Validate() error {
 	}
 	if err := validateRuntimeStepProviderRequest(s); err != nil {
 		return err
+	}
+	if promptinput.HasTypedModelInputLayers(s.ProviderRequest.Input) {
+		if err := s.PromptShadowParity.Validate(); err != nil {
+			return err
+		}
+		if !s.PromptShadowParity.Passed {
+			return fmt.Errorf("prompt shadow parity gate rejected runtime step")
+		}
 	}
 	if s.Hash == "" || s.Hash != ComputeRuntimeStepContextHash(s) {
 		return fmt.Errorf("runtime step context hash mismatch")

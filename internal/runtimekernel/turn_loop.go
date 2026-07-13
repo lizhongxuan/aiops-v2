@@ -111,17 +111,22 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	}
 	providerReq.ComputeHashes()
 	compiled.Fingerprint = providerReq.PromptFingerprint
+	promptShadowParity, err := buildRuntimePromptShadowParity(contextMessages, compiled, providerReq.Input, iteration, currentPendingStepCause(session), toolSurface, providerReq.Tools)
+	if err != nil {
+		return RuntimeStepContext{}, promptinput.BuildResult{}, err
+	}
 	step := RuntimeStepContext{
-		Turn:             turnCtx,
-		TurnAssemblyHash: control.TurnAssemblyHash,
-		PermissionHash:   control.PermissionHash,
-		CheckpointRef:    control.CheckpointRef,
-		Iteration:        iteration,
-		ContextState:     contextState,
-		Compiled:         compiled,
-		ModelInput:       promptBuild.Items,
-		ToolSurface:      toolSurface,
-		ProviderRequest:  providerReq,
+		Turn:               turnCtx,
+		TurnAssemblyHash:   control.TurnAssemblyHash,
+		PermissionHash:     control.PermissionHash,
+		CheckpointRef:      control.CheckpointRef,
+		Iteration:          iteration,
+		ContextState:       contextState,
+		Compiled:           compiled,
+		ModelInput:         promptBuild.Items,
+		ToolSurface:        toolSurface,
+		ProviderRequest:    providerReq,
+		PromptShadowParity: promptShadowParity,
 	}
 	step, err = FreezeRuntimeStepContext(step)
 	if err != nil {
