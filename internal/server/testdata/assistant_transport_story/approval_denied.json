@@ -142,16 +142,23 @@
     "evidence": [],
     "traceHashes": {
       "promptFingerprint": {
-        "compilerVersion": "prompt-fingerprint-v1",
+        "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
+        "compilerVersion": "prompt-fingerprint-v2",
+        "currentUserInputHash": "ee92697a567c45c738896dd5e8cf7430d652f040bf67bc80187030f7c96fb609",
         "developerHash": "3f6fa374f89ad85e9b368384cbf25c6d907e242f89ff1bd0c5ff765435a782d2",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "roleProfileHash": "5424934bc83bdf2e34e03161da8ef8d99d636ddfc1c28264cf239384d1bf2a24",
         "runtimePolicyHash": "2823d5dfd94233ae2c29f734ab5555aab14a9e436128494506b8c1cadb089086",
         "stableHash": "9ac898ae9a8ff329126165c2df2fefa0aeab3c6f948b04f7bd9774f86c15c77e",
+        "stablePrefixHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
+        "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
         "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
         "toolRegistryHash": "331f313a7a1cd0d544eb1cf92d8341e708d67547fe75559a95af07b31ae22431",
-        "version": "prompt-fingerprint-v1"
+        "turnPrefixHash": "b64323410ef75e44cd46047a0105623c839c8f65cdb18e75a3b21fb5816f36c8",
+        "turnStableHash": "ab65abcd63df78201f806e51721e299525c730d6ff234ea866bc0fb99f2dcb0b",
+        "version": "prompt-fingerprint-v2"
       },
-      "stablePromptHash": "9ac898ae9a8ff329126165c2df2fefa0aeab3c6f948b04f7bd9774f86c15c77e",
+      "stablePromptHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
       "stableToolFingerprint": "sha256:2c41877eb08bc5d47297b79988523c207c2feda390f8e3842292b6aec2912558",
       "toolSurfaceFingerprints": [
         "sha256:2c41877eb08bc5d47297b79988523c207c2feda390f8e3842292b6aec2912558"

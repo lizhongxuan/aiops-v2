@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/policyengine"
+	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
 
@@ -78,18 +79,35 @@ func TestRunTurnObserverRecordsTurnAndModelCall(t *testing.T) {
 	if got := session.CurrentTurn.Iterations[0].PromptFingerprint["stableHash"]; got == "" {
 		t.Fatalf("iteration prompt fingerprint missing stableHash: %#v", session.CurrentTurn.Iterations[0].PromptFingerprint)
 	}
+	if !session.CurrentTurn.Iterations[0].PromptShadowParity.Passed {
+		t.Fatalf("iteration prompt shadow parity = %#v, want passed", session.CurrentTurn.Iterations[0].PromptShadowParity)
+	}
+	legacyIteration := session.CurrentTurn.Iterations[0]
+	legacyIteration.PromptShadowParity = promptinput.PromptShadowParityReport{}
+	if err := legacyIteration.Validate(); err != nil {
+		t.Fatalf("legacy zero prompt shadow parity should remain compatible: %v", err)
+	}
+	partialParity := session.CurrentTurn.Iterations[0]
+	partialParity.PromptShadowParity.SchemaVersion = ""
+	if err := partialParity.Validate(); err == nil {
+		t.Fatal("IterationState.Validate() accepted partial prompt shadow parity without schema")
+	}
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.ID != modelCallItemID("turn-observer", 0) {
 			continue
 		}
 		var data struct {
-			PromptFingerprint map[string]string `json:"promptFingerprint"`
+			PromptFingerprint  map[string]string                    `json:"promptFingerprint"`
+			PromptShadowParity promptinput.PromptShadowParityReport `json:"promptShadowParity"`
 		}
 		if err := json.Unmarshal(item.Payload.Data, &data); err != nil {
 			t.Fatalf("unmarshal model item data: %v", err)
 		}
 		if data.PromptFingerprint["stableHash"] == "" {
 			t.Fatalf("model item prompt fingerprint missing stableHash: %#v", data.PromptFingerprint)
+		}
+		if !data.PromptShadowParity.Passed {
+			t.Fatalf("model item prompt shadow parity = %#v, want passed", data.PromptShadowParity)
 		}
 		return
 	}

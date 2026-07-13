@@ -127,19 +127,30 @@
     "evidence": ["evidence-prechange"],
     "traceHashes": {
       "promptFingerprint": {
-        "compilerVersion": "prompt-fingerprint-v1",
+        "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
+        "compilerVersion": "prompt-fingerprint-v2",
+        "currentUserInputHash": "295981f520116c1afc23c53c20ef3cd144081e158f7dc0cff2a89c6a59d8f399",
         "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "roleProfileHash": "5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea",
         "runtimePolicyHash": "6cb2c6dffbf6ee0f3c04c6804704c98058ae32abbc8a151506967e44da923aee",
         "stableHash": "80993299db196c508d0dff8c72bd35e5123d9798360ba46abcb84b0b2afc81ef",
+        "stablePrefixHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
+        "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
         "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
         "toolRegistryHash": "a33901c648f0a678582faceb4ed16fb2469792cb7ff66c4356ebbd002b1632d7",
-        "version": "prompt-fingerprint-v1"
+        "turnPrefixHash": "0e914554e19eade80d9b5a4e2a3ba83ba96c40cb06285f25c5c6d54c589a5549",
+        "turnStableHash": "75d597f5d07ce4ee41ae196a8857e7390dbbb674fe8197e96f40704bfc7991a5",
+        "version": "prompt-fingerprint-v2"
       },
-      "stablePromptHash": "80993299db196c508d0dff8c72bd35e5123d9798360ba46abcb84b0b2afc81ef",
+      "stablePromptHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
       "stableToolFingerprint": "sha256:4c93519c47f06282b897824d942646b3059995b500bd0ca9dd0aee1737638a0e",
-      "toolSurfaceFingerprints": ["sha256:4c93519c47f06282b897824d942646b3059995b500bd0ca9dd0aee1737638a0e"],
-      "toolPolicyHashes": ["709b36b41bcc89e6a9c7f6fc17a8b4484fa9a2d10d00e88625cebc784533aadd"],
+      "toolSurfaceFingerprints": [
+        "sha256:4c93519c47f06282b897824d942646b3059995b500bd0ca9dd0aee1737638a0e"
+      ],
+      "toolPolicyHashes": [
+        "709b36b41bcc89e6a9c7f6fc17a8b4484fa9a2d10d00e88625cebc784533aadd"
+      ],
       "governanceSnapshot": ""
     }
   }

@@ -225,10 +225,11 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 				RequestPropertiesHash: step.ProviderRequest.RequestPropertiesHash,
 				PromptCacheKey:        step.ProviderRequest.PromptCacheKey,
 			},
-			PromptInputTrace: traceReq.PromptInputTrace,
-			PromptInputDiff:  traceReq.PromptInputDiff,
-			DiagnosticTrace:  traceReq.DiagnosticTrace,
-			StepReference:    stepReference,
+			PromptInputTrace:   traceReq.PromptInputTrace,
+			PromptInputDiff:    traceReq.PromptInputDiff,
+			DiagnosticTrace:    traceReq.DiagnosticTrace,
+			StepReference:      stepReference,
+			PromptShadowParity: step.PromptShadowParity,
 		},
 		ProviderRequest: modeltrace.ProviderRequestTrace{
 			ModelInputHash:        step.ProviderRequest.ModelInputHash,
@@ -252,18 +253,19 @@ func writeRuntimeStepTrace(traceConfig modeltrace.Config, step RuntimeStepContex
 }
 
 type runtimeStepTraceDocumentV2 struct {
-	Hash                   string                          `json:"hash"`
-	TurnAssemblyHash       string                          `json:"turnAssemblyHash"`
-	PermissionHash         string                          `json:"permissionHash"`
-	CheckpointRef          string                          `json:"checkpointRef,omitempty"`
-	Iteration              int                             `json:"iteration"`
-	ToolSurfaceFingerprint string                          `json:"toolSurfaceFingerprint"`
-	ToolPolicyHash         string                          `json:"toolPolicyHash,omitempty"`
-	ProviderRequest        modeltrace.ProviderRequestTrace `json:"providerRequest"`
-	PromptInputTrace       any                             `json:"promptInputTrace,omitempty"`
-	PromptInputDiff        any                             `json:"promptInputDiff,omitempty"`
-	DiagnosticTrace        any                             `json:"diagnosticTrace,omitempty"`
-	StepReference          *StepReference                  `json:"stepReference,omitempty"`
+	Hash                   string                               `json:"hash"`
+	TurnAssemblyHash       string                               `json:"turnAssemblyHash"`
+	PermissionHash         string                               `json:"permissionHash"`
+	CheckpointRef          string                               `json:"checkpointRef,omitempty"`
+	Iteration              int                                  `json:"iteration"`
+	ToolSurfaceFingerprint string                               `json:"toolSurfaceFingerprint"`
+	ToolPolicyHash         string                               `json:"toolPolicyHash,omitempty"`
+	ProviderRequest        modeltrace.ProviderRequestTrace      `json:"providerRequest"`
+	PromptInputTrace       any                                  `json:"promptInputTrace,omitempty"`
+	PromptInputDiff        any                                  `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace        any                                  `json:"diagnosticTrace,omitempty"`
+	StepReference          *StepReference                       `json:"stepReference,omitempty"`
+	PromptShadowParity     promptinput.PromptShadowParityReport `json:"promptShadowParity"`
 }
 
 type runtimeProviderRequestTraceDocumentV2 struct {

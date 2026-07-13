@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -638,6 +639,7 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	if result.Snapshot == nil {
 		failAssistantTransportStory(t, story, result, "runtime turn snapshot is missing")
 	}
+	assertStoryPromptShadowParity(t, story, result)
 	turn, ok := result.State.Turns[result.State.CurrentTurnID]
 	if !ok {
 		failAssistantTransportStory(t, story, result, "current transport turn %q is missing", result.State.CurrentTurnID)
@@ -673,6 +675,22 @@ func assertAssistantTransportStory(t *testing.T, story assistantTransportStory, 
 	assertStoryHostManagerLifecycle(t, story, result)
 	if result.TraceRef == "" {
 		failAssistantTransportStory(t, story, result, "model input trace ref is missing")
+	}
+}
+
+func assertStoryPromptShadowParity(t *testing.T, story assistantTransportStory, result assistantTransportStoryResult) {
+	t.Helper()
+	if result.Snapshot == nil || len(result.Snapshot.Iterations) == 0 {
+		failAssistantTransportStory(t, story, result, "prompt shadow parity requires at least one persisted iteration")
+	}
+	for _, iteration := range result.Snapshot.Iterations {
+		report := iteration.PromptShadowParity
+		if err := report.Validate(); err != nil || !report.Passed || len(report.GateViolations) != 0 {
+			failAssistantTransportStory(t, story, result, "iteration %d prompt shadow parity invalid: report=%#v err=%v", iteration.Iteration, report, err)
+		}
+		if !reflect.DeepEqual(report.LegacyFacts, report.V2Facts) {
+			failAssistantTransportStory(t, story, result, "iteration %d prompt shadow control facts drifted: legacy=%#v v2=%#v", iteration.Iteration, report.LegacyFacts, report.V2Facts)
+		}
 	}
 }
 
@@ -1000,9 +1018,16 @@ func projectStoryTraceHashes(snapshot *runtimekernel.TurnSnapshot) storyTraceHas
 	out.GovernanceSnapshot = snapshot.GovernanceSnapshot
 	seenSurface := map[string]bool{}
 	seenPolicy := map[string]bool{}
+	deterministicPromptHashes := map[string]bool{
+		"version": true, "compilerVersion": true,
+		"absoluteSystemHash": true, "roleProfileHash": true, "stableRuntimeContractHash": true,
+		"stablePrefixHash": true, "turnStableHash": true, "turnPrefixHash": true, "currentUserInputHash": true,
+		"stableHash": true, "systemHash": true, "developerHash": true, "toolRegistryHash": true,
+		"runtimePolicyHash": true, "protocolStateHash": true,
+	}
 	for _, iteration := range snapshot.Iterations {
 		for key, value := range iteration.PromptFingerprint {
-			if strings.TrimSpace(value) != "" {
+			if deterministicPromptHashes[key] && strings.TrimSpace(value) != "" {
 				out.PromptFingerprint[key] = value
 			}
 		}

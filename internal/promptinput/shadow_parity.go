@@ -104,6 +104,10 @@ func (report PromptShadowParityReport) Validate() error {
 	return nil
 }
 
+func (report PromptShadowParityReport) IsZero() bool {
+	return reflect.DeepEqual(report, PromptShadowParityReport{})
+}
+
 func BuildPromptShadowParity(input PromptShadowParityInput) (PromptShadowParityReport, error) {
 	if err := ValidateModelInputLogicalOrder(input.V2Items, true); err != nil {
 		return PromptShadowParityReport{}, fmt.Errorf("v2 logical order: %w", err)

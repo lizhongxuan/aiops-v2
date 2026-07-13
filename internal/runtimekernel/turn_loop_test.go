@@ -2,10 +2,12 @@ package runtimekernel
 
 import (
 	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/tooling"
 )
@@ -78,6 +80,17 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	shadowJSON, _ := json.Marshal(step.PromptShadowParity)
 	if strings.Contains(string(shadowJSON), "check nginx errors") {
 		t.Fatalf("prompt shadow parity leaked current user input: %s", shadowJSON)
+	}
+	tracePath, err := writeRuntimeStepTrace(modeltrace.Config{Enabled: true, RootDir: t.TempDir()}, step, RuntimeTraceDebugRequest{})
+	if err != nil {
+		t.Fatalf("writeRuntimeStepTrace() error = %v", err)
+	}
+	traceJSON, err := os.ReadFile(tracePath)
+	if err != nil {
+		t.Fatalf("ReadFile(trace) error = %v", err)
+	}
+	if !strings.Contains(string(traceJSON), `"promptShadowParity"`) || !strings.Contains(string(traceJSON), `"passed": true`) {
+		t.Fatalf("trace missing passed prompt shadow parity: %s", traceJSON)
 	}
 	tamperedShadow := step
 	tamperedShadow.PromptShadowParity.Passed = false

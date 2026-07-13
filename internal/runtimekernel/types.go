@@ -805,6 +805,7 @@ type IterationState struct {
 	RefreshedTools          []string                                 `json:"refreshedTools,omitempty"`
 	PromptDelta             string                                   `json:"promptDelta,omitempty"`
 	PromptFingerprint       map[string]string                        `json:"promptFingerprint,omitempty"`
+	PromptShadowParity      promptinput.PromptShadowParityReport     `json:"promptShadowParity,omitempty"`
 	ModelInputTraceFile     string                                   `json:"modelInputTraceFile,omitempty"`
 	TokenBudget             int                                      `json:"tokenBudget,omitempty"`
 	ResultBudget            int                                      `json:"resultBudget,omitempty"`
@@ -833,6 +834,14 @@ func (s IterationState) Validate() error {
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if !s.PromptShadowParity.IsZero() {
+		if err := s.PromptShadowParity.Validate(); err != nil {
+			return err
+		}
+		if !s.PromptShadowParity.Passed {
+			return fmt.Errorf("iteration prompt shadow parity rejected")
+		}
 	}
 	if !s.Lifecycle.IsValid() {
 		return fmt.Errorf("invalid lifecycle %q", s.Lifecycle)

@@ -225,7 +225,7 @@ func TestAssistantTransportStoryCorpusCoversP0Contract(t *testing.T) {
 		}
 		traceHashes, _ := want["traceHashes"].(map[string]any)
 		promptHashes, _ := traceHashes["promptFingerprint"].(map[string]any)
-		for _, hash := range []string{"compilerVersion", "developerHash", "protocolStateHash", "runtimePolicyHash", "stableHash", "systemHash", "toolRegistryHash", "version"} {
+		for _, hash := range []string{"version", "compilerVersion", "absoluteSystemHash", "roleProfileHash", "stableRuntimeContractHash", "stablePrefixHash", "turnStableHash", "turnPrefixHash", "currentUserInputHash", "developerHash", "protocolStateHash", "runtimePolicyHash", "stableHash", "systemHash", "toolRegistryHash"} {
 			if strings.TrimSpace(fmt.Sprint(promptHashes[hash])) == "" {
 				t.Errorf("story %q want.traceHashes.promptFingerprint.%s is required", name, hash)
 			}
