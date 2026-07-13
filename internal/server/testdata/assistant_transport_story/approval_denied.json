@@ -102,13 +102,22 @@
       "confidence": "low",
       "checkedEvidenceRefs": [],
       "uncheckedRequirements": [],
-      "failedToolImpacts": [],
+      "failedToolImpacts": [
+        {
+          "toolName": "read_secret",
+          "failureClass": "blocked",
+          "impact": "证据读取失败，不能作为已检查结果"
+        }
+      ],
       "approvedActions": [],
       "performedActions": [],
       "postChecks": [],
       "requiredPostChecks": [],
       "limitations": [
-        "protected read requires approval"
+        "approval_denied",
+        "blocked",
+        "failed_tool_requires_lower_confidence",
+        "read_secret:blocked"
       ]
     },
     "transportProjection": {

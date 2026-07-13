@@ -89,7 +89,7 @@
       "status": "verified",
       "confidence": "high",
       "checkedEvidenceRefs": [
-        "call_metrics"
+        "tool_result:call_metrics"
       ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [],

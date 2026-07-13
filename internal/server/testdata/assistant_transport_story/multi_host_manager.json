@@ -7,7 +7,12 @@
     "message": {
       "id": "msg-multi-host",
       "role": "user",
-      "parts": [{"type": "text", "text": "@host-a @host-b 比较网络情况"}],
+      "parts": [
+        {
+          "type": "text",
+          "text": "@host-a @host-b 比较网络情况"
+        }
+      ],
       "metadata": {
         "enableTool": "spawn_host_agent,wait_host_agents",
         "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}},{\"version\":1,\"tokenId\":\"mention-host-b\",\"sigil\":\"@\",\"display\":\"@host-b\",\"rawText\":\"@host-b\",\"kind\":\"host\",\"path\":\"host://host-b\",\"source\":\"selection\",\"range\":{\"start\":8,\"end\":15},\"payload\":{\"hostId\":\"host-b\"}}]}"
@@ -17,8 +22,14 @@
   "hostManager": {
     "missionId": "$runtime",
     "children": [
-      {"hostId": "host-a", "output": "host-a network reachable"},
-      {"hostId": "host-b", "error": "timeout waiting for host-b"}
+      {
+        "hostId": "host-a",
+        "output": "host-a network reachable"
+      },
+      {
+        "hostId": "host-b",
+        "error": "timeout waiting for host-b"
+      }
     ]
   },
   "providerResponses": [
@@ -31,8 +42,14 @@
           "arguments": {
             "missionId": "$runtime",
             "assignments": [
-              {"hostId": "host-a", "task": "inspect network state on host-a"},
-              {"hostId": "host-b", "task": "inspect network state on host-b"}
+              {
+                "hostId": "host-a",
+                "task": "inspect network state on host-a"
+              },
+              {
+                "hostId": "host-b",
+                "task": "inspect network state on host-b"
+              }
             ]
           }
         }
@@ -41,7 +58,13 @@
     {
       "role": "assistant",
       "toolCalls": [
-        {"id": "call_wait_hosts", "name": "wait_host_agents", "arguments": {"missionId": "$runtime"}}
+        {
+          "id": "call_wait_hosts",
+          "name": "wait_host_agents",
+          "arguments": {
+            "missionId": "$runtime"
+          }
+        }
       ]
     },
     {
@@ -54,39 +77,105 @@
     "turnStatus": "completed",
     "lifecycle": "completed",
     "messages": [
-      {"phase": "commentary", "text": "我会先用 spawn_host_agent 核对关键信息，再整理回答。"},
-      {"phase": "commentary", "text": "我会先用 wait_host_agents 核对关键信息，再整理回答。"},
-      {"phase": "final_answer", "text": "host-a 网络检查成功；host-b 检查超时。当前仅有部分结果，需要稍后重试 host-b。"}
+      {
+        "phase": "commentary",
+        "text": "我会先用 spawn_host_agent 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "commentary",
+        "text": "我会先用 wait_host_agents 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "final_answer",
+        "text": "host-a 网络检查成功；host-b 检查超时。当前仅有部分结果，需要稍后重试 host-b。"
+      }
     ],
-    "modelVisibleTools": ["send_host_agent_message", "spawn_host_agent", "stop_host_agent", "wait_host_agents"],
+    "modelVisibleTools": [
+      "send_host_agent_message",
+      "spawn_host_agent",
+      "stop_host_agent",
+      "wait_host_agents"
+    ],
     "actualTools": [
-      {"id": "call_spawn_hosts", "name": "spawn_host_agent", "status": "completed"},
-      {"id": "call_wait_hosts", "name": "wait_host_agents", "status": "partial", "failureKind": "partial_result"}
+      {
+        "id": "call_spawn_hosts",
+        "name": "spawn_host_agent",
+        "status": "completed"
+      },
+      {
+        "id": "call_wait_hosts",
+        "name": "wait_host_agents",
+        "status": "partial",
+        "failureKind": "partial_result"
+      }
     ],
     "approvalLifecycle": [],
-    "target": {"binding": "multi_host", "resourceRefs": ["host:host-a", "host:host-b"]},
+    "target": {
+      "binding": "multi_host",
+      "resourceRefs": [
+        "host:host-a",
+        "host:host-b"
+      ]
+    },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
       "status": "partial",
       "confidence": "medium",
-      "checkedEvidenceRefs": ["call_spawn_hosts", "call_wait_hosts"],
+      "checkedEvidenceRefs": [
+        "tool_result:call_spawn_hosts",
+        "tool_result:call_wait_hosts"
+      ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [
-        {"toolName": "wait_host_agents", "failureClass": "partial_result", "impact": "部分子任务未完成，聚合结果不完整"}
+        {
+          "toolName": "wait_host_agents",
+          "failureClass": "partial_result",
+          "impact": "部分子任务未完成，聚合结果不完整"
+        }
       ],
       "approvedActions": [],
       "performedActions": [],
       "postChecks": [],
       "requiredPostChecks": [],
-      "limitations": ["wait_host_agents:partial_result"]
+      "limitations": [
+        "execution_required",
+        "failed_tool_requires_lower_confidence",
+        "missing_verification_report",
+        "partial_result",
+        "wait_host_agents:partial_result"
+      ]
     },
     "transportProjection": {
       "schemaVersion": "aiops.transport.v2",
       "stateStatus": "idle",
       "turnStatus": "completed",
-      "processKinds": ["assistant", "subagent", "assistant", "subagent"],
-      "processStatuses": ["completed", "completed", "completed", "completed"],
-      "timelineTypes": ["user_message", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "evidence", "final_response"],
+      "processKinds": [
+        "assistant",
+        "subagent",
+        "assistant",
+        "subagent"
+      ],
+      "processStatuses": [
+        "completed",
+        "completed",
+        "completed",
+        "completed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "final_response"
+      ],
       "finalStatus": "partial",
       "pendingApprovalCount": 0,
       "turnCount": 1

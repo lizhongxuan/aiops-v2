@@ -242,3 +242,20 @@ func TestFinalRuntimeFactsPendingApprovalCannotBeBypassedByAnswerText(t *testing
 		t.Fatalf("approval prose changed status: done=%#v pending=%#v", claimedDone, declaredPending)
 	}
 }
+
+func TestFinalRuntimeFactsTypedPartialResultPrecedesMissingVerificationReport(t *testing.T) {
+	facts := FinalRuntimeFacts{
+		EvidenceState: FinalEvidenceState{FailedTools: []FailedToolImpact{{
+			ToolName:     "wait_host_agents",
+			FailureClass: "partial_result",
+		}}},
+	}
+	completion := VerificationCompletionDecision{
+		Action:  VerificationCompletionActionBlockSuccessFinal,
+		Reasons: []string{"execution_required", "missing_verification_report"},
+	}
+
+	if got := finalRuntimeCompletionStatus(completion, facts); got != FinalCompletionStatusPartial {
+		t.Fatalf("completion = %q, want partial from typed aggregate child outcome", got)
+	}
+}

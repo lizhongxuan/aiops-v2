@@ -157,8 +157,9 @@
       "status": "needs_evidence",
       "confidence": "medium",
       "checkedEvidenceRefs": [
-        "call_restart",
-        "call_status"
+        "evidence-prechange",
+        "tool_result:call_restart",
+        "tool_result:call_status"
       ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [],
@@ -172,7 +173,13 @@
       "requiredPostChecks": [
         "service_health"
       ],
-      "limitations": []
+      "limitations": [
+        "execution_required",
+        "missing_verification_report",
+        "postcheck_pending",
+        "required_postcheck_incomplete",
+        "rollback_contract_missing"
+      ]
     },
     "transportProjection": {
       "schemaVersion": "aiops.transport.v2",

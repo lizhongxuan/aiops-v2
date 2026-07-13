@@ -9,7 +9,12 @@
         "message": {
           "id": "msg-partial",
           "role": "user",
-          "parts": [{"type": "text", "text": "@host-a 安装 demo-package 并核对结果"}],
+          "parts": [
+            {
+              "type": "text",
+              "text": "@host-a 安装 demo-package 并核对结果"
+            }
+          ],
           "metadata": {
             "enableTool": "read_package_state,install_package,verify_package_state",
             "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
@@ -29,19 +34,40 @@
     {
       "role": "assistant",
       "toolCalls": [
-        {"id": "call_prechange", "name": "read_package_state", "arguments": {"hostId": "host-a", "package": "demo-package"}}
+        {
+          "id": "call_prechange",
+          "name": "read_package_state",
+          "arguments": {
+            "hostId": "host-a",
+            "package": "demo-package"
+          }
+        }
       ]
     },
     {
       "role": "assistant",
       "toolCalls": [
-        {"id": "call_install", "name": "install_package", "arguments": {"hostId": "host-a", "package": "demo-package"}}
+        {
+          "id": "call_install",
+          "name": "install_package",
+          "arguments": {
+            "hostId": "host-a",
+            "package": "demo-package"
+          }
+        }
       ]
     },
     {
       "role": "assistant",
       "toolCalls": [
-        {"id": "call_verify", "name": "verify_package_state", "arguments": {"hostId": "host-a", "package": "demo-package"}}
+        {
+          "id": "call_verify",
+          "name": "verify_package_state",
+          "arguments": {
+            "hostId": "host-a",
+            "package": "demo-package"
+          }
+        }
       ]
     },
     {
@@ -53,17 +79,47 @@
     {
       "name": "read_package_state",
       "description": "Read package state before mutation.",
-      "inputSchema": {"type": "object", "required": ["hostId", "package"], "properties": {"hostId": {"type": "string"}, "package": {"type": "string"}}},
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "hostId",
+          "package"
+        ],
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          }
+        }
+      },
       "content": "{\"installed\":false,\"evidenceRefs\":[\"evidence-prechange\"]}"
     },
     {
       "name": "install_package",
       "description": "Install a package on one host.",
-      "inputSchema": {"type": "object", "required": ["hostId", "package"], "properties": {"hostId": {"type": "string"}, "package": {"type": "string"}}},
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "hostId",
+          "package"
+        ],
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          }
+        }
+      },
       "error": "package manager connection lost",
       "risk": "high",
       "mutating": true,
-      "postChecks": ["rpm -q demo-package"],
+      "postChecks": [
+        "rpm -q demo-package"
+      ],
       "approval": {
         "reason": "package installation requires approval",
         "risk": "high",
@@ -76,7 +132,21 @@
     {
       "name": "verify_package_state",
       "description": "Read package state on one host.",
-      "inputSchema": {"type": "object", "required": ["hostId", "package"], "properties": {"hostId": {"type": "string"}, "package": {"type": "string"}}},
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "hostId",
+          "package"
+        ],
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "package": {
+            "type": "string"
+          }
+        }
+      },
       "error": "package state unavailable"
     }
   ],
@@ -84,47 +154,150 @@
     "turnStatus": "completed",
     "lifecycle": "completed",
     "messages": [
-      {"phase": "commentary", "text": "我会先用 read_package_state 核对关键信息，再整理回答。"},
-      {"phase": "commentary", "text": "我会先用 install_package 核对关键信息，再整理回答。"},
-      {"phase": "commentary", "text": "我会先用 verify_package_state 核对关键信息，再整理回答。"},
-      {"phase": "final_answer", "text": "partial_mutation: what may have partially executed: install_package; known evidence refs: none; unknown state: demo-package installation state; required post-check: rpm -q demo-package."}
+      {
+        "phase": "commentary",
+        "text": "我会先用 read_package_state 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "commentary",
+        "text": "我会先用 install_package 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "commentary",
+        "text": "我会先用 verify_package_state 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "final_answer",
+        "text": "partial_mutation: what may have partially executed: install_package; known evidence refs: none; unknown state: demo-package installation state; required post-check: rpm -q demo-package."
+      }
     ],
-    "modelVisibleTools": ["install_package", "read_package_state", "verify_package_state"],
+    "modelVisibleTools": [
+      "install_package",
+      "read_package_state",
+      "verify_package_state"
+    ],
     "actualTools": [
-      {"id": "call_prechange", "name": "read_package_state", "status": "completed"},
-      {"id": "call_install", "name": "install_package", "status": "failed", "failureKind": "side_effect_unknown"},
-      {"id": "call_verify", "name": "verify_package_state", "status": "failed", "failureKind": "tool_business_error"}
+      {
+        "id": "call_prechange",
+        "name": "read_package_state",
+        "status": "completed"
+      },
+      {
+        "id": "call_install",
+        "name": "install_package",
+        "status": "failed",
+        "failureKind": "side_effect_unknown"
+      },
+      {
+        "id": "call_verify",
+        "name": "verify_package_state",
+        "status": "failed",
+        "failureKind": "tool_business_error"
+      }
     ],
-    "approvalLifecycle": ["install_package:approved", "install_package:requested"],
-    "target": {"binding": "host", "hostId": "host-a", "resourceRefs": ["host:host-a"]},
+    "approvalLifecycle": [
+      "install_package:approved",
+      "install_package:requested"
+    ],
+    "target": {
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
+    },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
       "status": "needs_evidence",
-      "confidence": "low",
-      "checkedEvidenceRefs": ["call_prechange"],
+      "confidence": "medium",
+      "checkedEvidenceRefs": [
+        "evidence-prechange",
+        "tool_result:call_prechange"
+      ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [
-        {"toolName": "install_package", "failureClass": "side_effect_unknown", "impact": "证据读取失败，不能作为已检查结果"},
-        {"toolName": "verify_package_state", "failureClass": "tool_business_error", "impact": "证据读取失败，不能作为已检查结果"}
+        {
+          "toolName": "install_package",
+          "failureClass": "side_effect_unknown",
+          "impact": "证据读取失败，不能作为已检查结果"
+        },
+        {
+          "toolName": "verify_package_state",
+          "failureClass": "tool_business_error",
+          "impact": "证据读取失败，不能作为已检查结果"
+        }
       ],
-      "approvedActions": ["install_package#call_install"],
+      "approvedActions": [
+        "install_package#call_install"
+      ],
       "performedActions": [],
       "postChecks": [],
-      "requiredPostChecks": ["rpm -q demo-package"],
-      "limitations": ["install_package:side_effect_unknown", "partial_mutation", "verify_package_state:tool_business_error"]
+      "requiredPostChecks": [
+        "rpm -q demo-package"
+      ],
+      "limitations": [
+        "execution_required",
+        "failed_tool_requires_lower_confidence",
+        "install_package:side_effect_unknown",
+        "missing_verification_report",
+        "postcheck_pending",
+        "required_postcheck_incomplete",
+        "rollback_contract_missing",
+        "side_effect_unknown",
+        "tool_business_error",
+        "verify_package_state:tool_business_error"
+      ]
     },
     "transportProjection": {
       "schemaVersion": "aiops.transport.v2",
       "stateStatus": "idle",
       "turnStatus": "completed",
-      "processKinds": ["assistant", "tool", "assistant", "tool", "approval", "assistant", "tool"],
-      "processStatuses": ["completed", "completed", "completed", "failed", "completed", "completed", "failed"],
-      "timelineTypes": ["user_message", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "tool_call", "approval_requested", "approval_decided", "tool_result", "model_call", "assistant_message", "tool_call", "tool_result", "model_call", "assistant_message", "evidence", "final_response"],
+      "processKinds": [
+        "assistant",
+        "tool",
+        "assistant",
+        "tool",
+        "approval",
+        "assistant",
+        "tool"
+      ],
+      "processStatuses": [
+        "completed",
+        "completed",
+        "completed",
+        "failed",
+        "completed",
+        "completed",
+        "failed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "approval_requested",
+        "approval_decided",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "final_response"
+      ],
       "finalStatus": "needs_evidence",
       "pendingApprovalCount": 0,
       "turnCount": 1
     },
-    "evidence": ["evidence-prechange"],
+    "evidence": [
+      "evidence-prechange"
+    ],
     "traceHashes": {
       "promptFingerprint": {
         "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",

@@ -113,17 +113,22 @@
     },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
-      "status": "verified",
+      "status": "needs_evidence",
       "confidence": "high",
       "checkedEvidenceRefs": [
-        "call_carryover"
+        "evidence-host-kme",
+        "tool_result:call_carryover"
       ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [],
       "approvedActions": [],
       "performedActions": [],
       "postChecks": [],
-      "limitations": []
+      "limitations": [
+        "execution_required",
+        "missing_runtime_approval_gate",
+        "missing_verification_report"
+      ]
     },
     "transportProjection": {
       "schemaVersion": "aiops.transport.v2",
@@ -151,7 +156,7 @@
         "evidence",
         "final_response"
       ],
-      "finalStatus": "verified",
+      "finalStatus": "needs_evidence",
       "pendingApprovalCount": 0,
       "turnCount": 2
     },

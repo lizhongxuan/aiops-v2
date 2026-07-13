@@ -444,6 +444,11 @@ func finalRuntimeCompletionStatus(completion VerificationCompletionDecision, fac
 	if completion.Status == verification.StatusFail || facts.PostcheckStatus == FinalPostcheckStatusFailed {
 		return FinalCompletionStatusFailed
 	}
+	for _, failed := range facts.EvidenceState.FailedTools {
+		if strings.EqualFold(strings.TrimSpace(failed.FailureClass), "partial_result") {
+			return FinalCompletionStatusPartial
+		}
+	}
 	if completion.Action == VerificationCompletionActionBlockSuccessFinal || completion.Action == VerificationCompletionActionRequireBlockerFinal ||
 		facts.EvidenceDecision.Action == FinalEvidenceActionBlock || containsFinalRuntimeCode(facts.FailureCodes, "plan_completion_blocked") ||
 		containsFinalRuntimeCode(facts.FailureCodes, "coverage_incomplete") || containsFinalRuntimeCode(facts.FailureCodes, "completion_policy_deny") ||
