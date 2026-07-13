@@ -6796,7 +6796,7 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			iterationID = last.ID
 		}
 		approval := PendingApproval{
-			ID:            fmt.Sprintf("approval-%d", now.UnixNano()),
+			ID:            pendingApprovalID(session.ID, snapshot.ID, snapshot.Iteration, tc, argumentsHash, targetRefs),
 			SessionID:     session.ID,
 			TurnID:        snapshot.ID,
 			Iteration:     snapshot.Iteration,
@@ -7271,8 +7271,15 @@ func partialToolProgressBody(content string) string {
 
 func newCheckpointMetadata(sessionID, turnID string, iteration, sequence int, kind string, lifecycle TurnLifecycleState, resumeState TurnResumeState) *CheckpointMetadata {
 	now := time.Now()
+	digest := strings.TrimPrefix(agentassembly.StableHash("runtime-checkpoint-id", map[string]any{
+		"sessionId": sessionID, "turnId": turnID, "iteration": iteration, "sequence": sequence,
+		"kind": kind, "lifecycle": lifecycle, "resumeState": resumeState,
+	}), "sha256:")
+	if len(digest) > 24 {
+		digest = digest[:24]
+	}
 	return &CheckpointMetadata{
-		ID:          fmt.Sprintf("chk-%d", now.UnixNano()),
+		ID:          "chk-" + digest,
 		SessionID:   sessionID,
 		TurnID:      turnID,
 		Iteration:   iteration,
@@ -7284,6 +7291,18 @@ func newCheckpointMetadata(sessionID, turnID string, iteration, sequence int, ki
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+func pendingApprovalID(sessionID, turnID string, iteration int, call ToolCall, argumentsHash string, targetRefs []string) string {
+	digest := strings.TrimPrefix(agentassembly.StableHash("runtime-pending-approval-id", map[string]any{
+		"sessionId": sessionID, "turnId": turnID, "iteration": iteration,
+		"toolCallId": call.ID, "toolName": call.Name, "argumentsHash": argumentsHash,
+		"targetRefs": uniqueSortedTraceStrings(targetRefs),
+	}), "sha256:")
+	if len(digest) > 24 {
+		digest = digest[:24]
+	}
+	return "approval-" + digest
 }
 
 func nextCheckpointSequence(snapshot *TurnSnapshot) int {

@@ -1,6 +1,7 @@
 package runtimekernel
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -70,7 +71,7 @@ func ComputeRuntimeStepContextHash(step RuntimeStepContext) string {
 		"checkpointRef":      step.CheckpointRef,
 		"iteration":          step.Iteration,
 		"turn":               step.Turn,
-		"contextState":       step.ContextState,
+		"contextState":       runtimeStepControlContext(step.ContextState),
 		"compiled":           step.Compiled,
 		"promptShadowParity": step.PromptShadowParity,
 		"modelInputHash":     step.ProviderRequest.ModelInputHash,
@@ -83,6 +84,52 @@ func ComputeRuntimeStepContextHash(step RuntimeStepContext) string {
 			"clientMetadata":        step.ProviderRequest.ClientMetadata,
 		},
 	})
+}
+
+// runtimeStepControlContext removes wall-clock observations before deriving a
+// control hash. Time remains available in the typed context for diagnostics,
+// but replaying identical facts at a later instant must not create a new Step.
+func runtimeStepControlContext(input ContextPipelineResult) any {
+	input.Messages = append([]Message(nil), input.Messages...)
+	for index := range input.Messages {
+		input.Messages[index].ID = fmt.Sprintf("<message:%d>", index+1)
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return input
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return input
+	}
+	return normalizeRuntimeStepControlValue("", value)
+}
+
+func normalizeRuntimeStepControlValue(key string, value any) any {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "createdat", "updatedat", "startedat", "finishedat", "completedat", "requestedat", "resolvedat", "timestamp", "expiresat":
+		if value != nil && fmt.Sprint(value) != "" {
+			return "<wall-clock>"
+		}
+	}
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for childKey, child := range typed {
+			out[childKey] = normalizeRuntimeStepControlValue(childKey, child)
+		}
+		return out
+	case []any:
+		out := make([]any, len(typed))
+		for index, child := range typed {
+			out[index] = normalizeRuntimeStepControlValue(key, child)
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func (s RuntimeStepContext) ValidatedProviderRequest() (modelrouter.ProviderRequestSnapshot, error) {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/modeltrace"
@@ -57,6 +58,26 @@ func TestRuntimeStepContextHashChangesWithInputCheckpointAndRouter(t *testing.T)
 				t.Fatalf("Hash = %q, want change from base", got.Hash)
 			}
 		})
+	}
+}
+
+func TestRuntimeStepContextHashNormalizesWallClockButPreservesContextFacts(t *testing.T) {
+	baseInput := validRuntimeStepContextForHashTest()
+	baseInput.ContextState.Messages = []Message{{ID: "context-1", Role: "user", Content: "stable context", Timestamp: time.Date(2026, 7, 10, 1, 2, 3, 0, time.UTC)}}
+	base := mustFreezeRuntimeStepContextForTest(t, baseInput)
+
+	clockChanged := validRuntimeStepContextForHashTest()
+	clockChanged.ContextState.Messages = []Message{{ID: "context-random-2", Role: "user", Content: "stable context", Timestamp: time.Date(2026, 7, 13, 9, 8, 7, 0, time.UTC)}}
+	clockFrozen := mustFreezeRuntimeStepContextForTest(t, clockChanged)
+	if clockFrozen.Hash != base.Hash {
+		t.Fatalf("wall-clock changed step control hash: %q != %q", clockFrozen.Hash, base.Hash)
+	}
+
+	factChanged := validRuntimeStepContextForHashTest()
+	factChanged.ContextState.Messages = []Message{{ID: "context-1", Role: "user", Content: "changed context", Timestamp: baseInput.ContextState.Messages[0].Timestamp}}
+	factFrozen := mustFreezeRuntimeStepContextForTest(t, factChanged)
+	if factFrozen.Hash == base.Hash {
+		t.Fatal("context content change did not change step control hash")
 	}
 }
 
