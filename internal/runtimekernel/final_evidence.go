@@ -147,96 +147,35 @@ func finalActionRef(toolName, toolCallID string) string {
 	return toolName + "#" + toolCallID
 }
 
-func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceVerification {
+// VerifyFinalEvidence is retained as a source-compatible adapter. Display text
+// is deliberately ignored so wording cannot change the runtime decision.
+func VerifyFinalEvidence(_ string, state FinalEvidenceState) FinalEvidenceVerification {
+	return VerifyFinalEvidenceFacts(state)
+}
+
+func VerifyFinalEvidenceFacts(state FinalEvidenceState) FinalEvidenceVerification {
 	state.Confidence = normalizeFinalEvidenceConfidence(state.Confidence)
 	decision := FinalEvidenceVerification{
 		Action:     FinalEvidenceActionAllow,
 		Confidence: state.Confidence,
 		State:      state,
 	}
-	answer = strings.TrimSpace(answer)
-	claimsChecked := finalAnswerClaimsChecked(answer)
-	highConfidenceClaim := finalAnswerClaimsHighConfidence(answer)
-	missingEvidenceClaim := finalAnswerClaimsMissingEvidence(answer)
-	if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
-		decision.Confidence = FinalEvidenceConfidenceLow
-		for _, reason := range safeTerminal.Reasons {
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, reason)
-		}
-		for _, state := range safeTerminal.TerminalStates {
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, state)
-		}
-		if !safeTerminal.Valid {
-			decision.Action = FinalEvidenceActionBlock
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "partial_mutation_missing_required_fields")
-			for _, field := range safeTerminal.MissingFields {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, field)
-			}
-			return decision
-		}
-		if claimsChecked || highConfidenceClaim {
-			decision.Action = FinalEvidenceActionDowngrade
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "safe_terminal_requires_low_confidence")
-			if missingEvidenceClaim && highConfidenceClaim {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "missing_evidence_claim_requires_low_confidence")
-			}
-			return decision
-		}
-		decision.Action = FinalEvidenceActionAllow
-		return decision
-	}
-
-	if len(state.FailedTools) > 0 && highConfidenceClaim {
+	if len(state.FailedTools) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
 		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceMedium)
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "failed_tool_requires_lower_confidence")
 	}
-	if missingEvidenceClaim && highConfidenceClaim {
-		decision.Action = FinalEvidenceActionDowngrade
-		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
-		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "missing_evidence_claim_requires_low_confidence")
-	}
-	if len(state.NotChecked) > 0 && (claimsChecked || highConfidenceClaim) {
+	if len(state.NotChecked) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
 		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "not_checked_item_requires_lower_confidence")
 	}
-	if claimsChecked && len(state.Checked) == 0 {
+	if len(outstandingRequiredPostChecks(state)) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
-		decision.Confidence = FinalEvidenceConfidenceLow
-		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "checked_claim_without_checked_evidence")
+		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceMedium)
+		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "required_postcheck_incomplete")
 	}
-	if risky := EvaluateRiskyOperationalAdvice(answer); risky.RequiresEvidenceGate {
-		if risky.Category == riskyAdviceCategoryUngatedMutationCommandAdvice {
-			if !state.ExecCommandAllowed || !state.TargetBound {
-				decision.Action = FinalEvidenceActionBlock
-				decision.Confidence = FinalEvidenceConfidenceLow
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-				if !state.ExecCommandAllowed {
-					decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "exec_command_not_allowed")
-				}
-				if !state.TargetBound {
-					decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "no_explicit_target_binding")
-				}
-				return decision
-			}
-			if len(state.Checked) == 0 {
-				decision.Action = FinalEvidenceActionDowngrade
-				decision.Confidence = FinalEvidenceConfidenceLow
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-			}
-		} else {
-			decision.Action = FinalEvidenceActionDowngrade
-			decision.Confidence = FinalEvidenceConfidenceLow
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-			if risky.Category != "" {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-			}
-		}
-	}
-	if state.MutationIntentWithoutTarget && !finalAnswerAsksExplicitTargetBinding(answer) {
+	if state.MutationIntentWithoutTarget {
 		decision.Action = FinalEvidenceActionBlock
 		decision.Confidence = FinalEvidenceConfidenceLow
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "mutation_intent_requires_explicit_target_binding")
@@ -244,10 +183,6 @@ func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceV
 		if !state.ExecCommandAllowed {
 			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "exec_command_not_allowed")
 		}
-		return decision
-	}
-	if len(decision.Reasons) == 0 {
-		decision.Action = FinalEvidenceActionAllow
 	}
 	return decision
 }

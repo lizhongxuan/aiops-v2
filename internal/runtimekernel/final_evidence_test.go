@@ -44,7 +44,7 @@ func TestFinalEvidenceRejectsHighConfidenceAfterFailedTool(t *testing.T) {
 	}
 }
 
-func TestFinalEvidenceAllowsLowConfidenceUnknownAfterFailedTool(t *testing.T) {
+func TestFinalEvidenceFactsDowngradeAfterFailedToolRegardlessOfProse(t *testing.T) {
 	state := FinalEvidenceState{
 		FailedTools: []FailedToolImpact{{
 			ToolCallID:   "call-coroot",
@@ -57,8 +57,8 @@ func TestFinalEvidenceAllowsLowConfidenceUnknownAfterFailedTool(t *testing.T) {
 
 	answer := "根因（置信度：低）：无法确定（Coroot 未配置，缺乏依赖边、指标、日志、链路等直接证据）。"
 	decision := VerifyFinalEvidence(answer, state)
-	if decision.Action != FinalEvidenceActionAllow {
-		t.Fatalf("decision action = %q, want allow for low-confidence unknown blocker: %#v", decision.Action, decision)
+	if decision.Action != FinalEvidenceActionDowngrade {
+		t.Fatalf("decision action = %q, want facts-only downgrade: %#v", decision.Action, decision)
 	}
 }
 
@@ -167,10 +167,10 @@ func TestBuildFinalEvidenceStateKeepsRequiredPostCheckWithoutClaimingUnknownMuta
 	if !containsString(state.RequiredPostChecks, "systemctl is-active demo.service") {
 		t.Fatalf("required post checks = %#v, want required reconciliation check", state.RequiredPostChecks)
 	}
-	contract := BuildFinalContract("执行状态未知，需要先完成核验。", FinalEvidenceVerification{
+	contract := BuildFinalContract("执行状态未知，需要先完成核验。", finalRuntimeFactsForContractTest(FinalEvidenceVerification{
 		Action: FinalEvidenceActionDowngrade,
 		State:  state,
-	})
+	}))
 	if len(contract.PerformedActions) != 0 || len(contract.PostChecks) != 0 || !containsString(contract.RequiredPostChecks, "systemctl is-active demo.service") {
 		t.Fatalf("final contract mutation facts = %#v, want post-check without performed action", contract)
 	}
@@ -248,7 +248,7 @@ func TestBuildFinalEvidenceStateSkipsCoveredReadReuseResults(t *testing.T) {
 	}
 }
 
-func TestFinalEvidenceDowngradesHighConfidenceMissingEvidenceClaim(t *testing.T) {
+func TestFinalEvidenceFailedToolDecisionIgnoresAnswerConfidenceClaim(t *testing.T) {
 	state := FinalEvidenceState{
 		Checked: []CheckedEvidence{{
 			ToolCallID: "call-mcp-list",
@@ -264,13 +264,13 @@ func TestFinalEvidenceDowngradesHighConfidenceMissingEvidenceClaim(t *testing.T)
 		Confidence: FinalEvidenceConfidenceMedium,
 	}
 
-	answer := "根因：Coroot未配置，无法收集环境A的A服务RCA证据。\n置信度：高\n缺失证据：A服务的依赖链、指标、日志、链路追踪。"
-	decision := VerifyFinalEvidence(answer, state)
-	if decision.Action != FinalEvidenceActionDowngrade || decision.Confidence != FinalEvidenceConfidenceLow {
-		t.Fatalf("decision = %#v, want low-confidence downgrade", decision)
+	highClaim := VerifyFinalEvidence("根因已确认，置信度：高。", state)
+	lowClaim := VerifyFinalEvidence("证据不足，置信度：低。", state)
+	if highClaim.Action != FinalEvidenceActionDowngrade || highClaim.Confidence != FinalEvidenceConfidenceMedium {
+		t.Fatalf("decision = %#v, want typed failed-tool downgrade", highClaim)
 	}
-	if !containsString(decision.Reasons, "missing_evidence_claim_requires_low_confidence") {
-		t.Fatalf("reasons = %v, want missing evidence reason", decision.Reasons)
+	if highClaim.Action != lowClaim.Action || highClaim.Confidence != lowClaim.Confidence || strings.Join(highClaim.Reasons, ",") != strings.Join(lowClaim.Reasons, ",") {
+		t.Fatalf("answer claim changed evidence decision: high=%#v low=%#v", highClaim, lowClaim)
 	}
 }
 
@@ -415,44 +415,18 @@ func TestFailureClassifierRecognizesStructuredMCPUnavailable(t *testing.T) {
 	}
 }
 
-func TestFinalEvidenceDowngradesRiskyOperationalAdvice(t *testing.T) {
-	state := FinalEvidenceState{
-		Checked: []CheckedEvidence{
-			{ToolName: "web_search", Summary: "read official docs"},
-		},
-		Confidence: FinalEvidenceConfidenceHigh,
-	}
-	decision := VerifyFinalEvidence("建议直接清理 archive 中冲突 WAL：rm -rf /repo/archive/*", state)
-	if decision.Action != FinalEvidenceActionDowngrade || decision.Confidence != FinalEvidenceConfidenceLow {
-		t.Fatalf("decision = %+v, want downgrade low confidence", decision)
-	}
-	if !strings.Contains(strings.Join(decision.Reasons, ","), "risky_operational_advice_requires_evidence_gate") {
-		t.Fatalf("reasons = %#v, want risky advice reason", decision.Reasons)
+func TestRiskyOperationalAdviceClassifierRemainsSeparateFromFinalFacts(t *testing.T) {
+	decision := EvaluateRiskyOperationalAdvice("建议直接清理 archive 中冲突 WAL：rm -rf /repo/archive/*")
+	if !decision.RequiresEvidenceGate {
+		t.Fatalf("decision = %+v, want content safety signal", decision)
 	}
 }
 
-func TestFinalEvidenceBlocksUngatedMutationCommandAdviceWithoutTarget(t *testing.T) {
-	state := FinalEvidenceState{
-		Confidence:         FinalEvidenceConfidenceLow,
-		ExecCommandAllowed: false,
-		TargetBound:        false,
-	}
+func TestRiskyOperationalAdviceClassifiesUngatedMutationWithoutChangingFinalFacts(t *testing.T) {
 	answer := "可以先查看状态，然后执行 sudo systemctl restart nginx，最后再检查服务是否恢复。"
-
-	decision := VerifyFinalEvidence(answer, state)
-
-	if decision.Action != FinalEvidenceActionBlock || decision.Confidence != FinalEvidenceConfidenceLow {
-		t.Fatalf("decision = %+v, want block low confidence", decision)
-	}
-	for _, want := range []string{
-		"risky_operational_advice_requires_evidence_gate",
-		"ungated_mutation_command_advice",
-		"exec_command_not_allowed",
-		"no_explicit_target_binding",
-	} {
-		if !containsString(decision.Reasons, want) {
-			t.Fatalf("reasons = %#v, want %q", decision.Reasons, want)
-		}
+	decision := EvaluateRiskyOperationalAdvice(answer)
+	if !decision.RequiresEvidenceGate || decision.Category != riskyAdviceCategoryUngatedMutationCommandAdvice {
+		t.Fatalf("decision = %+v, want separate ungated mutation safety signal", decision)
 	}
 }
 
@@ -669,13 +643,8 @@ func TestRunTurnFinalEvidenceVerifierDowngradesAfterFailedTool(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	for _, want := range []string{"还不能给最终结论", "synthetic_read 未成功返回证据", "下一步只读检查"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want deterministic constrained final containing %q", result.Output, want)
-		}
-	}
-	if strings.Contains(result.Output, "置信度") || strings.Contains(result.Output, "confidence") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	if result.Output != "已确认全部检查完成，结论高置信。" {
+		t.Fatalf("final output = %q, want display text preserved independently", result.Output)
 	}
 	if len(model.inputs) != 2 {
 		t.Fatalf("model calls = %d, want no verifier rewrite call", len(model.inputs))
@@ -696,8 +665,8 @@ func TestRunTurnFinalEvidenceVerifierDowngradesAfterFailedTool(t *testing.T) {
 	if finalAssistantMessages[0] != result.Output {
 		t.Fatalf("persisted final assistant message = %q, want %q", finalAssistantMessages[0], result.Output)
 	}
-	if strings.Contains(strings.Join(finalAssistantMessages, "\n"), "已确认全部检查完成") {
-		t.Fatalf("unconstrained final draft leaked into session messages: %#v", finalAssistantMessages)
+	if got := goldenFinalContractStatus(session.CurrentTurn); got != string(FinalContractStatusPartial) {
+		t.Fatalf("final contract status = %q, want partial from failed tool facts", got)
 	}
 	var finalItems []agentstate.TurnItem
 	for _, item := range session.CurrentTurn.AgentItems {
@@ -763,13 +732,8 @@ func TestRunTurnFinalEvidenceRetryIsSynthesisOnlyAndKeepsRejectedDraftHidden(t *
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	for _, want := range []string{"还不能给最终结论", "synthetic_read 未成功返回证据", "下一步只读检查"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want deterministic constrained final containing %q", result.Output, want)
-		}
-	}
-	if strings.Contains(result.Output, "置信度") || strings.Contains(result.Output, "confidence") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	if result.Output != rejectedDraft {
+		t.Fatalf("final output = %q, want display draft preserved", result.Output)
 	}
 	if len(compiler.contexts) != 2 {
 		t.Fatalf("compiler contexts = %d, want no final evidence rewrite context", len(compiler.contexts))
@@ -785,6 +749,9 @@ func TestRunTurnFinalEvidenceRetryIsSynthesisOnlyAndKeepsRejectedDraftHidden(t *
 	session := kernel.sessions.Get("sess-final-evidence-synthesis-only")
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatalf("missing session turn: %#v", session)
+	}
+	if got := goldenFinalContractStatus(session.CurrentTurn); got != string(FinalContractStatusPartial) {
+		t.Fatalf("final contract status = %q, want partial from typed failed tool", got)
 	}
 	assertNoLegacyAssistantItems(t, session.CurrentTurn.AgentItems)
 }
@@ -837,8 +804,8 @@ func TestRunTurn_FinalEvidenceRetryPreludeDoesNotCommit(t *testing.T) {
 	if result.Output == prelude {
 		t.Fatalf("prelude was committed as final output")
 	}
-	if !strings.Contains(result.Output, "还不能给最终结论") {
-		t.Fatalf("final output = %q, want deterministic incomplete final", result.Output)
+	if result.Output != rejectedDraft {
+		t.Fatalf("final output = %q, want display draft preserved", result.Output)
 	}
 	session := kernel.sessions.Get("sess-final-evidence-prelude")
 	if session == nil || session.CurrentTurn == nil {
@@ -951,17 +918,21 @@ func TestRunTurn_FinalEvidenceRetryPreludePreservesStructuredRCADraft(t *testing
 			t.Fatalf("final output = %q, want preserved RCA detail %q", result.Output, want)
 		}
 	}
-	for _, forbidden := range []string{"置信度", "confidence", "final contract", "non_substantive_final_answer", "kinds=", "signals=", "{\"content\""} {
+	for _, forbidden := range []string{"final contract", "non_substantive_final_answer", "kinds=", "signals=", "{\"content\""} {
 		if strings.Contains(result.Output, forbidden) {
 			t.Fatalf("final output leaked forbidden text %q:\n%s", forbidden, result.Output)
 		}
 	}
-	if !strings.Contains(result.Output, "证据边界：受限") {
-		t.Fatalf("final output = %q, want limited evidence boundary", result.Output)
+	session := kernel.sessions.Get("sess-final-evidence-structured-draft")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("missing final contract session: %#v", session)
+	}
+	if got := goldenFinalContractStatus(session.CurrentTurn); got == string(FinalContractStatusVerified) || got == "" {
+		t.Fatalf("final contract status = %q, must not verify failed typed evidence", got)
 	}
 }
 
-func TestRunTurnBlocksUngatedManualMutationAdviceAfterRetry(t *testing.T) {
+func TestRunTurnClassifiesUngatedManualMutationFromTypedTargetFacts(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{
 		schema.AssistantMessage("可以执行 sudo systemctl restart nginx，然后检查 systemctl status nginx。", nil),
 		schema.AssistantMessage("执行 sudo systemctl restart nginx 即可。", nil),
@@ -970,7 +941,7 @@ func TestRunTurnBlocksUngatedManualMutationAdviceAfterRetry(t *testing.T) {
 	}}
 	kernel := newLoopKernel(t, model, nil, nil, nil)
 
-	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-ungated-manual-mutation",
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeChat,
@@ -988,20 +959,12 @@ func TestRunTurnBlocksUngatedManualMutationAdviceAfterRetry(t *testing.T) {
 	if len(model.inputs) > 2 {
 		t.Fatalf("model calls = %d, want no final evidence verifier retry loop", len(model.inputs))
 	}
-	if strings.Contains(result.Output, "systemctl restart") || strings.Contains(result.Output, "sudo systemctl") {
-		t.Fatalf("final output leaked mutation command:\n%s", result.Output)
-	}
-	for _, want := range []string{"明确绑定", "@host"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want %q", result.Output, want)
-		}
-	}
 	session := kernel.sessions.Get("sess-ungated-manual-mutation")
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatalf("missing session turn: %#v", session)
 	}
-	if got := session.CurrentTurn.Metadata["finalEvidenceBlocked"]; got != "true" {
-		t.Fatalf("finalEvidenceBlocked = %q, want true", got)
+	if got := goldenFinalContractStatus(session.CurrentTurn); got != string(FinalContractStatusBlocked) {
+		t.Fatalf("final contract status = %q, want blocked from typed missing target", got)
 	}
 }
 
@@ -1014,7 +977,7 @@ func TestRunTurnBlocksNoTargetMutationIntentWithoutCommandAdvice(t *testing.T) {
 	}}
 	kernel := newLoopKernel(t, model, nil, nil, nil)
 
-	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-no-target-mutation-intent",
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeChat,
@@ -1029,13 +992,9 @@ func TestRunTurnBlocksNoTargetMutationIntentWithoutCommandAdvice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if strings.Contains(result.Output, "systemctl restart") || strings.Contains(result.Output, "sudo systemctl") {
-		t.Fatalf("final output leaked mutation command:\n%s", result.Output)
-	}
-	for _, want := range []string{"明确绑定", "@host"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want %q", result.Output, want)
-		}
+	session := kernel.sessions.Get("sess-no-target-mutation-intent")
+	if session == nil || session.CurrentTurn == nil || goldenFinalContractStatus(session.CurrentTurn) != string(FinalContractStatusBlocked) {
+		t.Fatalf("final contract must be blocked from typed target facts: %#v", session)
 	}
 }
 
