@@ -678,6 +678,8 @@ type TurnSnapshot struct {
 	TraceContext            TraceContextCarrier                `json:"traceContext,omitempty"`
 	PromptSections          []string                           `json:"promptSections,omitempty"`
 	LatestCheckpoint        *CheckpointMetadata                `json:"latestCheckpoint,omitempty"`
+	LatestStepReference     *StepReference                     `json:"latestStepReference,omitempty"`
+	PendingStepCause        *StepRevisionCause                 `json:"pendingStepCause,omitempty"`
 	Iterations              []IterationState                   `json:"iterations,omitempty"`
 	AgentItems              []agentstate.TurnItem              `json:"agentItems,omitempty"`
 	PendingApprovals        []PendingApproval                  `json:"pendingApprovals,omitempty"`
@@ -723,6 +725,16 @@ func (s TurnSnapshot) Validate() error {
 	if s.LatestCheckpoint != nil {
 		if err := s.LatestCheckpoint.Validate(); err != nil {
 			return fmt.Errorf("latest checkpoint: %w", err)
+		}
+	}
+	if s.LatestStepReference != nil {
+		if err := s.LatestStepReference.Validate(); err != nil {
+			return fmt.Errorf("latest step reference: %w", err)
+		}
+	}
+	if s.PendingStepCause != nil {
+		if err := s.PendingStepCause.Validate(); err != nil {
+			return fmt.Errorf("pending step cause: %w", err)
 		}
 	}
 	for i := range s.Iterations {
@@ -788,6 +800,7 @@ type IterationState struct {
 	TokenBudget             int                                      `json:"tokenBudget,omitempty"`
 	ResultBudget            int                                      `json:"resultBudget,omitempty"`
 	Checkpoint              *CheckpointMetadata                      `json:"checkpoint,omitempty"`
+	StepReference           *StepReference                           `json:"stepReference,omitempty"`
 	PendingApprovals        []PendingApproval                        `json:"pendingApprovals,omitempty"`
 	PendingEvidence         []PendingEvidence                        `json:"pendingEvidence,omitempty"`
 	CompactedSegments       []CompactedSegment                       `json:"compactedSegments,omitempty"`
@@ -821,6 +834,14 @@ func (s IterationState) Validate() error {
 	if s.Checkpoint != nil {
 		if err := s.Checkpoint.Validate(); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
+		}
+	}
+	if s.StepReference != nil {
+		if err := s.StepReference.Validate(); err != nil {
+			return fmt.Errorf("step reference: %w", err)
+		}
+		if s.StepReference.Iteration != s.Iteration {
+			return fmt.Errorf("step reference iteration mismatch")
 		}
 	}
 	for i := range s.ToolResults {
