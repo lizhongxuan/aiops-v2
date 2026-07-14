@@ -154,6 +154,7 @@ export function parsePromptTrace(input, controlChainOverride) {
   const controlChain = buildControlChainViewModel(payload);
   const controlFacts = buildControlFactsViewModel(payload, stepContext, controlChain);
   const promptHashes = buildPromptControlHashes(payload, promptFingerprint);
+  const promptCache = buildPromptCacheViewModel(payload);
   const toolControl = buildToolControlViewModel(payload, stepContext, toolSurface);
   const approvalControl = buildApprovalControlViewModel(controlChain, controlFacts);
   const specialInput = buildSpecialInputViewModel(payload);
@@ -201,6 +202,7 @@ export function parsePromptTrace(input, controlChainOverride) {
     controlFacts,
     controlChain,
     promptHashes,
+    promptCache,
     toolControl,
     approvalControl,
     providerRequest,
@@ -211,6 +213,29 @@ export function parsePromptTrace(input, controlChainOverride) {
     specialInput,
     warnings,
   };
+}
+
+function buildPromptCacheViewModel(payload = {}) {
+  const sections = firstCollection(payload.promptInputTrace?.promptSections)
+    .filter(isPlainObject)
+    .map((section) => {
+      const cache = compactText(section.cache) || "unknown";
+      const hash = redactSensitiveText(compactText(section.hash));
+      return {
+        id: redactSensitiveText(compactText(section.id)) || "unknown",
+        kind: redactSensitiveText(compactText(section.kind)) || "unknown",
+        cache,
+        missReason: cache === "hit" ? "" : redactSensitiveText(compactText(section.cacheMissReason)) || "unknown",
+        hash,
+        shortHash: shortHash(hash),
+      };
+    });
+  const summary = { hit: 0, miss: 0, invalidated: 0, unknown: 0 };
+  for (const section of sections) {
+    if (Object.hasOwn(summary, section.cache)) summary[section.cache] += 1;
+    else summary.unknown += 1;
+  }
+  return { sections, summary };
 }
 
 function buildControlChainViewModel(payload = {}) {

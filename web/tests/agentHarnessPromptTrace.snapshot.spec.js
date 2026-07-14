@@ -44,6 +44,13 @@ const traceDocument = {
     dispatchableTools: ["inspect_service"],
     hiddenReasons: { restart_service: "approval_context_stale" },
   },
+  promptInputTrace: {
+    promptSections: [
+      { id: "absolute.system", kind: "stable", hash: "sha256:absolute-system-v1", cache: "hit" },
+      { id: "role.profile", kind: "stable", hash: "sha256:role-profile-v2", cache: "invalidated", cacheMissReason: "hash_changed" },
+      { id: "dynamic.context", kind: "dynamic", hash: "sha256:dynamic-context-v7", cache: "miss", cacheMissReason: "section_added" },
+    ],
+  },
 };
 
 const controlChain = {
@@ -141,6 +148,10 @@ test("Prompt Trace highlights the first canonical control-chain divergence owner
   await expect(page.getByTestId("prompt-trace-hash-absoluteSystemHash")).toContainText("L0");
   await expect(page.getByTestId("prompt-trace-hash-dynamicContextHash")).toContainText("L5");
   await expect(page.getByTestId("prompt-trace-hash-currentUserInputHash")).toContainText("L6");
+  const cacheSections = page.getByTestId("prompt-trace-cache-sections");
+  await expect(cacheSections).toContainText("absolute.system");
+  await expect(cacheSections).toContainText("hash_changed");
+  await expect(cacheSections).toContainText("section_added");
   const bindings = page.getByTestId("prompt-trace-control-bindings");
   await expect(bindings).toContainText("permission");
   await expect(bindings).toContainText("checkpoint:approval-42");
@@ -152,4 +163,5 @@ test("Prompt Trace highlights the first canonical control-chain divergence owner
 
   await expect(panel).toHaveScreenshot("agent-harness-prompt-trace-control-chain.png");
   await expect(bindings).toHaveScreenshot("agent-harness-prompt-trace-bindings.png");
+  await expect(cacheSections).toHaveScreenshot("agent-harness-prompt-trace-cache-sections.png");
 });

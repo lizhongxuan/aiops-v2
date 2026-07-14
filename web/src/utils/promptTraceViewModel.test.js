@@ -191,6 +191,12 @@ describe("parsePromptTrace", () => {
         dispatchableTools: ["inspect_service"],
         hiddenReasons: { restart_service: "approval_required" },
       },
+		promptInputTrace: {
+			promptSections: [
+				{ id: "base.contract", kind: "stable", hash: "hash-base", cache: "hit" },
+				{ id: "dynamic.context", kind: "dynamic", hash: "hash-dynamic", cache: "invalidated", cacheMissReason: "hash_changed" },
+			],
+		},
       controlChain: {
         schemaVersion: "aiops.canonical-rollout.v1",
         sessionId: "sess-1",
@@ -255,6 +261,25 @@ describe("parsePromptTrace", () => {
     expect(vm.promptHashes.stable.find((item) => item.key === "absoluteSystemHash").change).toBe("unchanged");
     expect(vm.promptHashes.stable.find((item) => item.key === "roleProfileHash").change).toBe("changed");
     expect(vm.promptHashes.dynamic.find((item) => item.key === "dynamicContextHash").change).toBe("changed");
+		expect(vm.promptCache.sections).toEqual([
+			{
+				id: "base.contract",
+				kind: "stable",
+				cache: "hit",
+				missReason: "",
+				hash: "hash-base",
+				shortHash: "hash-base",
+			},
+			{
+				id: "dynamic.context",
+				kind: "dynamic",
+				cache: "invalidated",
+				missReason: "hash_changed",
+				hash: "hash-dynamic",
+				shortHash: "hash-dynamic",
+			},
+		]);
+		expect(vm.promptCache.summary).toEqual({ hit: 1, miss: 0, invalidated: 1, unknown: 0 });
     expect(vm.toolControl).toMatchObject({
       modelVisible: ["inspect_service", "restart_service"],
       dispatchable: ["inspect_service"],

@@ -779,6 +779,18 @@ function ControlChainPanel({ trace }: { trace: PromptTraceViewModel | null }) {
         <PromptHashGroup title="动态后缀 · L4-L6" items={trace.promptHashes.dynamic} />
       </div>
 
+      <ContextPanel title="Prompt cache">
+        <div data-testid="prompt-trace-cache-sections" className="grid gap-2">
+          {trace.promptCache.sections.length ? trace.promptCache.sections.map((section) => (
+            <div key={section.id} className="grid gap-2 rounded-md bg-slate-50 px-3 py-2 text-xs sm:grid-cols-[minmax(0,1fr)_auto_auto] sm:items-center">
+              <div className="min-w-0"><span className="font-medium text-slate-700">{section.id}</span><span className="ml-2 font-mono text-slate-400">{section.kind}</span></div>
+              <ToneBadge>{section.cache}</ToneBadge>
+              <span className="truncate font-mono text-slate-500" title={section.missReason}>{section.cache === "hit" ? shortHash(section.hash) || "hit" : section.missReason}</span>
+            </div>
+          )) : <EmptyGovernanceState text="暂无 prompt cache trace" />}
+        </div>
+      </ContextPanel>
+
       <div data-testid="prompt-trace-control-bindings" className="grid gap-3 lg:grid-cols-2">
         <ContextPanel title="Tool surface / policy">
           <div className="grid gap-3 text-xs sm:grid-cols-3">

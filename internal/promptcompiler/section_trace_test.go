@@ -120,10 +120,26 @@ func TestApplyPromptSectionCacheMarksHitMissAndInvalidated(t *testing.T) {
 	if byID["base.contract"].Cache != PromptSectionCacheHit {
 		t.Fatalf("base.contract cache = %q, want %q", byID["base.contract"].Cache, PromptSectionCacheHit)
 	}
+	if byID["base.contract"].CacheMissReason != "" {
+		t.Fatalf("base.contract hit miss reason = %q, want empty", byID["base.contract"].CacheMissReason)
+	}
 	if byID["dynamic.context"].Cache != PromptSectionCacheInvalidated {
 		t.Fatalf("dynamic.context cache = %q, want %q", byID["dynamic.context"].Cache, PromptSectionCacheInvalidated)
 	}
+	if byID["dynamic.context"].CacheMissReason != PromptSectionCacheMissReasonHashChanged {
+		t.Fatalf("dynamic.context miss reason = %q, want %q", byID["dynamic.context"].CacheMissReason, PromptSectionCacheMissReasonHashChanged)
+	}
 	if byID["profile.advisor"].Cache != PromptSectionCacheMiss {
 		t.Fatalf("profile.advisor cache = %q, want %q", byID["profile.advisor"].Cache, PromptSectionCacheMiss)
+	}
+	if byID["profile.advisor"].CacheMissReason != PromptSectionCacheMissReasonSectionAdded {
+		t.Fatalf("profile.advisor miss reason = %q, want %q", byID["profile.advisor"].CacheMissReason, PromptSectionCacheMissReasonSectionAdded)
+	}
+}
+
+func TestApplyPromptSectionCacheExplainsInitialMiss(t *testing.T) {
+	cached := ApplyPromptSectionCache(nil, []PromptSectionTrace{{ID: "base.contract", Hash: "sha256:stable"}})
+	if len(cached) != 1 || cached[0].Cache != PromptSectionCacheMiss || cached[0].CacheMissReason != PromptSectionCacheMissReasonNoPreviousTrace {
+		t.Fatalf("initial cache trace = %#v", cached)
 	}
 }

@@ -452,22 +452,23 @@ type PromptFingerprint struct {
 // PromptSectionTrace is a redaction-safe prompt-section summary. It stores
 // only stable identifiers, hashes, and size estimates, never section text.
 type PromptSectionTrace struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Source         string `json:"source"`
-	Hash           string `json:"hash"`
-	Bytes          int    `json:"bytes"`
-	TokensEstimate int    `json:"tokensEstimate"`
-	TokenEstimate  int    `json:"tokenEstimate,omitempty"`
-	Cache          string `json:"cache,omitempty"`
-	RetentionRank  string `json:"retentionRank,omitempty"`
-	RetentionClass string `json:"retentionClass,omitempty"`
-	CompactAction  string `json:"compactAction,omitempty"`
-	Action         string `json:"action,omitempty"`
-	CompactSchema  string `json:"compactSchema,omitempty"`
-	SourceRef      string `json:"sourceRef,omitempty"`
-	Redaction      string `json:"redaction,omitempty"`
-	Purpose        string `json:"purpose,omitempty"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Source          string `json:"source"`
+	Hash            string `json:"hash"`
+	Bytes           int    `json:"bytes"`
+	TokensEstimate  int    `json:"tokensEstimate"`
+	TokenEstimate   int    `json:"tokenEstimate,omitempty"`
+	Cache           string `json:"cache,omitempty"`
+	CacheMissReason string `json:"cacheMissReason,omitempty"`
+	RetentionRank   string `json:"retentionRank,omitempty"`
+	RetentionClass  string `json:"retentionClass,omitempty"`
+	CompactAction   string `json:"compactAction,omitempty"`
+	Action          string `json:"action,omitempty"`
+	CompactSchema   string `json:"compactSchema,omitempty"`
+	SourceRef       string `json:"sourceRef,omitempty"`
+	Redaction       string `json:"redaction,omitempty"`
+	Purpose         string `json:"purpose,omitempty"`
 }
 
 // ChangedPromptSection records why one prompt section hash changed.
@@ -487,6 +488,10 @@ const (
 	// PromptSectionCacheInvalidated marks a known section whose hash changed
 	// since the previous model input in the same session.
 	PromptSectionCacheInvalidated = "invalidated"
+
+	PromptSectionCacheMissReasonNoPreviousTrace = "no_previous_trace"
+	PromptSectionCacheMissReasonSectionAdded    = "section_added"
+	PromptSectionCacheMissReasonHashChanged     = "hash_changed"
 
 	PromptSectionChangeInitial               = "initial"
 	PromptSectionChangeSystemRoleChanged     = "system_role_changed"
