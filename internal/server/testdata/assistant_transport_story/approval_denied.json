@@ -1,5 +1,7 @@
 {
   "name": "approval_denied",
+  "sessionType": "host",
+  "mode": "execute",
   "requests": [
     {
       "command": {
@@ -10,11 +12,12 @@
           "parts": [
             {
               "type": "text",
-              "text": "读取受保护配置"
+              "text": "@host-a 重启 demo 服务"
             }
           ],
           "metadata": {
-            "enableTool": "read_secret"
+            "enableTool": "read_service_status,restart_service",
+            "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
           }
         }
       }
@@ -32,10 +35,22 @@
       "role": "assistant",
       "toolCalls": [
         {
-          "id": "call_secret",
-          "name": "read_secret",
+          "id": "call_status",
+          "name": "read_service_status",
           "arguments": {
-            "name": "db-config"
+            "service": "demo"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "id": "call_restart",
+          "name": "restart_service",
+          "arguments": {
+            "service": "demo"
           }
         }
       ]
@@ -43,25 +58,52 @@
   ],
   "toolOutcomes": [
     {
-      "name": "read_secret",
-      "description": "Read protected configuration.",
+      "name": "read_service_status",
+      "description": "Read service status.",
       "inputSchema": {
         "type": "object",
         "required": [
-          "name"
+          "service"
         ],
         "properties": {
-          "name": {
+          "service": {
             "type": "string"
           }
         }
       },
-      "content": "protected",
+      "content": "{\"status\":\"active\",\"evidenceRefs\":[\"evidence-prechange\"]}"
+    },
+    {
+      "name": "restart_service",
+      "description": "Restart a service.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "content": "demo restarted",
       "risk": "high",
+      "mutating": true,
+      "rollbackDeclaration": {
+        "strategy": "automatic",
+        "reference": "runbook://story/service-restart/rollback"
+      },
+      "postChecks": [
+        "service_health"
+      ],
       "approval": {
-        "reason": "protected read requires approval",
+        "reason": "restart requires approval",
         "risk": "high",
-        "source": "story"
+        "source": "story",
+        "expectedEffect": "restart demo",
+        "rollback": "restart previous process",
+        "validation": "service_health"
       }
     }
   ],
@@ -71,40 +113,56 @@
     "messages": [
       {
         "phase": "commentary",
-        "text": "我会先用 read_secret 核对关键信息，再整理回答。"
+        "text": "我会先用 read_service_status 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "commentary",
+        "text": "我会先用 restart_service 核对关键信息，再整理回答。"
       },
       {
         "phase": "final_answer",
-        "text": "{\"allowedNextSteps\":[\"continue_with_existing_evidence\",\"ask_for_read_only_alternative\",\"provide_limited_hypothesis\"],\"approvalId\":\"<approval-id>\",\"reason\":\"protected read requires approval\",\"scope\":\"\",\"status\":\"approval_denied\",\"tool\":\"read_secret\"}"
+        "text": "{\"allowedNextSteps\":[\"continue_with_existing_evidence\",\"ask_for_read_only_alternative\",\"provide_limited_hypothesis\"],\"approvalId\":\"<approval-id>\",\"reason\":\"restart requires approval\",\"scope\":\"host-a\",\"status\":\"approval_denied\",\"tool\":\"restart_service\"}"
       }
     ],
     "modelVisibleTools": [
-      "read_secret"
+      "read_service_status",
+      "restart_service"
     ],
     "actualTools": [
       {
-        "id": "call_secret",
-        "name": "read_secret",
+        "id": "call_status",
+        "name": "read_service_status",
+        "status": "completed"
+      },
+      {
+        "id": "call_restart",
+        "name": "restart_service",
         "status": "blocked"
       }
     ],
     "approvalLifecycle": [
-      "read_secret:denied",
-      "read_secret:requested"
+      "restart_service:denied",
+      "restart_service:requested"
     ],
     "target": {
-      "binding": "none",
-      "resourceRefs": []
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
     },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
       "status": "approval_denied",
-      "confidence": "low",
-      "checkedEvidenceRefs": [],
+      "confidence": "medium",
+      "checkedEvidenceRefs": [
+        "evidence-prechange",
+        "tool_result:call_status"
+      ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [
         {
-          "toolName": "read_secret",
+          "toolName": "restart_service",
           "failureClass": "blocked",
           "impact": "证据读取失败，不能作为已检查结果"
         }
@@ -112,12 +170,18 @@
       "approvedActions": [],
       "performedActions": [],
       "postChecks": [],
-      "requiredPostChecks": [],
+      "requiredPostChecks": [
+        "service_health"
+      ],
       "limitations": [
         "approval_denied",
         "blocked",
+        "execution_required",
         "failed_tool_requires_lower_confidence",
-        "read_secret:blocked"
+        "missing_verification_report",
+        "postcheck_pending",
+        "required_postcheck_incomplete",
+        "restart_service:blocked"
       ]
     },
     "transportProjection": {
@@ -127,15 +191,23 @@
       "processKinds": [
         "assistant",
         "tool",
+        "assistant",
+        "tool",
         "approval"
       ],
       "processStatuses": [
+        "completed",
+        "completed",
         "completed",
         "rejected",
         "completed"
       ],
       "timelineTypes": [
         "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
         "model_call",
         "assistant_message",
         "tool_call",
@@ -148,32 +220,34 @@
       "pendingApprovalCount": 0,
       "turnCount": 1
     },
-    "evidence": [],
+    "evidence": [
+      "evidence-prechange"
+    ],
     "traceHashes": {
       "promptFingerprint": {
         "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
         "compilerVersion": "prompt-fingerprint-v2",
-        "currentUserInputHash": "ee92697a567c45c738896dd5e8cf7430d652f040bf67bc80187030f7c96fb609",
-        "developerHash": "3f6fa374f89ad85e9b368384cbf25c6d907e242f89ff1bd0c5ff765435a782d2",
+        "currentUserInputHash": "0713feca342869bd1eff3fdcfcef09d6867693773a7b59fe5c8f72f451f1c91c",
+        "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
-        "roleProfileHash": "5424934bc83bdf2e34e03161da8ef8d99d636ddfc1c28264cf239384d1bf2a24",
-        "runtimePolicyHash": "6424748bbf94ae7f4bf8d440826d48d866c9e8b3d9557132c0ac484729df7762",
-        "stableHash": "9ac898ae9a8ff329126165c2df2fefa0aeab3c6f948b04f7bd9774f86c15c77e",
-        "stablePrefixHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
+        "roleProfileHash": "5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea",
+        "runtimePolicyHash": "a8de006dcee7e8f880610183d3f46fbed16145bf3a70804a5154c59a87fce5a2",
+        "stableHash": "e0744e8d7e4481e470dc32a1bb71adc519fd1cae2caedeff4540919ea505c444",
+        "stablePrefixHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
         "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
         "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
-        "toolRegistryHash": "331f313a7a1cd0d544eb1cf92d8341e708d67547fe75559a95af07b31ae22431",
-        "turnPrefixHash": "b64323410ef75e44cd46047a0105623c839c8f65cdb18e75a3b21fb5816f36c8",
-        "turnStableHash": "ab65abcd63df78201f806e51721e299525c730d6ff234ea866bc0fb99f2dcb0b",
+        "toolRegistryHash": "c9edf5fbe93abd831ab6881d4ff9ca21ae4cef643240ea78ee3c6e8fa2d25a53",
+        "turnPrefixHash": "0e914554e19eade80d9b5a4e2a3ba83ba96c40cb06285f25c5c6d54c589a5549",
+        "turnStableHash": "75d597f5d07ce4ee41ae196a8857e7390dbbb674fe8197e96f40704bfc7991a5",
         "version": "prompt-fingerprint-v2"
       },
-      "stablePromptHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
-      "stableToolFingerprint": "sha256:2c41877eb08bc5d47297b79988523c207c2feda390f8e3842292b6aec2912558",
+      "stablePromptHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
+      "stableToolFingerprint": "sha256:5a1220badf2454ab374e3fa5b68fe1e9759d7821995c14857ede0e397fcc917e",
       "toolSurfaceFingerprints": [
-        "sha256:2c41877eb08bc5d47297b79988523c207c2feda390f8e3842292b6aec2912558"
+        "sha256:5a1220badf2454ab374e3fa5b68fe1e9759d7821995c14857ede0e397fcc917e"
       ],
       "toolPolicyHashes": [
-        "5db217587996f0057bbcfdab4ab1c38794021207414157a5f3e6f3477f6100f1"
+        "03d41d3297dfcf88456116a2b1f7699fd7e92726170dcbc53afad7f68b33203b"
       ],
       "governanceSnapshot": ""
     }

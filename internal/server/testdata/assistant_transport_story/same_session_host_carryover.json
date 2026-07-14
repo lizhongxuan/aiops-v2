@@ -105,7 +105,9 @@
     "target": {
       "binding": "host",
       "hostId": "host-kme",
-      "resourceRefs": []
+      "resourceRefs": [
+        "host:host-kme"
+      ]
     },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",

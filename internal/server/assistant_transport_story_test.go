@@ -17,6 +17,7 @@ import (
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/tooling"
 )
 
 type assistantTransportStory struct {
@@ -64,17 +65,24 @@ type storyToolCall struct {
 }
 
 type storyToolOutcome struct {
-	Name                string             `json:"name"`
-	Description         string             `json:"description,omitempty"`
-	InputSchema         json.RawMessage    `json:"inputSchema,omitempty"`
-	Content             string             `json:"content,omitempty"`
-	Error               string             `json:"error,omitempty"`
-	Risk                string             `json:"risk,omitempty"`
-	Mutating            bool               `json:"mutating,omitempty"`
-	Approval            *storyToolApproval `json:"approval,omitempty"`
-	PostChecks          []string           `json:"postChecks,omitempty"`
-	PermissionScope     string             `json:"permissionScope,omitempty"`
-	BlockUntilCancelled bool               `json:"blockUntilCancelled,omitempty"`
+	Name                string                    `json:"name"`
+	Description         string                    `json:"description,omitempty"`
+	InputSchema         json.RawMessage           `json:"inputSchema,omitempty"`
+	Content             string                    `json:"content,omitempty"`
+	Error               string                    `json:"error,omitempty"`
+	Outcome             tooling.ToolResultOutcome `json:"outcome,omitempty"`
+	Risk                string                    `json:"risk,omitempty"`
+	Mutating            bool                      `json:"mutating,omitempty"`
+	RollbackDeclaration *storyRollbackDeclaration `json:"rollbackDeclaration,omitempty"`
+	Approval            *storyToolApproval        `json:"approval,omitempty"`
+	PostChecks          []string                  `json:"postChecks,omitempty"`
+	PermissionScope     string                    `json:"permissionScope,omitempty"`
+	BlockUntilCancelled bool                      `json:"blockUntilCancelled,omitempty"`
+}
+
+type storyRollbackDeclaration struct {
+	Strategy  tooling.ToolRollbackStrategy `json:"strategy"`
+	Reference string                       `json:"reference"`
 }
 
 type storyToolApproval struct {
@@ -266,19 +274,84 @@ func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
 	}
 
 	approval := stories["approval_resume"]
-	if len(approval.Want.FinalFacts.ApprovedActions) == 0 || len(approval.Want.FinalFacts.PerformedActions) == 0 || len(approval.Want.FinalFacts.RequiredPostChecks) == 0 {
-		t.Errorf("approval_resume must assert non-empty approvedActions, performedActions, and requiredPostChecks from runtime final facts: %#v", approval.Want.FinalFacts)
+	approvalMutationReady := false
+	for _, outcome := range approval.ToolOutcomes {
+		if outcome.Name == "restart_service" && outcome.Mutating && storyRollbackReady(outcome) {
+			approvalMutationReady = true
+		}
+	}
+	if !approvalMutationReady || approval.Want.TurnStatus != "completed" ||
+		!storyHasToolStatus(approval, "restart_service", string(runtimekernel.ToolInvocationCompleted)) ||
+		!storyContains(approval.Want.ApprovalLifecycle, "restart_service:approved") ||
+		!storyContains(approval.Want.ApprovalLifecycle, "restart_service:executed") ||
+		len(approval.Want.FinalFacts.ApprovedActions) == 0 || len(approval.Want.FinalFacts.PerformedActions) == 0 {
+		t.Errorf("approval_resume must prove an approved mutation resumed to a completed invocation/turn: want=%#v", approval.Want)
 	}
 
 	partial := stories["partial_mutation_postcheck_failed"]
 	partialMutation := false
 	for _, outcome := range partial.ToolOutcomes {
-		if outcome.Mutating && outcome.Approval != nil && len(outcome.PostChecks) > 0 {
+		if outcome.Mutating && storyRollbackReady(outcome) && outcome.Approval != nil && len(outcome.PostChecks) > 0 && outcome.Outcome == tooling.ToolResultOutcomePartial {
 			partialMutation = true
 		}
 	}
-	if !partialMutation || len(partial.Want.ActualTools) < 2 || len(partial.Want.FinalFacts.FailedToolImpacts) == 0 || len(partial.Want.FinalFacts.RequiredPostChecks) == 0 {
-		t.Errorf("partial_mutation_postcheck_failed must exercise an approved mutating tool and assert actual failure/post-check facts")
+	if !partialMutation ||
+		!storyHasToolStatus(partial, "install_package", string(runtimekernel.ToolInvocationPartial)) ||
+		!storyHasToolStatus(partial, "verify_package_state", string(runtimekernel.ToolInvocationFailed)) ||
+		len(partial.Want.FinalFacts.FailedToolImpacts) < 2 || len(partial.Want.FinalFacts.RequiredPostChecks) == 0 {
+		t.Errorf("partial_mutation_postcheck_failed must prove typed partial mutation plus failed post-check facts: want=%#v", partial.Want)
+	}
+
+	readonly := stories["single_readonly_tool"]
+	if readonly.Want.Target.Binding != "host" || readonly.Want.Target.HostID == "" ||
+		!storyContains(readonly.Want.Target.ResourceRefs, "host:"+readonly.Want.Target.HostID) ||
+		len(readonly.ToolOutcomes) != 1 || readonly.ToolOutcomes[0].Mutating ||
+		!storyHasToolStatus(readonly, readonly.ToolOutcomes[0].Name, string(runtimekernel.ToolInvocationCompleted)) {
+		t.Errorf("single_readonly_tool must be a completed read-only call bound to exactly one host resource: want=%#v outcomes=%#v", readonly.Want, readonly.ToolOutcomes)
+	}
+
+	denied := stories["approval_denied"]
+	deniedMutation := false
+	deniedMutationName := ""
+	for _, outcome := range denied.ToolOutcomes {
+		if outcome.Mutating && outcome.Approval != nil && strings.TrimSpace(outcome.Approval.Rollback) != "" && storyRollbackReady(outcome) {
+			deniedMutation = true
+			deniedMutationName = outcome.Name
+		}
+	}
+	if !deniedMutation || denied.Want.Target.Binding != "host" || denied.Want.Target.HostID == "" ||
+		!storyContains(denied.Want.Target.ResourceRefs, "host:"+denied.Want.Target.HostID) ||
+		!storyContains(denied.Want.ApprovalLifecycle, deniedMutationName+":requested") ||
+		!storyContains(denied.Want.ApprovalLifecycle, deniedMutationName+":denied") ||
+		len(denied.Want.FinalFacts.PerformedActions) != 0 {
+		t.Errorf("approval_denied must prove a single-host mutation was requested, denied, and never performed: want=%#v outcomes=%#v", denied.Want, denied.ToolOutcomes)
+	}
+
+	missingRollback := stories["mutation_missing_rollback"]
+	missingRollbackMutation := false
+	for _, outcome := range missingRollback.ToolOutcomes {
+		if outcome.Mutating && !storyRollbackReady(outcome) {
+			missingRollbackMutation = true
+		}
+	}
+	if !missingRollbackMutation || missingRollback.Want.ProviderCallCount == nil || *missingRollback.Want.ProviderCallCount != 0 ||
+		len(missingRollback.ProviderResponses) != 0 || len(missingRollback.Want.ModelVisibleTools) != 0 || len(missingRollback.Want.ActualTools) != 0 ||
+		missingRollback.Want.TurnStatus != "failed" || missingRollback.Want.Lifecycle != "failed" {
+		t.Errorf("mutation_missing_rollback must fail closed before provider sampling or dispatch: want=%#v responses=%#v", missingRollback.Want, missingRollback.ProviderResponses)
+	}
+
+	evidenceRCA := stories["evidence_rca_no_exec"]
+	if len(evidenceRCA.Want.Evidence) == 0 || !storyContains(evidenceRCA.Want.Evidence, "user_provided_evidence") ||
+		len(evidenceRCA.Want.ModelVisibleTools) != 0 || len(evidenceRCA.Want.ActualTools) != 0 ||
+		evidenceRCA.Want.Target.Binding != "none" || len(evidenceRCA.Want.FinalFacts.PerformedActions) != 0 {
+		t.Errorf("evidence_rca_no_exec must cover user evidence while proving zero host/tool execution: want=%#v", evidenceRCA.Want)
+	}
+
+	carryover := stories["same_session_host_carryover"]
+	if carryover.Want.Target.Binding != "host" || carryover.Want.Target.HostID == "" ||
+		!storyContains(carryover.Want.Target.ResourceRefs, "host:"+carryover.Want.Target.HostID) ||
+		!storyHasToolStatus(carryover, "read_agent_status", string(runtimekernel.ToolInvocationCompleted)) {
+		t.Errorf("same_session_host_carryover must preserve host identity and resourceRefs on the follow-up turn: want=%#v", carryover.Want)
 	}
 
 	multi := stories["multi_host_manager"]
@@ -328,6 +401,34 @@ func TestAssistantTransportStoryCorpusRejectsSemanticShells(t *testing.T) {
 	if multi.Want.Target.Binding != "multi_host" {
 		t.Errorf("multi_host_manager target binding = %q, want multi_host", multi.Want.Target.Binding)
 	}
+}
+
+func storyRollbackReady(outcome storyToolOutcome) bool {
+	if outcome.RollbackDeclaration == nil {
+		return false
+	}
+	return (tooling.ToolRollbackMetadata{
+		Strategy:  outcome.RollbackDeclaration.Strategy,
+		Reference: outcome.RollbackDeclaration.Reference,
+	}).DeclarativelyReady()
+}
+
+func storyContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func storyHasToolStatus(story assistantTransportStory, name, status string) bool {
+	for _, tool := range story.Want.ActualTools {
+		if tool.Name == name && tool.Status == status {
+			return true
+		}
+	}
+	return false
 }
 
 func storyUsesTool(story assistantTransportStory, name string) bool {

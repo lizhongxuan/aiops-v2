@@ -1,9 +1,100 @@
 {
-  "name":"mutation_missing_rollback",
-  "sessionType":"host",
-  "mode":"execute",
-  "command":{"type":"add-message","message":{"id":"msg-missing-rollback","role":"user","parts":[{"type":"text","text":"@host-a 重启 demo 服务"}],"metadata":{"enableTool":"restart_service","aiops.input.mentions.v1":"{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"}}},
-  "providerResponses":[{"role":"assistant","toolCalls":[{"id":"call_restart","name":"restart_service","arguments":{"service":"demo"}}]}],
-  "toolOutcomes":[{"name":"restart_service","description":"Restart a service.","inputSchema":{"type":"object","required":["service"],"properties":{"service":{"type":"string"}}},"risk":"high","mutating":true,"approval":{"reason":"restart requires approval","risk":"high","source":"story","expectedEffect":"restart demo"}}],
-  "want":{"turnStatus":"blocked","lifecycle":"suspended","messages":[{"phase":"commentary","text":"我会先用 restart_service 核对关键信息，再整理回答。"}],"modelVisibleTools":["restart_service"],"actualTools":[{"id":"call_restart","name":"restart_service","status":"blocked"}],"approvalLifecycle":["restart_service:evidence_required"],"target":{"binding":"host","hostId":"host-a","resourceRefs":["host:host-a"]},"finalFacts":{"checkedEvidenceRefs":[],"uncheckedRequirements":[],"failedToolImpacts":[],"approvedActions":[],"performedActions":[],"postChecks":[],"limitations":[]},"transportProjection":{"schemaVersion":"aiops.transport.v2","stateStatus":"blocked","turnStatus":"blocked","processKinds":["assistant","tool","approval"],"processStatuses":["completed","blocked","blocked"],"timelineTypes":["user_message","model_call","assistant_message","tool_call"],"pendingApprovalCount":1,"turnCount":1},"evidence":[],"traceHashes":{"promptFingerprint":{"absoluteSystemHash":"3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b","compilerVersion":"prompt-fingerprint-v2","currentUserInputHash":"183999ba339a5edf3424e177b0ef478a62e4d9d66224d90854ffbf1c34ff631a","developerHash":"992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662","protocolStateHash":"f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3","roleProfileHash":"5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea","runtimePolicyHash":"75365f288bf4934aab93bad2a86b5d851c71ae845418f4926c6ccbaff833c363","stableHash":"3a5f68ecefe337d9922f206738f5a044dd613708af1848a8de4e89115ef290e3","stablePrefixHash":"f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213","stableRuntimeContractHash":"85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb","systemHash":"bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde","toolRegistryHash":"d03772f1760b2a86b1c823be1b0dde7ff7013a077517ecf393bc8951d1a8baca","turnPrefixHash":"0e914554e19eade80d9b5a4e2a3ba83ba96c40cb06285f25c5c6d54c589a5549","turnStableHash":"75d597f5d07ce4ee41ae196a8857e7390dbbb674fe8197e96f40704bfc7991a5","version":"prompt-fingerprint-v2"},"stablePromptHash":"f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213","stableToolFingerprint":"sha256:73ed95e93d01ea9b184f0b71988e46ede01f8db20dd2f1d4b55b82d5fb054b3c","toolSurfaceFingerprints":["sha256:73ed95e93d01ea9b184f0b71988e46ede01f8db20dd2f1d4b55b82d5fb054b3c"],"toolPolicyHashes":["8e648b759e4d1bdc7aae20b46e924466b6d3f75db117cc2a7dae24b80feb04bc"],"governanceSnapshot":""}}
+  "name": "mutation_missing_rollback",
+  "sessionType": "host",
+  "mode": "execute",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-missing-rollback",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "@host-a 重启 demo 服务"
+        }
+      ],
+      "metadata": {
+        "enableTool": "restart_service",
+        "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
+      }
+    }
+  },
+  "providerResponses": [],
+  "toolOutcomes": [
+    {
+      "name": "restart_service",
+      "description": "Restart a service.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "risk": "high",
+      "mutating": true,
+      "approval": {
+        "reason": "restart requires approval",
+        "risk": "high",
+        "source": "story",
+        "expectedEffect": "restart demo"
+      }
+    }
+  ],
+  "want": {
+    "providerCallCount": 0,
+    "turnStatus": "failed",
+    "lifecycle": "failed",
+    "messages": [],
+    "modelVisibleTools": [],
+    "actualTools": [],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
+    },
+    "finalFacts": {
+      "checkedEvidenceRefs": [],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "requiredPostChecks": [],
+      "limitations": []
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "failed",
+      "turnStatus": "failed",
+      "processKinds": [
+        "system"
+      ],
+      "processStatuses": [
+        "failed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "error"
+      ],
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [],
+    "traceHashes": {
+      "promptFingerprint": {},
+      "stablePromptHash": "",
+      "stableToolFingerprint": "",
+      "toolSurfaceFingerprints": [],
+      "toolPolicyHashes": [],
+      "governanceSnapshot": ""
+    }
+  }
 }

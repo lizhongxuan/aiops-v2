@@ -1,6 +1,8 @@
 {
   "name": "single_readonly_tool",
-  "userInput": "读取 api 服务指标",
+  "hostId": "host-a",
+  "mode": "inspect",
+  "userInput": "@host-a 读取 api 服务指标",
   "availableTools": [
     {
       "name": "read_metrics",
@@ -33,7 +35,7 @@
   "expectedHarness": {
     "schemaVersion": "aiops.harness.golden.v1",
     "routeMode": "inspect",
-    "targetBinding": "none",
+    "targetBinding": "host",
     "modelVisibleTools": ["read_metrics"],
     "toolCalls": ["read_metrics"],
     "finalStatus": "verified",

@@ -94,6 +94,10 @@
       "content": "demo restarted",
       "risk": "high",
       "mutating": true,
+      "rollbackDeclaration": {
+        "strategy": "automatic",
+        "reference": "runbook://story/service-restart/rollback"
+      },
       "postChecks": [
         "service_health"
       ],

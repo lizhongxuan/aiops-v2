@@ -1,5 +1,7 @@
 {
   "name": "single_readonly_tool",
+  "sessionType": "host",
+  "mode": "inspect",
   "command": {
     "type": "add-message",
     "message": {
@@ -8,11 +10,12 @@
       "parts": [
         {
           "type": "text",
-          "text": "读取 api 服务指标"
+          "text": "@host-a 读取 api 服务指标"
         }
       ],
       "metadata": {
-        "enableTool": "read_metrics"
+        "enableTool": "read_metrics",
+        "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
       }
     }
   },
@@ -81,12 +84,15 @@
     ],
     "approvalLifecycle": [],
     "target": {
-      "binding": "none",
-      "resourceRefs": []
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
     },
     "finalFacts": {
       "schemaVersion": "aiops.harness.final.v1",
-      "status": "verified",
+      "status": "needs_evidence",
       "confidence": "high",
       "checkedEvidenceRefs": [
         "tool_result:call_metrics"
@@ -96,7 +102,11 @@
       "approvedActions": [],
       "performedActions": [],
       "postChecks": [],
-      "limitations": []
+      "requiredPostChecks": [],
+      "limitations": [
+        "execution_required",
+        "missing_verification_report"
+      ]
     },
     "transportProjection": {
       "schemaVersion": "aiops.transport.v2",
@@ -118,9 +128,10 @@
         "tool_result",
         "model_call",
         "assistant_message",
+        "evidence",
         "final_response"
       ],
-      "finalStatus": "verified",
+      "finalStatus": "needs_evidence",
       "pendingApprovalCount": 0,
       "turnCount": 1
     },
@@ -130,26 +141,26 @@
         "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
         "compilerVersion": "prompt-fingerprint-v2",
         "currentUserInputHash": "0713feca342869bd1eff3fdcfcef09d6867693773a7b59fe5c8f72f451f1c91c",
-        "developerHash": "3f6fa374f89ad85e9b368384cbf25c6d907e242f89ff1bd0c5ff765435a782d2",
+        "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
         "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
-        "roleProfileHash": "5424934bc83bdf2e34e03161da8ef8d99d636ddfc1c28264cf239384d1bf2a24",
-        "runtimePolicyHash": "285d6a65a3d881b9fd119aaa7cb117500f86fb169659bb2ffbc298587f338875",
-        "stableHash": "a67e99b49dcf5d277dad74fc79117666630413db8bea4d30bfd5d1baf4c2f1a0",
-        "stablePrefixHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
+        "roleProfileHash": "5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea",
+        "runtimePolicyHash": "822ea44272d62c74c86045b88b64b06160bc2c42dfde38c0ea651dbcb21b97d8",
+        "stableHash": "bc07e60f6d5ee1641f067a8497f884e135625b106fa9c53742b7fe91307e5e40",
+        "stablePrefixHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
         "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
         "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
         "toolRegistryHash": "be703bd63e3334f60187455e7075906f824df88df163cccc59f301675771dd8a",
-        "turnPrefixHash": "b64323410ef75e44cd46047a0105623c839c8f65cdb18e75a3b21fb5816f36c8",
-        "turnStableHash": "ab65abcd63df78201f806e51721e299525c730d6ff234ea866bc0fb99f2dcb0b",
+        "turnPrefixHash": "68cfdc5669e6f06786461462da7276a5e8ed3f557dd0437a0693802298a09da7",
+        "turnStableHash": "0210d654fbd3a219f665b5a9d386ada2152b1490d3dd029bd73e0b50cdadea33",
         "version": "prompt-fingerprint-v2"
       },
-      "stablePromptHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
-      "stableToolFingerprint": "sha256:4b3f2f8db71387809159e74f746b991a10753ef20331269f11f4213ebc5546f4",
+      "stablePromptHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
+      "stableToolFingerprint": "sha256:bd3f5cc29783328c8032ec33daf95a8abce66234ae6190d06ee8b00a8228d63a",
       "toolSurfaceFingerprints": [
-        "sha256:4b3f2f8db71387809159e74f746b991a10753ef20331269f11f4213ebc5546f4"
+        "sha256:bd3f5cc29783328c8032ec33daf95a8abce66234ae6190d06ee8b00a8228d63a"
       ],
       "toolPolicyHashes": [
-        "7434988d8bb6c63de8d5f8839961ff064949a7ea6fbdbe55d8b7530aff84f43d"
+        "014e8808f81f172c3ae610af30ea1582002713f2464a5f11093b973d21b034ae"
       ],
       "governanceSnapshot": ""
     }

@@ -162,8 +162,14 @@ func runAssistantTransportStory(t *testing.T, story assistantTransportStory) ass
 				if outcome.Error != "" {
 					return tooling.ToolResult{Error: outcome.Error}, errors.New(outcome.Error)
 				}
-				return tooling.ToolResult{Content: outcome.Content}, nil
+				return tooling.ToolResult{Content: outcome.Content, Outcome: outcome.Outcome}, nil
 			},
+		}
+		if outcome.RollbackDeclaration != nil {
+			toolDef.Meta.Rollback = &tooling.ToolRollbackMetadata{
+				Strategy:  outcome.RollbackDeclaration.Strategy,
+				Reference: outcome.RollbackDeclaration.Reference,
+			}
 		}
 		if outcome.Mutating {
 			toolDef.Meta.Layer = tooling.ToolLayerMutation
@@ -576,6 +582,21 @@ func runAssistantTransportStoryRequests(t *testing.T, story assistantTransportSt
 		if requestErr != nil {
 			failAssistantTransportStory(t, story, stepResult, "AssistantTransport request failed: %v", requestErr)
 		}
+		if storyTransportCommandIsApprovalDecision(command) {
+			waitForAssistantTransportStoryTurnTerminal(t, sessions, state.SessionID)
+			refreshPayload, marshalErr := json.Marshal(map[string]any{"state": stepResult.State, "threadId": threadID, "commands": []map[string]any{}})
+			if marshalErr != nil {
+				failAssistantTransportStory(t, story, stepResult, "marshal approval projection refresh: %v", marshalErr)
+			}
+			refreshCtx, refreshCancel := context.WithTimeout(context.Background(), assistantTransportStoryRequestTimeout)
+			refreshed, refreshErr := executeAssistantTransportStoryHTTP(refreshCtx, client, baseURL, stepResult.State, refreshPayload, sessions)
+			refreshCancel()
+			if refreshErr != nil {
+				failAssistantTransportStory(t, story, refreshed, "AssistantTransport approval projection refresh failed: %v", refreshErr)
+			}
+			refreshed.RawTransport = stepResult.RawTransport + refreshed.RawTransport
+			stepResult = refreshed
+		}
 		for refreshAttempt := 0; refreshAttempt < 3 && storyResultNeedsProjectionRefresh(stepResult); refreshAttempt++ {
 			refreshPayload, marshalErr := json.Marshal(map[string]any{"state": stepResult.State, "threadId": threadID, "commands": []map[string]any{}})
 			if marshalErr != nil {
@@ -603,12 +624,34 @@ func runAssistantTransportStoryRequests(t *testing.T, story assistantTransportSt
 	return combined
 }
 
+func storyTransportCommandIsApprovalDecision(command map[string]any) bool {
+	commandType, _ := command["type"].(string)
+	return strings.TrimSpace(commandType) == assistantTransportCommandApprovalDecision
+}
+
+func waitForAssistantTransportStoryTurnTerminal(t *testing.T, sessions *runtimekernel.SessionManager, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(assistantTransportStoryRequestTimeout)
+	for time.Now().Before(deadline) {
+		session := mustAssistantTransportStorySessionSnapshot(t, sessions, sessionID)
+		if session != nil && session.CurrentTurn != nil && session.CurrentTurn.Lifecycle.IsTerminal() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	session := mustAssistantTransportStorySessionSnapshot(t, sessions, sessionID)
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatalf("approval decision did not publish a runtime turn before timeout")
+	}
+	t.Fatalf("approval decision did not reach a terminal runtime turn before timeout: lifecycle=%q resumeState=%q error=%q", session.CurrentTurn.Lifecycle, session.CurrentTurn.ResumeState, session.CurrentTurn.Error)
+}
+
 func storyResultNeedsProjectionRefresh(result assistantTransportStoryResult) bool {
 	if result.Snapshot == nil || strings.TrimSpace(result.Snapshot.FinalOutput) == "" {
 		return false
 	}
 	turn := result.State.Turns[result.State.CurrentTurnID]
-	if turn.Final == nil {
+	if storyFinalTransportBlock(turn) == nil {
 		return true
 	}
 	snapshotHasFinalResponse := false
@@ -764,8 +807,9 @@ func assertStoryHostManagerLifecycle(t *testing.T, story assistantTransportStory
 		failAssistantTransportStory(t, story, result, "host manager aggregation completed=%d failed=%d, want mixed terminal child results before synthesis", completed, failed)
 	}
 	turn := result.State.Turns[result.State.CurrentTurnID]
-	if turn.Final == nil || turn.Final.Status != appui.AiopsTransportFinalStatusPartial {
-		failAssistantTransportStory(t, story, result, "host manager final = %#v, want partial from typed aggregate child outcome", turn.Final)
+	final := storyFinalTransportContract(turn)
+	if final == nil || final.Status != appui.AiopsTransportFinalStatusPartial {
+		failAssistantTransportStory(t, story, result, "host manager final = %#v, want partial from typed aggregate child outcome", final)
 	}
 }
 
@@ -783,16 +827,47 @@ func projectStoryContextFacts(snapshot *runtimekernel.TurnSnapshot) *storyContex
 }
 
 func projectStoryMessages(turn appui.AiopsTransportTurn) []storyMessage {
-	messages := make([]storyMessage, 0, len(turn.Process)+1)
-	for _, block := range turn.Process {
+	blocks := storyOrderedTransportBlocks(turn)
+	messages := make([]storyMessage, 0, len(blocks))
+	for _, block := range blocks {
+		if block.Type == appui.AiopsTransportBlockTypeFinalAnswer && strings.TrimSpace(block.Text) != "" {
+			messages = append(messages, storyMessage{Phase: "final_answer", Text: normalizeStoryMessageText(block.Text)})
+			continue
+		}
 		if block.Kind == appui.AiopsTransportProcessKindAssistant && strings.TrimSpace(block.Text) != "" {
 			messages = append(messages, storyMessage{Phase: firstStoryValue(block.Phase, "commentary"), Text: normalizeStoryMessageText(block.Text)})
 		}
 	}
-	if turn.Final != nil && strings.TrimSpace(turn.Final.Text) != "" {
-		messages = append(messages, storyMessage{Phase: "final_answer", Text: normalizeStoryMessageText(turn.Final.Text)})
-	}
 	return messages
+}
+
+func storyOrderedTransportBlocks(turn appui.AiopsTransportTurn) []appui.AiopsTransportBlock {
+	blocks := make([]appui.AiopsTransportBlock, 0, len(turn.BlockOrder))
+	for _, id := range turn.BlockOrder {
+		if block, ok := turn.BlocksByID[id]; ok {
+			blocks = append(blocks, block)
+		}
+	}
+	return blocks
+}
+
+func storyFinalTransportBlock(turn appui.AiopsTransportTurn) *appui.AiopsTransportBlock {
+	for index := len(turn.BlockOrder) - 1; index >= 0; index-- {
+		block, ok := turn.BlocksByID[turn.BlockOrder[index]]
+		if ok && block.Type == appui.AiopsTransportBlockTypeFinalAnswer {
+			copy := block
+			return &copy
+		}
+	}
+	return nil
+}
+
+func storyFinalTransportContract(turn appui.AiopsTransportTurn) *appui.AiopsTransportFinal {
+	block := storyFinalTransportBlock(turn)
+	if block == nil {
+		return nil
+	}
+	return block.FinalContract
 }
 
 func normalizeStoryMessageText(value string) string {
@@ -931,29 +1006,62 @@ func projectStoryTarget(snapshot *runtimekernel.TurnSnapshot) storyTargetAssert 
 	}
 	target.Binding = firstStoryValue(snapshot.Metadata["aiops.target.binding"], "none")
 	target.HostID = firstStoryValue(snapshot.Metadata["aiops.target.hostId"], snapshot.Metadata["aiops.target.selectedHostId"], snapshot.Metadata["hostId"])
-	for _, value := range strings.Split(snapshot.Metadata["aiops.target.refs"], ",") {
-		if value = strings.TrimSpace(value); value != "" {
-			target.ResourceRefs = append(target.ResourceRefs, value)
+	if snapshot.TurnAssembly != nil {
+		for _, ref := range snapshot.TurnAssembly.AdmissionFacts.TargetRefs {
+			resourceType := strings.TrimSpace(ref.Type)
+			resourceID := strings.TrimSpace(ref.ID)
+			if resourceType == "" || resourceID == "" {
+				continue
+			}
+			target.ResourceRefs = append(target.ResourceRefs, resourceType+":"+resourceID)
+		}
+	}
+	if len(target.ResourceRefs) == 0 {
+		for _, value := range strings.Split(snapshot.Metadata["aiops.target.refs"], ",") {
+			if value = strings.TrimSpace(value); value != "" {
+				target.ResourceRefs = append(target.ResourceRefs, value)
+			}
+		}
+	}
+	target.ResourceRefs = uniqueStoryStrings(target.ResourceRefs)
+	if target.HostID == "" && target.Binding == "host" {
+		for _, resourceRef := range target.ResourceRefs {
+			if strings.HasPrefix(resourceRef, "host:") {
+				target.HostID = strings.TrimPrefix(resourceRef, "host:")
+				break
+			}
 		}
 	}
 	sort.Strings(target.ResourceRefs)
 	return target
 }
 
+func uniqueStoryStrings(values []string) []string {
+	seen := make(map[string]bool, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
 func projectStoryFinalFacts(turn appui.AiopsTransportTurn) storyFinalFacts {
 	facts := storyFinalFacts{}
-	if turn.Final != nil {
-		facts.SchemaVersion = turn.Final.SchemaVersion
-		facts.Status = string(turn.Final.Status)
-		facts.Confidence = turn.Final.Confidence
-		facts.CheckedEvidenceRefs = append([]string(nil), turn.Final.CheckedEvidenceRefs...)
-		facts.UncheckedRequirements = append([]string(nil), turn.Final.UncheckedRequirements...)
-		facts.FailedToolImpacts = append([]appui.AiopsTransportFailedToolImpact(nil), turn.Final.FailedToolImpacts...)
-		facts.ApprovedActions = append([]string(nil), turn.Final.ApprovedActions...)
-		facts.PerformedActions = append([]string(nil), turn.Final.PerformedActions...)
-		facts.PostChecks = append([]string(nil), turn.Final.PostChecks...)
-		facts.RequiredPostChecks = append([]string(nil), turn.Final.RequiredPostChecks...)
-		facts.Limitations = append([]string(nil), turn.Final.Limitations...)
+	if final := storyFinalTransportContract(turn); final != nil {
+		facts.SchemaVersion = final.SchemaVersion
+		facts.Status = string(final.Status)
+		facts.Confidence = final.Confidence
+		facts.CheckedEvidenceRefs = append([]string(nil), final.CheckedEvidenceRefs...)
+		facts.UncheckedRequirements = append([]string(nil), final.UncheckedRequirements...)
+		facts.FailedToolImpacts = append([]appui.AiopsTransportFailedToolImpact(nil), final.FailedToolImpacts...)
+		facts.ApprovedActions = append([]string(nil), final.ApprovedActions...)
+		facts.PerformedActions = append([]string(nil), final.PerformedActions...)
+		facts.PostChecks = append([]string(nil), final.PostChecks...)
+		facts.RequiredPostChecks = append([]string(nil), final.RequiredPostChecks...)
+		facts.Limitations = append([]string(nil), final.Limitations...)
 	}
 	normalizeStoryFinalFacts(&facts)
 	return facts
@@ -970,15 +1078,18 @@ func projectStoryTransportProjection(state appui.AiopsTransportState, turn appui
 		PendingApprovalCount: len(state.PendingApprovals),
 		TurnCount:            len(state.TurnOrder),
 	}
-	for _, block := range turn.Process {
+	for _, block := range storyOrderedTransportBlocks(turn) {
+		if block.Type == appui.AiopsTransportBlockTypeFinalAnswer || block.Type == appui.AiopsTransportBlockTypeArtifact {
+			continue
+		}
 		projection.ProcessKinds = append(projection.ProcessKinds, string(block.Kind))
 		projection.ProcessStatuses = append(projection.ProcessStatuses, string(block.Status))
 	}
 	for _, item := range turn.Timeline {
 		projection.TimelineTypes = append(projection.TimelineTypes, item.Type)
 	}
-	if turn.Final != nil {
-		projection.FinalStatus = string(turn.Final.Status)
+	if final := storyFinalTransportContract(turn); final != nil {
+		projection.FinalStatus = string(final.Status)
 	}
 	return projection
 }
@@ -1755,7 +1866,7 @@ func resolveStoryPendingApprovalID(t *testing.T, state appui.AiopsTransportState
 		t.Fatal("story command uses <pending-approval> without a published current turn")
 	}
 	if len(session.CurrentTurn.PendingApprovals) != 1 {
-		t.Fatalf("story command requires exactly one canonical pending approval, got %d", len(session.CurrentTurn.PendingApprovals))
+		t.Fatalf("story command requires exactly one canonical pending approval, got %d; pending evidence=%#v lifecycle=%q error=%q", len(session.CurrentTurn.PendingApprovals), session.CurrentTurn.PendingEvidence, session.CurrentTurn.Lifecycle, session.CurrentTurn.Error)
 	}
 	pending := session.CurrentTurn.PendingApprovals[0]
 	if strings.TrimSpace(pending.ID) == "" || strings.TrimSpace(pending.ToolCallID) == "" || strings.TrimSpace(pending.ToolName) == "" {

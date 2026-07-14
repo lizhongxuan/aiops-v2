@@ -114,9 +114,14 @@
           }
         }
       },
-      "error": "package manager connection lost",
+      "content": "package manager applied only part of the requested change",
+      "outcome": "partial",
       "risk": "high",
       "mutating": true,
+      "rollbackDeclaration": {
+        "strategy": "automatic",
+        "reference": "runbook://story/package-install/rollback"
+      },
       "postChecks": [
         "rpm -q demo-package"
       ],
@@ -185,8 +190,8 @@
       {
         "id": "call_install",
         "name": "install_package",
-        "status": "failed",
-        "failureKind": "side_effect_unknown"
+        "status": "partial",
+        "failureKind": "partial_result"
       },
       {
         "id": "call_verify",
@@ -212,14 +217,15 @@
       "confidence": "medium",
       "checkedEvidenceRefs": [
         "evidence-prechange",
+        "tool_result:call_install",
         "tool_result:call_prechange"
       ],
       "uncheckedRequirements": [],
       "failedToolImpacts": [
         {
           "toolName": "install_package",
-          "failureClass": "side_effect_unknown",
-          "impact": "证据读取失败，不能作为已检查结果"
+          "failureClass": "partial_result",
+          "impact": "部分子任务未完成，聚合结果不完整"
         },
         {
           "toolName": "verify_package_state",
@@ -238,12 +244,12 @@
       "limitations": [
         "execution_required",
         "failed_tool_requires_lower_confidence",
-        "install_package:side_effect_unknown",
+        "install_package:partial_result",
         "missing_verification_report",
+        "partial_result",
         "postcheck_pending",
         "required_postcheck_incomplete",
         "rollback_contract_missing",
-        "side_effect_unknown",
         "tool_business_error",
         "verify_package_state:tool_business_error"
       ]
@@ -265,7 +271,7 @@
         "completed",
         "completed",
         "completed",
-        "failed",
+        "completed",
         "completed",
         "completed",
         "failed"
