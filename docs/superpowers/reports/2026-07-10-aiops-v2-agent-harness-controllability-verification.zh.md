@@ -4,7 +4,7 @@
 > 实施清单：`2026-07-10-aiops-v2-agent-harness-controllability-implementation-todo.zh.md`  
 > 验证日期：2026-07-14（CST）  
 > 分支：`feat/agent-harness-controllability`  
-> 代码验证基线：`c3c0159`（报告提交不改变运行时行为）
+> 代码验证基线：`8291346`（报告提交不改变运行时行为）
 
 ## 1. 结论
 
@@ -69,14 +69,14 @@ admission -> assembly -> prompt -> provider -> tool -> approval -> checkpoint
 坏 fixture 覆盖：
 
 - eval 重新访问 `/api/v1/state`。
-- final text/markdown 直接、单层、嵌套、未知 transform 和 2-hop alias 推导控制状态。
+- final text/markdown 直接、单层、嵌套、未知 transform、template interpolation 和多 hop alias 推导控制状态。
 - Go `strings.ToLower(strings.TrimSpace(finalText))`、TS `markdown.trim().toLocaleLowerCase()`。
 - provider adapter 错接另一 router、Runtime Step 调用点传入另一 tool surface、dispatcher 仅用注释伪造 binding。
 - TurnAssembly-before-prompt marker 缺失。
 - L0/L1 first 或 L5/L6 last validator 缺失。
-- 合法注释、test/dist 文件和纯 display/sanitize 使用不会误报。
+- closure 捕获外层 taint 会被拒绝；closure typed 参数/安全默认值、inner shadow、sibling scope、合法注释、test/dist 和纯 display/sanitize 使用不会误报。
 
-独立审查曾三次成功绕过旧规则；每次先留下 RED fixture，再修到 GREEN。最终规则不再枚举 trim/lower 函数，而是在函数作用域内追踪 final display text 到条件表达式的污染传播。
+独立审查多轮成功复现旧规则的漏检或误报；每次先留下 RED fixture，再修到 GREEN。最终规则不再枚举 trim/lower 函数，而是在 lexical scope chain 内追踪 final display text、template interpolation、closure capture 与参数 shadow 到条件表达式的污染传播。最终独立复核结论为 `APPROVED`。
 
 真实生产 Turn 测试还会比较：
 
@@ -100,7 +100,7 @@ CI backend job 在门禁前执行 `setup-node` 和 `npm ci`；boundary self-test
 | 2026-07-14 | `npm --prefix web run build` | 0 | 2831 modules；仅有既有大 chunk warning |
 | 2026-07-14 | `bash scripts/test-aiops-harness-contract-boundaries.sh` | 0 | 坏 fixture 自检通过 |
 | 2026-07-14 | `bash scripts/check-aiops-harness-contract-boundaries.sh` | 0 | 真实仓库扫描通过 |
-| 2026-07-14 | `bash scripts/aichat-harness-hardening-gate.sh` | 0 | 最新 `c3c0159` 后由主 agent 再跑；Go、Web 117+18、全仓测试通过 |
+| 2026-07-14 | `bash scripts/aichat-harness-hardening-gate.sh` | 0 | 最新 `8291346` 后由主 agent 再跑；Go、Web 117+18、全仓测试通过 |
 | 2026-07-14 | `go test ./...` | 0 | 全仓通过，约 7.31s；hardening 中再次通过 |
 | 2026-07-14 | `git diff --check` | 0 | 通过 |
 | 2026-07-14 | `npx playwright test tests/agentHarnessPromptTrace.snapshot.spec.js --project=chromium` | 0 | 1 passed，3.5s |
