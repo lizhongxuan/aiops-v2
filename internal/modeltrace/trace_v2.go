@@ -17,22 +17,23 @@ import (
 const TraceDocumentV2SchemaVersion = "aiops.trace/v2"
 
 type TraceDocumentV2 struct {
-	SchemaVersion               string                                            `json:"schemaVersion"`
-	CreatedAt                   string                                            `json:"createdAt"`
-	SessionID                   string                                            `json:"sessionId"`
-	TurnID                      string                                            `json:"turnId"`
-	Iteration                   int                                               `json:"iteration"`
-	Metadata                    map[string]string                                 `json:"metadata,omitempty"`
-	VisibleTools                []string                                          `json:"visibleTools,omitempty"`
-	PromptFingerprint           map[string]string                                 `json:"promptFingerprint,omitempty"`
-	PreviousPromptFingerprint   map[string]string                                 `json:"previousPromptFingerprint,omitempty"`
-	TurnContext                 any                                               `json:"turnContext,omitempty"`
-	StepContext                 any                                               `json:"stepContext,omitempty"`
-	StepContextHash             string                                            `json:"stepContextHash,omitempty"`
-	HarnessTurn                 any                                               `json:"harnessTurn,omitempty"`
-	ProviderRequest             ProviderRequestTrace                              `json:"providerRequest,omitempty"`
-	ToolSurface                 any                                               `json:"toolSurface,omitempty"`
-	TurnAssembly                any                                               `json:"turnAssembly,omitempty"`
+	SchemaVersion             string               `json:"schemaVersion"`
+	CreatedAt                 string               `json:"createdAt"`
+	SessionID                 string               `json:"sessionId"`
+	TurnID                    string               `json:"turnId"`
+	Iteration                 int                  `json:"iteration"`
+	Metadata                  map[string]string    `json:"metadata,omitempty"`
+	VisibleTools              []string             `json:"visibleTools,omitempty"`
+	PromptFingerprint         map[string]string    `json:"promptFingerprint,omitempty"`
+	PreviousPromptFingerprint map[string]string    `json:"previousPromptFingerprint,omitempty"`
+	TurnContext               any                  `json:"turnContext,omitempty"`
+	StepContext               any                  `json:"stepContext,omitempty"`
+	StepContextHash           string               `json:"stepContextHash,omitempty"`
+	HarnessTurn               any                  `json:"harnessTurn,omitempty"`
+	ProviderRequest           ProviderRequestTrace `json:"providerRequest,omitempty"`
+	ToolSurface               any                  `json:"toolSurface,omitempty"`
+	TurnAssembly              any                  `json:"turnAssembly,omitempty"`
+	// Deprecated: read-only compatibility trace; it is never consumed as runtime control input.
 	LegacyAgentAssemblySnapshot any                                               `json:"legacyAgentAssemblySnapshot,omitempty"`
 	TurnAssemblyShadow          any                                               `json:"turnAssemblyShadow,omitempty"`
 	Prompt                      Prompt                                            `json:"prompt,omitempty"`

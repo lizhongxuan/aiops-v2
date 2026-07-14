@@ -525,8 +525,8 @@ type CompiledPrompt struct {
 	// Envelope is the section-first prompt product consumed by model input assembly.
 	Envelope PromptEnvelope
 
-	// EnvelopeV2 is the validated L0-L6 shadow product. Task 10 does not
-	// change provider input; the promptinput cutover consumes it later.
+	// EnvelopeV2 is the canonical validated L0-L6 product consumed by runtime
+	// model-input assembly and the provider request path.
 	EnvelopeV2 PromptEnvelopeV2
 
 	// Stable is a derived compatibility view of stable envelope sections.

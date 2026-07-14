@@ -184,9 +184,9 @@ func dynamicSourceIDForExtraSection(section PromptSection) string {
 		DynamicContextSourceProtocol, DynamicContextSourceMemory, DynamicContextSourceHistoryCompacted:
 		return sourceType
 	}
-	// Compatibility-only classification for the legacy provider envelope. The
-	// validated EnvelopeV2 path consumes typed PromptSection source facts and
-	// never calls this title adapter. Remove this with the legacy cutover.
+	// Deprecated: compatibility-only classification for the read-only legacy
+	// parity/trace view. The canonical EnvelopeV2 provider path consumes typed
+	// PromptSection source facts and never uses this title adapter as control input.
 	title := strings.ToLower(strings.TrimSpace(section.Title))
 	switch {
 	case strings.Contains(title, "memory") || strings.Contains(title, "letta") || strings.Contains(title, "session fact"):

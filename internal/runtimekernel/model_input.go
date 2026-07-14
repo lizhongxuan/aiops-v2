@@ -79,22 +79,23 @@ type RuntimeTraceDebugRequest struct {
 	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot
 	RoleBindingConflicts          []resourcebinding.RoleBindingConflict
 	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot
-	LegacyAgentAssemblySnapshot   *agentassembly.AgentAssemblySnapshot
-	TurnAssembly                  *agentassembly.TurnAssembly
-	TurnAssemblyShadow            *TurnAssemblyShadowTrace
-	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection
-	ResourceLocks                 []promptinput.ResourceLockTrace
-	OwnerWriteTraces              []OwnerWriteTrace
-	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
-	AgentNotifications            []promptinput.AgentNotificationTrace
-	VerificationAgentReport       *promptinput.VerificationAgentReportTrace
-	VerificationReportRef         string
-	VerificationStatus            string
-	CompletionGate                *promptinput.CompletionGateTrace
-	SafetySignals                 []promptinput.SafetySignalTrace
-	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
-	ApprovalScope                 *promptinput.ApprovalScopeTrace
-	FinalEvidenceState            *FinalEvidenceState
+	// Deprecated: read-only compatibility trace; runtime control consumes TurnAssembly.
+	LegacyAgentAssemblySnapshot *agentassembly.AgentAssemblySnapshot
+	TurnAssembly                *agentassembly.TurnAssembly
+	TurnAssemblyShadow          *TurnAssemblyShadowTrace
+	SpecialInputWorldState      *specialinputmemory.SpecialInputWorldStateSection
+	ResourceLocks               []promptinput.ResourceLockTrace
+	OwnerWriteTraces            []OwnerWriteTrace
+	AgentFinalGate              *promptinput.AgentFinalGateDecisionTrace
+	AgentNotifications          []promptinput.AgentNotificationTrace
+	VerificationAgentReport     *promptinput.VerificationAgentReportTrace
+	VerificationReportRef       string
+	VerificationStatus          string
+	CompletionGate              *promptinput.CompletionGateTrace
+	SafetySignals               []promptinput.SafetySignalTrace
+	UnexpectedStateGate         *promptinput.UnexpectedStateGateTrace
+	ApprovalScope               *promptinput.ApprovalScopeTrace
+	FinalEvidenceState          *FinalEvidenceState
 }
 
 func buildRuntimePromptInputV2WithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent, iteration int, cause *StepRevisionCause) (promptinput.BuildResult, error) {
