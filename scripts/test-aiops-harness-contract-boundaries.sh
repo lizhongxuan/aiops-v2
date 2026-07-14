@@ -17,6 +17,7 @@ create_fixture() {
 		"${root}/internal/promptinput" \
 		"${root}/internal/runtimekernel" \
 		"${root}/web/src/chat" \
+		"${root}/web/src/dist" \
 		"${root}/web/src/transport"
 	printf '%s\n' \
 		'package appui' \
@@ -58,12 +59,48 @@ create_fixture() {
 		' * if (candidate.includes("approved")) return { status: "approved" };' \
 		' * const normalized = markdown.trim();' \
 		' * if (normalized.includes("completed")) return { status: "completed" };' \
+		' * const localeCandidate = markdown.trim().toLocaleLowerCase();' \
+		' * if (localeCandidate.includes("failed")) return { status: "failed" };' \
+		' * const first = markdown;' \
+		' * const second = normalizeForControl(first);' \
+		' * if (second.includes("blocked")) return { status: "blocked" };' \
 		' */' >"${root}/web/src/chat/control_comments.ts"
 	printf '%s\n' \
 		'package appui' \
 		'// candidate := strings.ToLower(finalText)' \
 		'// if strings.Contains(candidate, "approved") { return }' \
+		'/*' \
+		'candidate := strings.ToLower(strings.TrimSpace(finalText))' \
+		'first := finalText' \
+		'second := normalizeForControl(first)' \
+		'if strings.Contains(second, "blocked") { return }' \
+		'*/' \
 		>"${root}/internal/appui/control_comments.go"
+	printf '%s\n' \
+		'package appui' \
+		'func displayOnly(finalText string) string {' \
+		'  sanitized := strings.ToLower(strings.TrimSpace(finalText))' \
+		'  return renderMarkdown(sanitized)' \
+		'}' \
+		>"${root}/internal/appui/final_display.go"
+	printf '%s\n' \
+		'export function displayOnly(markdown: string) {' \
+		'  const sanitized = markdown.trim().toLocaleLowerCase();' \
+		'  const displayValue = escapeForDisplay(sanitized);' \
+		'  return renderMarkdown(displayValue);' \
+		'}' \
+		>"${root}/web/src/chat/finalDisplay.ts"
+	printf '%s\n' \
+		'export function ignoredGeneratedControl(markdown: string) {' \
+		'  if (markdown.includes("completed")) return "completed";' \
+		'}' \
+		>"${root}/web/src/dist/generated.ts"
+	printf '%s\n' \
+		'package appui' \
+		'func ignoredTestControl(finalText string) {' \
+		'  if strings.Contains(finalText, "failed") { return }' \
+		'}' \
+		>"${root}/internal/appui/control_test.go"
 }
 
 run_gate() {
@@ -129,6 +166,10 @@ go_transform_alias_root="${FIXTURE_ROOT}/go-transformed-aliased-final-control"
 ts_transform_alias_root="${FIXTURE_ROOT}/ts-transformed-aliased-final-control"
 provider_adapter_root="${FIXTURE_ROOT}/provider-router-adapter-missing"
 step_call_surface_root="${FIXTURE_ROOT}/step-call-wrong-tool-surface"
+nested_go_alias_root="${FIXTURE_ROOT}/nested-go-final-control"
+locale_ts_alias_root="${FIXTURE_ROOT}/locale-ts-final-control"
+two_hop_go_alias_root="${FIXTURE_ROOT}/two-hop-go-final-control"
+two_hop_ts_alias_root="${FIXTURE_ROOT}/two-hop-ts-final-control"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
@@ -150,6 +191,10 @@ create_fixture "${go_transform_alias_root}"
 create_fixture "${ts_transform_alias_root}"
 create_fixture "${provider_adapter_root}"
 create_fixture "${step_call_surface_root}"
+create_fixture "${nested_go_alias_root}"
+create_fixture "${locale_ts_alias_root}"
+create_fixture "${two_hop_go_alias_root}"
+create_fixture "${two_hop_ts_alias_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -297,7 +342,39 @@ printf '%s\n' \
 	'    Done()' \
 	'}' >"${step_call_surface_root}/internal/runtimekernel/runtime_kernel.go"
 
-expect_allowed "typed runtime state" "${legal_root}"
+printf '%s\n' \
+	'package appui' \
+	'func nestedTransformControl(finalText string) string {' \
+	'  candidate := strings.ToLower(strings.TrimSpace(finalText))' \
+	'  if strings.Contains(candidate, "approved") { return "approval_granted" }' \
+	'  return "pending"' \
+	'}' >"${nested_go_alias_root}/internal/appui/nested_control.go"
+
+printf '%s\n' \
+	'export function localeTransformControl(markdown: string) {' \
+	'  const candidate = markdown.trim().toLocaleLowerCase();' \
+	'  if (candidate.includes("completed")) return { status: "completed" };' \
+	'  return { status: "running" };' \
+	'}' >"${locale_ts_alias_root}/web/src/chat/localeControl.ts"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func twoHopControl(finalText string) string {' \
+	'  first := finalText' \
+	'  second := normalizeForControl(first)' \
+	'  if strings.Contains(second, "blocked") { return "blocked" }' \
+	'  return "running"' \
+	'}' >"${two_hop_go_alias_root}/internal/runtimekernel/two_hop_control.go"
+
+printf '%s\n' \
+	'export function twoHopControl(markdown: string) {' \
+	'  const first = markdown;' \
+	'  const second = normalizeForControl(first);' \
+	'  if (second.includes("failed")) return { status: "failed" };' \
+	'  return { status: "running" };' \
+	'}' >"${two_hop_ts_alias_root}/web/src/transport/twoHopControl.ts"
+
+expect_allowed "typed runtime state with comment and display-only final text" "${legal_root}"
 expect_rejected \
 	"final markdown inferred verified state" \
 	"${markdown_root}" \
@@ -393,6 +470,26 @@ expect_rejected \
 	"${step_call_surface_root}" \
 	"runtime step context StepToolRouter binding" \
 	"runtimekernel step admission"
+expect_rejected \
+	"nested Go transform controls state" \
+	"${nested_go_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TypeScript locale transform controls state" \
+	"${locale_ts_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"two-hop Go alias controls state" \
+	"${two_hop_go_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"two-hop TypeScript alias controls state" \
+	"${two_hop_ts_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
 
 if [[ "${fail}" -ne 0 ]]; then
 	exit 1

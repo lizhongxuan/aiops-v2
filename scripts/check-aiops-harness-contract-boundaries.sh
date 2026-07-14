@@ -148,17 +148,30 @@ check_absent \
 	'/api/v1/state' \
 	internal/eval cmd/agent-eval
 
-check_absent \
-	"control state derived from final text or markdown" \
-	"runtime/appui/web typed control facts" \
-	'(?i)^\s*if\s*(?:\(\s*)?(?:strings\.Contains\(\s*(finalText|FinalOutput|assistantText|markdown)\s*,\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|(finalText|FinalOutput|assistantText|markdown)\.(includes|match|test)\(\s*"[^"]*(approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
-	internal/runtimekernel internal/appui web/src
-
-check_absent_multiline \
-	"control state derived from final text or markdown" \
-	"runtime/appui/web typed control facts" \
-	'(?msx)^\h*(?:const\h+|let\h+|var\h+)?(?<control_alias>[A-Za-z_][A-Za-z0-9_]*)\h*(?::=|=)\h*(?:strings\.(?:TrimSpace|ToLower|ToUpper)\(\h*)?(?:finalText|assistantText|markdown|FinalOutput|(?:[A-Za-z_][A-Za-z0-9_]*\.)+FinalOutput)\h*\)?(?:\h*\.\h*(?:trim|toLowerCase|toUpperCase)\(\h*\)){0,2}\h*;?\h*$(?:(?:\R)(?!\h*(?://|/\*|\*)).*){0,20}?\R\h*if\h*(?:\(\h*)?(?:strings\.Contains\(\h*\k<control_alias>\h*,\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|\k<control_alias>\.(?:includes|match|test)\(\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
-	internal/runtimekernel internal/appui web/src
+final_text_matches=""
+final_text_rc=0
+if final_text_matches="$(python3 "${SCRIPT_DIR}/check-aiops-final-text-control.py" "${scan_roots[@]}" 2>&1)"; then
+	final_text_rc=0
+else
+	final_text_rc=$?
+fi
+case "${final_text_rc}" in
+	0)
+		;;
+	1)
+		echo "ERROR: forbidden harness boundary pattern found: control state derived from final text or markdown" >&2
+		echo "owner: runtime/appui/web typed control facts" >&2
+		echo "${final_text_matches}" >&2
+		fail=1
+		;;
+	*)
+		echo "ERROR: harness boundary scan failed: control state derived from final text or markdown" >&2
+		echo "owner: runtime/appui/web typed control facts" >&2
+		echo "checker exit code: ${final_text_rc}" >&2
+		echo "${final_text_matches}" >&2
+		fail=1
+		;;
+esac
 
 check_required \
 	"TurnAssembly before prompt production marker" \
