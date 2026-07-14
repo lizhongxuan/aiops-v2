@@ -275,7 +275,14 @@ func TestRunCLIExecutesServerAgent(t *testing.T) {
 			{"type": "set", "path": []any{"turns", "turn-cli-server"}, "value": map[string]any{
 				"id": "turn-cli-server", "clientTurnId": clientTurnID, "clientMessageId": message.ID,
 				"status": "completed", "agentItems": []any{},
-				"final": map[string]any{"id": "final-cli-server", "text": answer, "answerText": answer, "status": "completed"},
+				"blockOrder": []string{"final-cli-server"},
+				"blocksById": map[string]any{
+					"final-cli-server": map[string]any{
+						"type": "final_answer", "id": "final-cli-server", "kind": "assistant", "displayKind": "assistant.message",
+						"phase": "final_answer", "streamState": "complete", "status": "completed", "text": answer,
+						"finalContract": map[string]any{"id": "final-cli-server", "text": answer, "answerText": answer, "status": "completed"},
+					},
+				},
 			}},
 			{"type": "set", "path": []any{"status"}, "value": "idle"},
 		}
