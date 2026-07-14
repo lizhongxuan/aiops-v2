@@ -4,59 +4,94 @@
 > 实施清单：`2026-07-10-aiops-v2-agent-harness-controllability-implementation-todo.zh.md`  
 > 验证日期：2026-07-14（CST）  
 > 分支：`feat/agent-harness-controllability`  
-> 代码验证基线：`8291346`（报告提交不改变运行时行为）
+> Runtime 代码验证基线：`b846322`（后续文档提交不改变运行时行为）
 
-## 1. 结论
+## 1. 最终结论
 
-本轮已完成 Task -1 到 Task 20 的实现和验证。确定性控制链、三类 replay、Prompt L0-L6 顺序、provider/dispatcher 同一 `StepToolRouter`、facts-only Final/Transport 投影、append-only canonical rollout、Prompt Trace 页面和永久 CI 门禁均已落地。
+Task -1 到 Task 20 已实施并验证。最终版本把 Agent 的控制权收敛到 RuntimeKernel：生产 Turn 只有一个生命周期 writer、一个 provider/tool loop、一个事实来源和一个 canonical transport 协议；AppUI、Server、React 与 Eval 均只消费 Runtime 已提交的结果。
 
-确定性发布门禁全部通过；真实 GLM-5.1 的 no-tool 本地和远端样本通过。真实工具/审批/RCA/多主机抽样暴露了三个受限点，并按 fail-closed 处理，没有伪造为通过：
+本轮最终通过：
 
-1. 终端 `pwd` 在当前策略中仍按需要审批/证据的执行动作处理，普通 UI approval 不能替代服务端 ActionToken/evidence binding，executor 保持 0。
-2. RCA 和多主机长输出在 eval 的 canonical agent-items 严格边界触发截断错误；Runtime 已完成，但 eval 判定不通过。
-3. 真实 multi-host 样本只验证了 manager advisory 规划，没有连接真实多个 Host-Agent worker；真实 manager worker 生命周期由确定性 P0 full-story 覆盖。
+- 全量 Go、Web、边界自检、hardening gate、race 定向测试与 Web production build。
+- 14 个设计 P0 story 和扩展 golden story。
+- canonical rollout 的 contract/provider-fixture/full-story replay。
+- Playwright 13/13，以及 browser-in-app 的真实点击、断言、console 检查和截图。
+- 当前 `b846322` 构建的本地与远端 GLM-5.1 no-tool 真实 provider 样本，均为 51/51、tool calls 0。
 
-## 2. 最终真实控制链
+真实 provider 验证过程中发现的 UI 展示回归、legacy eval fixture 和 `FinalContract.status=unknown` 终态误判均已先复现、再修复并加入回归测试；不是以规避样本或放宽断言的方式得到通过。
+
+## 2. 当前真实控制链
 
 ```text
 AppUI TransportCommand
-  -> admission adapter（仅一次 legacy metadata -> typed AdmissionFacts）
-  -> IntentFrame + resource/role/session bindings + policy
-  -> immutable TurnAssembly + hash
-  -> RuntimeStepContext / StepRevision + hash
+  -> admission adapter（仅在边界把 legacy metadata 转为 typed AdmissionFacts）
+  -> RuntimeKernel.RunTurn（唯一生产 lifecycle / provider-tool loop owner）
+  -> immutable TurnAssembly + assembly hash
+  -> RuntimeStepContext / StepRevision + step hash
   -> PromptEnvelopeV2（L0 -> L6）
   -> frozen ProviderRequest + PromptFingerprint
-  -> StepToolRouter（provider 可见面与 dispatcher 可执行面的同一事实源）
+  -> provider response
+  -> StepToolRouter（provider 可见工具面与 dispatcher 可执行工具面的同一事实源）
   -> ToolDispatcher / ActionToken / approval / evidence / post-check
-  -> FinalRuntimeFacts -> FinalContract
-  -> AiopsTransportState（facts-only projection）
+  -> FinalRuntimeFacts
+  -> FinalContract
+  -> Runtime transport projection（canonical blockOrder + blocksById）
+  -> Server data-aiops_transport_state
+  -> React AssistantTransport
+  -> canonical transcript block presenter
   -> UI
 
-每个关键变化同时 append 到 CanonicalRollout：
+确定性 SystemTurn 分支：
+RuntimeKernel.CommitSystemTurn
+  -> canonical user/assistant/checkpoint/final facts/transport/owner trace
+  -> 与普通 Turn 相同的 rollout 与 transport 投影出口
+
+每个关键阶段同时 append 到 CanonicalRollout：
 admission -> assembly -> prompt -> provider -> tool -> approval -> checkpoint
 -> final facts -> transport projection source
 ```
 
-控制权边界：
+### 2.1 控制边界
 
-- System Prompt、绝对角色和稳定 runtime contract 位于 L0-L2；Turn 稳定事实位于 L3。
-- history 位于 L4，RAG/MCP/skill/tool result 等动态内容位于 L5。
-- 当前用户输入或 continuation instruction 位于 L6 且是最后逻辑输入。
-- final text/markdown 只用于展示，不能推导 approval、verified、completed、failed 等控制状态。
-- `/api/v1/state` 可继续服务非 agent 页面，但 `internal/eval` 和 agent harness 禁止消费。
+| 边界 | 最终约束 |
+|---|---|
+| 生命周期 ownership | `RuntimeKernel` 是唯一 writer；AppUI 不再拥有迁移通知、repair plan、workflow generation 的第二套 Turn loop |
+| SystemTurn | 只能提交 Runtime 允许的确定性状态，不能伪造 verified/completed 等业务完成事实；其自身 Turn lifecycle 可由 Runtime 正常收口 |
+| Prompt | 固定内容在前，动态内容在后：L0-L3 稳定层、L4 history、L5 RAG/MCP/skill/tool result、L6 当前输入/continuation 且最后 |
+| Prompt shadow | 只读 display/diagnostic trace，不参与控制，不进入生产 Prompt hash，也不能改变 provider input |
+| Tool surface | Provider 和 dispatcher 绑定同一 `StepToolRouter` 指纹；mutation tool 缺 rollback declaration 时在 provider 前拒绝 |
+| Final | final text/markdown 只展示；控制状态来自 typed `FinalRuntimeFacts` / `FinalContract` |
+| Transport wire | 只传 `blockOrder` 与 `blocksById`；Go `Process`/`Final` 为 `json:"-"`，React 不读取 `metadata.unstable_state` |
+| Eval | 只接受 canonical blocks；旧 `process`/`final` wire 直接失败，不再静默兼容 |
+| Legacy transcript | 仅在 persisted legacy input converter 边界读取，转换后立即进入 canonical block 模型 |
 
-## 3. Cutover 与兼容面审计
+`FinalContract.status=unknown` 不是无条件成功：只有 Turn/transport 已完成、无 pending approval/evidence/running tool、liveness 正常且没有失败事实时，才投影为 completed block；否则继续 fail closed。
 
-| 检查项 | 结果 | 证据/结论 |
-|---|---|---|
-| legacy provider input builder | 已删除 | Task 12 已将生产 ProviderRequest 切到 validated EnvelopeV2；旧 builder 分支不再存在 |
-| shadow 双写控制分支 | 已退出控制链 | Prompt shadow parity 仅作 hash/trace 对照，ProviderRequest.Input 是冻结权威输入 |
-| legacy assembly trace | 只读兼容 | `LegacyAgentAssemblySnapshot` 已标记 `Deprecated`，不得作为 runtime control input |
-| route/target/role/profile metadata 散读 | 已迁移 | admission 边界一次性适配，runtime 使用 `AdmissionFacts` / `TurnAssembly` |
-| `/api/v1/state` | 非 agent 兼容 | boundary gate 禁止 `internal/eval` 和 `cmd/agent-eval` 访问 |
-| final text 控制推导 | 已禁止 | Python stdlib 有限污点分析支持嵌套 transform、16-hop alias、Go/TS、if/ternary |
+## 3. Prompt 组装与缓存可解释性
 
-## 4. 永久门禁与绕过自证
+生产 Prompt 顺序已经固定：
+
+```text
+L0 absolute.system
+L1 runtime.contract
+L2 role.profile
+L3 turn.stable_facts
+L4 history/reasoning/checkpoint
+L5 dynamic_context（RAG、MCP、skill、tool result）
+L6 current_user_input / continuation_instruction
+```
+
+Provider adapter 验证 L0/L1 first、L2/L3 在 history 前、L5 在 history 后、L6 last，并保持 tool call/result 配对。cache trace 会显示具体 miss 原因，例如：
+
+- `hash_changed`
+- `section_added`
+- `section_removed`
+- `order_changed`
+- `cache_scope_changed`
+
+Prompt shadow parity 仍可供排障展示，但已经从生产 hash、控制判断和 provider request 中彻底隔离。
+
+## 4. 永久防回退门禁
 
 门禁入口：
 
@@ -66,46 +101,45 @@ admission -> assembly -> prompt -> provider -> tool -> approval -> checkpoint
 - `scripts/aichat-harness-hardening-gate.sh`
 - `.github/workflows/aiops-v2-hardening.yml`
 
-坏 fixture 覆盖：
+自证 fixture 覆盖：
 
-- eval 重新访问 `/api/v1/state`。
-- final text/markdown 直接、单层、嵌套、未知 transform、template interpolation 和多 hop alias 推导控制状态。
-- Go `strings.ToLower(strings.TrimSpace(finalText))`、TS `markdown.trim().toLocaleLowerCase()`。
-- provider adapter 错接另一 router、Runtime Step 调用点传入另一 tool surface、dispatcher 仅用注释伪造 binding。
+- eval 重新访问 `/api/v1/state` 或重新接受 legacy `process`/`final` wire。
+- final text/markdown 经 direct、nested transform、template interpolation、closure capture 或多 hop alias 推导控制状态。
+- provider adapter、Runtime Step 和 dispatcher 使用不同 tool surface。
 - TurnAssembly-before-prompt marker 缺失。
 - L0/L1 first 或 L5/L6 last validator 缺失。
-- closure 捕获外层 taint 会被拒绝；closure typed 参数/安全默认值、inner shadow、sibling scope、合法注释、test/dist 和纯 display/sanitize 使用不会误报。
+- AppUI 重新引入 lifecycle writer 或第二个 provider/tool loop。
+- mutation tool 没有 rollback declaration 仍被暴露给 provider。
 
-独立审查多轮成功复现旧规则的漏检或误报；每次先留下 RED fixture，再修到 GREEN。最终规则不再枚举 trim/lower 函数，而是在 lexical scope chain 内追踪 final display text、template interpolation、closure capture 与参数 shadow 到条件表达式的污染传播。最终独立复核结论为 `APPROVED`。
-
-真实生产 Turn 测试还会比较：
+生产 Turn 还会比较：
 
 ```text
 RuntimeStepContext.ProviderRequest.Tools[*].Hash
   == DispatchResult.DecisionTrace.ToolSurfaceFingerprint
 ```
 
-测试中的 deliberate divergence 会被拒绝。
+deliberate divergence 会被拒绝。
 
-CI backend job 在门禁前执行 `setup-node` 和 `npm ci`；boundary self-test 是第一个验证 step。新 Python checker 也在 workflow path trigger 中。
+## 5. 最终代码验证
 
-## 5. 完整 deterministic 验证
+| 验证 | 最终结果 |
+|---|---|
+| `go test ./internal/runtimecontract ./internal/agentassembly ./internal/promptcompiler ./internal/promptinput ./internal/modelrouter ./internal/modeltrace -count=1` | PASS |
+| `go test ./internal/runtimekernel -count=1` | PASS |
+| `go test ./internal/appui ./internal/server ./internal/eval -count=1` | PASS |
+| `go test ./...` | PASS |
+| `go test -race ./internal/appui ./internal/eval ./internal/server -run 'UnknownFinal\|AssistantTransportStories\|RuntimeLifecycleHasUniqueWriter\|RolloutReplayReferenceFixtures' -count=1` | PASS；appui 2.436s、eval 6.152s、server 14.308s |
+| `npm --prefix web test -- --run` | PASS；124 test files、907 tests、15.63s |
+| `npm --prefix web run typecheck` | PASS |
+| `npm --prefix web run build` | PASS；2831 modules、2.03s；只有既有的 >500 kB chunk warning |
+| `bash scripts/test-aiops-harness-contract-boundaries.sh` | PASS |
+| `bash scripts/check-aiops-harness-contract-boundaries.sh` | PASS |
+| `bash scripts/aichat-harness-hardening-gate.sh` | PASS；含全仓 Go 与 Web focused 118+19 |
+| `git diff --check` | PASS |
 
-| 日期 | 命令 | Exit | 结果/重跑说明 |
-|---|---|---:|---|
-| 2026-07-14 | `go test ./internal/runtimecontract ./internal/agentassembly ./internal/promptcompiler ./internal/promptinput ./internal/modelrouter ./internal/modeltrace -count=1` | 0 | 通过，约 1.95s；为取得稳定耗时只读复跑一次，同样通过 |
-| 2026-07-14 | `go test ./internal/runtimekernel -count=1` | 0 | 通过，约 11.42s |
-| 2026-07-14 | `go test ./internal/appui ./internal/server ./internal/eval -count=1` | 0 | 通过，约 5.55s |
-| 2026-07-14 | `npm --prefix web test -- --run` | 1 -> 0 | 首次因 Vitest 误收集 Playwright spec 退出 1；`f7f1185` 隔离 runner 后 123 files / 899 tests 全通过 |
-| 2026-07-14 | `npm --prefix web run build` | 0 | 2831 modules；仅有既有大 chunk warning |
-| 2026-07-14 | `bash scripts/test-aiops-harness-contract-boundaries.sh` | 0 | 坏 fixture 自检通过 |
-| 2026-07-14 | `bash scripts/check-aiops-harness-contract-boundaries.sh` | 0 | 真实仓库扫描通过 |
-| 2026-07-14 | `bash scripts/aichat-harness-hardening-gate.sh` | 0 | 最新 `8291346` 后由主 agent 再跑；Go、Web 117+18、全仓测试通过 |
-| 2026-07-14 | `go test ./...` | 0 | 全仓通过，约 7.31s；hardening 中再次通过 |
-| 2026-07-14 | `git diff --check` | 0 | 通过 |
-| 2026-07-14 | `npx playwright test tests/agentHarnessPromptTrace.snapshot.spec.js --project=chromium` | 0 | 1 passed，3.5s |
+Web 测试中的 jsdom `HTMLCanvasElement.getContext` 提示是既有非失败 warning；没有新增 test failure。
 
-### 5.1 设计中的 14 个 P0 story
+### 5.1 P0 story
 
 | Story | Deterministic full-story |
 |---|---|
@@ -114,7 +148,7 @@ CI backend job 在门禁前执行 `setup-node` 和 `npm ci`；boundary self-test
 | `approval_resume` | PASS |
 | `approval_denied` | PASS |
 | `mutation_missing_target` | PASS，provider/tool 0 次 |
-| `mutation_missing_rollback` | PASS，provider/tool 0 次 |
+| `mutation_missing_rollback` | PASS，provider/tool 0 次，并返回 canonical system failed block |
 | `partial_mutation_postcheck_failed` | PASS |
 | `tool_not_found` | PASS |
 | `invalid_arguments` | PASS |
@@ -124,83 +158,119 @@ CI backend job 在门禁前执行 `setup-node` 和 `npm ci`；boundary self-test
 | `multi_host_manager` | PASS |
 | `evidence_rca_no_exec` | PASS |
 
-当前 golden corpus 实际为 17 个；除上表外还包括 `host_bound_readonly`、`raw_dsml_markup_sanitized`、`host_agent_unavailable_fallback_denied`，均在 `TestAIChatHarnessGoldenCases` 中通过。
+扩展 golden story：`host_bound_readonly`、`raw_dsml_markup_sanitized`、`host_agent_unavailable_fallback_denied` 同样通过。
 
-### 5.2 三种 Replay
+### 5.2 Replay 固定证据
 
-`approval_resume` 和 `tool_not_found` 均通过：
-
-- Contract replay：重建 TurnAssembly/Step/Final hash，不调用 provider/tool。
-- Provider Fixture replay：使用冻结 provider response 重跑 adapter、policy 和 final facts。
-- Full-story replay：复用真实 `TransportCommandHandler -> RuntimeKernel -> TransportProjector`。
-
-固定 hash：
+Replay reference 只能通过显式 `AIOPS_UPDATE_ROLLOUT_REPLAY=1` 更新；正常测试不允许偷偷刷新 golden。
 
 | Fixture | Source | Rollout | Transport |
 |---|---|---|---|
-| `approval_resume` | `sha256:7d0d2733d69d72aa438126ae3bacfef0778fcc59eac8ef1bc27ab69f92fd7c07` | `sha256:ba034d8f7a3a56de31492980c2351d0b0ce79a78870a85743df50aeb271623b1` | `sha256:2ef952f306ffcb7f19a86ff8a86b23c9ad5c702ccb357f811bf3130f4e0bcebe` |
-| `tool_not_found` | `sha256:3d673cacdb09b353f4e54a901d65e149ee0fc0a10a982b1354513ce53c7b1a86` | `sha256:683d26218cf720b16ff6515788b71a878d05da1f1a79c1bcbfb215d71df14b6a` | `sha256:1ddc26cb779b5948d3e776adddeebd5a47c74309e3305517680f41cf49c6a8a9` |
+| `approval_resume` | `sha256:1e295d4f22eccaf3388b4f0c04aab71f4707315f58580584a50158592541ce99` | `sha256:7e0b58c2d150317b29ff5ec626451d244fbce7b98975bfe7251a30fec2a01b49` | `sha256:d5ab006c672d21c77d4255ff4bbbb163b806c28883deb73981555043f075213a` |
+| `tool_not_found` | `sha256:3d673cacdb09b353f4e54a901d65e149ee0fc0a10a982b1354513ce53c7b1a86` | `sha256:5a5531c4ea96295e4d406e6aaecd47ea78d39b4b7d2ff4b8177dfdf3c6242748` | `sha256:e7c5f570d235a2f3c11e3248c9a7a5247070d27001f8baeee26805e8cb0a540b` |
 
-### 5.3 Prompt hash 稳定性
+三类 replay 均存在：contract replay、provider fixture replay、full-story replay。
 
-| 变化 | 已验证变化 | 已验证保持不变 |
-|---|---|---|
-| 用户输入 | `current_user_input_hash`、`model_input_hash` | stable/turn prefix、history、dynamic |
-| RAG | `dynamic_context_hash`、`model_input_hash` | stable/turn prefix、current user |
-| role | `role_profile_hash`、`stable_prefix_hash`、model | absolute system |
-| host/Turn facts | turn stable/prefix、model | stable prefix |
-| history/reasoning | history、model | stable/turn prefix、dynamic、current user |
-| approval/continuation | checkpoint/history/continuation/model | TurnAssembly、L0-L3 |
+## 6. Playwright 与 browser-in-app
 
-Provider adapter 验证 L0/L1 first、L2/L3 before history、L5 after history、L6 last，并保持 tool call/result 配对；provider-specific cache 标记不改变逻辑顺序。
+### 6.1 Playwright
 
-## 6. Playwright 与应用内浏览器
+最终命令：
 
-### 6.1 Prompt Trace
+```bash
+npx playwright test \
+  tests/react-shell-snapshot.spec.js \
+  tests/agentHarnessPromptTrace.snapshot.spec.js \
+  --project=chromium
+```
 
-- Playwright snapshot：`output/playwright/agent-harness-prompt-trace/`
-- 截图：`output/playwright/agent-harness-prompt-trace/.playwright-cli/page-2026-07-13T22-38-01-379Z.png`
-- fixture trace：`output/playwright/agent-harness-prompt-trace/prompt-traces/iteration-001.json`
-- 页面显示 TurnAssembly/Step、9 个 Prompt hash、router diff、approval/checkpoint/rollout refs 和 first divergence owner。
-- Playwright 和 browser-in-app 均通过，应用 console error 为 0。
+结果：13/13 PASS，13.7s。
 
-### 6.2 真实审批 UI 与远端 UI
+### 6.2 应用内浏览器真实操作
 
-- 本地审批截图：`output/task20/playwright/.playwright-cli/page-2026-07-13T23-33-49-667Z.png`
-- 远端 UI 截图：`output/task20/playwright/.playwright-cli/page-2026-07-13T23-41-27-873Z.png`
-- 应用内浏览器实际点击 Submit；UI 进入 runtime reapproval/pending evidence，未绕过 ActionToken/evidence 执行。
-- 远端隔离 tunnel 页面显示 `glm-5.1`，Playwright/browser-in-app console error 均为 0。
+browser-in-app 打开 `/debug/prompts`，点击 `iteration-001.json`，再打开“控制链”。最终验证：
 
-## 7. 真实 GLM-5.1 抽样
+- 控制链 panel 唯一出现。
+- owner 为 `approval`。
+- 显示 9 个 hash row，包含 L0、L5、L6。
+- cache miss 明确显示 `absolute.system`、`hash_changed`、`section_added`。
+- permission、checkpoint、visible-only binding、rollout event/hash 均可见。
+- 页面没有显示 credential 或其他敏感信息。
+- browser console error 0、warning 0。
 
-Provider：Zhipu OpenAI-compatible endpoint（`api.z.ai`）；Model：`glm-5.1`。报告和仓库未保存 API key 或主机密码。
+截图：`output/playwright/agent-harness-prompt-trace/browser-in-app-control-chain.png`。
 
-| Story | Turn / rollout | Runtime/评测结果 | 人工结论 |
-|---|---|---|---|
-| no-tool（本地） | `turn-1783984870930765000`; seq 10 `sha256:6842bb83b82422eced32ffd87300408b39346a7fcf7447d7059e8dfccd291120` | PASS 1/1，score 1.00，51/51；completed，2 iterations | 真实 provider 基础链通过 |
-| read-only/tool proposal | `turn-1783985138184650000`; 最终 seq 23 `sha256:3e965853d1dddf01aef4d6e22dfeb7b56ab2b1e4e04c662edf86e01b2af7b4ba` | 模型提出一次 `exec_command pwd`；executor 0；最终 `pending_evidence` | targetless 请求先 fail closed；绑定目标后仍不能把 terminal command 当作无条件只读执行 |
-| approval resume | 同上 | 应用内浏览器提交 approval 后重发 runtime approval，随后保持 pending evidence；executor 0 | UI 决策不能伪造服务端 ActionToken/evidence，安全但该样本未完成执行 |
-| RCA evidence | `turn-1783985237221184000`; seq 19 `sha256:c41a980a04cb8453e50016a302e1eaa98f3342243b9304cf94f5d147394bc273` | Runtime completed，2 iterations，回答 3384 chars；eval FAIL，score 0.8515（50/61） | RCA 内容正确分析 timeline divergence；失败源是 11 items / 40852 bytes 的严格 canonical 截断，不是 Runtime 未完成 |
-| multi-host | `turn-1783985652484311000`; seq 19 `sha256:796a8f4b8a4753fcf71bb53d19ba2938e5e1d171fda67f7bd40b96a57cb3c7fb` | Runtime completed，2 iterations，回答 5365 chars；eval adapter 严格截断 | 只验证 manager 对 A/B/C 的 advisory 拆分；未声称真实多 Host-Agent worker 执行通过 |
-| no-tool（远端隔离服务） | `turn-1783985980732101515`; seq 10 `sha256:5544bde7a11259e56eff6234bfddacc0d033be59df1e59c3a119d7a7fc4194d7` | PASS 1/1，score 1.00，51/51；completed，2 iterations | 同一发布二进制在远端环境通过 |
+## 7. 当前代码的真实 GLM-5.1 验证
 
-真实样本产物：`output/task20/real-eval/`、`output/task20/real-read-only-local-2.json`、`output/task20/real-multi-host-advisory.json`。
+Provider 使用用户授权的 Z.AI OpenAI-compatible endpoint，模型为 `glm-5.1`。报告、代码、fixture 与提交中没有保存 API key、SSH 密码或等价敏感信息。
 
-远端验证使用隔离的 29180/29190 临时服务和 SSH tunnel；发布二进制 SHA-256 为 `e2b7db959648b34edf9cb613f69e8cc81af46977762ae2bcbaa8a6d56d06c9ab`。既有 19180/19190/7072 服务未修改，临时远端目录、tunnel 和进程已清理。
+### 7.1 本地最终样本
 
-## 8. 已知限制与后续项
+- Runtime 二进制：`output/task20/ai-server-final`
+- SHA-256：`8fd8063bb22664b8cc0a0937ccee6c0411d3ad4dc9144a7ab64543635eea66e3`
+- Eval run：`task20-glm51-final-head-smoke-b846322-pass`
+- 结果：PASS 1/1，score 1.00，51/51，tool calls 0。
+- Turn：`turn-1784002595000293000`，lifecycle completed，1 iteration，4 items。
+- canonical head seq 7：
+  - event `event:59c6f31c021e7f67188b739cecab092cf156cffd761884fb9605e7e4b303f29f`
+  - hash `sha256:897fd8a7930128af8d08b1735ab2a26f6fdec03adfa5bc6aae05ef62fedb3ee6`
 
-1. `exec_command pwd` 的风险分类和 evidence policy 当前使真实 approval resume 无法完成到 executor；若产品期望“明确只读 terminal 命令”可直接执行，应另开 policy 设计任务，不能在 UI 绕过 ActionToken。
-2. 长真实模型输出会触发 AssistantTransport canonical agent-items 截断。建议把大型 typed artifacts 外置为 ref，并让 eval adapter 读取 ref，而不是放宽 canonical 上限或静默丢弃。
-3. 真实 multi-host worker E2E 需要至少两个可控 Host-Agent target；本轮只完成 deterministic manager full-story 与真实模型 advisory 抽样。
-4. Python 污点 checker 是 16-hop、函数内、Go/TS 的有限分析，不是完整语言证明；它与 production RunTurn parity、typed projector 对抗测试、坏 fixture self-test 共同构成多层门禁。
+### 7.2 远端隔离服务最终样本
 
-## 9. 发布判断
+- Linux amd64 二进制：`output/task20/ai-server-linux-amd64-final`
+- SHA-256：`4c21f0ef5963290cde1ae84cd680052af4617d7454802dc0c703db9a63311c28`
+- Eval run：`task20-glm51-remote-final-head-b846322`
+- 结果：PASS 1/1，score 1.00，51/51，tool calls 0。
+- Turn：`turn-1784003476338768359`。
+- canonical head seq 7：
+  - event `event:aa0e899bb8b0704842045b4834f017a1a0559095b11fc45f4419577994a2c02e`
+  - hash `sha256:75f9aadca8912bfa9597fe6afe7a43d91d5bfa796d7357d4ca10ac91c003ae59`
 
-确定性 harness cutover 和 CI 防回退条件满足，可进入代码评审/合并流程。真实工具执行相关能力建议分阶段发布：
+远端使用临时 29180/29190 服务和 SSH tunnel。验证结束后进程、tunnel 与临时目录均已清理，29180/29190 已确认关闭；既有远端服务未修改。
 
-- no-tool、read-only facts、Prompt Trace、replay：可发布。
-- mutation/terminal approval：保持 fail-closed，先修正或明确 policy 产品语义。
-- 长 RCA/multi-host eval：先修 canonical ref hydration，再作为真实模型 release gate。
+### 7.3 真实 provider 暴露并修复的问题
 
-本报告不把受限真实样本计为通过；发布判断以“确定性控制链已锁定、真实不确定路径安全失败”为依据。
+最终通过前，真实样本发现 `FinalContract.status=unknown` 在“无工具、回答完成”的合法情况下仍被 AppUI 映射为 running，Eval 也不把它视作终态。修复流程：
+
+1. 增加 RED 回归：`TestCanonicalTransportUnknownFinalContractIsCompletedBlock`。
+2. 增加 Server RED 回归：`TestServerAgentAssistantTransportAcceptsCompletedUnknownFinalContract`。
+3. 只在完整终态条件满足时把 unknown 映射为 completed；其他 unknown 继续 fail closed。
+4. 使用当前 `b846322` 重新构建本地与远端二进制，两个真实样本均达到 51/51。
+
+另一个 built-in semantic no-tool 诊断样本为 50/51，仅因期望 literal “直接回答”未原样出现，Runtime 无错误；最终 release 证据使用独立 exact-output smoke，避免把文字风格差异误判成 harness 故障。
+
+## 8. 修复前历史诊断样本（不作为当前发布通过证据）
+
+修复前还跑过真实 read-only proposal、approval、RCA 与 multi-host advisory。这些样本只用于发现边界问题：
+
+- terminal `pwd` 仍需要服务端 ActionToken/evidence binding，普通 UI approval 不会绕过 policy，executor 保持 0。
+- 长 RCA/多主机输出曾触发 Eval canonical item 大小上限；Runtime 已完成但 Eval fail closed。
+- multi-host 样本只验证 manager advisory，没有连接多个真实 Host-Agent worker。
+
+以上结果没有被计为当前版本的真实工具执行通过；真正的 mutation、approval resume 与 multi-host 执行仍以 deterministic full-story 作为本轮完成证据。
+
+## 9. 本轮校正提交
+
+| 提交 | 校正内容 |
+|---|---|
+| `2c4ecbd` | 保留 canonical transcript 的正确 UI presentation；修复 pending/running 标头、连续 Ops Manual artifact 合并与普通工具输出误判 transport error |
+| `0a24eee` | 把 browser 发现的 UI 回归记录到 `fixbug.md` |
+| `48f6fac` | 把 CLI Eval legacy `process/final` fixture 迁移为 canonical blocks |
+| `b846322` | 收敛 unknown final contract 的终态判定，并加入 AppUI/Server 回归 |
+
+`README.md` 中用户已有的当前控制链记录未被本分支覆盖或改写。
+
+## 10. 已知限制与下一阶段
+
+1. terminal read-only command 的 approval/evidence 产品语义仍应单独设计；不能由 UI 绕过 Runtime policy。
+2. 超长 typed artifact 需要 ref hydration，而不是放宽 canonical transport 上限或静默截断。
+3. 真正的多 Host-Agent worker E2E 需要至少两个可控 worker target；本轮 deterministic manager story 已完成，真实 worker 网络未纳入发布证据。
+4. Host-Agent 的 Skill/MCP capability policy 仍需要成为显式、可审计的能力来源。
+5. persisted legacy transcript converter 暂时保留在输入边界；内部与输出协议已经 canonical-only。
+6. Python final-text checker 是有限静态分析，不是完整语言证明；它与 runtime parity、typed projector 测试和坏 fixture 自检共同构成多层门禁。
+
+## 11. 发布判断
+
+Agent Harness 的确定性 cutover、canonical transport、Prompt 顺序、mutation rollback、replay 与 CI 防回退条件已满足，可进入代码评审与合并选择。
+
+当前可发布范围：no-tool、canonical transcript、Prompt Trace、replay、确定性审批/变更 full-story。真实 terminal mutation、多 Host-Agent worker 和超长 artifact hydration 应继续保持 fail closed，并作为后续独立任务推进。
