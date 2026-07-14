@@ -79,6 +79,14 @@ const (
 	AiopsTransportFinalStatusUnknown         AiopsTransportFinalStatus = "unknown"
 )
 
+type AiopsTransportBlockType string
+
+const (
+	AiopsTransportBlockTypeCommentary  AiopsTransportBlockType = "commentary"
+	AiopsTransportBlockTypeFinalAnswer AiopsTransportBlockType = "final_answer"
+	AiopsTransportBlockTypeArtifact    AiopsTransportBlockType = "artifact"
+)
+
 type AiopsTransportState struct {
 	SchemaVersion       string                               `json:"schemaVersion"`
 	SessionID           string                               `json:"sessionId"`
@@ -121,26 +129,40 @@ type AiopsTransportOpsRun struct {
 }
 
 type AiopsTransportTurn struct {
-	ID                      string                          `json:"id"`
-	ClientTurnID            string                          `json:"clientTurnId,omitempty"`
-	ClientMessageID         string                          `json:"clientMessageId,omitempty"`
-	AgentItems              []AiopsTransportAgentItem       `json:"agentItems,omitempty"`
-	AgentItemsTruncated     bool                            `json:"agentItemsTruncated,omitempty"`
-	AgentItemsOriginalCount int                             `json:"agentItemsOriginalCount,omitempty"`
-	AgentItemsOriginalBytes int64                           `json:"agentItemsOriginalBytes,omitempty"`
-	AgentItemsHash          string                          `json:"agentItemsHash,omitempty"`
-	AgentItemsRef           string                          `json:"agentItemsRef,omitempty"`
-	User                    *AiopsTransportMessage          `json:"user,omitempty"`
-	Intent                  *AiopsTransportIntent           `json:"intent,omitempty"`
-	Process                 []AiopsProcessBlock             `json:"process,omitempty"`
-	Timeline                []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
-	ContextGovernance       []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
-	AgentUIArtifacts        []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
-	Final                   *AiopsTransportFinal            `json:"final,omitempty"`
-	Status                  AiopsTransportTurnStatus        `json:"status"`
-	StartedAt               string                          `json:"startedAt,omitempty"`
-	CompletedAt             string                          `json:"completedAt,omitempty"`
-	UpdatedAt               string                          `json:"updatedAt,omitempty"`
+	ID                      string                    `json:"id"`
+	ClientTurnID            string                    `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                    `json:"clientMessageId,omitempty"`
+	AgentItems              []AiopsTransportAgentItem `json:"agentItems,omitempty"`
+	AgentItemsTruncated     bool                      `json:"agentItemsTruncated,omitempty"`
+	AgentItemsOriginalCount int                       `json:"agentItemsOriginalCount,omitempty"`
+	AgentItemsOriginalBytes int64                     `json:"agentItemsOriginalBytes,omitempty"`
+	AgentItemsHash          string                    `json:"agentItemsHash,omitempty"`
+	AgentItemsRef           string                    `json:"agentItemsRef,omitempty"`
+	User                    *AiopsTransportMessage    `json:"user,omitempty"`
+	Intent                  *AiopsTransportIntent     `json:"intent,omitempty"`
+	// Process and Final are internal projection work fields. The wire transcript
+	// is exclusively BlockOrder + BlocksByID.
+	Process           []AiopsProcessBlock             `json:"-"`
+	Timeline          []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
+	ContextGovernance []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
+	AgentUIArtifacts  []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
+	Final             *AiopsTransportFinal            `json:"-"`
+	BlockOrder        []string                        `json:"blockOrder"`
+	BlocksByID        map[string]AiopsTransportBlock  `json:"blocksById"`
+	Status            AiopsTransportTurnStatus        `json:"status"`
+	StartedAt         string                          `json:"startedAt,omitempty"`
+	CompletedAt       string                          `json:"completedAt,omitempty"`
+	UpdatedAt         string                          `json:"updatedAt,omitempty"`
+}
+
+// AiopsTransportBlock is the canonical ordered transcript unit. Process
+// details are flattened for typed renderers; final/artifact payloads remain
+// typed and never need to be inferred from assistant text.
+type AiopsTransportBlock struct {
+	Type AiopsTransportBlockType `json:"type"`
+	AiopsProcessBlock
+	FinalContract *AiopsTransportFinal           `json:"finalContract,omitempty"`
+	Artifact      *AiopsTransportAgentUIArtifact `json:"artifact,omitempty"`
 }
 
 // AiopsTransportAgentItem is the versioned, privacy-bounded wire form of a

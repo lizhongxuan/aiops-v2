@@ -221,8 +221,11 @@ func TestTransportProjectorCanonicalTurnFactsRedactAndBoundPayload(t *testing.T)
 	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
 		t.Fatalf("json.Unmarshal(turn) error = %v", err)
 	}
-	if !reflect.DeepEqual(roundTripped, first) {
-		t.Fatalf("transport JSON round trip changed bounded facts\nwant=%#v\n got=%#v", first, roundTripped)
+	wantWire := first
+	wantWire.Process = nil
+	wantWire.Final = nil
+	if !reflect.DeepEqual(roundTripped, wantWire) {
+		t.Fatalf("transport JSON round trip changed bounded facts\nwant=%#v\n got=%#v", wantWire, roundTripped)
 	}
 }
 
@@ -543,6 +546,50 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
+	}
+}
+
+func TestTransportProjectorEmitsCanonicalOrderedBlocksWithoutLegacyTranscriptFields(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-canonical-blocks",
+		SessionID: "session-canonical-blocks",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "commentary-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "先检查运行状态。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`)}, CreatedAt: now},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "检查完成。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-canonical-blocks"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if len(got.BlockOrder) != 2 || got.BlockOrder[1] != "final-1" {
+		t.Fatalf("BlockOrder = %#v, want commentary then final", got.BlockOrder)
+	}
+	if got.BlocksByID[got.BlockOrder[0]].Type != AiopsTransportBlockTypeCommentary {
+		t.Fatalf("commentary block = %#v", got.BlocksByID[got.BlockOrder[0]])
+	}
+	if final := got.BlocksByID["final-1"]; final.Type != AiopsTransportBlockTypeFinalAnswer || final.FinalContract == nil || final.Text != "检查完成。" {
+		t.Fatalf("final block = %#v", final)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("json.Unmarshal(turn) error = %v", err)
+	}
+	if _, ok := wire["process"]; ok {
+		t.Fatalf("legacy process leaked into wire: %s", encoded)
+	}
+	if _, ok := wire["final"]; ok {
+		t.Fatalf("legacy final leaked into wire: %s", encoded)
 	}
 }
 
