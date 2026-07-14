@@ -31,6 +31,7 @@ import {
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
 type TransportRuntimeOptions = {
+  initialState: AiopsTransportState;
   onError: (
     error: Error,
     context: {
@@ -154,6 +155,33 @@ describe("ChatTransportProvider", () => {
     });
   });
 
+  it("canonicalizes persisted legacy transcript before it enters the runtime", async () => {
+    const state = createInitialAiopsTransportState("thread-legacy-admission");
+    state.sessionId = "sess-legacy-admission";
+    state.turnOrder = ["turn-legacy"];
+    state.turns["turn-legacy"] = {
+      id: "turn-legacy",
+      status: "completed",
+      process: [{ id: "command-1", kind: "command", status: "completed", text: "hostname" }],
+      final: { id: "final-1", text: "完成", status: "completed" },
+    };
+
+    await act(async () => {
+      root.render(
+        <ChatTransportProvider initialState={state} threadId="thread-legacy-admission">
+          <div>chat</div>
+        </ChatTransportProvider>,
+      );
+    });
+
+    const options = transportRuntimeSpy.mock.calls[0]?.[0] as { initialState: AiopsTransportState };
+    const admitted = options.initialState.turns["turn-legacy"];
+    expect(admitted.blockOrder).toEqual(["command-1", "final-1"]);
+    expect(admitted.blocksById?.["final-1"]).toMatchObject({ type: "final_answer", text: "完成" });
+    expect(admitted.process).toBeUndefined();
+    expect(admitted.final).toBeUndefined();
+  });
+
   it("localizes network errors and clears model wait state when the transport fails", async () => {
     const state = createInitialAiopsTransportState("thread-error-provider");
     state.sessionId = "sess-error-provider";
@@ -184,7 +212,7 @@ describe("ChatTransportProvider", () => {
     });
 
     const options = transportRuntimeSpy.mock.calls[0]?.[0] as TransportRuntimeOptions;
-    let nextState = state;
+    let nextState = options.initialState;
     options.onError(new Error("network error"), {
       updateState(updater) {
         nextState = updater(nextState);
@@ -192,10 +220,11 @@ describe("ChatTransportProvider", () => {
     });
 
     expect(nextState.lastError).toBe("网络异常,请检查后重试");
-    expect(nextState.turns["turn-error"]?.process?.[0]).toMatchObject({
+    expect(nextState.turns["turn-error"]?.blocksById?.["wait-model"]).toMatchObject({
       id: "wait-model",
       status: "failed",
       text: "模型调用失败",
     });
+    expect(nextState.turns["turn-error"]?.process).toBeUndefined();
   });
 });

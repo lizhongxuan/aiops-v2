@@ -1,5 +1,27 @@
 import { expect, test } from "@playwright/test";
 
+function canonicalTranscript(process, final) {
+  const blocks = process.map((block) => ({
+    ...block,
+    type: block.kind === "assistant" ? "commentary" : block.kind,
+  }));
+  blocks.push({
+    id: final.id,
+    type: "final_answer",
+    kind: "assistant",
+    displayKind: "assistant.message",
+    phase: "final_answer",
+    streamState: "complete",
+    status: "completed",
+    text: final.text,
+    finalContract: final,
+  });
+  return {
+    blockOrder: blocks.map((block) => block.id),
+    blocksById: Object.fromEntries(blocks.map((block) => [block.id, block])),
+  };
+}
+
 const transportState = {
   schemaVersion: "aiops.transport.v2",
   sessionId: "browser-flow-session",
@@ -17,7 +39,7 @@ const transportState = {
         text: "测试一下 aiops-v2 对话时，工具跟对话的顺序是否正确。",
         createdAt: "2026-05-08T02:00:00.000Z",
       },
-      process: [
+      ...canonicalTranscript([
         {
           id: "assistant-next",
           kind: "assistant",
@@ -76,12 +98,11 @@ const transportState = {
           text: "页面也确认过了，最终回答会基于上面的命令和搜索结果。",
           updatedAt: "2026-05-08T02:00:10.000Z",
         },
-      ],
-      final: {
+      ], {
         id: "final-browser-flow",
         text: "流程验证完成：对话、命令组、对话、搜索组和后续对话按预期顺序显示。",
         status: "completed",
-      },
+      }),
     },
   },
   turnOrder: ["turn-browser-flow"],

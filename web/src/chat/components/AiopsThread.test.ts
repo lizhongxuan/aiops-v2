@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { assistantMessageRenderedFinalText, finalContractSummaryView, isNearThreadBottom } from "./AiopsThread";
+import { assistantMessageRenderedFinalText, assistantTranscriptFromContent, finalContractSummaryView, groupAssistantTranscriptBlocks, isNearThreadBottom, orderedAssistantTurnBlocks } from "./AiopsThread";
+import type { AiopsTransportBlock, AiopsTransportTurn } from "@/transport/aiopsTransportTypes";
 
 describe("AiopsThread auto-scroll helpers", () => {
   it("treats a viewport close to the bottom as sticky", () => {
@@ -9,6 +10,110 @@ describe("AiopsThread auto-scroll helpers", () => {
 
   it("does not auto-stick when the user has scrolled up into history", () => {
     expect(isNearThreadBottom({ scrollTop: 200, clientHeight: 100, scrollHeight: 1000 })).toBe(false);
+  });
+});
+
+describe("AiopsThread canonical transcript", () => {
+  it("uses blockOrder as the only rendering order", () => {
+    const turn = {
+      id: "turn-1",
+      status: "completed",
+      blockOrder: ["commentary-1", "final-1"],
+      blocksById: {
+        "final-1": {
+          id: "final-1",
+          type: "final_answer",
+          kind: "assistant",
+          phase: "final_answer",
+          status: "completed",
+          text: "最终结论",
+        },
+        "commentary-1": {
+          id: "commentary-1",
+          type: "commentary",
+          kind: "assistant",
+          phase: "commentary",
+          status: "completed",
+          text: "先检查",
+        },
+      },
+    } as AiopsTransportTurn;
+
+    expect(orderedAssistantTurnBlocks(turn).map((block) => block.id)).toEqual(["commentary-1", "final-1"]);
+  });
+
+  it("reads ordered transcript blocks from AssistantTransport data parts", () => {
+    const transcript = assistantTranscriptFromContent([
+      {
+        type: "data",
+        name: "aiops.transport.turn",
+        data: { id: "turn-1", status: "completed" },
+      },
+      {
+        type: "data",
+        name: "aiops.transport.block",
+        data: { id: "commentary-1", type: "commentary" },
+      },
+      {
+        type: "data",
+        name: "aiops.transport.block",
+        data: { id: "final-1", type: "final_answer" },
+      },
+      { type: "text", text: "最终结论" },
+    ]);
+
+    expect(transcript.turn).toMatchObject({
+      id: "turn-1",
+      status: "completed",
+    });
+    expect(transcript.blocks.map((block) => block.id)).toEqual(["commentary-1", "final-1"]);
+  });
+
+  it("keeps consecutive process blocks in one transcript before final and artifact blocks", () => {
+    const groups = groupAssistantTranscriptBlocks([
+      {
+        id: "reasoning-1",
+        type: "reasoning",
+        kind: "reasoning",
+        status: "completed",
+        text: "分析",
+      },
+      {
+        id: "tool-1",
+        type: "tool",
+        kind: "tool",
+        status: "completed",
+        text: "检查",
+      },
+      {
+        id: "final-1",
+        type: "final_answer",
+        kind: "assistant",
+        status: "completed",
+        text: "结论",
+      },
+      {
+        id: "artifact-1",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        text: "图表",
+      },
+    ] as AiopsTransportBlock[]);
+
+    expect(groups).toHaveLength(3);
+    expect(groups[0]).toMatchObject({
+      type: "process",
+      blocks: [{ id: "reasoning-1" }, { id: "tool-1" }],
+    });
+    expect(groups[1]).toMatchObject({
+      type: "block",
+      block: { id: "final-1" },
+    });
+    expect(groups[2]).toMatchObject({
+      type: "block",
+      block: { id: "artifact-1" },
+    });
   });
 });
 

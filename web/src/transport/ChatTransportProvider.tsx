@@ -10,7 +10,7 @@ import {
 import type { PropsWithChildren } from "react";
 import { useEffect, useMemo, useRef } from "react";
 
-import { createAiopsTransportConverter } from "./aiopsTransportConverter";
+import { canonicalizeTransportTranscript, createAiopsTransportConverter } from "./aiopsTransportConverter";
 import {
   markAiopsTransportCanceled,
   markAiopsTransportFailed,
@@ -35,7 +35,7 @@ export function ChatTransportProvider({
   threadId = "default",
 }: ChatTransportProviderProps) {
   const initialTransportState = useMemo(
-    () => normalizeAiopsTransportState(initialState, threadId),
+    () => canonicalizeTransportTranscript(normalizeAiopsTransportState(initialState, threadId)),
     [initialState, threadId],
   );
   const converter = useMemo(() => createAiopsTransportConverter(), []);

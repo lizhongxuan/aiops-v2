@@ -71,7 +71,77 @@ function createState(): AiopsTransportState {
   };
 }
 
+function resultTurn(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return result.state.turns[turnId];
+}
+
+function resultBlocks(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  const turn = resultTurn(result, turnId);
+  return (turn?.blockOrder || []).flatMap((id) => {
+    const block = turn?.blocksById?.[id];
+    return block ? [block] : [];
+  });
+}
+
+function resultArtifacts(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return resultBlocks(result, turnId).flatMap((block) => block.artifact ? [block.artifact] : []);
+}
+
+function resultFinalBlock(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return resultBlocks(result, turnId).find((block) => block.type === "final_answer");
+}
+
+function textContent(content: readonly { type: string; text?: string }[] | undefined) {
+  return (content || []).filter((part) => part.type === "text");
+}
+
 describe("aiopsTransportConverter", () => {
+  it("renders the canonical ordered-block transcript without unstable metadata", () => {
+    const state = createState() as AiopsTransportState & {
+      turns: Record<string, AiopsTransportState["turns"][string] & Record<string, unknown>>;
+    };
+    const turn = state.turns["turn-1"];
+    delete turn.process;
+    delete turn.final;
+    turn.blockOrder = ["block-1", "final-1"];
+    turn.blocksById = {
+      "block-1": {
+        id: "block-1",
+        type: "command",
+        kind: "command",
+        status: "completed",
+        text: "systemctl status payment-api",
+        command: "systemctl status payment-api",
+      },
+      "final-1": {
+        id: "final-1",
+        type: "final_answer",
+        kind: "assistant",
+        phase: "final_answer",
+        status: "completed",
+        text: "payment-api is healthy after restart.",
+        finalContract: {
+          id: "final-1",
+          text: "payment-api is healthy after restart.",
+          status: "completed",
+        },
+      },
+    };
+
+    const result = createAiopsTransportConverter()(state, metadata());
+
+    expect(result.messages[1]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: { source: "aiops.transport.assistant", turnId: "turn-1" },
+      },
+    });
+    expect(textContent(result.messages[1]?.content)).toEqual([
+      { type: "text", text: "payment-api is healthy after restart." },
+    ]);
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
+  });
+
   it("renders turns chronologically even when transport order arrives out of order", () => {
     const state = createState();
     state.currentTurnId = "turn-new";
@@ -119,24 +189,26 @@ describe("aiopsTransportConverter", () => {
     expect(result.messages[1]).toMatchObject({
       role: "assistant",
       id: "turn-1:assistant",
-      content: [
-        { type: "text", text: "payment-api is healthy after restart." },
-      ],
       status: { type: "complete", reason: "stop" },
     });
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      turnId: "turn-1",
-      turnStatus: "completed",
-      turnStartedAt: "2026-05-06T00:00:00Z",
-      turnCompletedAt: "2026-05-06T00:00:05Z",
-      process: [
-        expect.objectContaining({
-          id: "block-1",
-          kind: "command",
-          command: "systemctl status payment-api",
-        }),
-      ],
+    expect(textContent(result.messages[1]?.content)).toEqual([
+      { type: "text", text: "payment-api is healthy after restart." },
+    ]);
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
+    expect(result.messages[1]?.metadata?.custom).toMatchObject({ turnId: "turn-1" });
+    expect(resultTurn(result)).toMatchObject({
+      id: "turn-1",
+      status: "completed",
+      startedAt: "2026-05-06T00:00:00Z",
+      completedAt: "2026-05-06T00:00:05Z",
     });
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "block-1",
+        kind: "command",
+        command: "systemctl status payment-api",
+      }),
+    ]));
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "systemctl status payment-api" }),
@@ -171,10 +243,8 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      finalText: "无法在目标主机执行命令：host agent 不可用。",
-      finalStatus: "tool_unavailable",
-      finalConfidence: "low",
+    expect(resultFinalBlock(result)).toMatchObject({
+      text: "无法在目标主机执行命令：host agent 不可用。",
       finalContract: {
         schemaVersion: "aiops.harness.final.v1",
         status: "tool_unavailable",
@@ -216,18 +286,13 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([
+    expect(textContent(result.messages[1]?.content)).toEqual([
       { type: "text", text: "网络异常,请检查后重试" },
     ]);
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      finalText: "网络异常,请检查后重试",
-      process: [
-        expect.objectContaining({
-          id: "wait-model",
-          text: "模型调用失败",
-        }),
-      ],
-    });
+    expect(resultFinalBlock(result)?.text).toBe("网络异常,请检查后重试");
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "wait-model", text: "模型调用失败" }),
+    ]));
   });
 
   it("passes timeline order and structured final status without parsing markdown", () => {
@@ -286,18 +351,18 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const meta = result.messages[1]?.metadata?.unstable_state;
+    const finalBlock = resultFinalBlock(result);
 
-    expect(meta?.finalStatus).toBe("tool_unavailable");
-    expect(meta?.finalConfidence).toBe("low");
-    expect(meta?.timeline?.map((item) => item.type)).toEqual([
+    expect(finalBlock?.finalContract?.status).toBe("tool_unavailable");
+    expect(finalBlock?.finalContract?.confidence).toBe("low");
+    expect(resultTurn(result)?.timeline?.map((item) => item.type)).toEqual([
       "assistant_message",
       "approval_requested",
       "approval_decided",
       "tool_result",
       "final_response",
     ]);
-    expect(meta?.finalContract).toMatchObject({
+    expect(finalBlock?.finalContract).toMatchObject({
       status: "tool_unavailable",
       confidence: "low",
       failedToolImpacts: [
@@ -335,7 +400,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([
+    expect(textContent(result.messages[1]?.content)).toEqual([
       {
         type: "text",
         text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
@@ -348,7 +413,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("marks commentary-only running turns with empty final text metadata", () => {
+  it("keeps commentary-only running turns in ordered blocks with no final content", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -379,11 +444,9 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([]);
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      finalText: "",
-    });
-    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(result)).toBeUndefined();
+    expect(resultBlocks(result)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           phase: "commentary",
@@ -429,9 +492,9 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([]);
-    expect(result.messages[1]?.metadata?.unstable_state?.finalText).toBe("");
-    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(result)?.text).toBe(duplicateText);
+    expect(resultBlocks(result)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           phase: "commentary",
@@ -477,7 +540,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([{ type: "text", text: preservedAnswer }]);
+    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: preservedAnswer }]);
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
@@ -510,7 +573,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([
+    expect(textContent(result.messages[1]?.content)).toEqual([
       { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
     ]);
   });
@@ -603,7 +666,7 @@ describe("aiopsTransportConverter", () => {
 
     expect(before.messages[1]?.id).toBe("turn-1:assistant");
     expect(after.messages[1]?.id).toBe("turn-1:assistant");
-    expect(after.messages[1]?.content).toEqual([
+    expect(textContent(after.messages[1]?.content)).toEqual([
       { type: "text", text: "partial" },
     ]);
   });
@@ -662,11 +725,7 @@ describe("aiopsTransportConverter", () => {
       role: "assistant",
       status: { type: "running" },
       metadata: {
-        unstable_state: {
-          turnId: "turn-1",
-          turnStatus: "submitted",
-          process: [],
-        },
+        custom: { turnId: "turn-1", source: "aiops.transport.assistant" },
       },
     });
   });
@@ -696,7 +755,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("attaches turn Agent-to-UI artifacts to assistant message metadata", () => {
+  it("projects turn Agent-to-UI artifacts into ordered transcript blocks", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -717,19 +776,19 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "artifact-coroot-latency",
           type: "coroot_chart",
           titleZh: "Coroot 延迟趋势",
           caseId: "case-debug-1",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
-  it("passes workflow editor Agent-to-UI artifacts through assistant metadata", () => {
+  it("passes workflow editor Agent-to-UI artifacts through ordered blocks", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -751,8 +810,8 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "workflow-result",
           type: "workflow_patch_result",
@@ -762,11 +821,11 @@ describe("aiopsTransportConverter", () => {
             effectStatus: "changed",
           }),
         }),
-      ],
-    });
+      ]),
+    );
   });
 
-  it("attaches context governance events to assistant message metadata", () => {
+  it("keeps context governance events in canonical transport state", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -785,18 +844,18 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      contextGovernance: [
+    expect(resultTurn(result)?.contextGovernance).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "ctxgov-1",
           layer: "L4",
           kind: "context.compaction.started",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
-  it("passes host operation state through assistant message metadata", () => {
+  it("keeps host operation state in AssistantTransport state without message duplication", () => {
     const state = createState();
     state.activeHostMissionId = "mission-1";
     state.hostMissions = {
@@ -839,7 +898,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+    expect(result.state).toMatchObject({
       activeHostMissionId: "mission-1",
       hostMissions: {
         "mission-1": expect.objectContaining({
@@ -863,7 +922,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("preserves optional host child full runtime trace fields in assistant metadata", () => {
+  it("preserves optional host child full runtime trace fields in AssistantTransport state", () => {
     const state = createState();
     state.activeHostMissionId = "mission-generic";
     state.hostMissions = {
@@ -1006,7 +1065,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+    expect(result.state).toMatchObject({
       childAgents: {
         "child-generic-a": expect.objectContaining({
           runtimeProfile: expect.objectContaining({
@@ -1058,7 +1117,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("delays disruptive artifacts until the assistant turn is terminal", () => {
+  it("keeps disruptive artifacts typed in blocks for React visibility policy", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -1082,29 +1141,11 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [],
-      deferredAgentUiArtifacts: [
-        expect.objectContaining({
-          id: "artifact-coroot-latency",
-          type: "coroot_chart",
-        }),
-      ],
-    });
-    expect(
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
-    ).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "ops_manual_search_result" }),
-      ]),
-    );
-    expect(
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
-    ).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "coroot_chart" }),
-      ]),
-    );
+    expect(resultArtifacts(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "ops_manual_search_result" }),
+      expect.objectContaining({ id: "artifact-coroot-latency", type: "coroot_chart" }),
+    ]));
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
   });
 
   it("shows delayed ops manual search artifacts after the assistant turn completes", () => {
@@ -1123,14 +1164,14 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "artifact-ops-manual",
           type: "ops_manual_search_result",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
   it("merges matching ops manual preflight into the search artifact", () => {
@@ -1172,8 +1213,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -1234,8 +1274,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -1300,8 +1339,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({
@@ -1370,8 +1408,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({

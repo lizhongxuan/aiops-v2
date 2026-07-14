@@ -423,20 +423,31 @@ describe("aiopsTransportRuntime", () => {
         "turn-1": {
           id: "turn-1",
           status: "working",
-          process: [
-            {
+          blockOrder: ["reasoning-1", "tool-1", "final-1"],
+          blocksById: {
+            "reasoning-1": {
               id: "reasoning-1",
+              type: "reasoning",
               kind: "reasoning",
               status: "running",
               text: "正在等待模型返回",
             },
-            {
+            "tool-1": {
               id: "tool-1",
+              type: "tool",
               kind: "tool",
               status: "completed",
               text: "已读取日志",
             },
-          ],
+            "final-1": {
+              id: "final-1",
+              type: "final_answer",
+              kind: "assistant",
+              status: "running",
+              text: "正在生成结论",
+              finalContract: { id: "final-1", text: "正在生成结论", status: "running" },
+            },
+          },
         },
       },
     } satisfies AiopsTransportState;
@@ -450,18 +461,22 @@ describe("aiopsTransportRuntime", () => {
       turns: {
         "turn-1": {
           status: "failed",
-          process: [
-            {
+          blocksById: {
+            "reasoning-1": {
               id: "reasoning-1",
               status: "failed",
               text: "模型调用失败",
             },
-            {
+            "tool-1": {
               id: "tool-1",
               status: "completed",
               text: "已读取日志",
             },
-          ],
+            "final-1": {
+              status: "failed",
+              finalContract: { status: "failed" },
+            },
+          },
         },
       },
     });
@@ -471,23 +486,27 @@ describe("aiopsTransportRuntime", () => {
       turns: {
         "turn-1": {
           status: "canceled",
-          process: [
-            {
+          blocksById: {
+            "reasoning-1": {
               id: "reasoning-1",
               status: "rejected",
               text: "模型调用已取消",
             },
-            {
+            "tool-1": {
               id: "tool-1",
               status: "completed",
               text: "已读取日志",
             },
-          ],
+            "final-1": {
+              status: "rejected",
+              finalContract: { status: "cancelled" },
+            },
+          },
         },
       },
     });
     expect(state.status).toBe("working");
     expect(state.turns["turn-1"]?.status).toBe("working");
-    expect(state.turns["turn-1"]?.process?.[0]?.text).toBe("正在等待模型返回");
+    expect(state.turns["turn-1"]?.blocksById?.["reasoning-1"]?.text).toBe("正在等待模型返回");
   });
 });

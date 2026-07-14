@@ -1,6 +1,7 @@
 import type {
   AiopsProcessBlock,
   AiopsSpecialInputContext,
+  AiopsTransportBlock,
   AiopsTransportTimelineItem,
   AiopsTransportHostMission,
   AiopsTransportState,
@@ -300,16 +301,24 @@ function markTurnTerminal(
   turn: AiopsTransportTurn,
   status: "failed" | "canceled",
 ): AiopsTransportTurn {
+  const blocksById = Object.fromEntries(
+    Object.entries(turn.blocksById || {}).map(([id, block]) => {
+      const terminal = markProcessBlockTerminal(block, status) as AiopsTransportBlock;
+      if (block.type !== "final_answer") {
+        return [id, terminal];
+      }
+      return [id, {
+        ...terminal,
+        finalContract: block.finalContract
+          ? { ...block.finalContract, status: status === "canceled" ? "cancelled" : "failed" }
+          : block.finalContract,
+      }];
+    }),
+  );
   return {
     ...turn,
     status,
-    process: turn.process?.map((block) => markProcessBlockTerminal(block, status)),
-    final: turn.final
-      ? {
-          ...turn.final,
-          status: "failed",
-        }
-      : turn.final,
+    blocksById,
   };
 }
 
@@ -585,11 +594,33 @@ function normalizeTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
     ? turn.timeline.map(normalizeTimelineItem).filter((item): item is AiopsTransportTimelineItem => Boolean(item))
     : undefined;
   const finalText = sanitizeUserVisibleFinalText(turn.final?.text);
+  const blocksById = Object.fromEntries(
+    Object.entries(turn.blocksById || {}).flatMap(([id, block]) => {
+      const normalized = normalizeProcessBlock(block) || (block.type === "artifact" && block.artifact ? block : undefined);
+      if (!normalized) {
+        return [];
+      }
+      const finalContract = block.finalContract;
+      const contractText = sanitizeUserVisibleFinalText(finalContract?.text);
+      return [[id, {
+        ...block,
+        ...normalized,
+        finalContract: finalContract
+          ? {
+              ...finalContract,
+              text: contractText,
+              answerText: sanitizeUserVisibleFinalText(finalContract.answerText),
+            }
+          : undefined,
+      } satisfies AiopsTransportBlock]];
+    }),
+  );
   return {
     ...turn,
     process,
     timeline,
     final: turn.final && finalText ? { ...turn.final, text: finalText } : undefined,
+    blocksById,
   };
 }
 

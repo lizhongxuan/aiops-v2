@@ -100,6 +100,11 @@ export type AiopsTransportTimelineItemType =
 
 export type AiopsAssistantMessagePhase = "commentary" | "final_answer";
 export type AiopsAssistantMessageStreamState = "streaming" | "complete" | "incomplete";
+export type AiopsTransportBlockType =
+  | "commentary"
+  | "final_answer"
+  | "artifact"
+  | AiopsTransportProcessKind;
 
 export type PostRunSuggestionType =
   | "run_record"
@@ -274,15 +279,25 @@ export type AiopsTransportTurn = {
   id: string;
   user?: AiopsTransportMessage;
   intent?: AiopsTransportIntent;
+  blockOrder?: string[];
+  blocksById?: Record<string, AiopsTransportBlock>;
+  /** Compatibility input only; AssistantTransport converts it at the boundary. */
   process?: AiopsProcessBlock[];
   timeline?: AiopsTransportTimelineItem[];
   contextGovernance?: AiopsContextGovernanceEvent[];
   agentUiArtifacts?: AiopsTransportAgentUiArtifact[];
+  /** Compatibility input only; AssistantTransport converts it at the boundary. */
   final?: AiopsTransportFinal;
   status: AiopsTransportTurnStatus;
   startedAt?: string;
   completedAt?: string;
   updatedAt?: string;
+};
+
+export type AiopsTransportBlock = AiopsProcessBlock & {
+  type: AiopsTransportBlockType;
+  finalContract?: AiopsTransportFinal;
+  artifact?: AiopsTransportAgentUiArtifact;
 };
 
 export type AiopsTransportTimelineItem = {
