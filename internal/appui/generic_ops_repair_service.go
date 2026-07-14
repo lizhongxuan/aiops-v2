@@ -14,16 +14,16 @@ import (
 )
 
 func (s *defaultChatService) handleGenericOpsRepair(ctx context.Context, _ ChatCommand, req runtimekernel.TurnRequest) (TurnResponse, bool, error) {
-	sessionStore, ok := s.sessions.(SessionStore)
-	if !ok {
-		return TurnResponse{}, false, nil
-	}
 	if !genericOpsRepairDraftOnly(req.Metadata) {
 		return TurnResponse{}, false, nil
 	}
 	frame := opsmanual.BuildOperationFrame(req.Input, nil)
 	if !shouldHandleGenericOpsRepair(req.Input, frame) {
 		return TurnResponse{}, false, nil
+	}
+	gateway, ok := s.runtime.(systemTurnRuntimeGateway)
+	if !ok {
+		return TurnResponse{}, true, fmt.Errorf("runtime gateway does not support deterministic system turns")
 	}
 	search, err := opsmanual.SearchOpsManuals(opsmanual.NewMemoryStore(), opsmanual.SearchOpsManualsRequest{Text: req.Input, OperationFrame: frame})
 	if err != nil {
@@ -35,32 +35,24 @@ func (s *defaultChatService) handleGenericOpsRepair(ctx context.Context, _ ChatC
 	}
 	final := genericOpsRepairFinalText(frame, search, repairPlan)
 	now := time.Now().UTC()
-	completedAt := now
-	turn := runtimekernel.TurnSnapshot{
-		ID:              req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       req.SessionID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
-		ResumeState:     runtimekernel.TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
-		CompletedAt:     &completedAt,
-		FinalOutput:     final,
-		AgentItems:      genericOpsRepairTurnItems(req, frame, search, repairPlan, final, now),
+	result, err := gateway.CommitSystemTurn(ctx, runtimekernel.SystemTurnRequest{
+		Turn: req,
+		Output: runtimekernel.SystemTurnOutput{
+			Kind:           runtimekernel.SystemTurnKindDeterministicPlan,
+			FinalText:      final,
+			ContractStatus: runtimekernel.FinalContractStatusNeedsEvidence,
+			FailureCodes: []string{
+				"generic_ops_requires_host_evidence",
+				"mutation_requires_approval",
+			},
+			AgentItems: genericOpsRepairSystemItems(req, frame, search, repairPlan, now),
+		},
+	})
+	if err != nil {
+		return TurnResponse{}, true, err
 	}
-	writeGenericOpsRepairTurn(sessionStore, req, final, turn)
 	appendGenericOpsRepairEvents(ctx, s.agentEvents, req, final)
-	return TurnResponse{
-		SessionID:       req.SessionID,
-		TurnID:          req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		Status:          "completed",
-		Output:          final,
-	}, true, nil
+	return mapTurnResponse(result), true, nil
 }
 
 func genericOpsRepairDraftOnly(metadata map[string]string) bool {
@@ -95,97 +87,32 @@ func shouldHandleGenericOpsRepair(input string, frame opsmanual.OperationFrame) 
 	}
 }
 
-func genericOpsRepairTurnItems(req runtimekernel.TurnRequest, frame opsmanual.OperationFrame, search opsmanual.SearchOpsManualsResult, plan *opsrepair.RepairPlan, final string, now time.Time) []agentstate.TurnItem {
-	items := []agentstate.TurnItem{
-		genericOpsRepairUserItem(req, now),
-		genericOpsRepairModelItem(req, frame, plan, now),
-	}
-	items = append(items, genericOpsRepairToolItems(req, "search_ops_manuals", "检索通用运维手册与 capability fallback", genericOpsRepairSearchPreview(search), now)...)
-	items = append(items, genericOpsRepairToolItems(req, "run_ops_manual_preflight", "生成只读预检计划，未执行破坏性动作", genericOpsRepairPreflightPreview(frame, search), now)...)
-	items = append(items, genericOpsRepairToolItems(req, "host_command", "规划主机只读探测命令，由 host-bound agent 执行", genericOpsRepairHostCommandPreview(frame), now)...)
-	items = append(items,
+func genericOpsRepairSystemItems(req runtimekernel.TurnRequest, frame opsmanual.OperationFrame, search opsmanual.SearchOpsManualsResult, plan *opsrepair.RepairPlan, now time.Time) []agentstate.TurnItem {
+	return []agentstate.TurnItem{
+		genericOpsRepairArtifactItem(req, agentstate.TurnItemTypeEvidenceCollected, "ops_manual_search", "search_ops_manuals", "检索通用运维手册与 capability fallback", genericOpsRepairSearchPreview(search), now),
+		genericOpsRepairArtifactItem(req, agentstate.TurnItemTypePlan, "read_only_preflight", "run_ops_manual_preflight", "生成只读预检计划，未执行破坏性动作", genericOpsRepairPreflightPreview(frame, search), now),
+		genericOpsRepairArtifactItem(req, agentstate.TurnItemTypePlan, "host_probe_plan", "host_command", "规划主机只读探测命令，由 host-bound agent 执行", genericOpsRepairHostCommandPreview(frame), now),
 		genericOpsRepairEvidenceItem(req, frame, search, now),
 		genericOpsRepairPlanItem(req, plan, now),
-		genericOpsRepairFinalItem(req, final, now),
-	)
-	return items
-}
-
-func genericOpsRepairUserItem(req runtimekernel.TurnRequest, now time.Time) agentstate.TurnItem {
-	return agentstate.TurnItem{
-		ID:     req.TurnID + "-user",
-		Type:   agentstate.TurnItemTypeUserMessage,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "turn",
-			Summary: req.Input,
-			Data:    mustJSON(map[string]any{"prompt": req.Input, "summary": req.Input}),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
 	}
 }
 
-func genericOpsRepairModelItem(req runtimekernel.TurnRequest, frame opsmanual.OperationFrame, plan *opsrepair.RepairPlan, now time.Time) agentstate.TurnItem {
+func genericOpsRepairArtifactItem(req runtimekernel.TurnRequest, itemType agentstate.TurnItemType, artifactType, source, summary string, preview map[string]any, now time.Time) agentstate.TurnItem {
 	return agentstate.TurnItem{
-		ID:     req.TurnID + "-model-call",
-		Type:   agentstate.TurnItemTypeModelCall,
+		ID:     req.TurnID + "-artifact-" + strings.ReplaceAll(source, "_", "-"),
+		Type:   itemType,
 		Status: agentstate.ItemStatusCompleted,
 		Payload: agentstate.PayloadEnvelope{
-			Kind:    "system",
-			Summary: "生成通用有状态集群恢复计划",
+			Kind:    "generic_ops_repair_artifact",
+			Summary: summary,
 			Data: mustJSON(map[string]any{
-				"capabilityPath": plan.Capability,
-				"resourceRoles":  genericOpsRepairRoleSignals(frame),
-				"genericOpsContract": []string{
-					"read_only_evidence_first",
-					"approval_before_mutation",
-				},
+				"artifactType": artifactType,
+				"source":       source,
+				"preview":      preview,
 			}),
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-}
-
-func genericOpsRepairToolItems(req runtimekernel.TurnRequest, toolName, summary string, preview map[string]any, now time.Time) []agentstate.TurnItem {
-	toolCallID := req.TurnID + "-" + strings.ReplaceAll(toolName, "_", "-")
-	payload := transportToolPayload{
-		ID:            toolCallID,
-		ToolCallID:    toolCallID,
-		ToolName:      toolName,
-		Name:          toolName,
-		DisplayKind:   "generic_ops_repair_evidence",
-		InputSummary:  summary,
-		OutputSummary: summary,
-		OutputPreview: mustJSON(preview),
-		Mock:          true,
-	}
-	return []agentstate.TurnItem{
-		{
-			ID:     toolCallID + "-call",
-			Type:   agentstate.TurnItemTypeToolCall,
-			Status: agentstate.ItemStatusCompleted,
-			Payload: agentstate.PayloadEnvelope{
-				Kind:    "tool",
-				Summary: toolName,
-				Data:    mustJSON(payload),
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		{
-			ID:     toolCallID,
-			Type:   agentstate.TurnItemTypeToolResult,
-			Status: agentstate.ItemStatusCompleted,
-			Payload: agentstate.PayloadEnvelope{
-				Kind:    "tool",
-				Summary: toolName,
-				Data:    mustJSON(payload),
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
 	}
 }
 
@@ -236,26 +163,6 @@ func genericOpsRepairPlanItem(req runtimekernel.TurnRequest, plan *opsrepair.Rep
 			Data: mustJSON(map[string]any{
 				"title": "通用有状态集群恢复方案",
 				"steps": steps,
-			}),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-}
-
-func genericOpsRepairFinalItem(req runtimekernel.TurnRequest, final string, now time.Time) agentstate.TurnItem {
-	return agentstate.TurnItem{
-		ID:     req.TurnID + "-final",
-		Type:   agentstate.TurnItemTypeAssistantMessage,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "assistant_message",
-			Summary: final,
-			Data: mustJSON(map[string]any{
-				"displayKind":    "assistant.message",
-				"phase":          "final_answer",
-				"streamState":    "complete",
-				"boundaryAction": "allow",
 			}),
 		},
 		CreatedAt: now,
@@ -359,38 +266,6 @@ func genericOpsRepairRoleSignals(frame opsmanual.OperationFrame) []string {
 		out = append(out, signal)
 	}
 	return out
-}
-
-func writeGenericOpsRepairTurn(store SessionStore, req runtimekernel.TurnRequest, assistantText string, turn runtimekernel.TurnSnapshot) {
-	session := store.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
-	if session.HostID == "" {
-		session.HostID = req.HostID
-	}
-	now := time.Now().UTC()
-	if session.CurrentTurn != nil {
-		session.TurnHistory = append(session.TurnHistory, *session.CurrentTurn)
-	}
-	session.Messages = append(session.Messages,
-		runtimekernel.Message{
-			ID:              firstNonEmptyString(req.ClientMessageID, req.TurnID+":user"),
-			ClientMessageID: req.ClientMessageID,
-			ClientTurnID:    req.ClientTurnID,
-			Role:            "user",
-			Content:         req.Input,
-			Timestamp:       now,
-		},
-		runtimekernel.Message{
-			ID:           req.TurnID + ":assistant",
-			ClientTurnID: req.ClientTurnID,
-			Role:         "assistant",
-			Content:      assistantText,
-			Timestamp:    now,
-		},
-	)
-	session.CurrentTurn = &turn
-	session.PendingApprovals = nil
-	session.PendingEvidence = nil
-	store.Update(session)
 }
 
 func appendGenericOpsRepairEvents(ctx context.Context, events AgentEventService, req runtimekernel.TurnRequest, summary string) {
