@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -489,6 +490,9 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 	if !strings.Contains(text, "append-text") {
 		t.Fatalf("response = %q, want append-text for final text", text)
+	}
+	if !strings.Contains(text, `"blocksById"`) || strings.Contains(text, `"final","text"`) {
+		t.Fatalf("response = %q, want canonical blocksById final delta and no legacy turn.final path", text)
 	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
@@ -1635,31 +1639,35 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 
 func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *testing.T) {
 	start := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	finalBlock := func(text string) appui.AiopsTransportBlock {
+		return appui.AiopsTransportBlock{
+			Type: appui.AiopsTransportBlockTypeFinalAnswer,
+			AiopsProcessBlock: appui.AiopsProcessBlock{
+				ID: "final-1", Kind: appui.AiopsTransportProcessKindAssistant,
+				Phase: "final_answer", Status: appui.AiopsTransportProcessStatusRunning, Text: text,
+			},
+			FinalContract: &appui.AiopsTransportFinal{ID: "final-1", Text: text, AnswerText: text, Status: appui.AiopsTransportFinalStatusRunning},
+		}
+	}
 	prev := appui.NewAiopsTransportState("sess-1", "thread-1")
 	prev.TurnOrder = []string{"turn-1"}
 	prev.Turns["turn-1"] = appui.AiopsTransportTurn{
-		ID:        "turn-1",
-		Status:    appui.AiopsTransportTurnStatusWorking,
-		StartedAt: start.Format(time.RFC3339Nano),
-		UpdatedAt: start.Format(time.RFC3339Nano),
-		Final: &appui.AiopsTransportFinal{
-			ID:     "final-1",
-			Text:   "第一段",
-			Status: appui.AiopsTransportFinalStatusRunning,
-		},
+		ID:         "turn-1",
+		Status:     appui.AiopsTransportTurnStatusWorking,
+		StartedAt:  start.Format(time.RFC3339Nano),
+		UpdatedAt:  start.Format(time.RFC3339Nano),
+		BlockOrder: []string{"final-1"},
+		BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock("第一段")},
 	}
 	next := prev
 	next.Turns = map[string]appui.AiopsTransportTurn{
 		"turn-1": {
-			ID:        "turn-1",
-			Status:    appui.AiopsTransportTurnStatusWorking,
-			StartedAt: start.Format(time.RFC3339Nano),
-			UpdatedAt: start.Add(time.Second).Format(time.RFC3339Nano),
-			Final: &appui.AiopsTransportFinal{
-				ID:     "final-1",
-				Text:   "第一段第二段",
-				Status: appui.AiopsTransportFinalStatusRunning,
-			},
+			ID:         "turn-1",
+			Status:     appui.AiopsTransportTurnStatusWorking,
+			StartedAt:  start.Format(time.RFC3339Nano),
+			UpdatedAt:  start.Add(time.Second).Format(time.RFC3339Nano),
+			BlockOrder: []string{"final-1"},
+			BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock("第一段第二段")},
 		},
 	}
 
@@ -1675,11 +1683,30 @@ func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *test
 	if !ok {
 		t.Fatalf("first op value = %T, want AiopsTransportTurn", ops[0].Value)
 	}
-	if turn.Final == nil || turn.Final.Text != "第一段" {
-		t.Fatalf("set turn final text = %+v, want previous text preserved", turn.Final)
+	if turn.BlocksByID["final-1"].Text != "第一段" {
+		t.Fatalf("set turn final block = %+v, want previous text preserved", turn.BlocksByID["final-1"])
+	}
+	setFinalBlock := turn.BlocksByID["final-1"]
+	if setFinalBlock.FinalContract == nil || setFinalBlock.FinalContract.Text != "第一段第二段" || setFinalBlock.FinalContract.AnswerText != "第一段第二段" {
+		t.Fatalf("set turn final contract = %+v, want current full contract", setFinalBlock.FinalContract)
 	}
 	if ops[1].Type != assistantTransportStreamOpAppendText || ops[1].Value != "第二段" {
 		t.Fatalf("second op = %+v, want append second chunk", ops[1])
+	}
+	if want := []any{"turns", "turn-1", "blocksById", "final-1", "text"}; !reflect.DeepEqual(ops[1].Path, want) {
+		t.Fatalf("second op path = %#v, want %#v", ops[1].Path, want)
+	}
+	appliedBlock := turn.BlocksByID["final-1"]
+	appliedBlock.Text += ops[1].Value.(string)
+	if appliedBlock.FinalContract == nil || appliedBlock.Text != appliedBlock.FinalContract.Text || appliedBlock.Text != appliedBlock.FinalContract.AnswerText {
+		t.Fatalf("applied final block = %+v, want block text and final contract text/answerText aligned", appliedBlock)
+	}
+	wire, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatalf("json.Marshal(ops) error = %v", err)
+	}
+	if bytes.Contains(wire, []byte(`"process":`)) || bytes.Contains(wire, []byte(`"final":`)) {
+		t.Fatalf("transport ops leaked legacy transcript fields: %s", wire)
 	}
 }
 

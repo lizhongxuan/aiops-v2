@@ -1613,31 +1613,27 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 		nextTurn := next.Turns[turnID]
 		prevTurn := prev.Turns[turnID]
 
-		nextTurnForSet := nextTurn
-		prevTurnForSet := prevTurn
-		nextFinalText := ""
-		prevFinalText := ""
-		if prevTurnForSet.Final != nil {
-			prevFinalText = prevTurnForSet.Final.Text
-			finalCopy := *prevTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			prevTurnForSet.Final = &finalCopy
-		}
-		if nextTurnForSet.Final != nil {
-			nextFinalText = nextTurnForSet.Final.Text
-			finalCopy := *nextTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			nextTurnForSet.Final = &finalCopy
+		nextTurnForSet := stripAssistantTransportLegacyTranscript(nextTurn)
+		prevTurnForSet := stripAssistantTransportLegacyTranscript(prevTurn)
+		nextFinalID, nextFinalText := assistantTransportFinalBlockText(nextTurn)
+		prevFinalID, prevFinalText := assistantTransportFinalBlockText(prevTurn)
+		appendFinalText := nextFinalID != "" && (prevFinalID == "" || prevFinalID == nextFinalID)
+		if appendFinalText {
+			nextTurnForSet = assistantTransportTurnWithFinalBlockText(nextTurnForSet, nextFinalID, prevFinalText)
+			if prevFinalID != "" {
+				prevTurnForSet = assistantTransportTurnWithFinalBlockText(prevTurnForSet, prevFinalID, prevFinalText)
+			}
 		}
 		if !reflect.DeepEqual(prevTurnForSet, nextTurnForSet) {
 			appendSet([]any{"turns", turnID}, nextTurnForSet)
 		}
-		if nextFinalText != prevFinalText {
+		if appendFinalText && nextFinalText != prevFinalText {
+			path := []any{"turns", turnID, "blocksById", nextFinalID, "text"}
 			if strings.HasPrefix(nextFinalText, prevFinalText) {
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText[len(prevFinalText):])
+				appendText(path, nextFinalText[len(prevFinalText):])
 			} else {
-				appendSet([]any{"turns", turnID, "final", "text"}, "")
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText)
+				appendSet(path, "")
+				appendText(path, nextFinalText)
 			}
 		}
 	}
@@ -1653,6 +1649,38 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 	}
 
 	return ops
+}
+
+func stripAssistantTransportLegacyTranscript(turn appui.AiopsTransportTurn) appui.AiopsTransportTurn {
+	turn.Process = nil
+	turn.Final = nil
+	return turn
+}
+
+func assistantTransportFinalBlockText(turn appui.AiopsTransportTurn) (string, string) {
+	for index := len(turn.BlockOrder) - 1; index >= 0; index-- {
+		id := turn.BlockOrder[index]
+		block, ok := turn.BlocksByID[id]
+		if ok && block.Type == appui.AiopsTransportBlockTypeFinalAnswer {
+			return id, block.Text
+		}
+	}
+	return "", ""
+}
+
+func assistantTransportTurnWithFinalBlockText(turn appui.AiopsTransportTurn, blockID, text string) appui.AiopsTransportTurn {
+	block, ok := turn.BlocksByID[blockID]
+	if !ok || block.Type != appui.AiopsTransportBlockTypeFinalAnswer {
+		return turn
+	}
+	blocks := make(map[string]appui.AiopsTransportBlock, len(turn.BlocksByID))
+	for id, item := range turn.BlocksByID {
+		blocks[id] = item
+	}
+	block.Text = text
+	blocks[blockID] = block
+	turn.BlocksByID = blocks
+	return turn
 }
 
 func firstAssistantTransportValue(values ...string) string {
