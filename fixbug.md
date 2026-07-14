@@ -233,3 +233,12 @@
 - 修复方式：审批命令后轮询 published session snapshot 直到 canonical turn terminal，再通过空 command 请求刷新 transport projection；所有故事断言统一从 blocks 中读取消息、过程和 FinalContract。
 - 验证结果：`go test ./internal/server -run '^TestAssistantTransportStories$' -count=1` 与 semantic shell corpus 通过，approval resume/denied、partial mutation、missing rollback 等场景稳定使用真实 runtime/transport 链。
 - 风险与后续：轮询只用于测试 harness，不改变生产 ack 语义；UI 仍应依据后续 AssistantTransport state/delta 展示执行进度与终态。
+
+## 2026-07-14 11:46 - Canonical blocks 切换后过程头、产物卡和普通工具输出回归
+
+- 修复时间：2026-07-14 11:46
+- Bug 现象：真实 Playwright 页面验证发现三类回归：尚未出现 tool block、只有 running final block 时缺少“过程”头；连续的 Ops Manual 搜索与预检产物被拆成两张卡；普通 command/tool 输出只要包含数字 `401` 或文字 `upstream timeout` 就被误渲染为传输失败。
+- 根因：React 展示层把 canonical block 的物理边界直接当作卡片边界，且 running final 没有生成过程占位；`normalizeProcessTypedContent` 对所有 typed output 使用宽泛的字符串错误启发式，把业务输出内容误当成 transport error。
+- 修复方式：pending turn 在只有 running final 时仍投影过程头；仅在 React presentation 层合并相邻、语义匹配的 Ops Manual search/preflight artifact，控制数据仍保持原始 canonical block；transport error 文案归一化只处理 assistant/system failed 文本，command/tool typed content 保持原样。
+- 验证结果：新增/更新 Vitest 与 native canonical block Playwright fixture；`npm --prefix web test -- --run` 通过 124 个测试文件、907 个测试；`npx playwright test tests/react-shell-snapshot.spec.js tests/agentHarnessPromptTrace.snapshot.spec.js --project=chromium` 通过 13/13；browser-in-app 真实打开 Prompt Trace 详情并切换控制链，DOM 断言和视觉截图通过，控制台 0 条 error/warn。
+- 风险与后续：artifact 合并只改变展示组合，不写回 transport 或 control facts；错误归一化继续对明确的 assistant/system failed block 生效。后续新增 typed block 必须显式定义展示语义，不能恢复跨类型的全文关键词猜测。
