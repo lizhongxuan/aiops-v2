@@ -5385,10 +5385,6 @@ func compactStringList(values []string) []string {
 	return out
 }
 
-func toolDisplayDataShouldStayOutOfPreview(displayType string) bool {
-	return strings.TrimSpace(displayType) != ""
-}
-
 type terminalToolResultEnvelope struct {
 	Command string `json:"command"`
 	Stdout  string `json:"stdout"`

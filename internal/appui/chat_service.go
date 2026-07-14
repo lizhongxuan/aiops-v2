@@ -1326,10 +1326,6 @@ func sessionHostID(session *runtimekernel.SessionState) string {
 	return strings.TrimSpace(session.HostID)
 }
 
-func applyInputMentionDiagnostics(req *runtimekernel.TurnRequest, mentions parsedInputMentions) {
-	applyInputMentionDiagnosticValues(req, mentions.Source, mentions.Validation)
-}
-
 func applyInputMentionDiagnosticValues(req *runtimekernel.TurnRequest, source, validation string) {
 	if req == nil {
 		return
