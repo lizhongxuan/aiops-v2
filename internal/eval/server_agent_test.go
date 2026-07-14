@@ -137,6 +137,8 @@ func TestServerAgentRunUsesAssistantTransportAndRejectsLegacyStateDependency(t *
 			t.Fatalf("metadata missing server-recognized clientTurnId: %#v", message.Metadata)
 		}
 		writer := newServerTransportTestWriter(w)
+		finalBlock := canonicalServerTransportFinalBlock("final-1", "payment-api is healthy", "completed")
+		finalBlock["text"] = "payment-api "
 		writeServerTransportTestOps(t, writer,
 			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-server"),
 			serverTransportTestOp("set", []any{"status"}, "working"),
@@ -154,15 +156,17 @@ func TestServerAgentRunUsesAssistantTransportAndRejectsLegacyStateDependency(t *
 					transportAgentItem("approval-1", "approval", "completed", "approved", map[string]any{"approvalId": "approval-1", "decision": "approved"}),
 					transportAgentItem("evidence-1", "evidence", "completed", "log evidence", map[string]any{"evidenceId": "evidence-1", "source": "app.log"}),
 				},
-				"process": []map[string]any{{
-					"id": "display-only", "kind": "file", "status": "completed", "text": "presentation only",
-					"source": "must_not_become_tool", "toolCallId": "process-call",
-				}},
-				"final": map[string]any{"id": "final-1", "text": "payment-api ", "answerText": "payment-api is healthy", "status": "completed"},
+				"blockOrder": []string{"display-only", "final-1"},
+				"blocksById": map[string]any{
+					"display-only": canonicalServerTransportProcessBlock("display-only", "file", "completed", "presentation only", map[string]any{
+						"source": "must_not_become_tool", "toolCallId": "process-call",
+					}),
+					"final-1": finalBlock,
+				},
 			}),
 		)
 		writeServerTransportTestOps(t, writer,
-			serverTransportTestOp("append-text", []any{"turns", "turn-server", "final", "text"}, "is healthy"),
+			serverTransportTestOp("append-text", []any{"turns", "turn-server", "blocksById", "final-1", "text"}, "is healthy"),
 			serverTransportTestOp("set", []any{"turns", "turn-server", "status"}, "completed"),
 			serverTransportTestOp("set", []any{"runtimeLiveness", "activeTurns", "turn-server"}, false),
 			serverTransportTestOp("set", []any{"status"}, "idle"),
@@ -212,6 +216,8 @@ func TestServerAgentAssistantTransportAccumulatorFailsClosed(t *testing.T) {
 		{name: "unknown operation", line: `aui-state:[{"type":"merge","path":["status"],"value":"idle"}]`, wantErr: "unsupported operation"},
 		{name: "missing path", line: `aui-state:[{"type":"set","value":"idle"}]`, wantErr: "path is required"},
 		{name: "unknown typed path", line: `aui-state:[{"type":"set","path":["legacySnapshot"],"value":{}}]`, wantErr: "unknown field"},
+		{name: "legacy process field", line: `aui-state:[{"type":"set","path":["turns","turn-1"],"value":{"id":"turn-1","status":"working","blockOrder":[],"blocksById":{},"process":[]}}]`, wantErr: "unknown field"},
+		{name: "legacy final field", line: `aui-state:[{"type":"set","path":["turns","turn-1"],"value":{"id":"turn-1","status":"completed","blockOrder":[],"blocksById":{},"final":{"id":"final-1","status":"completed"}}}]`, wantErr: "unknown field"},
 		{name: "invalid object path", line: `aui-state:[{"type":"set","path":[0],"value":"idle"}]`, wantErr: "object key"},
 		{name: "append target", line: `aui-state:[{"type":"append-text","path":["seq"],"value":"x"}]`, wantErr: "append-text target"},
 		{name: "append value", line: `aui-state:[{"type":"append-text","path":["status"],"value":7}]`, wantErr: "append-text value"},
@@ -225,6 +231,33 @@ func TestServerAgentAssistantTransportAccumulatorFailsClosed(t *testing.T) {
 			}
 			if err := accumulator.ApplyFrame(tt.line); err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("ApplyFrame() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestServerAgentAssistantTransportCanonicalBlocksFailClosed(t *testing.T) {
+	finalBlock := appui.AiopsTransportBlock{
+		Type: appui.AiopsTransportBlockTypeFinalAnswer,
+		AiopsProcessBlock: appui.AiopsProcessBlock{
+			ID: "final-1", Kind: appui.AiopsTransportProcessKindAssistant, Status: appui.AiopsTransportProcessStatusCompleted,
+		},
+		FinalContract: &appui.AiopsTransportFinal{ID: "final-1", Status: appui.AiopsTransportFinalStatusCompleted},
+	}
+	tests := []struct {
+		name string
+		turn appui.AiopsTransportTurn
+		want string
+	}{
+		{name: "missing ordered block", turn: appui.AiopsTransportTurn{ID: "turn-1", BlockOrder: []string{"final-1"}, BlocksByID: map[string]appui.AiopsTransportBlock{}}, want: "missing block"},
+		{name: "duplicate order entry", turn: appui.AiopsTransportTurn{ID: "turn-1", BlockOrder: []string{"final-1", "final-1"}, BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock}}, want: "duplicate"},
+		{name: "unordered block", turn: appui.AiopsTransportTurn{ID: "turn-1", BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock}}, want: "unordered blocks"},
+		{name: "block id mismatch", turn: appui.AiopsTransportTurn{ID: "turn-1", BlockOrder: []string{"other"}, BlocksByID: map[string]appui.AiopsTransportBlock{"other": finalBlock}}, want: "has id"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := serverTransportCanonicalBlocks(test.turn); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("serverTransportCanonicalBlocks() error = %v, want containing %q", err, test.want)
 			}
 		})
 	}
@@ -252,8 +285,11 @@ func TestServerAgentAssistantTransportReturnsTypedFailureDetail(t *testing.T) {
 				"id": "turn-failed", "clientTurnId": clientTurnID, "clientMessageId": messageID,
 				"status": "failed", "user": map[string]any{"id": messageID, "text": "hello"},
 				"agentItems": []map[string]any{transportAgentItem("failure-1", "error", "failed", "request failed", nil)},
-				"process":    []map[string]any{{"id": "failure-1", "kind": "system", "status": "failed", "text": "request failed"}},
-				"final":      map[string]any{"id": "final-failed", "text": "failure summary", "status": "failed"},
+				"blockOrder": []string{"failure-1", "final-failed"},
+				"blocksById": map[string]any{
+					"failure-1":    canonicalServerTransportProcessBlock("failure-1", "system", "failed", "request failed", nil),
+					"final-failed": canonicalServerTransportFinalBlock("final-failed", "failure summary", "failed"),
+				},
 			}),
 			serverTransportTestOp("set", []any{"lastError"}, "model config missing"),
 			serverTransportTestOp("set", []any{"status"}, "failed"),
@@ -268,6 +304,27 @@ func TestServerAgentAssistantTransportReturnsTypedFailureDetail(t *testing.T) {
 	}
 	if len(output.Events) != 1 || len(output.TurnItems) != 1 {
 		t.Fatalf("output should retain typed failed-turn facts: %#v", output)
+	}
+}
+
+func TestServerAgentAssistantTransportReturnsTypedFinalContractFailure(t *testing.T) {
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		return []map[string]any{
+			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-final-failed"),
+			serverTransportTestOp("set", []any{"turns", "turn-final-failed"}, map[string]any{
+				"id": "turn-final-failed", "clientTurnId": clientTurnID, "clientMessageId": messageID,
+				"status": "completed", "blockOrder": []string{"final-failed"},
+				"blocksById": map[string]any{"final-failed": canonicalServerTransportFinalBlock("final-failed", "typed failure", "failed")},
+			}),
+			serverTransportTestOp("set", []any{"status"}, "idle"),
+		}
+	})
+	defer server.Close()
+	_, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
+		context.Background(), Case{ID: "typed-final-failure", Category: "server", Input: "hello"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "server turn failed") {
+		t.Fatalf("error = %v, want typed finalContract status failure", err)
 	}
 }
 
@@ -316,8 +373,9 @@ func TestServerAgentAssistantTransportCompletedWithoutFinalTextIsNotRunError(t *
 			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-empty-final"),
 			serverTransportTestOp("set", []any{"turns", "turn-empty-final"}, map[string]any{
 				"id": "turn-empty-final", "clientTurnId": clientTurnID, "clientMessageId": messageID, "status": "completed",
-				"user":  map[string]any{"id": messageID, "text": "hello"},
-				"final": map[string]any{"id": "final-empty", "text": "", "answerText": "", "status": "completed"},
+				"user":       map[string]any{"id": messageID, "text": "hello"},
+				"blockOrder": []string{"final-empty"},
+				"blocksById": map[string]any{"final-empty": canonicalServerTransportFinalBlock("final-empty", "", "completed")},
 			}),
 			serverTransportTestOp("set", []any{"status"}, "idle"),
 		}
@@ -331,6 +389,31 @@ func TestServerAgentAssistantTransportCompletedWithoutFinalTextIsNotRunError(t *
 	}
 	if output.Answer != "" {
 		t.Fatalf("answer = %q, want empty output fact", output.Answer)
+	}
+}
+
+func TestServerAgentAssistantTransportRejectsFinalAnswerWithoutTypedContract(t *testing.T) {
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		return []map[string]any{
+			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-untyped-final"),
+			serverTransportTestOp("set", []any{"turns", "turn-untyped-final"}, map[string]any{
+				"id": "turn-untyped-final", "clientTurnId": clientTurnID, "clientMessageId": messageID, "status": "completed",
+				"blockOrder": []string{"final-1"},
+				"blocksById": map[string]any{
+					"final-1": canonicalServerTransportProcessBlock("final-1", "assistant", "completed", "untyped final prose", map[string]any{
+						"type": "final_answer", "phase": "final_answer", "streamState": "complete",
+					}),
+				},
+			}),
+			serverTransportTestOp("set", []any{"status"}, "idle"),
+		}
+	})
+	defer server.Close()
+	_, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
+		context.Background(), Case{ID: "untyped-final", Category: "server", Input: "hello"},
+	)
+	if err == nil || !strings.Contains(err.Error(), "missing finalContract") {
+		t.Fatalf("error = %v, want fail-closed typed finalContract requirement", err)
 	}
 }
 
@@ -355,7 +438,8 @@ func TestServerAgentAssistantTransportRejectsTruncatedCanonicalFacts(t *testing.
 			server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
 				turn := map[string]any{
 					"id": "turn-truncated", "clientTurnId": clientTurnID, "clientMessageId": messageID,
-					"status": "completed", "final": map[string]any{"id": "final-1", "status": "completed"},
+					"status": "completed", "blockOrder": []string{"final-1"},
+					"blocksById": map[string]any{"final-1": canonicalServerTransportFinalBlock("final-1", "", "completed")},
 				}
 				for key, value := range tt.turnFields {
 					turn[key] = value
@@ -378,9 +462,6 @@ func TestServerAgentAssistantTransportRejectsTruncatedCanonicalFacts(t *testing.
 }
 
 func TestServerAgentAssistantTransportCompletionReadsPendingAndLivenessFacts(t *testing.T) {
-	baseState := appui.NewAiopsTransportState("session-1", "thread-1")
-	baseState.Status = appui.AiopsTransportStatusIdle
-	baseTurn := appui.AiopsTransportTurn{ID: "turn-1", Status: appui.AiopsTransportTurnStatusCompleted}
 	tests := []struct {
 		name   string
 		mutate func(*appui.AiopsTransportState, *appui.AiopsTransportTurn)
@@ -398,12 +479,32 @@ func TestServerAgentAssistantTransportCompletionReadsPendingAndLivenessFacts(t *
 			state.RuntimeLiveness.ActiveCommandStreams["call-1"] = true
 		}},
 		{name: "running typed tool", mutate: func(_ *appui.AiopsTransportState, turn *appui.AiopsTransportTurn) {
-			turn.Process = []appui.AiopsProcessBlock{{ID: "call-1", Kind: appui.AiopsTransportProcessKindTool, Status: appui.AiopsTransportProcessStatusRunning}}
+			turn.BlockOrder = append([]string{"call-1"}, turn.BlockOrder...)
+			turn.BlocksByID["call-1"] = appui.AiopsTransportBlock{
+				Type: appui.AiopsTransportBlockType(appui.AiopsTransportProcessKindTool),
+				AiopsProcessBlock: appui.AiopsProcessBlock{
+					ID: "call-1", Kind: appui.AiopsTransportProcessKindTool, Status: appui.AiopsTransportProcessStatusRunning,
+				},
+			}
 		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			state, turn := baseState, baseTurn
+			state := appui.NewAiopsTransportState("session-1", "thread-1")
+			state.Status = appui.AiopsTransportStatusIdle
+			turn := appui.AiopsTransportTurn{
+				ID: "turn-1", Status: appui.AiopsTransportTurnStatusCompleted,
+				BlockOrder: []string{"final-1"},
+				BlocksByID: map[string]appui.AiopsTransportBlock{
+					"final-1": {
+						Type: appui.AiopsTransportBlockTypeFinalAnswer,
+						AiopsProcessBlock: appui.AiopsProcessBlock{
+							ID: "final-1", Kind: appui.AiopsTransportProcessKindAssistant, Status: appui.AiopsTransportProcessStatusCompleted,
+						},
+						FinalContract: &appui.AiopsTransportFinal{ID: "final-1", Status: appui.AiopsTransportFinalStatusCompleted},
+					},
+				},
+			}
 			tt.mutate(&state, &turn)
 			if serverTransportSettled(state, "turn-1", turn) {
 				t.Fatal("completion ignored typed pending/liveness fact")
@@ -443,9 +544,34 @@ func completedServerTransportOps(turnID, clientTurnID, messageID, answer string)
 			"id": turnID, "clientTurnId": clientTurnID, "clientMessageId": messageID,
 			"status": "completed", "user": map[string]any{"id": messageID, "text": "hello"},
 			"agentItems": []map[string]any{},
-			"final":      map[string]any{"id": turnID + ":final", "text": answer, "answerText": answer, "status": "completed"},
+			"blockOrder": []string{turnID + ":final"},
+			"blocksById": map[string]any{turnID + ":final": canonicalServerTransportFinalBlock(turnID+":final", answer, "completed")},
 		}),
 		serverTransportTestOp("set", []any{"status"}, "idle"),
+	}
+}
+
+func canonicalServerTransportProcessBlock(id, kind, status, text string, fields map[string]any) map[string]any {
+	block := map[string]any{
+		"type": kind, "id": id, "kind": kind, "status": status, "text": text,
+	}
+	for key, value := range fields {
+		block[key] = value
+	}
+	return block
+}
+
+func canonicalServerTransportFinalBlock(id, answer, status string) map[string]any {
+	processStatus := status
+	streamState := "complete"
+	if status == "running" {
+		processStatus = "running"
+		streamState = "streaming"
+	}
+	return map[string]any{
+		"type": "final_answer", "id": id, "kind": "assistant", "displayKind": "assistant.message",
+		"phase": "final_answer", "streamState": streamState, "status": processStatus, "text": answer,
+		"finalContract": map[string]any{"id": id, "text": answer, "answerText": answer, "status": status},
 	}
 }
 

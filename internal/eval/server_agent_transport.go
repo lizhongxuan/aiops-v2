@@ -310,7 +310,11 @@ func serverTransportTargetTurn(state appui.AiopsTransportState, clientTurnID, me
 }
 
 func serverTransportSettled(state appui.AiopsTransportState, turnID string, turn appui.AiopsTransportTurn) bool {
-	if state.RuntimeLiveness.ActiveTurns[turnID] || anyServerTransportFact(state.RuntimeLiveness.ActiveAgents) || anyServerTransportFact(state.RuntimeLiveness.ActiveCommandStreams) || serverTransportHasActiveTool(turn.Process) {
+	finalContract, err := serverTransportFinalContract(turn)
+	if err != nil || finalContract == nil || !serverTransportFinalStatusIsTerminal(finalContract.Status) {
+		return false
+	}
+	if state.RuntimeLiveness.ActiveTurns[turnID] || anyServerTransportFact(state.RuntimeLiveness.ActiveAgents) || anyServerTransportFact(state.RuntimeLiveness.ActiveCommandStreams) || serverTransportHasActiveTool(turn) {
 		return false
 	}
 	pending := len(state.PendingApprovals) > 0 || anyServerTransportFact(state.RuntimeLiveness.PendingApprovals) || anyServerTransportFact(state.RuntimeLiveness.PendingUserInputs)
@@ -327,6 +331,23 @@ func serverTransportSettled(state appui.AiopsTransportState, turnID string, turn
 	return false
 }
 
+func serverTransportFinalStatusIsTerminal(status appui.AiopsTransportFinalStatus) bool {
+	switch status {
+	case appui.AiopsTransportFinalStatusCompleted,
+		appui.AiopsTransportFinalStatusFailed,
+		appui.AiopsTransportFinalStatusVerified,
+		appui.AiopsTransportFinalStatusPartial,
+		appui.AiopsTransportFinalStatusBlocked,
+		appui.AiopsTransportFinalStatusNeedsEvidence,
+		appui.AiopsTransportFinalStatusApprovalDenied,
+		appui.AiopsTransportFinalStatusToolUnavailable,
+		appui.AiopsTransportFinalStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
 func anyServerTransportFact(facts map[string]bool) bool {
 	for _, active := range facts {
 		if active {
@@ -336,7 +357,12 @@ func anyServerTransportFact(facts map[string]bool) bool {
 	return false
 }
 
-func serverTransportHasActiveTool(blocks []appui.AiopsProcessBlock) bool {
+func serverTransportHasActiveTool(turn appui.AiopsTransportTurn) bool {
+	blocks, err := serverTransportCanonicalBlocks(turn)
+	if err != nil {
+		// An invalid transcript cannot prove that the turn has settled.
+		return true
+	}
 	for _, block := range blocks {
 		if block.Status == appui.AiopsTransportProcessStatusRunning || block.Status == appui.AiopsTransportProcessStatusQueued {
 			switch block.Kind {
@@ -369,12 +395,71 @@ func serverTransportRunOutput(sessionID, turnID string, turn appui.AiopsTranspor
 		seenCallIDs[call.ID] = true
 		calls = append(calls, call)
 	}
+	finalContract, err := serverTransportFinalContract(turn)
+	if err != nil {
+		return RunOutput{}, err
+	}
 	answer := ""
-	if turn.Final != nil {
-		answer = firstNonEmpty(turn.Final.AnswerText, turn.Final.Text)
+	if finalContract != nil {
+		answer = firstNonEmpty(finalContract.AnswerText, finalContract.Text)
 	}
 	events := agentui.ProjectTurnItemsToAgentEvents(sessionID, turnID, items, 0)
 	return RunOutput{Answer: answer, Events: events, ToolCalls: calls, TurnItems: items}, nil
+}
+
+func serverTransportFinalContract(turn appui.AiopsTransportTurn) (*appui.AiopsTransportFinal, error) {
+	blocks, err := serverTransportCanonicalBlocks(turn)
+	if err != nil {
+		return nil, err
+	}
+	var final *appui.AiopsTransportFinal
+	for _, block := range blocks {
+		if block.Type != appui.AiopsTransportBlockTypeFinalAnswer {
+			if block.FinalContract != nil {
+				return nil, fmt.Errorf("AssistantTransport block %q has finalContract but type %q", block.ID, block.Type)
+			}
+			continue
+		}
+		if block.FinalContract == nil {
+			return nil, fmt.Errorf("AssistantTransport final_answer block %q is missing finalContract", block.ID)
+		}
+		if final != nil {
+			return nil, fmt.Errorf("AssistantTransport turn %q has multiple final_answer blocks", turn.ID)
+		}
+		if strings.TrimSpace(block.FinalContract.ID) != strings.TrimSpace(block.ID) {
+			return nil, fmt.Errorf("AssistantTransport final_answer block %q finalContract id = %q", block.ID, block.FinalContract.ID)
+		}
+		contract := *block.FinalContract
+		final = &contract
+	}
+	return final, nil
+}
+
+func serverTransportCanonicalBlocks(turn appui.AiopsTransportTurn) ([]appui.AiopsTransportBlock, error) {
+	blocks := make([]appui.AiopsTransportBlock, 0, len(turn.BlockOrder))
+	seen := make(map[string]bool, len(turn.BlockOrder))
+	for index, id := range turn.BlockOrder {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("AssistantTransport turn %q blockOrder[%d] is empty", turn.ID, index)
+		}
+		if seen[id] {
+			return nil, fmt.Errorf("AssistantTransport turn %q blockOrder contains duplicate %q", turn.ID, id)
+		}
+		block, ok := turn.BlocksByID[id]
+		if !ok {
+			return nil, fmt.Errorf("AssistantTransport turn %q blockOrder references missing block %q", turn.ID, id)
+		}
+		if strings.TrimSpace(block.ID) != id {
+			return nil, fmt.Errorf("AssistantTransport turn %q block %q has id %q", turn.ID, id, block.ID)
+		}
+		seen[id] = true
+		blocks = append(blocks, block)
+	}
+	if len(seen) != len(turn.BlocksByID) {
+		return nil, fmt.Errorf("AssistantTransport turn %q blocksById contains unordered blocks", turn.ID)
+	}
+	return blocks, nil
 }
 
 func serverTransportTurnItems(turn appui.AiopsTransportTurn) ([]agentstate.TurnItem, error) {
@@ -451,13 +536,18 @@ func serverTransportToolCall(item agentstate.TurnItem) (ToolCall, error) {
 }
 
 func serverTransportRunError(state appui.AiopsTransportState, turn appui.AiopsTransportTurn) string {
-	if state.Status == appui.AiopsTransportStatusFailed || turn.Status == appui.AiopsTransportTurnStatusFailed {
+	finalContract, _ := serverTransportFinalContract(turn)
+	finalStatus := appui.AiopsTransportFinalStatusUnknown
+	if finalContract != nil {
+		finalStatus = finalContract.Status
+	}
+	if state.Status == appui.AiopsTransportStatusFailed || turn.Status == appui.AiopsTransportTurnStatusFailed || finalStatus == appui.AiopsTransportFinalStatusFailed {
 		return firstNonEmpty(state.LastError, "server turn failed")
 	}
-	if state.Status == appui.AiopsTransportStatusCanceled || turn.Status == appui.AiopsTransportTurnStatusCanceled {
+	if state.Status == appui.AiopsTransportStatusCanceled || turn.Status == appui.AiopsTransportTurnStatusCanceled || finalStatus == appui.AiopsTransportFinalStatusCancelled {
 		return "server turn canceled"
 	}
-	if state.Status == appui.AiopsTransportStatusBlocked || turn.Status == appui.AiopsTransportTurnStatusBlocked {
+	if state.Status == appui.AiopsTransportStatusBlocked || turn.Status == appui.AiopsTransportTurnStatusBlocked || finalStatus == appui.AiopsTransportFinalStatusBlocked {
 		return "server turn blocked on a typed pending approval or user input"
 	}
 	return ""
