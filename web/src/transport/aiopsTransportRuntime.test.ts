@@ -350,6 +350,33 @@ describe("aiopsTransportRuntime", () => {
     }
   });
 
+  it("preserves typed command output and observed timeout evidence without treating content as transport failure", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-observed-timeout"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "working",
+          blockOrder: ["command-1", "tool-1"],
+          blocksById: {
+            "command-1": {
+              id: "command-1", type: "command", kind: "command", status: "completed", text: "ps -arc",
+              command: "ps -arc", outputPreview: "64001 process-1\n64002 process-2",
+            },
+            "tool-1": {
+              id: "tool-1", type: "tool", kind: "tool", status: "completed", text: "logs_query",
+              outputPreview: "Large nginx log result was externalized. Summary: 17 upstream timeout lines.",
+            },
+          },
+        },
+      },
+    });
+
+    expect(state.turns["turn-1"]?.blocksById?.["command-1"]?.outputPreview).toBe("64001 process-1\n64002 process-2");
+    expect(state.turns["turn-1"]?.blocksById?.["tool-1"]?.outputPreview).toContain("upstream timeout lines");
+  });
+
   it("builds custom AssistantTransport commands from the current state", () => {
     const send = vi.fn();
     const state = {

@@ -5,7 +5,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
 import type { AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportBlock, AiopsTransportFinal, AiopsTransportFinalStatus, AiopsTransportMcpSurface, AiopsTransportState, AiopsTransportTimelineItem, AiopsTransportTurn } from "@/transport/aiopsTransportTypes";
-import { AIOPS_BLOCK_DATA_PART, AIOPS_TURN_DATA_PART } from "@/transport/aiopsTransportConverter";
+import { AIOPS_BLOCK_DATA_PART, AIOPS_TURN_DATA_PART, mergeOpsManualSearchAndPreflightArtifacts } from "@/transport/aiopsTransportConverter";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
 import { parseHostMentionCandidates, parseSpecialAiMentionCandidates, type HostMentionCandidate, type SpecialAiMentionCandidate } from "../hostMentions";
@@ -281,13 +281,14 @@ function AssistantMessage() {
   const hasFinalBlock = blocks.some((block) => block.type === "final_answer");
   const finalDurationMs = blocks.find((block) => block.type === "final_answer")?.durationMs;
   const renderGroups = groupAssistantTranscriptBlocks(blocks);
+  const hasProcessGroup = renderGroups.some((group) => group.type === "process");
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
       <div className="w-full space-y-3">
         <ContextStatusNotice event={contextStatusEvent} />
+        {!hasProcessGroup && isPendingAssistantTurn(turn?.status) ? <ProcessTranscript process={[]} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} renderFinalText={false} /> : null}
         {renderGroups.map((group) => (group.type === "process" ? <ProcessTranscript key={group.id} process={group.blocks} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} finalDurationMs={finalDurationMs} renderFinalText={false} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} /> : <AssistantTranscriptBlock key={group.block.id} block={group.block} turn={turn!} corootArtifacts={corootArtifacts} hasFinalBlock={hasFinalBlock} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} />))}
-        {blocks.length === 0 && isPendingAssistantTurn(turn?.status) ? <ProcessTranscript process={[]} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} renderFinalText={false} /> : null}
       </div>
     </MessagePrimitive.Root>
   );
@@ -310,7 +311,37 @@ export function assistantTranscriptFromContent(content: readonly unknown[]) {
       blocks.push(dataPart.data as AiopsTransportBlock);
     }
   }
-  return { turn, blocks };
+  return { turn, blocks: mergeAssistantArtifactRuns(blocks) };
+}
+
+export function mergeAssistantArtifactRuns(blocks: AiopsTransportBlock[]): AiopsTransportBlock[] {
+  const merged: AiopsTransportBlock[] = [];
+  for (let index = 0; index < blocks.length;) {
+    if (blocks[index]?.type !== "artifact" || !blocks[index]?.artifact) {
+      merged.push(blocks[index]);
+      index += 1;
+      continue;
+    }
+    let end = index;
+    const run: AiopsTransportBlock[] = [];
+    while (end < blocks.length && blocks[end]?.type === "artifact" && blocks[end]?.artifact) {
+      run.push(blocks[end]);
+      end += 1;
+    }
+    const artifacts = mergeOpsManualSearchAndPreflightArtifacts(run.map((block) => block.artifact!));
+    for (let artifactIndex = 0; artifactIndex < artifacts.length; artifactIndex += 1) {
+      const artifact = artifacts[artifactIndex];
+      const base = run[Math.min(artifactIndex, run.length - 1)];
+      merged.push({
+        ...base,
+        id: artifact.id,
+        text: artifact.summaryZh || artifact.summary || artifact.titleZh || artifact.title || base.text,
+        artifact,
+      });
+    }
+    index = end;
+  }
+  return merged;
 }
 
 function AssistantTranscriptBlock({ block, turn, corootArtifacts, hasFinalBlock, onApprovalDecision }: { block: AiopsTransportBlock; turn: AssistantTurnEnvelope; corootArtifacts: AiopsTransportAgentUiArtifact[]; hasFinalBlock: boolean; onApprovalDecision: (approvalId: string, decision: "accept" | "reject") => void }) {

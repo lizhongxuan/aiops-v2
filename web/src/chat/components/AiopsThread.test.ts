@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { assistantMessageRenderedFinalText, assistantTranscriptFromContent, finalContractSummaryView, groupAssistantTranscriptBlocks, isNearThreadBottom, orderedAssistantTurnBlocks } from "./AiopsThread";
+import { assistantMessageRenderedFinalText, assistantTranscriptFromContent, finalContractSummaryView, groupAssistantTranscriptBlocks, isNearThreadBottom, mergeAssistantArtifactRuns, orderedAssistantTurnBlocks } from "./AiopsThread";
 import type { AiopsTransportBlock, AiopsTransportTurn } from "@/transport/aiopsTransportTypes";
 
 describe("AiopsThread auto-scroll helpers", () => {
@@ -113,6 +113,36 @@ describe("AiopsThread canonical transcript", () => {
     expect(groups[2]).toMatchObject({
       type: "block",
       block: { id: "artifact-1" },
+    });
+  });
+
+  it("merges a contiguous ops manual artifact run without reading legacy turn fields", () => {
+    const blocks = mergeAssistantArtifactRuns([
+      {
+        id: "search-1", type: "artifact", kind: "tool", status: "completed", artifact: {
+          id: "search-1", type: "ops_manual_search_result", inlineData: {
+            ops_manual_flow_id: "flow-1",
+            manuals: [{ manual: { id: "manual-1" }, bound_workflow_id: "workflow-1" }],
+          },
+        },
+      },
+      {
+        id: "params-1", type: "artifact", kind: "tool", status: "completed", artifact: {
+          id: "params-1", type: "ops_manual_param_resolution", inlineData: {
+            ops_manual_flow_id: "flow-1", manual_id: "manual-1", workflow_id: "workflow-1",
+          },
+        },
+      },
+    ] as AiopsTransportBlock[]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({
+      id: "params-1",
+      artifact: {
+        id: "params-1",
+        type: "ops_manual_search_result",
+        inlineData: { original_search_artifact_id: "search-1" },
+      },
     });
   });
 });

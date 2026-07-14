@@ -350,7 +350,7 @@ function finalAnswerBlock(turn: AiopsTransportTurn) {
   return undefined;
 }
 
-function mergeOpsManualSearchAndPreflightArtifacts(artifacts: AiopsTransportAgentUiArtifact[]): AiopsTransportAgentUiArtifact[] {
+export function mergeOpsManualSearchAndPreflightArtifacts(artifacts: AiopsTransportAgentUiArtifact[]): AiopsTransportAgentUiArtifact[] {
   const consumed = new Set<string>();
   const mergedByPreflightId = new Map<string, Record<string, unknown>>();
   return artifacts.map((artifact, index) => {

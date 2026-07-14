@@ -1,21 +1,40 @@
 import { expect, test } from "@playwright/test";
 
-function canonicalTranscript(process, final) {
+function canonicalTranscript(process, final, artifacts = []) {
   const blocks = process.map((block) => ({
     ...block,
     type: block.kind === "assistant" ? "commentary" : block.kind,
   }));
-  blocks.push({
-    id: final.id,
-    type: "final_answer",
-    kind: "assistant",
-    displayKind: "assistant.message",
-    phase: "final_answer",
-    streamState: "complete",
-    status: "completed",
-    text: final.text,
-    finalContract: final,
-  });
+  if (final) {
+    const processStatus = final.status === "running"
+      ? "running"
+      : ["blocked", "needs_evidence", "approval_denied", "tool_unavailable"].includes(final.status)
+        ? "blocked"
+        : ["failed", "cancelled"].includes(final.status)
+          ? "failed"
+          : "completed";
+    blocks.push({
+      id: final.id,
+      type: "final_answer",
+      kind: "assistant",
+      displayKind: "assistant.message",
+      phase: "final_answer",
+      streamState: final.status === "running" ? "streaming" : processStatus === "completed" ? "complete" : "incomplete",
+      status: processStatus,
+      text: final.text,
+      finalContract: final,
+    });
+  }
+  for (const artifact of artifacts) {
+    blocks.push({
+      id: artifact.id,
+      type: "artifact",
+      kind: "tool",
+      status: artifact.status === "failed" ? "failed" : "completed",
+      text: artifact.summaryZh || artifact.summary || artifact.titleZh || artifact.title || "",
+      artifact,
+    });
+  }
   return {
     blockOrder: blocks.map((block) => block.id),
     blocksById: Object.fromEntries(blocks.map((block) => [block.id, block])),
@@ -325,12 +344,11 @@ function runningPreludeBeforeToolsState() {
           text: "再看下主机资源",
           createdAt: runningPreludeStartedAt,
         },
-        process: [],
-        final: {
+        ...canonicalTranscript([], {
           id: "final-running-prelude-before-tools",
           text: runningPreludeText,
           status: "running",
-        },
+        }),
       },
     },
     turnOrder: ["turn-running-prelude-before-tools"],
@@ -465,7 +483,7 @@ function longTerminalOutputState() {
           text: "看下进程内存",
           createdAt: "2026-05-08T02:00:00.000Z",
         },
-        process: [
+        ...canonicalTranscript([
           {
             id: "cmd-long-terminal-output",
             kind: "command",
@@ -475,12 +493,11 @@ function longTerminalOutputState() {
             outputPreview,
             updatedAt: "2026-05-08T02:00:05.000Z",
           },
-        ],
-        final: {
+        ], {
           id: "final-long-terminal-output",
           text: "进程列表已获取。",
           status: "completed",
-        },
+        }),
       },
     },
     turnOrder: ["turn-long-terminal-output"],
@@ -534,7 +551,7 @@ function contextCompactionTransportState() {
             createdAt: "2026-05-22T08:00:02.000Z",
           },
         ],
-        process: [
+        ...canonicalTranscript([
           {
             id: "tool-context-spill",
             kind: "tool",
@@ -558,12 +575,11 @@ function contextCompactionTransportState() {
             ],
             updatedAt: "2026-05-22T08:00:03.000Z",
           },
-        ],
-        final: {
+        ], {
           id: "final-context-compaction",
           text: "我正在整理旧上下文，关键摘要会保留在当前对话里。",
           status: "running",
-        },
+        }),
       },
     },
     turnOrder: ["turn-context-compaction"],
@@ -726,13 +742,12 @@ function artifactTransportState(sessionId, userText, artifact) {
           text: userText,
           createdAt: "2026-05-19T10:00:00.000Z",
         },
-        process: [],
         agentUiArtifacts: artifacts,
-        final: {
+        ...canonicalTranscript([], {
           id: `final-${sessionId}`,
           text: "已完成运维手册判定。",
           status: "completed",
-        },
+        }, artifacts),
       },
     },
     turnOrder: [turnId],
@@ -799,7 +814,7 @@ function opsManualMergedParamConfirmationState() {
         redactionStatus: "redacted",
         inlineData: {
           status: "need_user_input",
-          ops_manual_flow_id: "flow-regenerated-param",
+          ops_manual_flow_id: "flow-mysql-search",
           manual_id: "manual-mysql-backup-ssh",
           workflow_id: "flow-mysql-search",
           resolved_params: [
@@ -979,7 +994,7 @@ test("process transcript keeps narration and expanded search details aligned", a
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页检索 2 次 · 找到 1 个来源");
+  await expect(transcript).toContainText("网页搜索 2 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
@@ -1059,7 +1074,7 @@ test("long terminal output stays inside a scrollable output box", async ({ page 
   const terminalOutput = page.getByTestId("aiops-command-output-cmd-long-terminal-output");
   await expect(terminalCard).toHaveClass(/max-h-72/);
   await expect(terminalCard).toHaveClass(/overflow-hidden/);
-  await expect(terminalOutput).toHaveClass(/max-h-48/);
+  await expect(terminalOutput).toHaveClass(/max-h-\[12rem\]/);
   await expect(terminalOutput).toHaveClass(/overflow-y-auto/);
 
   const sizes = await terminalOutput.evaluate((element) => ({

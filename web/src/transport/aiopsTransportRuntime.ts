@@ -633,7 +633,10 @@ function normalizeTimelineItem(item: AiopsTransportTimelineItem): AiopsTransport
   if (!id || !type) {
     return undefined;
   }
-  const text = sanitizeUserVisibleRuntimeText(item.text || "");
+  const rawText = item.text || "";
+  const text = item.status === "failed" || type === "error" || type === "turn_failed"
+    ? sanitizeUserVisibleRuntimeText(rawText)
+    : sanitizeUserVisibleRuntimeContent(rawText);
   return {
     ...item,
     id,
@@ -645,18 +648,22 @@ function normalizeTimelineItem(item: AiopsTransportTimelineItem): AiopsTransport
 }
 
 function normalizeProcessBlock(block: AiopsProcessBlock): AiopsProcessBlock | undefined {
-  const sanitizeBlockText = block.kind === "assistant" ? sanitizeUserVisibleFinalText : sanitizeUserVisibleRuntimeText;
+  const sanitizeBlockText = block.kind === "assistant"
+    ? sanitizeUserVisibleFinalText
+    : block.kind === "system" && block.status === "failed"
+      ? sanitizeUserVisibleRuntimeText
+      : sanitizeUserVisibleRuntimeContent;
   const next: AiopsProcessBlock = {
     ...block,
     text: sanitizeBlockText(block.text || ""),
-    command: sanitizeOptionalRuntimeText(block.command),
-    inputSummary: sanitizeOptionalRuntimeText(block.inputSummary),
-    outputPreview: sanitizeOptionalRuntimeText(block.outputPreview),
+    command: sanitizeOptionalRuntimeContent(block.command),
+    inputSummary: sanitizeOptionalRuntimeContent(block.inputSummary),
+    outputPreview: sanitizeOptionalRuntimeContent(block.outputPreview),
     steps: block.steps?.map((step) => ({
       ...step,
-      text: sanitizeUserVisibleRuntimeText(step.text),
-      title: sanitizeOptionalRuntimeText(step.title),
-      summary: sanitizeOptionalRuntimeText(step.summary),
+      text: sanitizeUserVisibleRuntimeContent(step.text),
+      title: sanitizeOptionalRuntimeContent(step.title),
+      summary: sanitizeOptionalRuntimeContent(step.summary),
     })),
   };
   if (
@@ -681,12 +688,23 @@ function sanitizeUserVisibleFinalText(value?: string) {
   return redactRiskyOperationalAdvice(text);
 }
 
-function sanitizeOptionalRuntimeText(value?: string) {
-  const text = sanitizeUserVisibleRuntimeText(value || "");
+function sanitizeOptionalRuntimeContent(value?: string) {
+  const text = sanitizeUserVisibleRuntimeContent(value || "");
   return text || undefined;
 }
 
 function sanitizeUserVisibleRuntimeText(value: string) {
+	const text = sanitizeUserVisibleRuntimeContent(value);
+	if (!text) {
+		return "";
+	}
+	if (isRawTransportErrorMessage(text)) {
+		return toUserFacingTransportErrorMessage(text);
+	}
+	return text;
+}
+
+function sanitizeUserVisibleRuntimeContent(value: string) {
   const text = (value || "").trim();
   if (!text) {
     return "";
@@ -699,9 +717,6 @@ function sanitizeUserVisibleRuntimeText(value: string) {
     lower.includes("execution_required,missing_verification_report")
   ) {
     return "";
-  }
-  if (isRawTransportErrorMessage(text)) {
-    return toUserFacingTransportErrorMessage(text);
   }
   return text;
 }
