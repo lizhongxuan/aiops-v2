@@ -209,6 +209,8 @@ func TestSystemTurnRequestRejectsFabricatedRuntimeFacts(t *testing.T) {
 		{name: "empty final", mutate: func(req *SystemTurnRequest) { req.Output.FinalText = "" }, want: "final text"},
 		{name: "invalid kind", mutate: func(req *SystemTurnRequest) { req.Output.Kind = SystemTurnKind("other") }, want: "kind"},
 		{name: "verified without evidence", mutate: func(req *SystemTurnRequest) { req.Output.ContractStatus = FinalContractStatusVerified }, want: "verified"},
+		{name: "approval denied without approval facts", mutate: func(req *SystemTurnRequest) { req.Output.ContractStatus = FinalContractStatusApprovalDenied }, want: "approval_denied"},
+		{name: "tool unavailable without tool facts", mutate: func(req *SystemTurnRequest) { req.Output.ContractStatus = FinalContractStatusToolUnavailable }, want: "tool_unavailable"},
 		{name: "assistant item", mutate: func(req *SystemTurnRequest) {
 			req.Output.AgentItems = []agentstate.TurnItem{{ID: "forged-assistant", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted}}
 		}, want: "assistant_message"},

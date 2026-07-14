@@ -118,9 +118,7 @@ func validateSystemTurnContractStatus(status FinalContractStatus) error {
 	switch status {
 	case FinalContractStatusPartial,
 		FinalContractStatusBlocked,
-		FinalContractStatusNeedsEvidence,
-		FinalContractStatusApprovalDenied,
-		FinalContractStatusToolUnavailable:
+		FinalContractStatusNeedsEvidence:
 		return nil
 	case FinalContractStatusVerified:
 		return fmt.Errorf("verified system turn requires typed checked evidence and is not supported")
