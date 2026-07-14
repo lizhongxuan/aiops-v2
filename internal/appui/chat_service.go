@@ -13,7 +13,6 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
@@ -36,6 +35,10 @@ type defaultChatService struct {
 
 type AsyncTurnRunner interface {
 	Start(ctx context.Context, req runtimekernel.TurnRequest)
+}
+
+type systemTurnRuntimeGateway interface {
+	CommitSystemTurn(ctx context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error)
 }
 
 type defaultAsyncTurnRunner struct {
@@ -240,9 +243,9 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	applyChatRuntimeSessionTargetRoleTrace(&req, commandSession, content, mentions)
 	if !isWorkflowAIChatSource(req.Metadata) {
 		if notice, ok := workflowCreationMigrationNotice(content); ok {
-			response := s.writeWorkflowCreationMigrationTurn(req, content, notice)
+			response, err := s.commitWorkflowCreationMigrationTurn(ctx, req, notice)
 			response = attachOpsRunToTurnResponse(response, opsRun)
-			return response, nil
+			return response, err
 		}
 	}
 	if s.workflowGeneration != nil && !isWorkflowAIChatSource(req.Metadata) {
@@ -306,65 +309,21 @@ func workflowCreationMigrationNoticeText(input string) string {
 	return "Workflow 创建已经迁移到 Runner Studio 的 Workflow AI Chat。\n\n[打开 Workflow AI Chat 创建](" + link + ") [复制需求]"
 }
 
-func (s *defaultChatService) writeWorkflowCreationMigrationTurn(req runtimekernel.TurnRequest, userText string, notice string) TurnResponse {
-	now := time.Now().UTC()
-	completedAt := now
-	turn := runtimekernel.TurnSnapshot{
-		ID:              req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       req.SessionID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
-		ResumeState:     runtimekernel.TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
-		CompletedAt:     &completedAt,
-		FinalOutput:     notice,
-		AgentItems: []agentstate.TurnItem{
-			workflowGenerationUserItem(req, userText, now),
-			workflowGenerationFinalItem(req, notice, now),
+func (s *defaultChatService) commitWorkflowCreationMigrationTurn(ctx context.Context, req runtimekernel.TurnRequest, notice string) (TurnResponse, error) {
+	gateway, ok := s.runtime.(systemTurnRuntimeGateway)
+	if !ok {
+		return TurnResponse{}, fmt.Errorf("runtime gateway does not support deterministic system turns")
+	}
+	result, err := gateway.CommitSystemTurn(ctx, runtimekernel.SystemTurnRequest{
+		Turn: req,
+		Output: runtimekernel.SystemTurnOutput{
+			Kind:           runtimekernel.SystemTurnKindNotice,
+			FinalText:      notice,
+			ContractStatus: runtimekernel.FinalContractStatusPartial,
+			FailureCodes:   []string{"workflow_creation_migrated_to_runner_studio"},
 		},
-	}
-	if store, ok := s.sessions.(SessionStore); ok {
-		session := store.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
-		if session.HostID == "" {
-			session.HostID = req.HostID
-		}
-		if session.CurrentTurn != nil {
-			session.TurnHistory = append(session.TurnHistory, *session.CurrentTurn)
-		}
-		session.Messages = append(session.Messages,
-			runtimekernel.Message{
-				ID:              firstNonEmptyString(req.ClientMessageID, req.TurnID+":user"),
-				ClientMessageID: req.ClientMessageID,
-				ClientTurnID:    req.ClientTurnID,
-				Role:            "user",
-				Content:         userText,
-				Timestamp:       now,
-			},
-			runtimekernel.Message{
-				ID:           req.TurnID + ":assistant",
-				ClientTurnID: req.ClientTurnID,
-				Role:         "assistant",
-				Content:      notice,
-				Timestamp:    now,
-			},
-		)
-		session.CurrentTurn = &turn
-		session.PendingApprovals = nil
-		session.PendingEvidence = nil
-		store.Update(session)
-	}
-	return TurnResponse{
-		SessionID:       req.SessionID,
-		TurnID:          req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		Status:          "completed",
-		Output:          notice,
-	}
+	})
+	return mapTurnResponse(result), err
 }
 
 func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool {

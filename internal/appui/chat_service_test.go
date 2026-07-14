@@ -24,6 +24,9 @@ type chatRuntimeCapture struct {
 	resumeCalled bool
 	resumeReq    runtimekernel.ResumeRequest
 	cancelReq    runtimekernel.CancelRequest
+	systemCalled bool
+	systemReq    runtimekernel.SystemTurnRequest
+	commitSystem func(context.Context, runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error)
 }
 
 type cancelledChatRuntime struct {
@@ -114,6 +117,15 @@ func (r *blockingChatRuntime) CancelTurn(context.Context, runtimekernel.CancelRe
 	return runtimekernel.TurnResult{}, nil
 }
 
+func (r *blockingChatRuntime) CommitSystemTurn(_ context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{
+		SessionType: req.Turn.SessionType, Mode: req.Turn.Mode,
+		SessionID: req.Turn.SessionID, TurnID: req.Turn.TurnID,
+		ClientTurnID: req.Turn.ClientTurnID, ClientMessageID: req.Turn.ClientMessageID,
+		Status: "completed", Output: req.Output.FinalText,
+	}, nil
+}
+
 type lifecycleContextRuntime struct {
 	ctxErr chan error
 }
@@ -143,7 +155,8 @@ func (r *lifecycleContextRuntime) CancelTurn(context.Context, runtimekernel.Canc
 
 func TestChatServiceSendMessageMigratesAddWorkflowToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	result, err := service.SendMessage(context.Background(), ChatCommand{
@@ -167,10 +180,18 @@ func TestChatServiceSendMessageMigratesAddWorkflowToRunnerStudio(t *testing.T) {
 		strings.Contains(result.Output, "%40add_workflow") {
 		t.Fatalf("Output = %q, want runner create link with encoded requirement and no add_workflow mention", result.Output)
 	}
-	select {
-	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; migrated @add_workflow should be handled synchronously")
-	default:
+	if _, called := runtime.runSnapshot(); called {
+		t.Fatal("runtime RunTurn was called; migrated @add_workflow should use the system-turn gateway")
+	}
+	systemReq, called := runtime.systemSnapshot()
+	if !called {
+		t.Fatal("runtime CommitSystemTurn was not called")
+	}
+	if systemReq.Turn.Input != "@add_workflow 每天早上8点自动抓取AI行业新闻，提取三条关键内容直接返回给我" ||
+		systemReq.Output.Kind != runtimekernel.SystemTurnKindNotice ||
+		systemReq.Output.ContractStatus != runtimekernel.FinalContractStatusPartial ||
+		systemReq.Output.FinalText != result.Output {
+		t.Fatalf("system turn request = %#v, want fixed migration notice facts", systemReq)
 	}
 	session := sessions.Get("sess-workflowgen")
 	if session == nil || session.CurrentTurn == nil {
@@ -188,7 +209,8 @@ func TestChatServiceSendMessageMigratesAddWorkflowToRunnerStudio(t *testing.T) {
 
 func TestChatServiceSendMessageMigratesPlainWorkflowWritingRequestToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	result, err := service.SendMessage(context.Background(), ChatCommand{
@@ -211,10 +233,11 @@ func TestChatServiceSendMessageMigratesPlainWorkflowWritingRequestToRunnerStudio
 	if !strings.Contains(result.Output, "/runner?workflow_ai=create&prompt=") {
 		t.Fatalf("Output = %q, want runner create link", result.Output)
 	}
-	select {
-	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; migrated plain workflow request should be handled synchronously")
-	default:
+	if _, called := runtime.runSnapshot(); called {
+		t.Fatal("runtime RunTurn was called; migrated plain workflow request should use the system-turn gateway")
+	}
+	if systemReq, called := runtime.systemSnapshot(); !called || systemReq.Output.FinalText != result.Output {
+		t.Fatalf("system turn request = %#v called=%t, want fixed migration notice", systemReq, called)
 	}
 	session := sessions.Get("sess-workflowgen-plain")
 	if session == nil || session.CurrentTurn == nil {
@@ -370,7 +393,8 @@ func TestChatServiceDoesNotTreatWorkflowConfirmationAsNewPlainRequestWithoutActi
 
 func TestChatServiceDoesNotGenerateWorkflowDraftFromConfirmationAfterMigration(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newCancelledChatRuntime()
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	initial, err := service.SendMessage(context.Background(), ChatCommand{
@@ -396,11 +420,7 @@ func TestChatServiceDoesNotGenerateWorkflowDraftFromConfirmationAfterMigration(t
 	if result.Status != "accepted" {
 		t.Fatalf("Status = %q, want accepted runtime path without active workflow generation session", result.Status)
 	}
-	select {
-	case <-runtime.started:
-	case <-time.After(time.Second):
-		t.Fatal("runtime RunTurn was not called; confirmation after migration must not generate draft internally")
-	}
+	_ = waitForRunTurn(t, runtime)
 	session := sessions.Get("sess-workflowgen-confirm")
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("session current turn missing")
@@ -657,6 +677,23 @@ func (r *chatRuntimeCapture) CancelTurn(_ context.Context, req runtimekernel.Can
 	return runtimekernel.TurnResult{SessionID: req.SessionID, TurnID: req.TurnID, Status: "cancelled"}, nil
 }
 
+func (r *chatRuntimeCapture) CommitSystemTurn(ctx context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error) {
+	r.mu.Lock()
+	r.systemCalled = true
+	r.systemReq = req
+	commit := r.commitSystem
+	r.mu.Unlock()
+	if commit != nil {
+		return commit(ctx, req)
+	}
+	return runtimekernel.TurnResult{
+		SessionType: req.Turn.SessionType, Mode: req.Turn.Mode,
+		SessionID: req.Turn.SessionID, TurnID: req.Turn.TurnID,
+		ClientTurnID: req.Turn.ClientTurnID, ClientMessageID: req.Turn.ClientMessageID,
+		Status: "completed", Output: req.Output.FinalText,
+	}, nil
+}
+
 func (r *chatRuntimeCapture) runSnapshot() (runtimekernel.TurnRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -680,6 +717,12 @@ func (r *chatRuntimeCapture) cancelSnapshot() runtimekernel.CancelRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cancelReq
+}
+
+func (r *chatRuntimeCapture) systemSnapshot() (runtimekernel.SystemTurnRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.systemReq, r.systemCalled
 }
 
 func waitForRunTurn(t *testing.T, runtime *chatRuntimeCapture) runtimekernel.TurnRequest {
