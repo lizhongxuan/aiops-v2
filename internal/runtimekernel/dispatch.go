@@ -609,20 +609,6 @@ func copyRuntimeToolHiddenReasons(in map[string][]string) map[string][]string {
 	return out
 }
 
-func toolHiddenByPolicyError(toolName string, hidden tooling.ToolHiddenReason, snapshot *tooling.ToolSurfacePolicySnapshot) string {
-	payload := map[string]string{
-		"errorType":      "tool_hidden_by_policy",
-		"toolName":       strings.TrimSpace(toolName),
-		"reason":         hidden.Reason,
-		"requiredAction": "request permission, switch mode, or choose a safer alternative",
-	}
-	if snapshot != nil {
-		payload["policySnapshotHash"] = strings.TrimSpace(snapshot.Hash)
-	}
-	data, _ := json.Marshal(payload)
-	return string(data)
-}
-
 func (d *ToolDispatcher) hiddenToolUnavailableResult(tc ToolCall, hidden tooling.ToolHiddenReason, snapshot *tooling.ToolSurfacePolicySnapshot, meta tooling.ToolMetadata) DispatchResult {
 	reason := strings.TrimSpace(hidden.Reason)
 	if reason == "" {

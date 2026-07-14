@@ -441,24 +441,6 @@ func toolPromptContent(tools []tooling.Tool) string {
 	return strings.TrimSpace(builder.String())
 }
 
-func promptSectionsText(sections []promptcompiler.PromptSection) string {
-	var builder strings.Builder
-	for _, section := range sections {
-		if strings.TrimSpace(section.Content) == "" {
-			continue
-		}
-		if builder.Len() > 0 {
-			builder.WriteString("\n\n")
-		}
-		if title := strings.TrimSpace(section.Title); title != "" {
-			builder.WriteString(title)
-			builder.WriteString("\n")
-		}
-		builder.WriteString(section.Content)
-	}
-	return strings.TrimSpace(builder.String())
-}
-
 func assembledToolsFromRuntimePool(tools []tool.BaseTool) []tooling.Tool {
 	if len(tools) == 0 {
 		return nil

@@ -1966,17 +1966,6 @@ func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featurefl
 	return ctx
 }
 
-func (k *RuntimeKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
-	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
-	if source, ok := k.tools.(metadataToolAssemblySource); ok {
-		return source.AssembleToolPoolWithMetadata(session, assemblyMode, metadata)
-	}
-	if !opsManualsOptedOut(metadata) {
-		return k.tools.AssembleToolPool(session, assemblyMode)
-	}
-	return tooling.AssembleEinoToolPool(filterOpsManualTools(k.tools.CompileContext(session, assemblyMode).AssembledTools))
-}
-
 func effectiveToolAssemblyMode(session SessionType, mode Mode, metadata map[string]string) Mode {
 	if session != SessionTypeHost || mode != ModeChat {
 		return mode

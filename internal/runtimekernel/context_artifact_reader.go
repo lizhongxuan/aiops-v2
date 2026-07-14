@@ -92,51 +92,6 @@ func (r ContextArtifactReader) Read(req ContextArtifactReadRequest) (ContextArti
 	return result, nil
 }
 
-func (r ContextArtifactReader) readLimit(limit int) int {
-	if limit <= 0 || limit > r.maxReadBytes {
-		return r.maxReadBytes
-	}
-	return limit
-}
-
-func (r ContextArtifactReader) queryText(text, query string, limit int) []ContextArtifactMatch {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil
-	}
-	lowerText := strings.ToLower(text)
-	lowerQuery := strings.ToLower(query)
-	var matches []ContextArtifactMatch
-	searchFrom := 0
-	for {
-		idx := strings.Index(lowerText[searchFrom:], lowerQuery)
-		if idx < 0 {
-			break
-		}
-		pos := searchFrom + idx
-		start := pos - limit/2
-		if start < 0 {
-			start = 0
-		}
-		end := start + limit
-		if end < pos+len(query) {
-			end = pos + len(query)
-		}
-		if end > len(text) {
-			end = len(text)
-		}
-		matches = append(matches, ContextArtifactMatch{
-			Offset:  int64(pos),
-			Content: text[start:end],
-		})
-		searchFrom = pos + len(query)
-		if len(matches) >= 20 {
-			break
-		}
-	}
-	return matches
-}
-
 func contextArtifactMatchesFromResource(matches []resourceio.Match) []ContextArtifactMatch {
 	if len(matches) == 0 {
 		return nil
