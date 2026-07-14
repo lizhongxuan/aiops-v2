@@ -717,6 +717,7 @@ type TurnSnapshot struct {
 	Mode                    Mode                               `json:"mode"`
 	Metadata                map[string]string                  `json:"metadata,omitempty"`
 	TaskDepth               taskdepth.Profile                  `json:"taskDepth,omitempty"`
+	SystemTurn              *SystemTurnRecord                  `json:"systemTurn,omitempty"`
 	Lifecycle               TurnLifecycleState                 `json:"lifecycle"`
 	ResumeState             TurnResumeState                    `json:"resumeState"`
 	Iteration               int                                `json:"iteration"`
@@ -769,6 +770,11 @@ func (s TurnSnapshot) Validate() error {
 	}
 	if !s.ResumeState.IsValid() {
 		return fmt.Errorf("invalid resume state %q", s.ResumeState)
+	}
+	if s.SystemTurn != nil {
+		if err := s.SystemTurn.Validate(); err != nil {
+			return fmt.Errorf("system turn: %w", err)
+		}
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
