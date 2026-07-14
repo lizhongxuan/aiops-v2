@@ -1,7 +1,6 @@
 package runtimekernel
 
 import (
-	"fmt"
 	"strings"
 
 	"aiops-v2/internal/modelrouter"
@@ -10,12 +9,14 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
-func buildRuntimePromptShadowParity(history []Message, compiled promptcompiler.CompiledPrompt, v2Items []promptinput.ModelInputItem, iteration int, cause *StepRevisionCause, toolSurface RuntimeToolRouterSnapshot, providerTools []modelrouter.ProviderToolSpec) (promptinput.PromptShadowParityReport, error) {
+// buildRuntimePromptShadowParity produces a deprecated, best-effort migration
+// trace. Its output and failures must never participate in runtime control.
+func buildRuntimePromptShadowParity(history []Message, compiled promptcompiler.CompiledPrompt, v2Items []promptinput.ModelInputItem, iteration int, cause *StepRevisionCause, toolSurface RuntimeToolRouterSnapshot, providerTools []modelrouter.ProviderToolSpec) promptinput.PromptShadowParityReport {
 	promptHistory, _ := promptInputMessagesFromRuntimeWithContextDedupe(history)
 	promptHistory = promptHistoryWithEffectiveUsers(promptHistory)
 	kind, currentUser, _, err := runtimePromptCurrentInput(promptHistory, iteration, cause)
 	if err != nil {
-		return promptinput.PromptShadowParityReport{}, err
+		return promptinput.PromptShadowParityReport{}
 	}
 	legacyTools := make([]string, 0, len(toolSurface.ModelVisibleTools))
 	for _, name := range toolSurface.ModelVisibleTools {
@@ -42,15 +43,9 @@ func buildRuntimePromptShadowParity(history []Message, compiled promptcompiler.C
 		V2Items:          v2Items,
 	})
 	if err != nil {
-		return promptinput.PromptShadowParityReport{}, err
+		return promptinput.PromptShadowParityReport{}
 	}
-	if err := report.Validate(); err != nil {
-		return promptinput.PromptShadowParityReport{}, err
-	}
-	if !report.Passed {
-		return promptinput.PromptShadowParityReport{}, fmt.Errorf("prompt shadow parity gate: %s", strings.Join(report.GateViolations, ","))
-	}
-	return report, nil
+	return report
 }
 
 func runtimePromptShadowContinuationKind(kind promptinput.CurrentInputKind, cause *StepRevisionCause) string {

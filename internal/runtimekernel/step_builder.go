@@ -111,10 +111,7 @@ func (k *RuntimeKernel) buildRuntimeStepContext(
 	}
 	providerReq.ComputeHashes()
 	compiled.Fingerprint = providerReq.PromptFingerprint
-	promptShadowParity, err := buildRuntimePromptShadowParity(contextMessages, compiled, providerReq.Input, iteration, currentPendingStepCause(session), toolSurface, providerReq.Tools)
-	if err != nil {
-		return RuntimeStepContext{}, promptinput.BuildResult{}, err
-	}
+	promptShadowParity := buildRuntimePromptShadowParity(contextMessages, compiled, providerReq.Input, iteration, currentPendingStepCause(session), toolSurface, providerReq.Tools)
 	step := RuntimeStepContext{
 		Turn:               turnCtx,
 		TurnAssemblyHash:   control.TurnAssemblyHash,

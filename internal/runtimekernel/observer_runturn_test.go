@@ -89,8 +89,14 @@ func TestRunTurnObserverRecordsTurnAndModelCall(t *testing.T) {
 	}
 	partialParity := session.CurrentTurn.Iterations[0]
 	partialParity.PromptShadowParity.SchemaVersion = ""
-	if err := partialParity.Validate(); err == nil {
-		t.Fatal("IterationState.Validate() accepted partial prompt shadow parity without schema")
+	if err := partialParity.Validate(); err != nil {
+		t.Fatalf("deprecated partial prompt shadow parity blocked iteration state: %v", err)
+	}
+	failedParity := session.CurrentTurn.Iterations[0]
+	failedParity.PromptShadowParity.GateViolations = []string{"deprecated_shadow_drift"}
+	failedParity.PromptShadowParity.Passed = false
+	if err := failedParity.Validate(); err != nil {
+		t.Fatalf("deprecated failed prompt shadow parity blocked iteration state: %v", err)
 	}
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.ID != modelCallItemID("turn-observer", 0) {

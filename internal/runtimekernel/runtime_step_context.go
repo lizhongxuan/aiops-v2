@@ -8,6 +8,8 @@ import (
 	"aiops-v2/internal/promptinput"
 )
 
+// RuntimeStepContext carries PromptShadowParity only as a deprecated,
+// best-effort migration trace; parity is never runtime control.
 type RuntimeStepContext struct {
 	Turn               RuntimeTurnContext                   `json:"turn"`
 	TurnAssemblyHash   string                               `json:"turnAssemblyHash"`
@@ -52,14 +54,6 @@ func (s RuntimeStepContext) Validate() error {
 	}
 	if err := validateRuntimeStepProviderRequest(s); err != nil {
 		return err
-	}
-	if promptinput.HasTypedModelInputLayers(s.ProviderRequest.Input) {
-		if err := s.PromptShadowParity.Validate(); err != nil {
-			return err
-		}
-		if !s.PromptShadowParity.Passed {
-			return fmt.Errorf("prompt shadow parity gate rejected runtime step")
-		}
 	}
 	if s.Hash == "" || s.Hash != ComputeRuntimeStepContextHash(s) {
 		return fmt.Errorf("runtime step context hash mismatch")

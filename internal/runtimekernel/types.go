@@ -837,6 +837,8 @@ func (s TurnSnapshot) Validate() error {
 }
 
 // IterationState captures a single model/tool iteration within a turn.
+// PromptShadowParity is a deprecated, best-effort migration trace and never
+// participates in iteration validation or runtime control.
 type IterationState struct {
 	ID                      string                                   `json:"id"`
 	SessionID               string                                   `json:"sessionId"`
@@ -886,14 +888,6 @@ func (s IterationState) Validate() error {
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
-	}
-	if !s.PromptShadowParity.IsZero() {
-		if err := s.PromptShadowParity.Validate(); err != nil {
-			return err
-		}
-		if !s.PromptShadowParity.Passed {
-			return fmt.Errorf("iteration prompt shadow parity rejected")
-		}
 	}
 	if !s.Lifecycle.IsValid() {
 		return fmt.Errorf("invalid lifecycle %q", s.Lifecycle)

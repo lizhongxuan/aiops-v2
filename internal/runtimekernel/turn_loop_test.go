@@ -92,12 +92,44 @@ func TestBuildRuntimeStepContextCreatesProviderRequestSnapshot(t *testing.T) {
 	if !strings.Contains(string(traceJSON), `"promptShadowParity"`) || !strings.Contains(string(traceJSON), `"passed": true`) {
 		t.Fatalf("trace missing passed prompt shadow parity: %s", traceJSON)
 	}
-	tamperedShadow := step
-	tamperedShadow.PromptShadowParity.Passed = false
-	tamperedShadow.Hash = ComputeRuntimeStepContextHash(tamperedShadow)
-	if err := tamperedShadow.Validate(); err == nil {
-		t.Fatal("Validate() accepted rejected prompt shadow parity")
-	}
+	t.Run("deprecated failed parity is read-only", func(t *testing.T) {
+		tamperedShadow := step
+		tamperedShadow.PromptShadowParity.GateViolations = []string{"deprecated_shadow_drift"}
+		tamperedShadow.PromptShadowParity.Passed = false
+		if _, err := tamperedShadow.ValidatedProviderRequest(); err != nil {
+			t.Fatalf("deprecated failed prompt shadow parity blocked provider request: %v", err)
+		}
+	})
+	t.Run("deprecated partial parity is read-only", func(t *testing.T) {
+		partialShadow := step
+		partialShadow.PromptShadowParity.SchemaVersion = ""
+		if _, err := partialShadow.ValidatedProviderRequest(); err != nil {
+			t.Fatalf("deprecated partial prompt shadow parity blocked provider request: %v", err)
+		}
+	})
+	t.Run("deprecated legacy shadow build error is isolated", func(t *testing.T) {
+		if _, err := step.ValidatedProviderRequest(); err != nil {
+			t.Fatalf("canonical V2 provider request is not valid before legacy shadow: %v", err)
+		}
+		invalidLegacyHistory := []Message{
+			{Role: "system", Content: "legacy-only derived context", Metadata: map[string]string{"runtime.context.kind": "unsupported_legacy_shadow"}},
+			{Role: "user", Content: "check nginx errors"},
+		}
+		legacyShadow := buildRuntimePromptShadowParity(invalidLegacyHistory, compiled, step.ProviderRequest.Input, 0, nil, step.ToolSurface, step.ProviderRequest.Tools)
+		if !legacyShadow.IsZero() {
+			t.Fatalf("legacy shadow build failure report = %#v, want empty read-only trace", legacyShadow)
+		}
+	})
+	t.Run("canonical provider request remains fail closed", func(t *testing.T) {
+		tamperedProvider, err := cloneRuntimeStepContext(step)
+		if err != nil {
+			t.Fatalf("cloneRuntimeStepContext() error = %v", err)
+		}
+		tamperedProvider.ProviderRequest.Input[0].Content = "tampered canonical V2 input"
+		if _, err := tamperedProvider.ValidatedProviderRequest(); err == nil {
+			t.Fatal("ValidatedProviderRequest() accepted canonical V2/provider tamper")
+		}
+	})
 	tamperedCompiledFingerprint := step
 	tamperedCompiledFingerprint.Compiled.Fingerprint.ModelInputHash = "tampered"
 	tamperedCompiledFingerprint.Hash = ComputeRuntimeStepContextHash(tamperedCompiledFingerprint)
