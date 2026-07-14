@@ -298,9 +298,9 @@ func TestRunTurn_ExecutesTurnHooks(t *testing.T) {
 
 // ---------------------------------------------------------------------------
 // Property 1: Turn 管道执行顺序
-// For any valid TurnRequest, RuntimeKernel should execute pipeline steps in
-// fixed order: assemble_context → compile_prompt → assemble_tools →
-// create_agent → runner_run → callback_events → projection → final_gate
+// For any valid TurnRequest, the production RunTurn path must assemble the
+// immutable turn before prompt compilation and start the provider only after
+// both stages.
 //
 // **Validates: Requirements 1.2**
 // ---------------------------------------------------------------------------
@@ -312,27 +312,25 @@ func TestProperty1_TurnPipelineExecutionOrder(t *testing.T) {
 		input := genNonEmptyString().Draw(t, "input")
 
 		kernel := newTestKernel(nil)
-
-		recorder := &PipelineRecorder{}
+		observer := &turnAssemblyRecordingObserver{}
+		kernel.observer = observer
 		req := TurnRequest{
 			SessionType: sessionType,
 			Mode:        mode,
+			SessionID:   "property-pipeline-session",
+			TurnID:      "property-pipeline-turn",
 			Input:       input,
 		}
 
-		_, _ = kernel.RunTurnWithRecorder(context.Background(), req, recorder)
-
-		// Verify pipeline step order
-		expectedOrder := AllPipelineSteps()
-		if len(recorder.Steps) != len(expectedOrder) {
-			t.Fatalf("expected %d pipeline steps, got %d: %v",
-				len(expectedOrder), len(recorder.Steps), recorder.Steps)
+		if _, err := kernel.RunTurn(context.Background(), req); err != nil {
+			t.Fatalf("RunTurn() error = %v", err)
 		}
-
-		for i, step := range recorder.Steps {
-			if step != expectedOrder[i] {
-				t.Fatalf("step[%d]: expected %q, got %q (full: %v)",
-					i, expectedOrder[i], step, recorder.Steps)
+		if len(observer.stages) < 3 || observer.stages[0] != "turn_assembly_built" || (len(observer.stages)-1)%2 != 0 {
+			t.Fatalf("production stages = %v, want assembly followed by prompt/provider pairs", observer.stages)
+		}
+		for index := 1; index < len(observer.stages); index += 2 {
+			if observer.stages[index] != "prompt_compiled" || observer.stages[index+1] != "provider_request_started" {
+				t.Fatalf("production stages = %v, invalid step pair at %d", observer.stages, index)
 			}
 		}
 	})
@@ -350,7 +348,7 @@ func TestRunTurnFiltersOpsManualToolsWhenUserOptedOut(t *testing.T) {
 		})
 	}
 
-	_, err := kernel.RunTurnWithRecorder(context.Background(), TurnRequest{
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		Input:       "已选择跳过运维手册，继续只读排查",
@@ -358,9 +356,9 @@ func TestRunTurnFiltersOpsManualToolsWhenUserOptedOut(t *testing.T) {
 			"opsManualAction":  "skip_ops_manual",
 			"opsManualSkipped": "true",
 		},
-	}, &PipelineRecorder{})
+	})
 	if err != nil {
-		t.Fatalf("RunTurnWithRecorder error = %v", err)
+		t.Fatalf("RunTurn error = %v", err)
 	}
 	if len(compiler.contexts) == 0 {
 		t.Fatal("compiler did not record a compile context")

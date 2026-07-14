@@ -77,6 +77,28 @@ func TestRuntimeStepContextSingleProductionBuilder(t *testing.T) {
 	requireProductionBuilderSite(t, "FreezeRuntimeStepContext call", freezeCalls, "step_builder.go", "buildRuntimeStepContext")
 }
 
+func TestRuntimeTurnLoopHasNoCopiedTestEntrypoint(t *testing.T) {
+	var runTurnDefinitions, copiedEntrypoints, legacyExecutors []productionBuilderSite
+	walkProductionFunctions(t, func(file string, fset *token.FileSet, function *ast.FuncDecl) {
+		if function.Recv != nil && function.Name.Name == "RunTurn" {
+			runTurnDefinitions = append(runTurnDefinitions, productionSite(fset, file, function.Name.Pos(), function.Name.Name))
+		}
+		if function.Recv != nil && strings.HasPrefix(function.Name.Name, "RunTurn") && function.Name.Name != "RunTurn" {
+			copiedEntrypoints = append(copiedEntrypoints, productionSite(fset, file, function.Name.Pos(), function.Name.Name))
+		}
+		if function.Name.Name == "executeAgent" {
+			legacyExecutors = append(legacyExecutors, productionSite(fset, file, function.Name.Pos(), function.Name.Name))
+		}
+	})
+	requireProductionBuilderSite(t, "RuntimeKernel.RunTurn definition", runTurnDefinitions, "runtime_kernel.go", "RunTurn")
+	if len(copiedEntrypoints) != 0 {
+		t.Fatalf("copied RunTurn production entrypoints = %#v, want none", copiedEntrypoints)
+	}
+	if len(legacyExecutors) != 0 {
+		t.Fatalf("legacy direct agent executors = %#v, want none", legacyExecutors)
+	}
+}
+
 func walkProductionFunctions(t *testing.T, visit func(string, *token.FileSet, *ast.FuncDecl)) {
 	t.Helper()
 	entries, err := os.ReadDir(".")
