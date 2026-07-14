@@ -78,6 +78,9 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 		if assembly.RollbackPolicy == "" {
 			return TurnAssembly{}, fmt.Errorf("mutation turn assembly requires rollback policy")
 		}
+		if err := validateMutationToolRollbackReadiness(assembly.CapabilityPolicy); err != nil {
+			return TurnAssembly{}, err
+		}
 	}
 	admissionControlHash := StableHash("turn-assembly.admission-control", map[string]any{
 		"intent": assembly.AdmissionFacts.Intent, "userConstraints": assembly.AdmissionFacts.UserConstraints,
@@ -96,6 +99,26 @@ func BuildTurnAssembly(input TurnAssemblyInput) (TurnAssembly, error) {
 		"sourceRefs": assembly.SourceRefs,
 	})
 	return assembly, nil
+}
+
+func validateMutationToolRollbackReadiness(policy CapabilityPolicySnapshot) error {
+	seen := make(map[string]struct{})
+	for _, items := range [][]ToolSurfaceItem{policy.ModelVisibleTools, policy.DispatchableTools} {
+		for _, item := range items {
+			if !item.Mutating && item.Capability != resourcebinding.CapabilityMutate {
+				continue
+			}
+			key := toolIdentityKey(item)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			if !item.RollbackReady || strings.TrimSpace(item.RollbackDeclarationHash) == "" {
+				return fmt.Errorf("mutation tool %q missing declarative rollback readiness", key)
+			}
+		}
+	}
+	return nil
 }
 
 func (assembly TurnAssembly) Validate() error {

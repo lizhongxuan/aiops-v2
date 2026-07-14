@@ -99,6 +99,9 @@ func TestRunTurnPermissionBindingUsesFrozenStepHashAfterProvider(t *testing.T) {
 		Meta: tooling.ToolMetadata{
 			Name: "synthetic.mutate", Description: "Apply a synthetic state change",
 			Mutating: true, RequiresApproval: true,
+			Rollback: &tooling.ToolRollbackMetadata{
+				Strategy: tooling.ToolRollbackStrategyAutomatic, Reference: "test://synthetic-state/rollback",
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{PermissionScope: "argument_scoped"},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType: "synthetic", ResourceID: "state", OperationKind: "write",
@@ -235,6 +238,9 @@ func permissionBindingMutationTool(executed *int) *tooling.StaticTool {
 		Meta: tooling.ToolMetadata{
 			Name: "synthetic.mutate", Description: "Apply a synthetic state change",
 			Mutating: true, RequiresApproval: true,
+			Rollback: &tooling.ToolRollbackMetadata{
+				Strategy: tooling.ToolRollbackStrategyAutomatic, Reference: "test://synthetic-state/rollback",
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{PermissionScope: "argument_scoped"},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType: "synthetic", ResourceID: "state", OperationKind: "write",

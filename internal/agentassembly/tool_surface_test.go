@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/tooling"
 )
 
@@ -81,5 +82,79 @@ func TestToolSurfaceSnapshotRejectsMissingOrUnknownHiddenReason(t *testing.T) {
 				t.Fatalf("Validate() error = nil, want invalid hidden reason rejected")
 			}
 		})
+	}
+}
+
+func TestMutationTurnAssemblyRejectsToolWithoutDeclarativeRollback(t *testing.T) {
+	facts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:            &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}},
+		PermissionProfile: "host-mutation",
+		SessionTarget:     resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+	})
+	mutationTool := tooling.ToolMetadata{
+		Name:             "restart_service",
+		Mutating:         true,
+		RequiresApproval: true,
+	}
+	input := validTurnAssemblyInput(facts)
+	input.PermissionProfile = "host-mutation"
+	input.RollbackPolicy = "action-rollback-contract-required"
+	input.CapabilityPolicy = BuildToolSurfaceSnapshot(ToolSurfaceInput{
+		ModelVisibleTools: []tooling.ToolMetadata{mutationTool},
+		DispatchableTools: []tooling.ToolMetadata{mutationTool},
+	})
+
+	if _, err := BuildTurnAssembly(input); err == nil {
+		t.Fatal("BuildTurnAssembly() error = nil, want mutation tool without declarative rollback rejected")
+	}
+}
+
+func TestMutationTurnAssemblyAcceptsToolWithDeclarativeRollback(t *testing.T) {
+	facts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:            &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite}},
+		PermissionProfile: "host-mutation",
+		SessionTarget:     resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+	})
+	mutationTool := tooling.ToolMetadata{
+		Name:             "restart_service",
+		Mutating:         true,
+		RequiresApproval: true,
+		Rollback: &tooling.ToolRollbackMetadata{
+			Strategy:  tooling.ToolRollbackStrategyAutomatic,
+			Reference: "runbook://service/restart/rollback",
+		},
+	}
+	input := validTurnAssemblyInput(facts)
+	input.PermissionProfile = "host-mutation"
+	input.RollbackPolicy = "action-rollback-contract-required"
+	input.CapabilityPolicy = BuildToolSurfaceSnapshot(ToolSurfaceInput{
+		ModelVisibleTools: []tooling.ToolMetadata{mutationTool},
+		DispatchableTools: []tooling.ToolMetadata{mutationTool},
+	})
+
+	assembly, err := BuildTurnAssembly(input)
+	if err != nil {
+		t.Fatalf("BuildTurnAssembly() error = %v", err)
+	}
+	item := assembly.CapabilityPolicy.ModelVisibleTools[0]
+	if !item.Mutating || !item.RollbackReady || item.RollbackDeclarationHash == "" {
+		t.Fatalf("mutation tool surface item = %#v, want typed rollback readiness proof", item)
+	}
+}
+
+func TestReadOnlyTurnAssemblyDoesNotRequireToolRollbackDeclaration(t *testing.T) {
+	facts := mustAdmissionFactsForAssembly(t, runtimecontract.AdmissionInput{
+		Intent:        &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		SessionTarget: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+	})
+	readTool := tooling.ToolMetadata{Name: "read_service_status"}
+	input := validTurnAssemblyInput(facts)
+	input.CapabilityPolicy = BuildToolSurfaceSnapshot(ToolSurfaceInput{
+		ModelVisibleTools: []tooling.ToolMetadata{readTool},
+		DispatchableTools: []tooling.ToolMetadata{readTool},
+	})
+
+	if _, err := BuildTurnAssembly(input); err != nil {
+		t.Fatalf("BuildTurnAssembly() read-only error = %v", err)
 	}
 }

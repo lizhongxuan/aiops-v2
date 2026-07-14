@@ -21,14 +21,17 @@ type ToolSurfaceSnapshot struct {
 }
 
 type ToolSurfaceItem struct {
-	Name                string `json:"name,omitempty"`
-	Namespace           string `json:"namespace,omitempty"`
-	DescriptionHash     string `json:"descriptionHash,omitempty"`
-	ResourceBindingHash string `json:"resourceBindingHash,omitempty"`
-	Capability          string `json:"capability,omitempty"`
-	RequiresApproval    bool   `json:"requiresApproval,omitempty"`
-	PolicyHash          string `json:"policyHash,omitempty"`
-	HiddenReason        string `json:"hiddenReason,omitempty"`
+	Name                    string `json:"name,omitempty"`
+	Namespace               string `json:"namespace,omitempty"`
+	DescriptionHash         string `json:"descriptionHash,omitempty"`
+	ResourceBindingHash     string `json:"resourceBindingHash,omitempty"`
+	Capability              string `json:"capability,omitempty"`
+	Mutating                bool   `json:"mutating,omitempty"`
+	RequiresApproval        bool   `json:"requiresApproval,omitempty"`
+	RollbackReady           bool   `json:"rollbackReady,omitempty"`
+	RollbackDeclarationHash string `json:"rollbackDeclarationHash,omitempty"`
+	PolicyHash              string `json:"policyHash,omitempty"`
+	HiddenReason            string `json:"hiddenReason,omitempty"`
 }
 
 type HiddenToolInput struct {
@@ -110,6 +113,14 @@ func (s ToolSurfaceSnapshot) Validate() error {
 			return fmt.Errorf("hidden tool %q has unknown hidden reason %q", name, reason)
 		}
 	}
+	for _, items := range [][]ToolSurfaceItem{s.RegisteredTools, s.ModelVisibleTools, s.DispatchableTools} {
+		for _, item := range items {
+			hasDeclarationHash := strings.TrimSpace(item.RollbackDeclarationHash) != ""
+			if item.RollbackReady != hasDeclarationHash {
+				return fmt.Errorf("tool %q has inconsistent rollback readiness proof", toolIdentityKey(item))
+			}
+		}
+	}
 	return nil
 }
 
@@ -129,6 +140,7 @@ func toolSurfaceItemsFromMetadata(metas []tooling.ToolMetadata, bindings []resou
 			Namespace:        toolNamespace(meta),
 			DescriptionHash:  StableHash("tool-description", strings.TrimSpace(meta.Description)),
 			Capability:       input.Capability,
+			Mutating:         meta.Mutating,
 			RequiresApproval: input.RequiresApproval,
 			PolicyHash:       strings.TrimSpace(policyHash),
 			HiddenReason:     strings.TrimSpace(hiddenReason),
@@ -136,6 +148,13 @@ func toolSurfaceItemsFromMetadata(metas []tooling.ToolMetadata, bindings []resou
 		if item.Capability == "" && meta.Mutating {
 			item.Capability = resourcebinding.CapabilityMutate
 			item.RequiresApproval = true
+		}
+		if item.Capability == resourcebinding.CapabilityMutate {
+			item.Mutating = true
+		}
+		if meta.Rollback != nil && meta.Rollback.DeclarativelyReady() {
+			item.RollbackReady = true
+			item.RollbackDeclarationHash = StableHash("tool-rollback-declaration", meta.Rollback)
 		}
 		item.ResourceBindingHash = resourceBindingHashForTool(meta, bindings)
 		out = append(out, item)

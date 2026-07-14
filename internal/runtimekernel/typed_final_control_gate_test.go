@@ -7,6 +7,7 @@ import (
 	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/taskdepth"
+	"aiops-v2/internal/tooling"
 )
 
 func TestTypedFinalControlGateIgnoresConflictingLegacyMetadata(t *testing.T) {
@@ -16,7 +17,11 @@ func TestTypedFinalControlGateIgnoresConflictingLegacyMetadata(t *testing.T) {
 		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite, runtimecontract.ActionRiskHostExec},
 		Confidence: runtimecontract.ConfidenceHigh,
 	}, []resourcebinding.ResourceRef{target}, []agentassembly.ToolSurfaceItem{{
-		Name: "exec_command", Capability: resourcebinding.CapabilityMutate, RequiresApproval: true,
+		Name: "exec_command", Capability: resourcebinding.CapabilityMutate, Mutating: true, RequiresApproval: true,
+		RollbackReady: true,
+		RollbackDeclarationHash: agentassembly.StableHash("tool-rollback-declaration", tooling.ToolRollbackMetadata{
+			Strategy: tooling.ToolRollbackStrategyAutomatic, Reference: "test://exec-command/rollback",
+		}),
 	}})
 	snapshot := &TurnSnapshot{
 		SessionType:  SessionTypeWorkspace,

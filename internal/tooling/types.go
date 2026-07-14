@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"strings"
 	"time"
 
 	"aiops-v2/internal/resourceio"
@@ -213,6 +214,38 @@ type ToolIdempotencyMetadata struct {
 	PostCheckRefs []string                `json:"postCheckRefs,omitempty"`
 }
 
+// ToolRollbackStrategy identifies how a mutating tool restores a safe state.
+// The strategy is registry metadata, not an instruction synthesized at runtime.
+type ToolRollbackStrategy string
+
+const (
+	ToolRollbackStrategyAutomatic      ToolRollbackStrategy = "automatic"
+	ToolRollbackStrategyManualTakeover ToolRollbackStrategy = "manual_takeover"
+)
+
+// ToolRollbackMetadata is the declarative proof that a mutating tool has an
+// operator-owned rollback contract before the tool can enter a mutation turn.
+// Reference names the durable implementation or runbook without exposing its
+// mutable content in the model-visible tool surface.
+type ToolRollbackMetadata struct {
+	Strategy  ToolRollbackStrategy `json:"strategy,omitempty"`
+	Reference string               `json:"reference,omitempty"`
+}
+
+// DeclarativelyReady reports whether the rollback declaration is complete and
+// uses a strategy understood by the harness.
+func (m ToolRollbackMetadata) DeclarativelyReady() bool {
+	if strings.TrimSpace(m.Reference) == "" {
+		return false
+	}
+	switch m.Strategy {
+	case ToolRollbackStrategyAutomatic, ToolRollbackStrategyManualTakeover:
+		return true
+	default:
+		return false
+	}
+}
+
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
 	Name                   string                  `json:"name"`
@@ -244,6 +277,7 @@ type ToolMetadata struct {
 	Discovery              ToolDiscoveryMetadata   `json:"discovery,omitempty"`
 	ResourceLocks          []ToolResourceLockKey   `json:"resourceLocks,omitempty"`
 	Idempotency            ToolIdempotencyMetadata `json:"idempotency,omitempty"`
+	Rollback               *ToolRollbackMetadata   `json:"rollback,omitempty"`
 	MCPInfo                MCPInfo                 `json:"mcpInfo,omitempty"`
 	ProviderNative         *ProviderNativeToolInfo `json:"providerNative,omitempty"`
 }
