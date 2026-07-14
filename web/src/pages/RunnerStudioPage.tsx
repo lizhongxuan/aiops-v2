@@ -33,11 +33,8 @@ import {
   applyRunnerStudioWorkflowAiPatch,
   createRunnerStudioWorkflowAiDraftFromPlan,
   createRunnerStudioWorkflowAiSession,
-  detectRunnerStudioWorkflowAiPatchEffect,
-  previewRunnerStudioWorkflowAiPatch,
   proposeRunnerStudioWorkflowAiPlan,
   undoRunnerStudioWorkflowAiPatch,
-  validateRunnerStudioWorkflowAiPatch,
 } from "@/api/runnerStudioClient";
 import { RunnerCanvas } from "@/components/runner/RunnerCanvas";
 import { createInputParam, normalizeInputParams, valueSourceLabel, variableToValueSource } from "@/components/runner/io/ioTypes";
@@ -2055,7 +2052,6 @@ function RunnerRunHistoryPanel({ records, currentState, currentEvents, graph, se
 function RunnerNodeRunDetails({ state, graph, selectedNodeId, onSelectNode }: { state: RunState; graph: RunnerGraph; selectedNodeId: string; onSelectNode: (id: string) => void }) {
   const fallbackNodeId = Object.keys(state.nodes || {})[0] || graph.nodes?.[0]?.id || "";
   const nodeId = selectedNodeId || fallbackNodeId;
-  const node = nodeId ? state.nodes?.[nodeId] : null;
   const logs = (state.logs || []).filter((log: { nodeId?: string }) => log.nodeId === nodeId);
   const failureDetails = collectNodeRunFailureDetails(state, nodeId);
   return (

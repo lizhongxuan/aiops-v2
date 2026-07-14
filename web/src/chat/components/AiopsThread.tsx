@@ -12,9 +12,7 @@ import { parseHostMentionCandidates, parseSpecialAiMentionCandidates, type HostM
 import { AnswerDocumentRenderer } from "./AnswerDocumentRenderer";
 import { ContextStatusNotice } from "./ContextStatusNotice";
 import { McpSurfacePart } from "./McpSurfacePart";
-import { MessageMarkdown } from "./MessageMarkdown";
 import { ProcessTranscript } from "./ProcessTranscript";
-import { useSessionTargetContext } from "./SessionTargetContext";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
 
 type AssistantMessageMeta = {
@@ -39,7 +37,6 @@ type AssistantMessageMeta = {
 export function AiopsThread() {
   const state = useAssistantTransportState() as AiopsTransportState;
   const surfaces = Object.values(state.mcpSurfaces || {});
-  const target = useSessionTargetContext();
   const workspace = useSessionWorkspaceContext();
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);

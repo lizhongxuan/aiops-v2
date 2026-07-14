@@ -61,10 +61,6 @@ function hasChildAgents(mission: AiopsTransportHostMission, state: AiopsTranspor
   return (mission.childAgentIds || []).some((childAgentId) => Boolean((state.childAgents || {})[childAgentId]));
 }
 
-function hasMissionHosts(mission: AiopsTransportHostMission) {
-  return selectMissionMentions(mission).length > 0;
-}
-
 function selectPlanSteps(mission: AiopsTransportHostMission) {
   const missionWithPlan = mission as AiopsTransportHostMission & {
     planSteps?: unknown;
@@ -75,19 +71,6 @@ function selectPlanSteps(mission: AiopsTransportHostMission) {
   }
   if (Array.isArray(missionWithPlan.plan)) {
     return missionWithPlan.plan;
-  }
-  return [];
-}
-
-function selectMissionMentions(mission: AiopsTransportHostMission) {
-  const missionWithMentions = mission as AiopsTransportHostMission & {
-    mentions?: unknown;
-  };
-  if (Array.isArray(mission.mentionedHosts)) {
-    return mission.mentionedHosts;
-  }
-  if (Array.isArray(missionWithMentions.mentions)) {
-    return missionWithMentions.mentions;
   }
   return [];
 }

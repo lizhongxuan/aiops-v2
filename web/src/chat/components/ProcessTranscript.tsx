@@ -1,7 +1,6 @@
 import { Bot, ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentStepView, AiopsProcessBlock, AiopsTransportProcessKind, AiopsTransportProcessStatus } from "@/transport/aiopsTransportTypes";
 
@@ -988,21 +987,6 @@ function statusLabel(status?: string) {
   }
 }
 
-function statusBadgeClass(status?: string) {
-  switch (status) {
-    case "blocked":
-      return "bg-amber-50 text-amber-700";
-    case "failed":
-    case "rejected":
-      return "bg-red-50 text-red-700";
-    case "running":
-    case "queued":
-      return "bg-blue-50 text-blue-700";
-    default:
-      return "bg-slate-100 text-slate-500";
-  }
-}
-
 function terminalStatusLabel(status?: string) {
   switch (status) {
     case "blocked":
@@ -1194,56 +1178,6 @@ function AssistantProgressText({ text }: { text: string }) {
 
 function isToolSummaryBlock(block: AiopsProcessBlock): boolean {
   return block.kind === "search" || block.kind === "command" || block.kind === "tool" || block.kind === "file" || block.kind === "mcp";
-}
-
-function getToolIcon(block: AiopsProcessBlock): string {
-  if (block.kind === "search") return "🔍";
-  if (block.kind === "command") return "⚙️";
-  if (block.kind === "file") {
-    const text = `${block.displayKind || ""} ${block.text || ""} ${block.inputSummary || ""}`.toLowerCase();
-    if (/edit|write|create|modify|update/.test(text)) return "✏️";
-    return "📂";
-  }
-  return "⚙️";
-}
-
-function toolSummaryText(block: AiopsProcessBlock): string {
-  const isRunning = block.status === "running" || block.status === "queued";
-
-  if (block.kind === "command") {
-    const cmd = block.command || stripHtml(block.text || "") || "命令";
-    return isRunning ? `正在执行 ${cmd}` : cmd;
-  }
-  if (block.kind === "file") {
-    const text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
-    const cleaned = cleanToolText(text) || "文件操作";
-    return isRunning ? `正在处理 ${cleaned}` : cleaned;
-  }
-  if (block.kind === "tool" || block.kind === "mcp") {
-    const text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.displayKind || "";
-    const cleaned = cleanToolText(text) || "工具调用";
-    return isRunning ? `正在调用 ${cleaned}` : cleaned;
-  }
-  const text = cleanToolText(stripHtml(block.text || "") || block.displayKind || block.kind);
-  return isRunning ? `正在${text}` : text;
-}
-
-function ToolSummaryLine({ block }: { block: AiopsProcessBlock }) {
-  const icon = getToolIcon(block);
-  const summary = toolSummaryText(block);
-  if (!summary) return null;
-
-  const full = `${icon} ${summary}`;
-  const display = full.length > 80 ? `${full.slice(0, 79)}…` : full;
-
-  return (
-    <div
-      className={cn("truncate text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}
-      title={full.length > 80 ? full : undefined}
-    >
-      {display}
-    </div>
-  );
 }
 
 function ThinkingText({ block }: { block: AiopsProcessBlock }) {
