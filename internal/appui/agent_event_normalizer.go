@@ -10,14 +10,6 @@ import (
 	"aiops-v2/internal/runtimekernel"
 )
 
-func NormalizeToolInvocationAgentEvent(inv projection.ToolInvocation) AgentEvent {
-	events, _ := NormalizeToolInvocation(inv)
-	if len(events) == 0 {
-		return AgentEvent{}
-	}
-	return events[0]
-}
-
 func NormalizeToolInvocation(inv projection.ToolInvocation) ([]AgentEvent, error) {
 	phase := AgentEventPhaseUpdated
 	status := AgentEventStatusRunning
@@ -483,14 +475,6 @@ func truncateAgentEventSummary(value string, limit int) string {
 	return string(runes[:limit]) + "..."
 }
 
-func NormalizeRuntimeLifecycleAgentEvent(event runtimekernel.LifecycleEvent) (AgentEvent, bool) {
-	events, err := NormalizeRuntimeLifecycleEvent(event)
-	if err != nil || len(events) == 0 {
-		return AgentEvent{}, false
-	}
-	return events[0], true
-}
-
 func NormalizeRuntimeLifecycleEvent(event runtimekernel.LifecycleEvent) ([]AgentEvent, error) {
 	createdAt := event.Timestamp
 	if createdAt.IsZero() {
@@ -582,14 +566,6 @@ func normalizeReasoningSummaryPayload(raw json.RawMessage, completed bool) json.
 	return normalized
 }
 
-func NormalizeSnapshotCompletedAgentEvent(snapshot projection.Snapshot) AgentEvent {
-	events, _ := NormalizeSnapshot(snapshot)
-	if len(events) == 0 {
-		return AgentEvent{}
-	}
-	return events[0]
-}
-
 func NormalizeSnapshot(snapshot projection.Snapshot) ([]AgentEvent, error) {
 	createdAt := snapshot.Timestamp
 	if createdAt.IsZero() {
@@ -610,14 +586,6 @@ func NormalizeSnapshot(snapshot projection.Snapshot) ([]AgentEvent, error) {
 		return nil, err
 	}
 	return []AgentEvent{event}, nil
-}
-
-func NormalizeApprovalAgentEvent(approval projection.Approval) AgentEvent {
-	events, _ := NormalizeApproval(approval)
-	if len(events) == 0 {
-		return AgentEvent{}
-	}
-	return events[0]
 }
 
 func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
@@ -658,14 +626,6 @@ func NormalizeApproval(approval projection.Approval) ([]AgentEvent, error) {
 		return nil, err
 	}
 	return []AgentEvent{event}, nil
-}
-
-func NormalizeEvidenceAgentEvent(evidence projection.Evidence) AgentEvent {
-	events, _ := NormalizeEvidence(evidence)
-	if len(events) == 0 {
-		return AgentEvent{}
-	}
-	return events[0]
 }
 
 func NormalizeEvidence(evidence projection.Evidence) ([]AgentEvent, error) {

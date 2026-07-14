@@ -124,15 +124,6 @@ func verificationCompletionGateAllowsFinal(_ string, decision VerificationComple
 	return !verificationCompletionMissingRuntimeApprovalGate(decision)
 }
 
-func verificationCompletionMissingReport(decision VerificationCompletionDecision) bool {
-	for _, reason := range decision.Reasons {
-		if reason == "missing_verification_report" {
-			return true
-		}
-	}
-	return false
-}
-
 func verificationCompletionMissingRuntimeApprovalGate(decision VerificationCompletionDecision) bool {
 	for _, reason := range decision.Reasons {
 		if reason == "missing_runtime_approval_gate" {
@@ -155,16 +146,6 @@ func verificationCompletionRuntimeApprovalGateRequired(snapshot *TurnSnapshot) b
 		return snapshot.TaskDepth.RequiresApproval || snapshot.TaskDepth.RequiresValidation || taskdepth.AtLeast(snapshot.TaskDepth.Level, taskdepth.LevelOperations)
 	}
 	return control.TargetBound && control.ExecAllowed && frozenTurnMutationRequired(snapshot, control)
-}
-
-func verificationCompletionHasMutationSignal(snapshot *TurnSnapshot) bool {
-	control, ok := frozenTurnControlFromSnapshot(snapshot)
-	return ok && frozenTurnMutationRequired(snapshot, control)
-}
-
-func verificationCompletionHasTargetBinding(snapshot *TurnSnapshot) bool {
-	control, ok := frozenTurnControlFromSnapshot(snapshot)
-	return ok && control.TargetBound
 }
 
 func verificationCompletionRuntimeApprovalGateObserved(snapshot *TurnSnapshot) bool {
