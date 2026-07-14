@@ -6,7 +6,9 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"
 
 scripts/test-aiops-harness-contract-boundaries.sh
+scripts/test-aiops-change-budget.sh
 scripts/check-aiops-harness-contract-boundaries.sh
+scripts/check-aiops-change-budget.sh
 go test ./internal/runtimekernel -run 'TestAssemblyBoundarySingleBuilder|TestRuntimeStepContextSingleProductionBuilder|TestTurnAssemblyShadowBuildsOnceBeforePromptAndProvider|TestStepToolRouterProviderAndDispatcherShareFingerprint|TestRunTurnProviderRequestAndDispatcherDecisionShareToolSurfaceFingerprint|TestBuildRuntimeStepContextCreatesProviderRequestSnapshot|TestRuntimeStepContextOwnsModelInputProviderRequestAndToolSurface|TestRunTurn_RefreshesToolsBetweenIterations' -count=1
 go test ./internal/promptinput -run 'TestBuildFirstStepUsesL0L6OrderAndCurrentUserLast' -count=1
 go test ./internal/promptcompiler -run 'TestPromptEnvelopeV2ValidatesLogicalLayerOrder|TestApplyPromptSectionCacheMarksHitMissAndInvalidated' -count=1

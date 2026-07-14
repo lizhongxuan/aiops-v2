@@ -233,6 +233,12 @@ check_absent \
   '(?i)(RunToolDirect|ExecuteToolDirect|DirectToolExecution|toolRegistry\.Execute|registry\.ExecuteTool|lookupTool\([^)]*\)\.Execute)' \
   internal/runtimekernel internal/appui
 
+check_absent_multiline \
+  "second turn loop outside RuntimeKernel" \
+  "runtimekernel turn lifecycle" \
+  '(?is)func\s+[A-Za-z0-9_]*(?:TurnLoop|AgentLoop|RunAgent|ExecuteTurn)[^{]*\{.{0,500}for\s+[^{}]*\{.{0,500}(?:Generate|Chat|CallModel|InvokeModel)\(' \
+  internal/appui internal/agentassembly internal/server
+
 check_absent \
   "approval decision fallback RunTurn" \
   "appui approval service" \

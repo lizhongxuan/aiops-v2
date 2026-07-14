@@ -12,10 +12,12 @@ create_fixture() {
 	local root="$1"
 	mkdir -p \
 		"${root}/cmd/agent-eval" \
+		"${root}/internal/agentassembly" \
 		"${root}/internal/appui" \
 		"${root}/internal/eval" \
 		"${root}/internal/promptinput" \
 		"${root}/internal/runtimekernel" \
+		"${root}/internal/server" \
 		"${root}/web/src/chat" \
 		"${root}/web/src/dist" \
 		"${root}/web/src/transport"
@@ -84,12 +86,33 @@ create_fixture() {
 		'}' \
 		>"${root}/internal/appui/final_display.go"
 	printf '%s\n' \
+		'package appui' \
+		'func switchDisplayOnly(finalText string) string {' \
+		'  switch finalText {' \
+		'  case "completed":' \
+		'    return renderMarkdown(finalText)' \
+		'  default:' \
+		'    return renderMarkdown(finalText)' \
+		'  }' \
+		'}' \
+		>"${root}/internal/appui/switch_display.go"
+	printf '%s\n' \
 		'export function displayOnly(markdown: string) {' \
 		'  const sanitized = markdown.trim().toLocaleLowerCase();' \
 		'  const displayValue = escapeForDisplay(sanitized);' \
 		'  return renderMarkdown(displayValue);' \
 		'}' \
 		>"${root}/web/src/chat/finalDisplay.ts"
+	printf '%s\n' \
+		'export function switchDisplayOnly(markdown: string) {' \
+		'  switch (markdown) {' \
+		'    case "completed":' \
+		'      return renderMarkdown(markdown);' \
+		'    default:' \
+		'      return renderMarkdown(markdown);' \
+		'  }' \
+		'}' \
+		>"${root}/web/src/chat/switchDisplay.ts"
 	printf '%s\n' \
 		'export function ignoredGeneratedControl(markdown: string) {' \
 		'  if (markdown.includes("completed")) return "completed";' \
@@ -148,11 +171,14 @@ expect_rejected() {
 legal_root="${FIXTURE_ROOT}/legal"
 markdown_root="${FIXTURE_ROOT}/markdown-verified"
 dispatcher_root="${FIXTURE_ROOT}/dispatcher-bypass"
+second_loop_root="${FIXTURE_ROOT}/second-turn-loop"
 approval_root="${FIXTURE_ROOT}/approval-rerun"
 multi_bad_root="${FIXTURE_ROOT}/multi-root-bypass"
 multi_missing_root="${FIXTURE_ROOT}/multi-root-missing-scan-surface"
 eval_state_root="${FIXTURE_ROOT}/eval-state-endpoint"
 runtime_final_root="${FIXTURE_ROOT}/runtime-final-control"
+switch_final_root="${FIXTURE_ROOT}/switch-final-control"
+ts_switch_final_root="${FIXTURE_ROOT}/ts-switch-final-control"
 appui_final_root="${FIXTURE_ROOT}/appui-final-control"
 web_final_root="${FIXTURE_ROOT}/web-final-control"
 assembly_marker_root="${FIXTURE_ROOT}/assembly-marker-missing"
@@ -178,10 +204,13 @@ ts_default_parameter_root="${FIXTURE_ROOT}/ts-default-parameter-final-control"
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
 create_fixture "${dispatcher_root}"
+create_fixture "${second_loop_root}"
 create_fixture "${approval_root}"
 create_fixture "${multi_bad_root}"
 create_fixture "${eval_state_root}"
 create_fixture "${runtime_final_root}"
+create_fixture "${switch_final_root}"
+create_fixture "${ts_switch_final_root}"
 create_fixture "${appui_final_root}"
 create_fixture "${web_final_root}"
 create_fixture "${assembly_marker_root}"
@@ -217,6 +246,14 @@ printf '%s\n' \
 	'}' >"${dispatcher_root}/internal/runtimekernel/direct_tool.go"
 
 printf '%s\n' \
+	'package appui' \
+	'func runFeatureTurnLoop() {' \
+	'  for iteration := 0; iteration < 8; iteration++ {' \
+	'    model.Generate()' \
+	'  }' \
+	'}' >"${second_loop_root}/internal/appui/feature_turn_loop.go"
+
+printf '%s\n' \
 	'package runtimekernel' \
 	'func bypassDispatcherAcrossRoots() {' \
 	'  toolRegistry.Execute()' \
@@ -240,6 +277,32 @@ printf '%s\n' \
 	'  if strings.Contains(finalText, "approved") { return "approval_granted" }' \
 	'  return "pending"' \
 	'}' >"${runtime_final_root}/internal/runtimekernel/final_control.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func switchFinalControl(finalText string) bool {' \
+	'  switch strings.ToLower(finalText) {' \
+	'  case "approved":' \
+	'    return true' \
+	'  case "denied":' \
+	'    return false' \
+	'  default:' \
+	'    return false' \
+	'  }' \
+	'}' >"${switch_final_root}/internal/runtimekernel/switch_final_control.go"
+
+printf '%s\n' \
+	'export function switchFinalControl(markdown: string) {' \
+	'  const candidate = markdown.trim();' \
+	'  switch (candidate) {' \
+	'    case "completed":' \
+	'      return { status: "completed" };' \
+	'    case "failed":' \
+	'      return { status: "failed" };' \
+	'    default:' \
+	'      return { status: "running" };' \
+	'  }' \
+	'}' >"${ts_switch_final_root}/web/src/transport/switchFinalControl.ts"
 
 printf '%s\n' \
 	'package appui' \
@@ -496,6 +559,11 @@ expect_rejected \
 	"direct tool execution bypassing ToolDispatcher" \
 	"runtimekernel dispatcher"
 expect_rejected \
+	"second turn loop outside RuntimeKernel" \
+	"${second_loop_root}" \
+	"second turn loop outside RuntimeKernel" \
+	"runtimekernel turn lifecycle"
+expect_rejected \
 	"scan error cannot mask direct tool bypass" \
 	"${multi_bad_root}:${multi_missing_root}" \
 	"direct tool execution bypassing ToolDispatcher" \
@@ -513,6 +581,16 @@ expect_rejected \
 expect_rejected \
 	"runtime control derived from final text" \
 	"${runtime_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"switch case return controls state from final text" \
+	"${switch_final_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TypeScript switch case return controls state from markdown" \
+	"${ts_switch_final_root}" \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts"
 expect_rejected \

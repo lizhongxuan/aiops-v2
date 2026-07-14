@@ -35,6 +35,13 @@ ASSIGNMENT_START_RE = re.compile(
     r"(?::=|=(?!=|>))\s*"
 )
 IF_RE = re.compile(r"\bif\b")
+SWITCH_RE = re.compile(r"\bswitch\b")
+CASE_RE = re.compile(r"\b(?:case|default)\b")
+RETURN_RE = re.compile(r"\breturn\b")
+SAFE_DISPLAY_RETURN_RE = re.compile(
+    r"^(?:(?:renderMarkdown|escapeForDisplay|sanitizeForDisplay|normalizeForDisplay)\s*\("
+    r"|(?:finalText|assistantText|markdown|FinalOutput|[A-Za-z_$][A-Za-z0-9_$]*FinalOutput)\b)"
+)
 FUNCTION_HEADER_RES = (
     re.compile(r"(?:^|[}\n])\s*func\b[^{}]*$", re.DOTALL),
     re.compile(r"(?:^|[;}\n])[^{}\n]*\bfunc\s*\([^{}]*$", re.DOTALL),
@@ -82,6 +89,14 @@ class Scope:
 class Condition:
     offset: int
     text: str
+
+
+@dataclass(frozen=True)
+class SwitchDecision:
+    offset: int
+    expression: str
+    case_label: str
+    branch: str
 
 
 @dataclass(frozen=True)
@@ -473,6 +488,88 @@ def extract_ternary_conditions(source: str, masked: str) -> Iterator[Condition]:
         line_start += len(line)
 
 
+def switch_branch_has_control_return(branch: str, template_interpolation: bool) -> bool:
+    """Return whether a case branch returns non-display control data.
+
+    A final-text switch that only forwards text into the approved display sinks
+    is harmless. Any other return selects structured data from prose and is a
+    control decision, including booleans, status strings, objects, and helper
+    results.
+    """
+    masked = mask_strings(branch, template_interpolation)
+    for match in RETURN_RE.finditer(masked):
+        expression_start = match.end()
+        expression_end = len(branch)
+        for delimiter in (";", "\n", "}"):
+            candidate = masked.find(delimiter, expression_start)
+            if candidate != -1:
+                expression_end = min(expression_end, candidate)
+        expression = branch[expression_start:expression_end].strip()
+        if not expression:
+            continue
+        if SAFE_DISPLAY_RETURN_RE.match(expression):
+            continue
+        return True
+    return False
+
+
+def extract_switch_decisions(
+    source: str, masked: str, template_interpolation: bool
+) -> Iterator[SwitchDecision]:
+    """Yield state-literal switch cases controlled by final display text.
+
+    Both ``switch (value)`` in TypeScript and Go's unparenthesized
+    ``switch value`` form are supported. Case positions are found in masked
+    source so strings/comments cannot forge structure, while labels and return
+    expressions are read from the original stripped source.
+    """
+    for switch in SWITCH_RE.finditer(masked):
+        cursor = switch.end()
+        while cursor < len(masked) and masked[cursor].isspace():
+            cursor += 1
+        if cursor >= len(masked):
+            continue
+
+        if masked[cursor] == "(":
+            expression_end = matching_delimiter(masked, cursor, "(", ")")
+            if expression_end is None:
+                continue
+            expression_start = cursor + 1
+            block_open = masked.find("{", expression_end + 1)
+        else:
+            block_open = masked.find("{", cursor, min(len(masked), cursor + 2000))
+            expression_start = cursor
+            expression_end = block_open
+        if block_open == -1 or expression_end is None or expression_end < expression_start:
+            continue
+        block_close = matching_delimiter(masked, block_open, "{", "}")
+        if block_close is None:
+            continue
+
+        expression = source[expression_start:expression_end].strip()
+        block_masked = masked[block_open + 1 : block_close]
+        case_matches = list(CASE_RE.finditer(block_masked))
+        for index, case_match in enumerate(case_matches):
+            if case_match.group(0) == "default":
+                continue
+            case_global = block_open + 1 + case_match.start()
+            label_start = block_open + 1 + case_match.end()
+            label_end = masked.find(":", label_start, block_close)
+            if label_end == -1:
+                continue
+            case_label = source[label_start:label_end]
+            if not has_state_literal(case_label):
+                continue
+            if index + 1 < len(case_matches):
+                branch_end = block_open + 1 + case_matches[index + 1].start()
+            else:
+                branch_end = block_close
+            branch = source[label_end + 1 : branch_end]
+            if not switch_branch_has_control_return(branch, template_interpolation):
+                continue
+            yield SwitchDecision(case_global, expression, case_label, branch)
+
+
 def condition_atoms(condition: Condition, template_interpolation: bool) -> Iterator[Condition]:
     """Split boolean clauses so typed status facts do not taint display guards.
 
@@ -634,6 +731,28 @@ def analyze_file(path: Path) -> list[Violation]:
             violations.append(
                 Violation(path, line, " <- ".join(path_to_source), compact_condition)
             )
+
+    for decision in extract_switch_decisions(source, masked, template_interpolation):
+        path_to_source = taint_path(
+            decision.expression,
+            decision.offset,
+            scopes,
+            len(source),
+            assignments_by_scope,
+            template_interpolation,
+        )
+        if not path_to_source:
+            continue
+        line = source.count("\n", 0, decision.offset) + 1
+        compact_case = " ".join(decision.case_label.split())[:160]
+        violations.append(
+            Violation(
+                path,
+                line,
+                " <- ".join(path_to_source),
+                f"switch {decision.expression} case {compact_case}",
+            )
+        )
     return violations
 
 
