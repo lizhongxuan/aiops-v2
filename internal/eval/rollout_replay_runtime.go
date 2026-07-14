@@ -113,6 +113,7 @@ type runtimeToolOutcome struct {
 	Name, Description, Content, Error, Risk, PermissionScope string
 	InputSchema                                              json.RawMessage                                                              `json:"inputSchema,omitempty"`
 	Mutating                                                 bool                                                                         `json:"mutating,omitempty"`
+	RollbackDeclaration                                      *tooling.ToolRollbackMetadata                                                `json:"rollbackDeclaration,omitempty"`
 	PostChecks                                               []string                                                                     `json:"postChecks,omitempty"`
 	Approval                                                 *struct{ Reason, Risk, Source, ExpectedEffect, Rollback, Validation string } `json:"approval,omitempty"`
 }
@@ -306,6 +307,7 @@ func runtimeReplayTool(outcome runtimeToolOutcome) *tooling.StaticTool {
 	}
 	if outcome.Mutating {
 		definition.Meta.Layer = tooling.ToolLayerMutation
+		definition.Meta.Rollback = outcome.RollbackDeclaration
 		definition.Meta.ResourceLocks = []tooling.ToolResourceLockKey{{ResourceType: "replay_resource", ResourceID: runtimeReplaySlug(outcome.Name), OperationKind: "mutation"}}
 		definition.Meta.Idempotency = tooling.ToolIdempotencyMetadata{Strategy: tooling.ToolIdempotencyStrategyArgumentsHash, PostCheckRefs: append([]string(nil), outcome.PostChecks...)}
 	}

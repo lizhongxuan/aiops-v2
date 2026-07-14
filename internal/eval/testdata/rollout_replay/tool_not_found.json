@@ -11,21 +11,21 @@
     "events": [
       {"sequence": 1, "kind": "admission", "hash": "sha256:c61cece7dda29db00dc58d5701b48150f1c00080e42cd8f293e02172e4af3f04"},
       {"sequence": 2, "kind": "assembly", "hash": "sha256:4e22fb6fec01a5b27859407d5ac5d1d3ba9cbebba4367de739a1ac130b61a918"},
-      {"sequence": 3, "kind": "prompt", "hash": "sha256:0f1ec57b445b37eb30102842cc7be5072f523235a69896fb3ce8e129dcae138c"},
-      {"sequence": 4, "kind": "provider_request", "hash": "sha256:2353c24ba3b6e295295721e03f766c3a9f2c008d5c5f3ca6f71b0578eadabcf0"},
-      {"sequence": 5, "kind": "provider_response", "hash": "sha256:b8743be2e25b99eb25fef95c5ad93297d6ce1b5832cc6150176b491a4bcca539"},
-      {"sequence": 6, "kind": "tool_proposed", "hash": "sha256:6796ac65e1cee35db6246adfc8c2cc2c498d55b99028d66b7e2627e7e2533e01"},
-      {"sequence": 7, "kind": "tool_dispatched", "hash": "sha256:e6255bfc1e14ebec715459550846b4aa8c2429405fbbcfe26417101f306499dd"},
-      {"sequence": 8, "kind": "tool_result", "hash": "sha256:11972a3f69a84de18df9445c05e6e2bb214caba3deb1b5fbffde465b128a7652"},
-      {"sequence": 9, "kind": "checkpoint", "hash": "sha256:b604f4a4a55a3a26943d498ad6505836c7d0db8a958f5663c0c136bc90f1935f"},
-      {"sequence": 10, "kind": "transport_projection", "hash": "sha256:89a7a8f74b77be08850a2a2a4463c3d490508cf6092b2ac5eb2406c09a656bf7"},
-      {"sequence": 11, "kind": "prompt", "hash": "sha256:1a365ae608183057ab7fff6d06e3135aa0a61a719e0f00a416b2c01f99e84073"},
-      {"sequence": 12, "kind": "provider_request", "hash": "sha256:bf97d5d1eb7f6f0902ea2b2ee16e4ada45e842a216340161b571ac25addcfed1"},
-      {"sequence": 13, "kind": "provider_response", "hash": "sha256:8cd9f3caf6bd2f3c75e9c9f8272af8d45945c1d3ac69faa909435bbf429b4ce3"},
-      {"sequence": 14, "kind": "final_facts", "hash": "sha256:d9b2c9adf9997fc2738344e69652387d6e497f1cf6d67f67c61276af9b265f26"},
-      {"sequence": 15, "kind": "transport_projection", "hash": "sha256:b3f16813c0b839b43af04b7be8a88b6417392a19dd4f9c2d24fff3ba114458ee"}
+      {"sequence": 3, "kind": "prompt", "hash": "sha256:eab7de2f1924ca389265966dcb515c0fda9d8c7e95fe478b84f62f56d6a85f22"},
+      {"sequence": 4, "kind": "provider_request", "hash": "sha256:f8e3a8564b8f111b24fafe6aa4d787a871c5cc1072224202260c1a8b09d25513"},
+      {"sequence": 5, "kind": "provider_response", "hash": "sha256:acb1c82ad939c0af51ca2b6b8a0593bf909ce9b4a15775fb230cd784f6cc4988"},
+      {"sequence": 6, "kind": "tool_proposed", "hash": "sha256:e68e96d457704fc7e64814ad94ff5b33b2152a35bfba99555b8dca06e5bb5b29"},
+      {"sequence": 7, "kind": "tool_dispatched", "hash": "sha256:d7033c20cab0ef125a911bdede67c864f46e270415ff05edba98a0b497a65acf"},
+      {"sequence": 8, "kind": "tool_result", "hash": "sha256:63fd8d4a1fefa5585870ef9a5d204dc109ef7d55f370cec0fecc42bf9a72ea3e"},
+      {"sequence": 9, "kind": "checkpoint", "hash": "sha256:f9a3ddc09c190b931df9753f35382c056973ab36535ce4bc9865ac82a0e69377"},
+      {"sequence": 10, "kind": "transport_projection", "hash": "sha256:09bd2e69085be6e1bcb2334e5917d74cb357c7bbca8172282289e9e9bbfcfd72"},
+      {"sequence": 11, "kind": "prompt", "hash": "sha256:68bde56dca5fc9873d7a25c6f5548ed456654641a02a411f7313f2cd080ec1e7"},
+      {"sequence": 12, "kind": "provider_request", "hash": "sha256:ef5f849a9268776de18322c6d5851d9c286e4ed8eac90a01fbc4b998c426dae1"},
+      {"sequence": 13, "kind": "provider_response", "hash": "sha256:3ac6d9111a2680f1c68ac325bfb6759b15e68aab9547aad42e6256a36aa168b6"},
+      {"sequence": 14, "kind": "final_facts", "hash": "sha256:797057dd8d104537df7611b66b666ccdb63fc9bd7afe95af27b3098bc86ece85"},
+      {"sequence": 15, "kind": "transport_projection", "hash": "sha256:a3565274e97cf0dabbca88ee60d1dc26d1fb1a050ecf96dad8b8019e7ab36e5a"}
     ],
-    "rolloutHash": "sha256:683d26218cf720b16ff6515788b71a878d05da1f1a79c1bcbfb215d71df14b6a",
-    "transportHash": "sha256:1ddc26cb779b5948d3e776adddeebd5a47c74309e3305517680f41cf49c6a8a9"
+    "rolloutHash": "sha256:5a5531c4ea96295e4d406e6aaecd47ea78d39b4b7d2ff4b8177dfdf3c6242748",
+    "transportHash": "sha256:e7c5f570d235a2f3c11e3248c9a7a5247070d27001f8baeee26805e8cb0a540b"
   }
 }
