@@ -170,6 +170,9 @@ nested_go_alias_root="${FIXTURE_ROOT}/nested-go-final-control"
 locale_ts_alias_root="${FIXTURE_ROOT}/locale-ts-final-control"
 two_hop_go_alias_root="${FIXTURE_ROOT}/two-hop-go-final-control"
 two_hop_ts_alias_root="${FIXTURE_ROOT}/two-hop-ts-final-control"
+template_three_hop_root="${FIXTURE_ROOT}/template-three-hop-final-control"
+go_closure_capture_root="${FIXTURE_ROOT}/go-closure-capture-final-control"
+ts_closure_capture_root="${FIXTURE_ROOT}/ts-closure-capture-final-control"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
@@ -195,6 +198,9 @@ create_fixture "${nested_go_alias_root}"
 create_fixture "${locale_ts_alias_root}"
 create_fixture "${two_hop_go_alias_root}"
 create_fixture "${two_hop_ts_alias_root}"
+create_fixture "${template_three_hop_root}"
+create_fixture "${go_closure_capture_root}"
+create_fixture "${ts_closure_capture_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -374,6 +380,74 @@ printf '%s\n' \
 	'  return { status: "running" };' \
 	'}' >"${two_hop_ts_alias_root}/web/src/transport/twoHopControl.ts"
 
+printf '%s\n' \
+	'export function templateThreeHopControl(markdown: string) {' \
+	'  const first = `${markdown}`;' \
+	'  const second = normalizeForControl(first);' \
+	'  const third = second;' \
+	'  if (third.includes("failed")) return { status: "failed" };' \
+	'  return { status: "running" };' \
+	'}' >"${template_three_hop_root}/web/src/chat/templateControl.ts"
+
+printf '%s\n' \
+	'package appui' \
+	'func closureCaptureControl(finalText string) string {' \
+	'  candidate := normalizeForControl(finalText)' \
+	'  result := "running"' \
+	'  func() {' \
+	'    captured := candidate' \
+	'    if strings.Contains(captured, "blocked") { result = "blocked" }' \
+	'  }()' \
+	'  return result' \
+	'}' >"${go_closure_capture_root}/internal/appui/closure_control.go"
+
+printf '%s\n' \
+	'export function closureCaptureControl(markdown: string) {' \
+	'  const candidate = normalizeForControl(markdown);' \
+	'  return () => {' \
+	'    const captured = candidate;' \
+	'    if (captured.includes("completed")) return { status: "completed" };' \
+	'    return { status: "running" };' \
+	'  };' \
+	'}' >"${ts_closure_capture_root}/web/src/transport/closureControl.ts"
+
+printf '%s\n' \
+	'package appui' \
+	'func closureDisplayOnly(finalText string) string {' \
+	'  candidate := normalizeForDisplay(finalText)' \
+	'  rendered := ""' \
+	'  func() {' \
+	'    captured := candidate' \
+	'    rendered = renderMarkdown(captured)' \
+	'  }()' \
+	'  return rendered' \
+	'}' \
+	'func closureSiblingShadow(finalText string) bool {' \
+	'  candidate := normalizeForDisplay(finalText)' \
+	'  _ = func() string { return renderMarkdown(candidate) }' \
+	'  return func() bool {' \
+	'    candidate := "typed safe value"' \
+	'    return strings.Contains(candidate, "failed")' \
+	'  }()' \
+	'}' >"${legal_root}/internal/appui/closure_display.go"
+
+printf '%s\n' \
+	'export function closureDisplayOnly(markdown: string) {' \
+	'  const candidate = normalizeForDisplay(markdown);' \
+	'  const displayClosure = () => {' \
+	'    const captured = candidate;' \
+	'    return renderMarkdown(captured);' \
+	'  };' \
+	'  const typedSibling = () => {' \
+	'    const candidate = "typed safe value";' \
+	'    if (candidate.includes("failed")) return false;' \
+	'    return true;' \
+	'  };' \
+	'  const ordinaryTemplate = `markdown`;' \
+	'  if (ordinaryTemplate.includes("failed")) return null;' \
+	'  return typedSibling() ? displayClosure() : null;' \
+	'}' >"${legal_root}/web/src/chat/closureDisplay.ts"
+
 expect_allowed "typed runtime state with comment and display-only final text" "${legal_root}"
 expect_rejected \
 	"final markdown inferred verified state" \
@@ -488,6 +562,21 @@ expect_rejected \
 expect_rejected \
 	"two-hop TypeScript alias controls state" \
 	"${two_hop_ts_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"template interpolation three-hop alias controls state" \
+	"${template_three_hop_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"Go anonymous closure captures tainted final text" \
+	"${go_closure_capture_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TypeScript arrow closure captures tainted markdown" \
+	"${ts_closure_capture_root}" \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts"
 

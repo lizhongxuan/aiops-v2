@@ -37,12 +37,14 @@ ASSIGNMENT_START_RE = re.compile(
 IF_RE = re.compile(r"\bif\b")
 FUNCTION_HEADER_RES = (
     re.compile(r"(?:^|[}\n])\s*func\b[^{}]*$", re.DOTALL),
+    re.compile(r"(?:^|[;}\n])[^{}\n]*\bfunc\s*\([^{}]*$", re.DOTALL),
     re.compile(r"(?:^|[;}\n])\s*(?:export\s+)?(?:default\s+)?(?:async\s+)?function\b[^{}]*$", re.DOTALL),
     re.compile(
         r"(?:^|[;}\n])\s*(?:export\s+)?(?:const|let|var)\s+"
         r"[A-Za-z_$][A-Za-z0-9_$]*\b[^{}]*=>\s*$",
         re.DOTALL,
     ),
+    re.compile(r"(?:^|[;}\n])[^{}\n]*=>\s*$", re.DOTALL),
     re.compile(
         r"(?:^|[;}\n])\s*(?:(?:public|private|protected|static|async|readonly)\s+)*"
         r"(?!(?:if|for|while|switch|catch|with)\b)"
@@ -90,26 +92,48 @@ class Violation:
     condition: str
 
 
-def strip_comments(source: str) -> str:
+def strip_comments(source: str, template_interpolation: bool) -> str:
     """Replace // and /* */ comments with spaces while preserving line offsets."""
     out = list(source)
     index = 0
-    quote = ""
-    escaped = False
+    stack: list[tuple[str, str | int]] = [("code", 0)]
     while index < len(source):
         char = source[index]
         next_char = source[index + 1] if index + 1 < len(source) else ""
-        if quote:
-            if escaped:
-                escaped = False
-            elif char == "\\" and quote != "`":
-                escaped = True
-            elif char == quote:
-                quote = ""
+        mode, value = stack[-1]
+        if mode == "string":
+            quote = str(value)
+            if char == "\\" and quote != "`":
+                index += 2
+                continue
+            if char == quote:
+                stack.pop()
             index += 1
             continue
-        if char in {'"', "'", "`"}:
-            quote = char
+        if mode == "template":
+            if char == "\\":
+                index += 2
+                continue
+            if char == "`":
+                stack.pop()
+                index += 1
+                continue
+            if template_interpolation and char == "$" and next_char == "{":
+                stack.append(("interpolation", 1))
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if char in {'"', "'"}:
+            stack.append(("string", char))
+            index += 1
+            continue
+        if char == "`":
+            if template_interpolation:
+                stack.append(("template", "`"))
+            else:
+                stack.append(("string", "`"))
             index += 1
             continue
         if char == "/" and next_char == "/":
@@ -131,32 +155,84 @@ def strip_comments(source: str) -> str:
                     out[index] = " "
                 index += 1
             continue
+        if mode == "interpolation":
+            depth = int(value)
+            if char == "{":
+                stack[-1] = (mode, depth + 1)
+            elif char == "}":
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (mode, depth - 1)
         index += 1
     return "".join(out)
 
 
-def mask_strings(source: str) -> str:
-    """Replace string contents with spaces while retaining shape and newlines."""
+def mask_strings(source: str, template_interpolation: bool) -> str:
+    """Mask literals but preserve JavaScript template interpolation expressions."""
     out = list(source)
     index = 0
-    quote = ""
-    escaped = False
+    stack: list[tuple[str, str | int]] = [("code", 0)]
     while index < len(source):
         char = source[index]
-        if quote:
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        mode, value = stack[-1]
+        if mode == "string":
+            quote = str(value)
             if char != "\n":
                 out[index] = " "
-            if escaped:
-                escaped = False
-            elif char == "\\" and quote != "`":
-                escaped = True
-            elif char == quote:
-                quote = ""
+            if char == "\\" and quote != "`":
+                if index + 1 < len(source) and source[index + 1] != "\n":
+                    out[index + 1] = " "
+                index += 2
+                continue
+            if char == quote:
+                stack.pop()
             index += 1
             continue
-        if char in {'"', "'", "`"}:
-            quote = char
+        if mode == "template":
+            if char != "\n":
+                out[index] = " "
+            if char == "\\":
+                if index + 1 < len(source) and source[index + 1] != "\n":
+                    out[index + 1] = " "
+                index += 2
+                continue
+            if char == "`":
+                stack.pop()
+                index += 1
+                continue
+            if char == "$" and next_char == "{":
+                out[index] = out[index + 1] = " "
+                stack.append(("interpolation", 1))
+                index += 2
+                continue
+            index += 1
+            continue
+
+        if char in {'"', "'"}:
+            stack.append(("string", char))
             out[index] = " "
+            index += 1
+            continue
+        if char == "`":
+            if template_interpolation:
+                stack.append(("template", "`"))
+            else:
+                stack.append(("string", "`"))
+            out[index] = " "
+            index += 1
+            continue
+        if mode == "interpolation":
+            depth = int(value)
+            if char == "{":
+                stack[-1] = (mode, depth + 1)
+            elif char == "}":
+                out[index] = " "
+                if depth == 1:
+                    stack.pop()
+                else:
+                    stack[-1] = (mode, depth - 1)
         index += 1
     return "".join(out)
 
@@ -229,6 +305,15 @@ def scope_for_offset(scopes: list[Scope], offset: int, source_len: int) -> Scope
     return min(containing, key=lambda scope: scope.end - scope.start)
 
 
+def scope_chain_for_offset(scopes: list[Scope], offset: int, source_len: int) -> list[Scope]:
+    containing = [scope for scope in scopes if scope.start <= offset <= scope.end]
+    containing.sort(key=lambda scope: scope.end - scope.start)
+    file_scope = Scope(0, source_len)
+    if file_scope not in containing:
+        containing.append(file_scope)
+    return containing
+
+
 def extract_if_conditions(source: str, masked: str) -> Iterator[Condition]:
     for match in IF_RE.finditer(masked):
         cursor = match.end()
@@ -260,7 +345,7 @@ def extract_ternary_conditions(source: str, masked: str) -> Iterator[Condition]:
         line_start += len(line)
 
 
-def condition_atoms(condition: Condition) -> Iterator[Condition]:
+def condition_atoms(condition: Condition, template_interpolation: bool) -> Iterator[Condition]:
     """Split boolean clauses so typed status facts do not taint display guards.
 
     A condition such as ``typedStatus == "failed" || hasFinalText`` is legal:
@@ -268,7 +353,7 @@ def condition_atoms(condition: Condition) -> Iterator[Condition]:
     guard. The forbidden form has the tainted value and state literal in the
     same boolean atom, for example ``candidate.includes("failed")``.
     """
-    masked = mask_strings(condition.text)
+    masked = mask_strings(condition.text, template_interpolation)
     cursor = 0
     for operator in re.finditer(r"&&|\|\|", masked):
         yield Condition(condition.offset + cursor, condition.text[cursor : operator.start()])
@@ -276,55 +361,77 @@ def condition_atoms(condition: Condition) -> Iterator[Condition]:
     yield Condition(condition.offset + cursor, condition.text[cursor:])
 
 
-def delimiter_balance(expression: str) -> int:
-    masked = mask_strings(expression)
-    return sum(masked.count(opening) - masked.count(closing) for opening, closing in (("(", ")"), ("[", "]"), ("{", "}")))
-
-
-def assignment_records(source: str, scope: Scope) -> Iterator[tuple[str, Assignment]]:
-    """Yield simple assignments, extending RHS over balanced continuation lines."""
+def assignment_records(
+    source: str, masked: str, scope: Scope
+) -> Iterator[tuple[str, Assignment]]:
+    """Yield assignments with a single bounded scan over multiline call RHS."""
     for match in ASSIGNMENT_START_RE.finditer(source, scope.start, scope.end):
         rhs_start = match.end()
-        line_end = source.find("\n", rhs_start, scope.end)
-        if line_end == -1:
-            line_end = scope.end
-        semicolon = source.find(";", rhs_start, line_end)
-        rhs_end = semicolon if semicolon != -1 else line_end
-        rhs = source[rhs_start:rhs_end]
-        while delimiter_balance(rhs) > 0 and rhs_end < scope.end:
-            next_end = source.find("\n", rhs_end + 1, scope.end)
-            if next_end == -1:
-                next_end = scope.end
-            rhs_end = next_end
-            rhs = source[rhs_start:rhs_end]
-        yield match.group("lhs"), Assignment(match.start(), rhs.strip())
+        rhs_end = rhs_start
+        paren_depth = 0
+        bracket_depth = 0
+        while rhs_end < scope.end:
+            char = masked[rhs_end]
+            if char == "(":
+                paren_depth += 1
+            elif char == ")":
+                paren_depth -= 1
+            elif char == "[":
+                bracket_depth += 1
+            elif char == "]":
+                bracket_depth -= 1
+            elif char == ";" and paren_depth <= 0 and bracket_depth <= 0:
+                break
+            elif char == "\n" and paren_depth <= 0 and bracket_depth <= 0:
+                break
+            rhs_end += 1
+        yield match.group("lhs"), Assignment(
+            match.start(), source[rhs_start:rhs_end].strip()
+        )
 
 
-def assignments_for_scope(source: str, scope: Scope) -> dict[str, list[Assignment]]:
-    assignments: dict[str, list[Assignment]] = {}
-    for lhs, assignment in assignment_records(source, scope):
-        assignments.setdefault(lhs, []).append(assignment)
-    return assignments
+def assignment_index(
+    source: str,
+    masked: str,
+    scopes: list[Scope],
+    source_len: int,
+) -> dict[Scope, dict[str, list[Assignment]]]:
+    """Index every assignment once under its innermost lexical function scope."""
+    indexed: dict[Scope, dict[str, list[Assignment]]] = {}
+    file_scope = Scope(0, source_len)
+    for lhs, assignment in assignment_records(source, masked, file_scope):
+        owner = scope_for_offset(scopes, assignment.offset, source_len)
+        indexed.setdefault(owner, {}).setdefault(lhs, []).append(assignment)
+    return indexed
 
 
 def nearest_assignment(
-    assignments: dict[str, list[Assignment]], name: str, before: int
+    scopes: list[Scope],
+    source_len: int,
+    assignments_by_scope: dict[Scope, dict[str, list[Assignment]]],
+    name: str,
+    before: int,
 ) -> Assignment | None:
-    candidates = assignments.get(name, ())
-    for assignment in reversed(candidates):
-        if assignment.offset < before:
-            return assignment
+    for scope in scope_chain_for_offset(scopes, before, source_len):
+        assignments = assignments_by_scope.get(scope, {})
+        candidates = assignments.get(name, ())
+        for assignment in reversed(candidates):
+            if assignment.offset < before:
+                return assignment
     return None
 
 
 def taint_path(
     expression: str,
     before: int,
-    assignments: dict[str, list[Assignment]],
+    scopes: list[Scope],
+    source_len: int,
+    assignments_by_scope: dict[Scope, dict[str, list[Assignment]]],
+    template_interpolation: bool,
     seen: frozenset[tuple[str, int]] = frozenset(),
     depth: int = 0,
 ) -> list[str] | None:
-    masked_expression = mask_strings(expression)
+    masked_expression = mask_strings(expression, template_interpolation)
     direct = SOURCE_RE.search(masked_expression)
     if direct:
         return [direct.group(0)]
@@ -332,7 +439,13 @@ def taint_path(
         return None
 
     for name in dict.fromkeys(IDENT_RE.findall(masked_expression)):
-        assignment = nearest_assignment(assignments, name, before)
+        assignment = nearest_assignment(
+            scopes,
+            source_len,
+            assignments_by_scope,
+            name,
+            before,
+        )
         if assignment is None:
             continue
         key = (name, assignment.offset)
@@ -341,7 +454,10 @@ def taint_path(
         nested = taint_path(
             assignment.rhs,
             assignment.offset,
-            assignments,
+            scopes,
+            source_len,
+            assignments_by_scope,
+            template_interpolation,
             seen | {key},
             depth + 1,
         )
@@ -352,23 +468,29 @@ def taint_path(
 
 def analyze_file(path: Path) -> list[Violation]:
     raw = path.read_text(encoding="utf-8", errors="replace")
-    source = strip_comments(raw)
-    masked = mask_strings(source)
+    template_interpolation = path.suffix.lower() != ".go"
+    source = strip_comments(raw, template_interpolation)
+    masked = mask_strings(source, template_interpolation)
     scopes = function_scopes(masked)
-    assignment_cache: dict[Scope, dict[str, list[Assignment]]] = {}
+    assignments_by_scope = assignment_index(
+        source, masked, scopes, len(source)
+    )
     violations: list[Violation] = []
 
     conditions = list(extract_if_conditions(source, masked))
     conditions.extend(extract_ternary_conditions(source, masked))
     for condition in conditions:
-        for atom in condition_atoms(condition):
+        for atom in condition_atoms(condition, template_interpolation):
             if not has_state_literal(atom.text):
                 continue
-            scope = scope_for_offset(scopes, atom.offset, len(source))
-            assignments = assignment_cache.setdefault(
-                scope, assignments_for_scope(source, scope)
+            path_to_source = taint_path(
+                atom.text,
+                atom.offset,
+                scopes,
+                len(source),
+                assignments_by_scope,
+                template_interpolation,
             )
-            path_to_source = taint_path(atom.text, atom.offset, assignments)
             if not path_to_source:
                 continue
             line = source.count("\n", 0, atom.offset) + 1
