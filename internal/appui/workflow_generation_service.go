@@ -16,19 +16,19 @@ import (
 )
 
 type WorkflowGenerationChatService struct {
-	sessionStore    SessionStore
 	store           workflowgen.SessionStore
 	builder         workflowgen.PlanBuilder
 	generator       workflowgen.GraphGenerator
 	agentEvents     AgentEventService
 	runtimeSettings RuntimeSettingsProvider
+	runtime         systemTurnRuntimeGateway
 
 	mu                   sync.Mutex
 	activeByConversation map[string]string
 }
 
 func NewWorkflowGenerationChatService(
-	sessionStore SessionStore,
+	_ SessionStore,
 	store workflowgen.SessionStore,
 	builder workflowgen.PlanBuilder,
 	generator workflowgen.GraphGenerator,
@@ -49,7 +49,6 @@ func NewWorkflowGenerationChatService(
 		provider = runtimeSettings[0]
 	}
 	return &WorkflowGenerationChatService{
-		sessionStore:         sessionStore,
 		store:                store,
 		builder:              builder,
 		generator:            generator,
@@ -59,13 +58,21 @@ func NewWorkflowGenerationChatService(
 	}
 }
 
+func (s *WorkflowGenerationChatService) WithSystemTurnGateway(runtime RuntimeGateway) *WorkflowGenerationChatService {
+	if s == nil {
+		return nil
+	}
+	s.runtime, _ = runtime.(systemTurnRuntimeGateway)
+	return s
+}
+
 func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatCommand, req runtimekernel.TurnRequest) (TurnResponse, bool, error) {
-	if s == nil || s.sessionStore == nil || s.store == nil || s.builder == nil {
+	if s == nil || s.runtime == nil || s.store == nil || s.builder == nil {
 		return TurnResponse{}, false, nil
 	}
 	content := strings.TrimSpace(req.Input)
 	if s.isGenerateWorkflowConfirmation(req.SessionID, cmd, content) {
-		response, handled, err := s.handleGenerateConfirmation(ctx, req, content)
+		response, handled, err := s.handleGenerateConfirmation(ctx, req)
 		return response, handled, err
 	}
 	requirement, isNew := parseAddWorkflowMention(content)
@@ -130,39 +137,30 @@ func (s *WorkflowGenerationChatService) Handle(ctx context.Context, cmd ChatComm
 
 	final := workflowPlanFinalText(session, plan)
 	now := time.Now().UTC()
-	completedAt := now
-	turn := runtimekernel.TurnSnapshot{
-		ID:              req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       req.SessionID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
-		ResumeState:     runtimekernel.TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
-		CompletedAt:     &completedAt,
-		FinalOutput:     final,
-		AgentItems: []agentstate.TurnItem{
-			workflowGenerationUserItem(req, content, now),
-			workflowGenerationModelCallItem(req, plan, now),
-			workflowGenerationPlanItem(req, plan, now),
-			workflowGenerationEvidenceItem(req, plan, now),
-			workflowGenerationArtifactItem(req, session, plan, now, false, nil),
-			workflowGenerationFinalItem(req, final, now),
-		},
+	failureCodes := []string{"workflow_draft_requires_confirmation"}
+	if len(plan.RequiredSlots) > 0 {
+		failureCodes = append(failureCodes, "workflow_required_slots_missing")
 	}
-	s.writeTurn(req, content, final, turn)
+	result, err := s.runtime.CommitSystemTurn(ctx, runtimekernel.SystemTurnRequest{
+		Turn: req,
+		Output: runtimekernel.SystemTurnOutput{
+			Kind:           runtimekernel.SystemTurnKindDeterministicPlan,
+			FinalText:      final,
+			ContractStatus: runtimekernel.FinalContractStatusNeedsEvidence,
+			FailureCodes:   failureCodes,
+			AgentItems: []agentstate.TurnItem{
+				workflowGenerationRouteItem(req, plan, "plan", now),
+				workflowGenerationPlanItem(req, plan, now),
+				workflowGenerationEvidenceItem(req, plan, now),
+				workflowGenerationArtifactItem(req, session, plan, now, false, nil),
+			},
+		},
+	})
+	if err != nil {
+		return TurnResponse{}, true, err
+	}
 	s.appendAgentEvents(req, final)
-	return TurnResponse{
-		SessionID:       req.SessionID,
-		TurnID:          req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		Status:          "completed",
-		Output:          final,
-	}, true, nil
+	return mapTurnResponse(result), true, nil
 }
 
 func (s *WorkflowGenerationChatService) buildInitialWorkflowPlan(ctx context.Context, requirement string) (*workflowgen.WorkflowGenerationPlan, error) {
@@ -176,7 +174,7 @@ func (s *WorkflowGenerationChatService) buildInitialWorkflowPlan(ctx context.Con
 	return s.builder.BuildPlan(ctx, workflowgen.BuildPlanRequest{Requirement: requirement})
 }
 
-func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.Context, req runtimekernel.TurnRequest, content string) (TurnResponse, bool, error) {
+func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.Context, req runtimekernel.TurnRequest) (TurnResponse, bool, error) {
 	activeID := s.activeSession(req.SessionID)
 	if activeID == "" {
 		return TurnResponse{}, false, nil
@@ -207,29 +205,24 @@ func (s *WorkflowGenerationChatService) handleGenerateConfirmation(ctx context.C
 
 	final := workflowGenerationGeneratedFinalText(result)
 	now := time.Now().UTC()
-	completedAt := now
-	turn := runtimekernel.TurnSnapshot{
-		ID:              req.TurnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       req.SessionID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Lifecycle:       runtimekernel.TurnLifecycleCompleted,
-		ResumeState:     runtimekernel.TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
-		CompletedAt:     &completedAt,
-		FinalOutput:     final,
-		AgentItems: []agentstate.TurnItem{
-			workflowGenerationUserItem(req, content, now),
-			workflowGenerationArtifactItem(req, session, session.Plan, now, true, result),
-			workflowGenerationFinalItem(req, final, now),
+	committed, err := s.runtime.CommitSystemTurn(ctx, runtimekernel.SystemTurnRequest{
+		Turn: req,
+		Output: runtimekernel.SystemTurnOutput{
+			Kind:           runtimekernel.SystemTurnKindDeterministicArtifact,
+			FinalText:      final,
+			ContractStatus: runtimekernel.FinalContractStatusPartial,
+			FailureCodes:   []string{"workflow_generated_draft"},
+			AgentItems: []agentstate.TurnItem{
+				workflowGenerationRouteItem(req, session.Plan, "draft_generation", now),
+				workflowGenerationArtifactItem(req, session, session.Plan, now, true, result),
+			},
 		},
+	})
+	if err != nil {
+		return TurnResponse{}, true, err
 	}
-	s.writeTurn(req, content, final, turn)
 	s.appendAgentEvents(req, final)
-	return TurnResponse{SessionID: req.SessionID, TurnID: req.TurnID, ClientTurnID: req.ClientTurnID, ClientMessageID: req.ClientMessageID, Status: "completed", Output: final}, true, nil
+	return mapTurnResponse(committed), true, nil
 }
 
 func (s *WorkflowGenerationChatService) runtimeSettingsSnapshot(ctx context.Context) store.RuntimeSettings {
@@ -286,38 +279,6 @@ func workflowGenerationGeneratedFinalText(result *workflowgen.GenerateDraftResul
 		status,
 		summary,
 	)
-}
-
-func (s *WorkflowGenerationChatService) writeTurn(req runtimekernel.TurnRequest, userText, assistantText string, turn runtimekernel.TurnSnapshot) {
-	session := s.sessionStore.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
-	if session.HostID == "" {
-		session.HostID = req.HostID
-	}
-	now := time.Now().UTC()
-	if session.CurrentTurn != nil {
-		session.TurnHistory = append(session.TurnHistory, *session.CurrentTurn)
-	}
-	session.Messages = append(session.Messages,
-		runtimekernel.Message{
-			ID:              firstNonEmptyString(req.ClientMessageID, req.TurnID+":user"),
-			ClientMessageID: req.ClientMessageID,
-			ClientTurnID:    req.ClientTurnID,
-			Role:            "user",
-			Content:         userText,
-			Timestamp:       now,
-		},
-		runtimekernel.Message{
-			ID:           req.TurnID + ":assistant",
-			ClientTurnID: req.ClientTurnID,
-			Role:         "assistant",
-			Content:      assistantText,
-			Timestamp:    now,
-		},
-	)
-	session.CurrentTurn = &turn
-	session.PendingApprovals = nil
-	session.PendingEvidence = nil
-	s.sessionStore.Update(session)
 }
 
 func (s *WorkflowGenerationChatService) appendAgentEvents(req runtimekernel.TurnRequest, summary string) {
@@ -428,29 +389,22 @@ func statusForPlan(plan *workflowgen.WorkflowGenerationPlan) workflowgen.Session
 	return workflowgen.SessionStatusPlanReady
 }
 
-func workflowGenerationUserItem(req runtimekernel.TurnRequest, content string, now time.Time) agentstate.TurnItem {
-	payload := map[string]string{"prompt": content}
-	return agentstate.TurnItem{
-		ID:     req.TurnID + "-user",
-		Type:   agentstate.TurnItemTypeUserMessage,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Summary: content,
-			Data:    mustJSON(payload),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
+func workflowGenerationRouteItem(req runtimekernel.TurnRequest, plan *workflowgen.WorkflowGenerationPlan, stage string, now time.Time) agentstate.TurnItem {
+	route := "workflow_generation.plan_builder"
+	if stage == "draft_generation" {
+		route = "workflow_generation.graph_generator"
 	}
-}
-
-func workflowGenerationModelCallItem(req runtimekernel.TurnRequest, plan *workflowgen.WorkflowGenerationPlan, now time.Time) agentstate.TurnItem {
 	return agentstate.TurnItem{
-		ID:     req.TurnID + "-model-call",
-		Type:   agentstate.TurnItemTypeModelCall,
+		ID:     req.TurnID + "-route-" + stage,
+		Type:   agentstate.TurnItemTypeRouteSelected,
 		Status: agentstate.ItemStatusCompleted,
 		Payload: agentstate.PayloadEnvelope{
+			Kind:    "workflow_generation_route",
 			Summary: "生成资源型 workflow 计划并检查通用 contract 信号",
 			Data: mustJSON(map[string]any{
+				"route":              route,
+				"stage":              stage,
+				"execution":          "deterministic",
 				"capabilityPath":     plan.Intent,
 				"reviewStatus":       plan.ReviewStatus,
 				"genericOpsContract": workflowGenerationGenericOpsContracts(plan),
@@ -518,41 +472,28 @@ func workflowGenerationEvidenceItem(req runtimekernel.TurnRequest, plan *workflo
 
 func workflowGenerationArtifactItem(req runtimekernel.TurnRequest, session *workflowgen.WorkflowGenerationSession, plan *workflowgen.WorkflowGenerationPlan, now time.Time, generated bool, result *workflowgen.GenerateDraftResult) agentstate.TurnItem {
 	preview := workflowGenerationArtifactPayload(session, plan, generated, result)
-	payload := transportToolPayload{
-		ToolCallID:    "workflow-generation-" + session.ID,
-		ToolName:      "workflow_generation.plan",
-		DisplayKind:   "runner_workflow_generation",
-		InputSummary:  session.Requirement,
-		OutputSummary: "初始生成大纲已生成，等待用户确认生成草稿。",
-		OutputPreview: mustJSON(preview),
+	summary := "初始生成大纲已生成，等待用户确认生成草稿。"
+	itemType := agentstate.TurnItemTypePlan
+	payloadKind := "workflow_generation_plan_artifact"
+	if generated {
+		summary = "Runner Workflow 草稿已生成并完成受控验证。"
+		itemType = agentstate.TurnItemTypeEvidenceCollected
+		payloadKind = "workflow_generation_validation_artifact"
 	}
 	return agentstate.TurnItem{
 		ID:     req.TurnID + "-workflow-generation-artifact",
-		Type:   agentstate.TurnItemTypeToolResult,
+		Type:   itemType,
 		Status: agentstate.ItemStatusCompleted,
 		Payload: agentstate.PayloadEnvelope{
-			Kind:    "tool",
-			Summary: payload.OutputSummary,
-			Data:    mustJSON(payload),
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-}
-
-func workflowGenerationFinalItem(req runtimekernel.TurnRequest, final string, now time.Time) agentstate.TurnItem {
-	return agentstate.TurnItem{
-		ID:     req.TurnID + "-final",
-		Type:   agentstate.TurnItemTypeAssistantMessage,
-		Status: agentstate.ItemStatusCompleted,
-		Payload: agentstate.PayloadEnvelope{
-			Kind:    "assistant_message",
-			Summary: final,
+			Kind:    payloadKind,
+			Summary: summary,
 			Data: mustJSON(map[string]any{
-				"displayKind":    "assistant.message",
-				"phase":          "final_answer",
-				"streamState":    "complete",
-				"boundaryAction": "allow",
+				"artifactType":  "runner_workflow_generation",
+				"displayKind":   "runner_workflow_generation",
+				"source":        "workflow_generation",
+				"inputSummary":  session.Requirement,
+				"outputSummary": summary,
+				"payload":       preview,
 			}),
 		},
 		CreatedAt: now,

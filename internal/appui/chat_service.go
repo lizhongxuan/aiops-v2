@@ -78,7 +78,7 @@ func NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(baseContext context
 	baseContext = normalizeBaseContext(baseContext)
 	var workflowGeneration *WorkflowGenerationChatService
 	if sessionStore, ok := sessions.(SessionStore); ok {
-		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService, runtimeSettings)
+		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService, runtimeSettings).WithSystemTurnGateway(runtime)
 	}
 	return &defaultChatService{
 		runtime:            runtime,
