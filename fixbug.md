@@ -242,3 +242,12 @@
 - 修复方式：pending turn 在只有 running final 时仍投影过程头；仅在 React presentation 层合并相邻、语义匹配的 Ops Manual search/preflight artifact，控制数据仍保持原始 canonical block；transport error 文案归一化只处理 assistant/system failed 文本，command/tool typed content 保持原样。
 - 验证结果：新增/更新 Vitest 与 native canonical block Playwright fixture；`npm --prefix web test -- --run` 通过 124 个测试文件、907 个测试；`npx playwright test tests/react-shell-snapshot.spec.js tests/agentHarnessPromptTrace.snapshot.spec.js --project=chromium` 通过 13/13；browser-in-app 真实打开 Prompt Trace 详情并切换控制链，DOM 断言和视觉截图通过，控制台 0 条 error/warn。
 - 风险与后续：artifact 合并只改变展示组合，不写回 transport 或 control facts；错误归一化继续对明确的 assistant/system failed block 生效。后续新增 typed block 必须显式定义展示语义，不能恢复跨类型的全文关键词猜测。
+
+## 2026-07-14 12:13 - 真实 no-tool 终态被 unknown 证据状态误判为仍在运行
+
+- 修复时间：2026-07-14 12:13
+- Bug 现象：最终代码二进制调用真实 GLM-5.1 后，Runtime 已原子提交 completed turn、final_response 和完整回答，AssistantTransport 也已清空 liveness；但 eval 报“stream ended before typed terminal”。同一 final block 还同时显示 `streamState=complete` 与 `status=running`。
+- 根因：`FinalContract.status=unknown` 在 simple-read/no-tool 场景表示合法的“未做证据验证”结论，不是执行生命周期；AppUI 却把它映射为 running process，eval 终态集合也排除了 unknown，把证据分类和 lifecycle 混为一谈。
+- 修复方式：canonical final block 保留 `finalContract.status=unknown` 作为事实分类，同时将 block process status 映射为 completed；eval 将 unknown 视为合法终态，但仍要求 turn completed/failed/canceled/blocked、transport state、pending、liveness、active tool 全部一致，不能靠 unknown 单独宣告完成。
+- 验证结果：两个 RED 分别稳定观察到 `running/complete` 矛盾和 typed terminal error；修复后 focused AppUI/Eval 测试与 `go test ./internal/appui ./internal/eval -count=1` 通过。真实 GLM 最终基线冒烟在重建二进制后复验。
+- 风险与后续：empty/missing finalContract、running turn、active tool、pending approval/evidence 和非空 liveness 仍 fail closed；unknown 仅表示最终回答未被验证，不再承担流式生命周期语义。

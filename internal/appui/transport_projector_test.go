@@ -2437,6 +2437,31 @@ func TestTransportProjectorTypedFactsOnlyFinalStatusIgnoresVerificationProse(t *
 	}
 }
 
+func TestCanonicalTransportUnknownFinalContractIsCompletedBlock(t *testing.T) {
+	turn := AiopsTransportTurn{
+		ID:     "turn-unknown-final",
+		Status: AiopsTransportTurnStatusCompleted,
+		Final: &AiopsTransportFinal{
+			ID:            "final-unknown",
+			SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+			Status:        AiopsTransportFinalStatusUnknown,
+			Text:          "只读说明已经完成。",
+			AnswerText:    "只读说明已经完成。",
+		},
+	}
+	order, blocks := projectCanonicalTransportBlocks(turn)
+	if len(order) != 1 || order[0] != "final-unknown" {
+		t.Fatalf("block order = %#v, want final-unknown", order)
+	}
+	block := blocks["final-unknown"]
+	if block.Status != AiopsTransportProcessStatusCompleted || block.StreamState != "complete" {
+		t.Fatalf("unknown final block status/stream = %q/%q, want completed/complete", block.Status, block.StreamState)
+	}
+	if block.FinalContract == nil || block.FinalContract.Status != AiopsTransportFinalStatusUnknown {
+		t.Fatalf("final contract = %#v, want preserved unknown evidence status", block.FinalContract)
+	}
+}
+
 func TestTransportProjectorNormalizesPersistedVerifiedContractInvariant(t *testing.T) {
 	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
 	tests := []struct {

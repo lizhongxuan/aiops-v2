@@ -337,6 +337,7 @@ func serverTransportFinalStatusIsTerminal(status appui.AiopsTransportFinalStatus
 		appui.AiopsTransportFinalStatusFailed,
 		appui.AiopsTransportFinalStatusVerified,
 		appui.AiopsTransportFinalStatusPartial,
+		appui.AiopsTransportFinalStatusUnknown,
 		appui.AiopsTransportFinalStatusBlocked,
 		appui.AiopsTransportFinalStatusNeedsEvidence,
 		appui.AiopsTransportFinalStatusApprovalDenied,

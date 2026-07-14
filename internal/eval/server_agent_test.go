@@ -392,6 +392,34 @@ func TestServerAgentAssistantTransportCompletedWithoutFinalTextIsNotRunError(t *
 	}
 }
 
+func TestServerAgentAssistantTransportAcceptsCompletedUnknownFinalContract(t *testing.T) {
+	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
+		finalBlock := canonicalServerTransportFinalBlock("final-unknown", "只读说明已经完成。", "unknown")
+		finalBlock["status"] = "running"
+		finalBlock["streamState"] = "complete"
+		return []map[string]any{
+			serverTransportTestOp("set", []any{"currentTurnId"}, "turn-unknown-final"),
+			serverTransportTestOp("set", []any{"turns", "turn-unknown-final"}, map[string]any{
+				"id": "turn-unknown-final", "clientTurnId": clientTurnID, "clientMessageId": messageID, "status": "completed",
+				"user":       map[string]any{"id": messageID, "text": "hello"},
+				"blockOrder": []string{"final-unknown"},
+				"blocksById": map[string]any{"final-unknown": finalBlock},
+			}),
+			serverTransportTestOp("set", []any{"status"}, "idle"),
+		}
+	})
+	defer server.Close()
+	output, err := (ServerAgent{Config: ServerAgentConfig{BaseURL: server.URL, PollTimeout: time.Second}}).Run(
+		context.Background(), Case{ID: "unknown-final", Category: "server", Input: "hello"},
+	)
+	if err != nil {
+		t.Fatalf("completed unknown final returned terminal-state error: %v", err)
+	}
+	if output.Answer != "只读说明已经完成。" {
+		t.Fatalf("answer = %q, want completed unknown final answer", output.Answer)
+	}
+}
+
 func TestServerAgentAssistantTransportRejectsFinalAnswerWithoutTypedContract(t *testing.T) {
 	server := newServerTransportStateServer(t, func(clientTurnID, messageID string) []map[string]any {
 		return []map[string]any{

@@ -1697,7 +1697,7 @@ func mapTurnStatusToFinalStatus(status AiopsTransportTurnStatus) AiopsTransportF
 
 func mapFinalStatusToTransportProcessStatus(status AiopsTransportFinalStatus) AiopsTransportProcessStatus {
 	switch status {
-	case AiopsTransportFinalStatusCompleted, AiopsTransportFinalStatusVerified, AiopsTransportFinalStatusPartial:
+	case AiopsTransportFinalStatusCompleted, AiopsTransportFinalStatusVerified, AiopsTransportFinalStatusPartial, AiopsTransportFinalStatusUnknown:
 		return AiopsTransportProcessStatusCompleted
 	case AiopsTransportFinalStatusFailed, AiopsTransportFinalStatusCancelled:
 		return AiopsTransportProcessStatusFailed
