@@ -62,20 +62,6 @@ func updateAgentItemData(snapshot *TurnSnapshot, itemID string, data any) {
 	snapshot.UpdatedAt = time.Now()
 }
 
-func removeAgentItem(snapshot *TurnSnapshot, itemID string) {
-	if snapshot == nil || strings.TrimSpace(itemID) == "" {
-		return
-	}
-	next := snapshot.AgentItems[:0]
-	for _, item := range snapshot.AgentItems {
-		if item.ID != itemID {
-			next = append(next, item)
-		}
-	}
-	snapshot.AgentItems = next
-	snapshot.UpdatedAt = time.Now()
-}
-
 type approvalAgentItemData struct {
 	ApprovalID    string   `json:"approvalId"`
 	ToolCallID    string   `json:"toolCallId,omitempty"`
@@ -417,29 +403,6 @@ func userEvidenceAgentItemFromMetadata(turnID string, metadata map[string]string
 	)
 	item.Payload.Kind = "user_provided"
 	return item, true
-}
-
-func completedEvidenceItemIDs(snapshot *TurnSnapshot) []string {
-	if snapshot == nil {
-		return nil
-	}
-	out := make([]string, 0)
-	seen := map[string]struct{}{}
-	for _, item := range snapshot.AgentItems {
-		if item.Type != agentstate.TurnItemTypeEvidence || item.Status != agentstate.ItemStatusCompleted {
-			continue
-		}
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 func isUpdatePlanToolName(name string) bool {

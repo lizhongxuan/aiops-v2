@@ -344,28 +344,6 @@ func looksLikeOperationalAnalysisQuestion(lower string) bool {
 	return true
 }
 
-func finalAnswerAsksExplicitTargetBinding(answer string) bool {
-	lower := strings.ToLower(strings.TrimSpace(answer))
-	if lower == "" {
-		return false
-	}
-	return hasAnyRiskMarker(lower, []string{
-		"@host",
-		"@ip",
-		"明确绑定",
-		"绑定目标",
-		"选择目标",
-		"指定目标",
-		"指定主机",
-		"目标主机",
-		"选择主机",
-		"select a target",
-		"bind a target",
-		"explicit target",
-		"target binding",
-	})
-}
-
 func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 	if snapshot == nil {
 		return nil
@@ -650,86 +628,6 @@ func finalEvidenceConfidenceRank(value string) int {
 	default:
 		return 1
 	}
-}
-
-func finalAnswerClaimsChecked(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{
-		"已检查", "已确认", "确认全部", "全部检查", "checked", "verified", "confirmed", "inspected",
-	} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalAnswerClaimsHighConfidence(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{"高置信", "confirmed", "definitely", "no issue", "normal"} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	compact := compactFinalEvidenceText(text)
-	for _, marker := range []string{"置信度:高", "置信度：高", "置信度高", "confidence:high", "confidence：high"} {
-		if strings.Contains(compact, marker) {
-			return true
-		}
-	}
-	for _, marker := range []string{"确定", "明确", "正常"} {
-		if containsAffirmedChineseMarker(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalAnswerClaimsMissingEvidence(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{
-		"缺失证据", "缺乏", "无法收集", "无法获取", "无法完成", "无法确定", "未配置", "not_configured", "not configured", "missing_evidence", "missing evidence",
-	} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func compactFinalEvidenceText(text string) string {
-	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
-	return replacer.Replace(text)
-}
-
-func containsAffirmedChineseMarker(text, marker string) bool {
-	for offset := 0; ; {
-		index := strings.Index(text[offset:], marker)
-		if index < 0 {
-			return false
-		}
-		absolute := offset + index
-		if !hasChineseNegationPrefix(text[:absolute]) {
-			return true
-		}
-		offset = absolute + len(marker)
-	}
-}
-
-func hasChineseNegationPrefix(prefix string) bool {
-	runes := []rune(prefix)
-	if len(runes) > 6 {
-		runes = runes[len(runes)-6:]
-	}
-	tail := string(runes)
-	for _, marker := range []string{
-		"无法", "不能", "未能", "不可", "不", "并未", "没有", "缺乏",
-	} {
-		if strings.Contains(tail, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func appendFinalEvidenceReason(reasons []string, reason string) []string {

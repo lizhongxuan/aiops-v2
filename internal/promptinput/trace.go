@@ -251,17 +251,6 @@ func cloneApprovalScopeTrace(scope *ApprovalScopeTrace) *ApprovalScopeTrace {
 	return &out
 }
 
-func promptSource(promptLayer string) string {
-	switch promptLayer {
-	case "system", "developer", "tool_index":
-		return "stable_prompt"
-	case "runtime_policy", "dynamic_prompt":
-		return "dynamic_prompt"
-	default:
-		return "prompt"
-	}
-}
-
 func conversationSemanticRole(msg Message) string {
 	switch msg.Role {
 	case "assistant":
@@ -274,31 +263,6 @@ func conversationSemanticRole(msg Message) string {
 	default:
 		return msg.Role
 	}
-}
-
-func conversationTraceID(msg Message) string {
-	if msg.ToolResult != nil && msg.ToolResult.ToolCallID != "" {
-		return msg.ToolResult.ToolCallID
-	}
-	if len(msg.ToolCalls) == 1 {
-		return msg.ToolCalls[0].ID
-	}
-	if len(msg.ToolCalls) > 1 {
-		return fmt.Sprintf("%s+%d", msg.ToolCalls[0].ID, len(msg.ToolCalls)-1)
-	}
-	return ""
-}
-
-func stringExtra(extra map[string]any, key string) string {
-	if extra == nil {
-		return ""
-	}
-	value, ok := extra[key]
-	if !ok {
-		return ""
-	}
-	str, _ := value.(string)
-	return str
 }
 
 func visibleOpsManualTools(tools []promptcompiler.Tool) []string {
