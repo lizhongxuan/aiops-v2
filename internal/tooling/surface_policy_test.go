@@ -40,6 +40,29 @@ func TestToolSurfacePolicySnapshotFiltersPrompt(t *testing.T) {
 	}
 }
 
+func TestToolHiddenReasonTaxonomyIncludesHarnessReasons(t *testing.T) {
+	for _, reason := range []string{
+		"host_exec_disallowed",
+		"target_host_out_of_scope",
+		"approval_required",
+		"permission_denied",
+		"mcp_unavailable",
+		"pack_not_enabled",
+		"tool_search_required",
+		"opsmanual_not_requested",
+		"public_web_policy_disabled",
+		"mutation_not_allowed",
+		"resource_lock_conflict",
+		"profile_denied",
+		"fallback_denied",
+		"needs_host_agent",
+	} {
+		if !IsKnownToolHiddenReason(reason) {
+			t.Fatalf("reason %q is not recognized by hidden reason taxonomy", reason)
+		}
+	}
+}
+
 func TestToolSurfacePolicyHonorsAgentRoleReadOnlyBoundary(t *testing.T) {
 	tools := []Tool{
 		&StaticTool{Meta: ToolMetadata{Name: "synthetic.read", Layer: ToolLayerCore, RiskLevel: ToolRiskLow}},

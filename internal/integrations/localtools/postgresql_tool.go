@@ -44,6 +44,10 @@ func NewEnsurePostgreSQLInstalledTool(opts Options) tooling.Tool {
 					"systemctl is-active postgresql or pg_isready when available",
 				},
 			},
+			Rollback: &tooling.ToolRollbackMetadata{
+				Strategy:  tooling.ToolRollbackStrategyManualTakeover,
+				Reference: "localtools.ensure_postgresql_installed.rollback-v1",
+			},
 			Discovery: tooling.ToolDiscoveryMetadata{
 				CapabilityKind: "database_ops",
 				ResourceTypes:  []string{"database", "host", "package"},

@@ -35,7 +35,46 @@ describe("aiopsTransportRuntime", () => {
     expect(state.hostMissions).toEqual({});
     expect(state.childAgents).toEqual({});
     expect(state.activeHostMissionId).toBeUndefined();
+    expect(state.specialInputContext).toBeUndefined();
     expect(new Date(state.updatedAt).toString()).not.toBe("Invalid Date");
+  });
+
+  it("normalizes special input context without requiring markdown inference", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-special-input"),
+      specialInputContext: {
+        schemaVersion: "aiops.special_input_memory.v1",
+        turnId: "turn-1",
+        activeGrant: {
+          id: "grant-host-a",
+          resourceKind: "host",
+          resourceId: "host-a",
+          canonicalKey: "host:host-a",
+          display: "host-a",
+          status: "active",
+          allowedActions: ["inspect", "read", "exec_low_risk"],
+        },
+        candidateFacts: [
+          {
+            id: "fact-raw",
+            kind: "host",
+            resourceKind: "host",
+            resourceId: "1.1.1.1",
+            canonicalKey: "host:1.1.1.1",
+            display: "1.1.1.1",
+            trustLevel: "raw_typed",
+            status: "active",
+          },
+        ],
+        pendingConfirmations: [
+          { id: "pending-target", kind: "target", reason: "active_grant_revalidate_failed" },
+        ],
+      },
+    } satisfies Partial<AiopsTransportState>);
+
+    expect(state.specialInputContext?.activeGrant?.resourceId).toBe("host-a");
+    expect(state.specialInputContext?.candidateFacts?.[0]?.trustLevel).toBe("raw_typed");
+    expect(state.specialInputContext?.pendingConfirmations?.[0]?.reason).toBe("active_grant_revalidate_failed");
   });
 
   it("normalizes nullable host mission arrays from runtime snapshots", () => {
@@ -275,6 +314,69 @@ describe("aiopsTransportRuntime", () => {
     expect(state.turns["turn-1"]?.final?.text).toContain("2. **pg_autoctl 将 B 初始化为独立主库");
   });
 
+  it("sanitizes model provider timeout details from failed final text and process blocks", () => {
+    const raw = `模型请求超时：约 20s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: Post "https://provider.invalid/v1/chat/completions": net/http: TLS handshake timeout`;
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-model-timeout"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "failed",
+          process: [
+            {
+              id: "runtime-error",
+              kind: "system",
+              status: "failed",
+              text: raw,
+            },
+          ],
+          final: {
+            id: "final-model-timeout",
+            text: raw,
+            status: "failed",
+          },
+        },
+      },
+    });
+
+    const finalText = state.turns["turn-1"]?.final?.text || "";
+    const processText = state.turns["turn-1"]?.process?.[0]?.text || "";
+    expect(finalText).toBe("模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。");
+    expect(processText).toBe(finalText);
+    for (const forbidden of ["provider.invalid", "chat/completions", "Post ", "TLS handshake timeout", "约 20s"]) {
+      expect(finalText).not.toContain(forbidden);
+      expect(processText).not.toContain(forbidden);
+    }
+  });
+
+  it("preserves typed command output and observed timeout evidence without treating content as transport failure", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-observed-timeout"),
+      turnOrder: ["turn-1"],
+      turns: {
+        "turn-1": {
+          id: "turn-1",
+          status: "working",
+          blockOrder: ["command-1", "tool-1"],
+          blocksById: {
+            "command-1": {
+              id: "command-1", type: "command", kind: "command", status: "completed", text: "ps -arc",
+              command: "ps -arc", outputPreview: "64001 process-1\n64002 process-2",
+            },
+            "tool-1": {
+              id: "tool-1", type: "tool", kind: "tool", status: "completed", text: "logs_query",
+              outputPreview: "Large nginx log result was externalized. Summary: 17 upstream timeout lines.",
+            },
+          },
+        },
+      },
+    });
+
+    expect(state.turns["turn-1"]?.blocksById?.["command-1"]?.outputPreview).toBe("64001 process-1\n64002 process-2");
+    expect(state.turns["turn-1"]?.blocksById?.["tool-1"]?.outputPreview).toContain("upstream timeout lines");
+  });
+
   it("builds custom AssistantTransport commands from the current state", () => {
     const send = vi.fn();
     const state = {
@@ -291,6 +393,8 @@ describe("aiopsTransportRuntime", () => {
     actions.mcpAction("filesystem", "open", { path: "/tmp" });
     actions.mcpRefresh("filesystem");
     actions.mcpPin("filesystem", true);
+    actions.specialInputClear({ resourceKind: "host", resourceId: "host-a", canonicalKey: "host:host-a" });
+    actions.specialInputConfirm({ resourceKind: "host", resourceId: "1.1.1.1", canonicalKey: "host:1.1.1.1" });
 
     expect(send.mock.calls.map(([command]) => command)).toEqual([
       {
@@ -320,6 +424,20 @@ describe("aiopsTransportRuntime", () => {
       },
       { type: "aiops.mcp-refresh", surfaceId: "filesystem" },
       { type: "aiops.mcp-pin", surfaceId: "filesystem", pinned: true },
+      {
+        type: "aiops.special-input-clear",
+        sessionId: "sess-1",
+        resourceKind: "host",
+        resourceId: "host-a",
+        canonicalKey: "host:host-a",
+      },
+      {
+        type: "aiops.special-input-confirm",
+        sessionId: "sess-1",
+        resourceKind: "host",
+        resourceId: "1.1.1.1",
+        canonicalKey: "host:1.1.1.1",
+      },
     ]);
   });
 
@@ -332,20 +450,31 @@ describe("aiopsTransportRuntime", () => {
         "turn-1": {
           id: "turn-1",
           status: "working",
-          process: [
-            {
+          blockOrder: ["reasoning-1", "tool-1", "final-1"],
+          blocksById: {
+            "reasoning-1": {
               id: "reasoning-1",
+              type: "reasoning",
               kind: "reasoning",
               status: "running",
               text: "正在等待模型返回",
             },
-            {
+            "tool-1": {
               id: "tool-1",
+              type: "tool",
               kind: "tool",
               status: "completed",
               text: "已读取日志",
             },
-          ],
+            "final-1": {
+              id: "final-1",
+              type: "final_answer",
+              kind: "assistant",
+              status: "running",
+              text: "正在生成结论",
+              finalContract: { id: "final-1", text: "正在生成结论", status: "running" },
+            },
+          },
         },
       },
     } satisfies AiopsTransportState;
@@ -355,8 +484,28 @@ describe("aiopsTransportRuntime", () => {
 
     expect(failed).toMatchObject({
       status: "failed",
-      lastError: "backend unavailable",
-      turns: { "turn-1": { status: "failed" } },
+      lastError: "服务异常,请稍后重试",
+      turns: {
+        "turn-1": {
+          status: "failed",
+          blocksById: {
+            "reasoning-1": {
+              id: "reasoning-1",
+              status: "failed",
+              text: "模型调用失败",
+            },
+            "tool-1": {
+              id: "tool-1",
+              status: "completed",
+              text: "已读取日志",
+            },
+            "final-1": {
+              status: "failed",
+              finalContract: { status: "failed" },
+            },
+          },
+        },
+      },
     });
     expect(canceled).toMatchObject({
       status: "canceled",
@@ -364,23 +513,27 @@ describe("aiopsTransportRuntime", () => {
       turns: {
         "turn-1": {
           status: "canceled",
-          process: [
-            {
+          blocksById: {
+            "reasoning-1": {
               id: "reasoning-1",
               status: "rejected",
               text: "模型调用已取消",
             },
-            {
+            "tool-1": {
               id: "tool-1",
               status: "completed",
               text: "已读取日志",
             },
-          ],
+            "final-1": {
+              status: "rejected",
+              finalContract: { status: "cancelled" },
+            },
+          },
         },
       },
     });
     expect(state.status).toBe("working");
     expect(state.turns["turn-1"]?.status).toBe("working");
-    expect(state.turns["turn-1"]?.process?.[0]?.text).toBe("正在等待模型返回");
+    expect(state.turns["turn-1"]?.blocksById?.["reasoning-1"]?.text).toBe("正在等待模型返回");
   });
 });

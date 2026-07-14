@@ -169,6 +169,16 @@ func corootToolResultError(toolName string, err error) string {
 	if errText == "" {
 		errText = "coroot tool failed"
 	}
+	if corootErr, ok := err.(*CorootError); ok {
+		if hint := corootUserHintForError(CorootErrorPayload{
+			Kind:       corootErr.Kind,
+			StatusCode: corootErr.StatusCode,
+			URI:        corootErr.URI,
+			Message:    corootErr.Message,
+		}); hint != "" {
+			errText += ". " + hint
+		}
+	}
 	toolName = strings.TrimSpace(toolName)
 	if toolName == "" {
 		toolName = "coroot"
@@ -180,7 +190,7 @@ func corootToolPrompt(name string) string {
 	common := "Use the session-bound Coroot project from aiops.coroot.project when present; otherwise omit project so the configured Coroot project is used, and do not send default as a placeholder. If Coroot is unavailable, report that evidence as unavailable and continue with other evidence instead of asking the user whether Coroot evidence exists."
 	switch name {
 	case "coroot.list_services":
-		return common + " Use coroot.list_services as the default read-only availability/service probe and service discovery probe. If the user needs Coroot details that are not visible in the current tool set, call tool_search with a narrow Coroot query such as metrics, logs, traces, topology, incidents, dashboards, project status, or configuration to reveal the relevant deferred pack."
+		return common + " Use coroot.list_services as the default read-only availability/service probe and service discovery probe. When the user asks broadly which Coroot services are abnormal, unhealthy, warning, or 异常 without naming a service, call this before asking for a service name. The result includes statusCounts and problemServices; use those fields instead of calling coroot.list_services again just to split critical and warning services in the same turn. If the user needs Coroot details that are not visible in the current tool set, call tool_search with a narrow Coroot query such as metrics, logs, traces, topology, incidents, dashboards, project status, or configuration to reveal the relevant deferred pack."
 	case "coroot.collect_rca_context":
 		return common + " For service RCA, latency/error/SLO/resource/dependency analysis, prefer this aggregate evidence tool first because it summarizes metrics, SLOs, dependencies, recent incidents, logs, traces, profiling, deployments, and rawRefs into a model-safe evidence pack. Use narrower Coroot packs only for follow-up drill-down or when a section is missing. If edgeEvidence, evidenceGraph, dependencies, or hypotheses are present, treat them as primary RCA evidence and do not later claim topology evidence is missing just because a narrower follow-up tool failed. For a dependency chain X->Y->Z, include the chain as X->Y->Z, include the labels edgeEvidence and hypotheses when those fields support the RCA, and calibrate candidates as: Z依赖异常导致X异常, Y传播上游异常, X自身资源或发布异常. State confidence as high confidence only with Coroot edge evidence, and state the safety guardrail read-only Coroot evidence first. If it identifies an external dependency, IP, DNS name, or ExternalService edge, that edge is not the final root cause until its identity, endpoint, owner, port/protocol, and caller-to-dependency network path are investigated."
 	case "coroot.service_metrics", "coroot.slo_status":
@@ -188,7 +198,7 @@ func corootToolPrompt(name string) string {
 	case "coroot.rca_report":
 		return common + " Use this only when the user explicitly asks for Coroot's native RCA report or as reference evidence after aiops has collected its own evidence; do not treat it as the primary RCA source. If the optional native Coroot RCA returns 404, Application not found, or AI disabled after the service was found elsewhere, this means that RCA reference is unavailable and does not prove the service is absent; continue with coroot.collect_rca_context, metrics, topology, logs, traces, and incidents before finalizing."
 	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
-		return common + " When the user asks about incidents, alerts, incident ids, or the Coroot incidents page, call coroot.incidents before finalizing. For recent/latest incident lists, do not set status, severity, or applicationCategory unless the user explicitly asks for that filter."
+		return common + " When the user asks about incidents, alerts, broad Coroot anomalies/异常, incident ids, or the Coroot incidents page, call coroot.incidents before finalizing. For recent/latest incident lists, do not set status, severity, or applicationCategory unless the user explicitly asks for that filter."
 	default:
 		return common
 	}
@@ -212,7 +222,7 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 	}
 	switch name {
 	case "coroot.list_services":
-		configureCorootDeferredTool(&meta, "mcp_dynamic_coroot", []string{"observability", "services", "service health", "应用", "服务", "健康状态"})
+		configureCorootDeferredTool(&meta, "mcp_dynamic_coroot", []string{"observability", "services", "service health", "应用", "服务", "健康状态", "异常", "异常服务", "warning", "unhealthy"})
 		setCorootDiscovery(&meta, "observability", []string{"service", "application"}, []string{"list", "read"})
 	case "coroot.health_check", "coroot.list_projects", "coroot.get_project_status":
 		configureCorootDeferredTool(&meta, "coroot_admin_read", []string{"coroot health", "health check", "project status", "projects", "项目", "项目状态", "agent status", "prometheus status"})
@@ -253,7 +263,7 @@ func corootToolMetadata(name, description string) tooling.ToolMetadata {
 		configureCorootDeferredTool(&meta, "coroot_profiling", []string{"profile", "profiling", "flamegraph", "CPU profile", "memory profile", "pprof", "火焰图", "性能剖析"})
 		setCorootDiscovery(&meta, "profiling", []string{"service", "application", "profile"}, []string{"read", "query"})
 	case "coroot.alert_rules", "coroot.incidents", "coroot.incident_timeline":
-		configureCorootDeferredTool(&meta, "coroot_incident", []string{"incident", "incidents", "alert", "alerts", "告警", "事件", "事故", "timeline", "时间线"})
+		configureCorootDeferredTool(&meta, "coroot_incident", []string{"incident", "incidents", "alert", "alerts", "告警", "事件", "事故", "异常", "异常事件", "异常列表", "timeline", "时间线"})
 		setCorootDiscovery(&meta, "incidents", []string{"incident", "alert", "service", "application"}, []string{"read", "list"})
 	case "coroot.list_dashboards", "coroot.get_dashboard", "coroot.get_panel_data":
 		configureCorootDeferredTool(&meta, "coroot_dashboard", []string{"dashboard", "dashboards", "panel", "chart", "coroot panel", "仪表盘", "看板", "面板"})
@@ -306,6 +316,8 @@ func withCorootEnvelopeFields(payload any) any {
 
 func corootModelFacingPayload(payload any) any {
 	switch typed := payload.(type) {
+	case ListServicesResult:
+		return listServicesModelFacingPayload(typed)
 	case ServiceMetricsResult:
 		return serviceMetricsModelFacingPayload(typed)
 	case ServiceTopologyResult:
@@ -317,6 +329,60 @@ func corootModelFacingPayload(payload any) any {
 	default:
 		return payload
 	}
+}
+
+const (
+	maxCorootModelProblemServices = 30
+	maxCorootModelSampleServices  = 12
+)
+
+func listServicesModelFacingPayload(result ListServicesResult) ListServicesModelResult {
+	statusCounts := map[string]int{}
+	categoryCounts := map[string]int{}
+	problemServices := make([]ServiceSummary, 0)
+	sampleServices := make([]ServiceSummary, 0, minInt(len(result.Services), maxCorootModelSampleServices))
+	for _, service := range result.Services {
+		status := normalizedCorootHealthStatus(service.Status)
+		if status == "" {
+			status = "unknown"
+		}
+		statusCounts[status]++
+		category := strings.TrimSpace(service.Category)
+		if category == "" {
+			category = "unknown"
+		}
+		categoryCounts[category]++
+		if len(sampleServices) < maxCorootModelSampleServices {
+			sampleServices = append(sampleServices, service)
+		}
+		if isProblemStatus(status) && len(problemServices) < maxCorootModelProblemServices {
+			problemServices = append(problemServices, service)
+		}
+	}
+	return ListServicesModelResult{
+		SchemaVersion:   result.SchemaVersion,
+		Tool:            result.Tool,
+		Status:          result.Status,
+		Project:         result.Project,
+		TotalServices:   len(result.Services),
+		StatusCounts:    statusCounts,
+		CategoryCounts:  categoryCounts,
+		ProblemServices: problemServices,
+		SampleServices:  sampleServices,
+		Truncated:       len(result.Services) > len(sampleServices) || countProblemServices(result.Services) > len(problemServices),
+		ModelGuidance:   "Use problemServices/statusCounts from this result before calling coroot.list_services again; do not repeat list_services just to filter critical or warning services unless the user asks for a new filter not represented here.",
+		RawRef:          result.RawRef,
+	}
+}
+
+func countProblemServices(services []ServiceSummary) int {
+	count := 0
+	for _, service := range services {
+		if isProblemStatus(service.Status) {
+			count++
+		}
+	}
+	return count
 }
 
 func withCorootEvidencePack(payload any, project string) any {
@@ -559,7 +625,7 @@ func executeHealthCheck(client *Client) func(context.Context, json.RawMessage) (
 		if _, err := decodeCorootInput(input); err != nil {
 			return nil, nil, err
 		}
-		rawRef, err := client.GetJSON(ctx, healthPath(), nil, nil)
+		rawRef, err := client.CheckHealth(ctx)
 		if err != nil {
 			return nil, rawRef, err
 		}
@@ -1475,6 +1541,7 @@ func corootStructuredError(tool string, rawRef *CorootRawRef, err error) corootE
 			Message:    corootErr.Message,
 		}
 	}
+	payload.UserHint = corootUserHintForError(payload)
 	return corootErrorResult{
 		SchemaVersion: corootSchemaVersion,
 		Tool:          tool,
@@ -1485,12 +1552,29 @@ func corootStructuredError(tool string, rawRef *CorootRawRef, err error) corootE
 	}
 }
 
+func corootUserHintForError(payload CorootErrorPayload) string {
+	switch strings.TrimSpace(payload.Kind) {
+	case "authentication_required":
+		return "Coroot returned an HTML page instead of JSON. The embedded Coroot UI may work through the browser session, but AI Chat backend tools need a backend-readable Coroot credential/session and the configured product path."
+	case "decode_error":
+		if strings.Contains(payload.Message, "invalid character '<'") {
+			return "Coroot returned HTML instead of JSON. Check the Coroot product path and backend authentication used by AI Chat tools."
+		}
+	case "upstream_client_error":
+		switch payload.StatusCode {
+		case 401, 403:
+			return "Coroot MCP tools are registered, but the backend Web API request is not authenticated. Configure a backend-readable Coroot Web session or Coroot Web username/password in Settings -> Coroot Monitoring. Project API keys are usually for collector/agent ingestion and cannot read Coroot Web API evidence."
+		}
+	}
+	return ""
+}
+
 func corootSkipReasonForError(payload CorootErrorPayload) string {
 	message := strings.ToLower(strings.TrimSpace(payload.Message))
 	switch strings.TrimSpace(payload.Kind) {
 	case "empty_response":
 		return "empty_data"
-	case "not_configured", "transport_error", "timeout", "upstream_server_error", "read_error", "decode_error":
+	case "not_configured", "transport_error", "timeout", "upstream_server_error", "read_error", "decode_error", "authentication_required":
 		return "coroot_mcp_unavailable"
 	case "upstream_client_error":
 		if payload.StatusCode == 404 {

@@ -37,5 +37,14 @@
       "outcome": "failed",
       "triggerFailureKind": "invalid_arguments"
     }
-  ]
+  ],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "modelVisibleTools": ["read_metrics"],
+    "toolCalls": ["read_metrics"],
+    "finalStatus": "partial",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
 }

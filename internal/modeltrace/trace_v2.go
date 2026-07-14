@@ -9,31 +9,42 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/diagnostics"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 const TraceDocumentV2SchemaVersion = "aiops.trace/v2"
 
 type TraceDocumentV2 struct {
-	SchemaVersion      string               `json:"schemaVersion"`
-	CreatedAt          string               `json:"createdAt"`
-	SessionID          string               `json:"sessionId"`
-	TurnID             string               `json:"turnId"`
-	Iteration          int                  `json:"iteration"`
-	Metadata           map[string]string    `json:"metadata,omitempty"`
-	VisibleTools       []string             `json:"visibleTools,omitempty"`
-	PromptFingerprint  map[string]string    `json:"promptFingerprint,omitempty"`
-	TurnContext        any                  `json:"turnContext,omitempty"`
-	StepContext        any                  `json:"stepContext,omitempty"`
-	ProviderRequest    ProviderRequestTrace `json:"providerRequest,omitempty"`
-	ToolSurface        any                  `json:"toolSurface,omitempty"`
-	Prompt             Prompt               `json:"prompt,omitempty"`
-	ModelInput         any                  `json:"modelInput,omitempty"`
-	LLMRequests        []any                `json:"llmRequests,omitempty"`
-	PromptInputTrace   any                  `json:"promptInputTrace,omitempty"`
-	PromptInputDiff    any                  `json:"promptInputDiff,omitempty"`
-	DiagnosticTrace    any                  `json:"diagnosticTrace,omitempty"`
-	FinalEvidenceState any                  `json:"finalEvidenceState,omitempty"`
-	RawPayloadRefs     []RawPayloadRef      `json:"rawPayloadRefs,omitempty"`
+	SchemaVersion             string               `json:"schemaVersion"`
+	CreatedAt                 string               `json:"createdAt"`
+	SessionID                 string               `json:"sessionId"`
+	TurnID                    string               `json:"turnId"`
+	Iteration                 int                  `json:"iteration"`
+	Metadata                  map[string]string    `json:"metadata,omitempty"`
+	VisibleTools              []string             `json:"visibleTools,omitempty"`
+	PromptFingerprint         map[string]string    `json:"promptFingerprint,omitempty"`
+	PreviousPromptFingerprint map[string]string    `json:"previousPromptFingerprint,omitempty"`
+	TurnContext               any                  `json:"turnContext,omitempty"`
+	StepContext               any                  `json:"stepContext,omitempty"`
+	StepContextHash           string               `json:"stepContextHash,omitempty"`
+	HarnessTurn               any                  `json:"harnessTurn,omitempty"`
+	ProviderRequest           ProviderRequestTrace `json:"providerRequest,omitempty"`
+	ToolSurface               any                  `json:"toolSurface,omitempty"`
+	TurnAssembly              any                  `json:"turnAssembly,omitempty"`
+	// Deprecated: read-only compatibility trace; it is never consumed as runtime control input.
+	LegacyAgentAssemblySnapshot any                                               `json:"legacyAgentAssemblySnapshot,omitempty"`
+	TurnAssemblyShadow          any                                               `json:"turnAssemblyShadow,omitempty"`
+	Prompt                      Prompt                                            `json:"prompt,omitempty"`
+	ModelInput                  any                                               `json:"modelInput,omitempty"`
+	LLMRequests                 []any                                             `json:"llmRequests,omitempty"`
+	SpecialInputWorldState      *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState,omitempty"`
+	PromptInputTrace            any                                               `json:"promptInputTrace,omitempty"`
+	PromptInputDiff             any                                               `json:"promptInputDiff,omitempty"`
+	DiagnosticTrace             any                                               `json:"diagnosticTrace,omitempty"`
+	FinalEvidenceState          any                                               `json:"finalEvidenceState,omitempty"`
+	RawPayloadRefs              []RawPayloadRef                                   `json:"rawPayloadRefs,omitempty"`
 }
 
 type ProviderRequestTrace struct {
@@ -54,6 +65,7 @@ func WriteTraceDocumentV2(root string, doc TraceDocumentV2) (string, error) {
 	if doc.CreatedAt == "" {
 		doc.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
+	doc = redactTraceDocumentV2(doc)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", err
 	}
@@ -78,6 +90,118 @@ func WriteTraceDocumentV2(root string, doc TraceDocumentV2) (string, error) {
 		return "", err
 	}
 	return path, nil
+}
+
+func redactTraceDocumentV2(doc TraceDocumentV2) TraceDocumentV2 {
+	doc.Metadata = redactTraceV2StringMap(doc.Metadata)
+	doc.TurnContext = redactTraceV2Value(doc.TurnContext)
+	doc.StepContext = redactTraceV2Value(doc.StepContext)
+	doc.HarnessTurn = redactTraceV2Value(doc.HarnessTurn)
+	doc.ToolSurface = redactTraceV2Value(doc.ToolSurface)
+	doc.TurnAssembly = redactTraceV2Value(doc.TurnAssembly)
+	doc.LegacyAgentAssemblySnapshot = redactTraceV2Value(doc.LegacyAgentAssemblySnapshot)
+	doc.TurnAssemblyShadow = redactTraceV2Value(doc.TurnAssemblyShadow)
+	doc.Prompt = redactPrompt(doc.Prompt)
+	doc.ModelInput = redactTraceV2Value(doc.ModelInput)
+	if redacted := redactTraceV2Value(doc.LLMRequests); redacted != nil {
+		doc.LLMRequests, _ = redacted.([]any)
+	} else {
+		doc.LLMRequests = nil
+	}
+	doc.SpecialInputWorldState = redactTraceV2WorldState(doc.SpecialInputWorldState)
+	doc.PromptInputTrace = redactTraceV2Value(doc.PromptInputTrace)
+	doc.PromptInputDiff = redactTraceV2Value(doc.PromptInputDiff)
+	doc.DiagnosticTrace = redactTraceV2Value(doc.DiagnosticTrace)
+	doc.FinalEvidenceState = redactTraceV2Value(doc.FinalEvidenceState)
+	return doc
+}
+
+func redactTraceV2WorldState(input *specialinputmemory.SpecialInputWorldStateSection) *specialinputmemory.SpecialInputWorldStateSection {
+	if input == nil {
+		return nil
+	}
+	redacted := redactTraceV2Value(input)
+	data, err := json.Marshal(redacted)
+	if err != nil {
+		return nil
+	}
+	var out specialinputmemory.SpecialInputWorldStateSection
+	if err := json.Unmarshal(data, &out); err != nil {
+		return nil
+	}
+	return &out
+}
+
+func redactTraceV2StringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		if traceV2SensitiveKey(key) {
+			out[key] = "[REDACTED]"
+			continue
+		}
+		out[key] = diagnostics.RedactSensitiveText(value)
+	}
+	return out
+}
+
+func redactTraceV2Value(input any) any {
+	if input == nil {
+		return nil
+	}
+	data, err := json.Marshal(input)
+	if err != nil {
+		return nil
+	}
+	var value any
+	if err := json.Unmarshal(data, &value); err != nil {
+		return nil
+	}
+	return redactTraceV2JSONValue(value)
+}
+
+func redactTraceV2JSONValue(value any) any {
+	switch typed := value.(type) {
+	case string:
+		return diagnostics.RedactSensitiveText(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for index := range typed {
+			out[index] = redactTraceV2JSONValue(typed[index])
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, item := range typed {
+			if traceV2SensitiveKey(key) {
+				out[key] = "[REDACTED]"
+				continue
+			}
+			out[key] = redactTraceV2JSONValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
+}
+
+func traceV2SensitiveKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	key = strings.ReplaceAll(key, "_", "")
+	key = strings.ReplaceAll(key, "-", "")
+	for _, sensitive := range []string{"password", "passwd", "pwd", "token", "secret", "apikey", "authorization"} {
+		if key == sensitive || strings.HasSuffix(key, sensitive) {
+			return true
+		}
+	}
+	if strings.Contains(key, "secretref") || strings.HasPrefix(key, "authorization") || strings.HasSuffix(key, "authorization") ||
+		strings.Contains(key, "accesstoken") || strings.Contains(key, "refreshtoken") ||
+		(strings.HasPrefix(key, "secret") && (strings.HasSuffix(key, "key") || strings.HasSuffix(key, "value") || strings.HasSuffix(key, "ref"))) {
+		return true
+	}
+	return false
 }
 
 func WriteTraceDocumentV2FromRequest(req Request) (string, error) {
@@ -106,6 +230,7 @@ func WriteTraceDocumentV2FromRequestWithConfig(cfg Config, req Request) (string,
 	if caseID := firstNonEmptyTraceV2(req.CaseID, req.Metadata["eval.caseId"], req.Metadata["caseId"]); caseID != "" {
 		metadata["caseId"] = caseID
 	}
+	promptTrace := mergeRequestToolTraceFields(req)
 	doc := TraceDocumentV2{
 		SchemaVersion:     TraceDocumentV2SchemaVersion,
 		SessionID:         firstNonEmptyTraceV2(req.SessionID, req.Kind, "session"),
@@ -114,14 +239,16 @@ func WriteTraceDocumentV2FromRequestWithConfig(cfg Config, req Request) (string,
 		Metadata:          metadata,
 		VisibleTools:      append([]string(nil), req.VisibleTools...),
 		PromptFingerprint: copyStringMap(req.PromptFingerprint),
+		HarnessTurn:       req.HarnessTurn,
 		Prompt:            redactPrompt(req.Prompt),
 		ModelInput:        req.ModelInput,
 		StepContext: map[string]any{
 			"modelInput": req.ModelInput,
 		},
-		PromptInputTrace:   req.PromptInputTrace,
-		PromptInputDiff:    req.PromptInputDiff,
-		FinalEvidenceState: req.FinalEvidenceState,
+		SpecialInputWorldState: specialinputmemory.CloneWorldStateSection(promptTrace.SpecialInputWorldState),
+		PromptInputTrace:       promptTrace,
+		PromptInputDiff:        req.PromptInputDiff,
+		FinalEvidenceState:     req.FinalEvidenceState,
 	}
 	if len(req.ModelInput) > 0 {
 		doc.ProviderRequest.ModelInputHash = stableTraceV2Hash(req.ModelInput)

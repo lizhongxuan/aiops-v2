@@ -7,6 +7,9 @@ import { AgentProfilePage } from "@/pages/AgentProfilePage";
 import { AgentUICenterPage } from "@/pages/AgentUICenterPage";
 import { ApprovalManagementPage } from "@/pages/ApprovalManagementPage";
 import { CapabilityCenterPage } from "@/pages/CapabilityCenterPage";
+import { CorootEntryPage } from "@/pages/coroot/CorootEntryPage";
+import { CorootMonitorSettingsPage } from "@/pages/coroot/CorootMonitorSettingsPage";
+import { CorootWorkspacePage } from "@/pages/coroot/CorootWorkspacePage";
 import { ERPHealthPage } from "@/pages/ERPHealthPage";
 import { GeneratorWorkshopPage } from "@/pages/GeneratorWorkshopPage";
 import { HostsPage } from "@/pages/HostsPage";
@@ -43,6 +46,9 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/opsgraph/graphs": <OpsGraphListPage />,
   "/incidents": <IncidentListPage />,
   "/incidents/:incidentId": <IncidentWorkbenchPage />,
+  "/coroot": <CorootEntryPage />,
+  "/coroot/config": <Navigate to="/settings/coroot" replace />,
+  "/coroot/p/:projectId/:view?/:id?/:report?": <CorootWorkspacePage />,
   "/runbooks": <RunbookCatalogPage />,
   "/runbooks/:runbookId": <RunbookDetailPage />,
   "/runner": <RunnerStudioPage />,
@@ -52,6 +58,7 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/settings": <SettingsPage />,
   "/settings/llm": <LLMConfigPage />,
   "/settings/runtime": <RuntimeSettingsPage />,
+  "/settings/coroot": <CorootMonitorSettingsPage />,
   "/settings/hosts": <HostsPage />,
   "/settings/ops-manuals": <OpsManualsPage />,
   "/settings/experience-packs": <OpsManualsPage />,

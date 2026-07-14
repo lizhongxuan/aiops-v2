@@ -1,0 +1,52 @@
+{
+  "id": "pg-role-binding",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "@hostA 设置为 PG 主节点，@hostB 设置为 PG 从节点，然后检查主节点复制状态。",
+  "expected": {
+    "expectedAssembly": {
+      "agentKind": "host_worker",
+      "profile": "host.pg_role_bound",
+      "runtimeRole": "runtime_agent",
+      "routeReasonContains": "role-bound"
+    },
+    "expectedResources": {
+      "verifiedIds": ["hostA", "hostB"]
+    },
+    "expectedSessionTargets": {
+      "bindingMode": "multi_host",
+      "hostIds": ["hostA", "hostB"],
+      "sourceTurnId": "turn-1"
+    },
+    "expectedRoleBindings": [
+      {
+        "resourceId": "hostA",
+        "role": "pg_primary",
+        "conflictState": "none"
+      },
+      {
+        "resourceId": "hostB",
+        "role": "pg_standby",
+        "conflictState": "none"
+      }
+    ],
+    "expectedToolSurface": {
+      "visibleTools": ["exec_command"],
+      "dispatchableTools": ["exec_command"],
+      "requireSingleSource": true
+    },
+    "expectedFinalReport": {
+      "hostIds": ["hostA"],
+      "roles": ["pg_primary"],
+      "evidenceRefs": ["tool:hostA:replication-status"]
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}

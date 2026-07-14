@@ -78,6 +78,49 @@ func TestDomainRulesCorootToolMetadataIncludesRCAGuidance(t *testing.T) {
 	}
 }
 
+func TestCorootListServicesReturnsCompactAbnormalSummaryForModel(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/api/project/prod/overview/applications" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":{"applications":[
+			{"id":"prod:default:Deployment:checkout","cluster":"prod-a","category":"application","status":"warning"},
+			{"id":"prod:default:Deployment:payments","cluster":"prod-a","category":"application","status":"ok"},
+			{"id":"prod:kube-system:DaemonSet:calico-node","cluster":"prod-a","category":"control-plane","status":"critical"}
+		]}}`))
+	})
+
+	tool := corootToolByName(t, tools, "coroot.list_services")
+	result := executeCorootToolResult(t, tool, `{"project":"prod"}`)
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+		t.Fatalf("decode model content: %v\n%s", err, result.Content)
+	}
+
+	if body["totalServices"] != float64(3) {
+		t.Fatalf("totalServices = %#v, want 3", body["totalServices"])
+	}
+	statusCounts := body["statusCounts"].(map[string]any)
+	if statusCounts["warning"] != float64(1) || statusCounts["critical"] != float64(1) || statusCounts["ok"] != float64(1) {
+		t.Fatalf("statusCounts = %#v, want critical/warning/ok counts", statusCounts)
+	}
+	problemServices := body["problemServices"].([]any)
+	if got := len(problemServices); got != 2 {
+		t.Fatalf("problemServices len = %d, want 2: %#v", got, problemServices)
+	}
+	if first := problemServices[0].(map[string]any); first["name"] != "checkout" || first["status"] != "warning" {
+		t.Fatalf("first problem service = %#v, want checkout warning", first)
+	}
+	if _, ok := body["services"]; ok {
+		t.Fatalf("model-facing broad list should not expose full services array: %#v", body["services"])
+	}
+	if !strings.Contains(result.Content, "Use problemServices/statusCounts from this result before calling coroot.list_services again") {
+		t.Fatalf("model guidance missing no-repeat hint: %s", result.Content)
+	}
+}
+
 func TestCorootToolsReturnFixedSchemasFromUpstream(t *testing.T) {
 	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
@@ -167,6 +210,45 @@ func TestCorootToolsReturnFixedSchemasFromUpstream(t *testing.T) {
 	}
 	if got := len(rca["relatedServices"].([]any)); got == 0 {
 		t.Fatalf("rca relatedServices empty")
+	}
+}
+
+func TestCorootHealthCheckUsesServerRootHealthEndpoint(t *testing.T) {
+	var sawRootHealth bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/health":
+			sawRootHealth = true
+			w.WriteHeader(http.StatusOK)
+		case "/coroot/health":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(`<!doctype html><html><body>coroot ui</body></html>`))
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer upstream.Close()
+
+	client, err := NewClient(ClientConfig{
+		BaseURL:         upstream.URL,
+		ProductBasePath: "/coroot/",
+		Token:           "test-token",
+		Project:         "prod",
+		Timeout:         time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	body := executeCorootTool(t, corootToolByName(t, corootToolsWithClient(client), "coroot.health_check"), `{}`)
+	if body["status"] != "ok" {
+		t.Fatalf("health_check status = %#v, want ok: %#v", body["status"], body)
+	}
+	if body["healthy"] != true {
+		t.Fatalf("health_check healthy = %#v, want true: %#v", body["healthy"], body)
+	}
+	if !sawRootHealth {
+		t.Fatal("health_check did not request server root /health")
 	}
 }
 
@@ -1067,6 +1149,26 @@ func TestCorootToolReturnsStructuredError(t *testing.T) {
 	}
 	if body["skipReason"] != "coroot_mcp_unavailable" {
 		t.Fatalf("skipReason = %#v, want coroot_mcp_unavailable", body["skipReason"])
+	}
+}
+
+func TestCorootToolReturnsActionableAuthHintForUnauthorized(t *testing.T) {
+	tools := newCorootTestTools(t, func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	})
+
+	result := executeCorootToolResult(t, corootToolByName(t, tools, "coroot.incidents"), `{"project":"prod"}`)
+	if !strings.Contains(result.Error, "Web session") || !strings.Contains(result.Error, "username/password") || !strings.Contains(result.Error, "Project API keys") {
+		t.Fatalf("ToolResult.Error = %q, want actionable Coroot auth guidance", result.Error)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &body); err != nil {
+		t.Fatalf("decode coroot error content: %v\n%s", err, result.Content)
+	}
+	errPayload := body["error"].(map[string]any)
+	hint, _ := errPayload["userHint"].(string)
+	if !strings.Contains(hint, "Web session") || !strings.Contains(hint, "username/password") || !strings.Contains(hint, "Project API keys") {
+		t.Fatalf("userHint = %q, want actionable Coroot auth guidance", hint)
 	}
 }
 

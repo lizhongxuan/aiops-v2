@@ -10,6 +10,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 	"aiops-v2/internal/verification"
@@ -85,11 +86,11 @@ func TestVerificationCompletionGateValidatesPassPartialAndFail(t *testing.T) {
 	if partialDecision.Action != VerificationCompletionActionRequireBlockerFinal || partialDecision.Status != verification.StatusPartial {
 		t.Fatalf("partial decision = %#v, want require blocker/PARTIAL", partialDecision)
 	}
-	if verificationCompletionGateAllowsFinal("已完成，可以收尾。", partialDecision, nil) {
-		t.Fatal("partial decision allowed success final, want blocker-only final")
+	if !verificationCompletionGateAllowsFinal("已完成，可以收尾。", partialDecision, nil) {
+		t.Fatal("typed partial facts should allow display commit with non-success contract")
 	}
 	if !verificationCompletionGateAllowsFinal("权限缺少，无法继续；需要 request synthetic approval。", partialDecision, nil) {
-		t.Fatal("partial decision rejected explicit blocker final")
+		t.Fatal("blocker prose should have the same commit decision")
 	}
 
 	fail := verificationReportSnapshot(t, verification.VerificationReport{
@@ -115,8 +116,8 @@ func TestVerificationCompletionGateValidatesPassPartialAndFail(t *testing.T) {
 	if failDecision.Action != VerificationCompletionActionBlockSuccessFinal || failDecision.Status != verification.StatusFail {
 		t.Fatalf("fail decision = %#v, want block success/FAIL", failDecision)
 	}
-	if verificationCompletionGateAllowsFinal("已完成，已验证。", failDecision, nil) {
-		t.Fatal("fail decision allowed success final")
+	if !verificationCompletionGateAllowsFinal("已完成，已验证。", failDecision, nil) {
+		t.Fatal("typed failure should commit display text with failed final contract")
 	}
 }
 
@@ -140,7 +141,7 @@ func TestParseVerificationReportJSONIgnoresGenericStatusPayload(t *testing.T) {
 	}
 }
 
-func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
+func TestRunTurnVerificationCompletionGateRecordsMissingReportWithoutProseRetry(t *testing.T) {
 	traceDir := t.TempDir()
 	setLegacyTraceRootForTest(t, traceDir)
 
@@ -180,11 +181,11 @@ func TestRunTurnVerificationCompletionGateRetriesMissingReport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	if result.Output != "缺少结构化 VerificationReport，当前不能给完成结论。" {
-		t.Fatalf("final output = %q, want blocker final", result.Output)
+	if result.Output != "已完成，已验证，结论明确。" {
+		t.Fatalf("final output = %q, want display answer preserved", result.Output)
 	}
-	if len(model.inputs) != 3 {
-		t.Fatalf("model calls = %d, want gate-triggered third call", len(model.inputs))
+	if len(model.inputs) != 2 {
+		t.Fatalf("model calls = %d, missing report must not be repaired by prose retry", len(model.inputs))
 	}
 	session := kernel.sessions.Get("sess-verification-completion-missing")
 	if session == nil || session.CurrentTurn == nil || len(session.CurrentTurn.Iterations) < 2 {
@@ -228,11 +229,14 @@ func TestRunTurnVerificationCompletionGateRetriesProseApprovalForScopedMutation(
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-prose-approval-mutation",
-		SessionType: SessionTypeWorkspace,
-		Mode:        ModeExecute,
-		TurnID:      "turn-prose-approval-mutation",
-		Input:       "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
+		SessionID:         "sess-prose-approval-mutation",
+		SessionType:       SessionTypeWorkspace,
+		Mode:              ModeExecute,
+		TurnID:            "turn-prose-approval-mutation",
+		HostID:            "host-a",
+		PermissionProfile: RuntimePermissionProfileApprovalRequired,
+		RollbackPolicy:    RuntimeRollbackPolicyActionContractRequired,
+		Input:             "在 @host-a 上重启服务。需要先展示审批，用户批准后继续同一个 turn。",
 		Metadata: map[string]string{
 			"taskDepth":                       "operations",
 			"aiops.intent.kind":               "change",
@@ -329,11 +333,15 @@ func TestRunTurnVerificationCompletionGateConvertsInstallProseApprovalIntoRuntim
 	}
 	kernel := newLoopKernel(t, model, []tooling.Tool{tool}, nil, nil)
 	result, err := kernel.RunTurn(context.Background(), TurnRequest{
-		SessionID:   "sess-install-prose-approval",
-		SessionType: SessionTypeWorkspace,
-		Mode:        ModeExecute,
-		TurnID:      "turn-install-prose-approval",
-		Input:       "在 @host-a 上安装一个 nginx",
+		SessionID:         "sess-install-prose-approval",
+		SessionType:       SessionTypeWorkspace,
+		Mode:              ModeExecute,
+		TurnID:            "turn-install-prose-approval",
+		HostID:            "host-a",
+		IntentFrame:       &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindChange, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite, runtimecontract.ActionRiskHostExec}, Confidence: runtimecontract.ConfidenceHigh},
+		PermissionProfile: RuntimePermissionProfileApprovalRequired,
+		RollbackPolicy:    RuntimeRollbackPolicyActionContractRequired,
+		Input:             "在 @host-a 上安装一个 nginx",
 		Metadata: map[string]string{
 			"taskDepth":                       string(taskdepth.LevelSimpleRead),
 			"aiops.route.mode":                "host_bound_ops",
@@ -449,10 +457,10 @@ func TestRunTurnVerificationCompletionGateAllowsEvidenceBackedVerificationSummar
 		t.Fatalf("RunTurn: %v", err)
 	}
 	if !strings.Contains(result.Output, "验证通过") {
-		t.Fatalf("final output = %q, want evidence-backed verification summary", result.Output)
+		t.Fatalf("final output = %q, want display summary preserved", result.Output)
 	}
 	if len(model.inputs) != 2 {
-		t.Fatalf("model calls = %d, want no completion-gate retry after evidence-backed verification summary", len(model.inputs))
+		t.Fatalf("model calls = %d, typed facts must not trigger prose retry", len(model.inputs))
 	}
 }
 
@@ -527,10 +535,10 @@ func TestRunTurnVerificationCompletionGateCompletesEvidenceBackedStatusAnswer(t 
 		t.Fatalf("tool calls = %d, want 1", calls)
 	}
 	if !strings.Contains(result.Output, "CPU 状态正常") {
-		t.Fatalf("final output = %q, want evidence-backed status answer", result.Output)
+		t.Fatalf("final output = %q, want display status answer", result.Output)
 	}
 	if len(model.inputs) != 2 {
-		t.Fatalf("model calls = %d, want no completion-gate retry after evidence-backed status answer", len(model.inputs))
+		t.Fatalf("model calls = %d, typed facts must not trigger prose retry", len(model.inputs))
 	}
 	session := kernel.sessions.Get("sess-verification-completion-status-answer")
 	if session == nil || session.CurrentTurn == nil {

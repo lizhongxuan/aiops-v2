@@ -150,9 +150,13 @@ func ApplyPromptSectionRetentionPolicy(sections []promptcompiler.PromptSectionTr
 		})
 		decision.SourceRef = "prompt_section:" + safePromptSectionRef(section.ID)
 		decisions = append(decisions, decision)
+		if section.TokenEstimate == 0 {
+			section.TokenEstimate = section.TokensEstimate
+		}
 		section.RetentionRank = decision.RetentionRank
 		section.RetentionClass = decision.RetentionClass
 		section.CompactAction = decision.Action
+		section.Action = harnessContextSectionAction(decision.Action)
 		section.SourceRef = decision.SourceRef
 		if section.CompactSchema == "" {
 			section.CompactSchema = contract.CompactSchema
@@ -168,6 +172,21 @@ func ApplyPromptSectionRetentionPolicy(sections []promptcompiler.PromptSectionTr
 		}
 	}
 	return annotated, decisions, nil
+}
+
+func harnessContextSectionAction(action string) string {
+	switch strings.TrimSpace(action) {
+	case promptcompiler.CompactActionKeptOriginal, "":
+		return "kept"
+	case promptcompiler.CompactActionSummarized:
+		return "summarized"
+	case promptcompiler.CompactActionExternalized:
+		return "externalized"
+	case promptcompiler.CompactActionBlocked:
+		return "blocked"
+	default:
+		return strings.TrimSpace(action)
+	}
 }
 
 func safePromptSectionRef(id string) string {

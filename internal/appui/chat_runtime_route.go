@@ -6,6 +6,7 @@ import (
 
 	"aiops-v2/internal/envcontext"
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
 )
@@ -86,7 +87,26 @@ func BuildChatRuntimeRouteWithEnvironment(input string, mentions []hostops.HostM
 		route.EnvironmentReadOnlyReason = environment.ReadOnlyReason
 		route.Reasons = appendUniqueEvidenceString(route.Reasons, "environment target conflict")
 	}
+	if route.AllowsCorootRCA {
+		applyCorootCapabilityRouteHint(&route, "explicit capability: coroot")
+	}
 	return route
+}
+
+func applyCorootCapabilityRouteHint(route *ChatRuntimeRoute, reason string) {
+	if route == nil {
+		return
+	}
+	route.AllowsCorootRCA = true
+	if route.Mode == "" || route.Mode == ChatRouteAdvisory {
+		route.Mode = ChatRouteEvidenceRCA
+	}
+	if strings.TrimSpace(reason) != "" {
+		route.Reasons = appendUniqueEvidenceString(route.Reasons, reason)
+	}
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
 }
 
 func BuildChatRuntimeRouteFromIntentFrame(frame runtimecontract.IntentFrame, existing ChatRuntimeRoute) ChatRuntimeRoute {
@@ -243,6 +263,172 @@ func applyExplicitSelectedHostContext(req *runtimekernel.TurnRequest, route Chat
 	}
 }
 
+func applyChatRuntimeResourceProjection(req *runtimekernel.TurnRequest, mentions []hostops.HostMention) {
+	if req == nil {
+		return
+	}
+	bindings := make([]resourcebinding.ResourceBindingSnapshot, 0, len(mentions)+1)
+	for _, mention := range mentions {
+		binding := resourcebinding.HostBindingFromMention(hostops.ResourceBindingProjectionFromMention(mention))
+		if binding.Ref.ID == "" {
+			continue
+		}
+		bindings = append(bindings, binding)
+	}
+	if hostID := strings.TrimSpace(req.HostID); hostID != "" && !resourceBindingsContainHost(bindings, hostID) {
+		source := resourcebinding.BindingSourceRouteMetadata
+		verifiedBy := "appui.route_metadata"
+		if req.Metadata != nil && req.Metadata["aiops.target.selectedHostContext"] == "true" {
+			source = resourcebinding.BindingSourceSessionTarget
+			verifiedBy = "appui.selected_host_context"
+		} else if req.Metadata != nil && req.Metadata["aiops.sessionTarget.route.applied"] == "true" {
+			source = resourcebinding.BindingSourceSessionTarget
+			verifiedBy = "appui.session_target_route"
+		}
+		bindings = append(bindings, resourcebinding.BuildHostBinding(resourcebinding.HostBindingInput{
+			HostID:      hostID,
+			DisplayName: hostID,
+			Source:      source,
+			VerifiedBy:  verifiedBy,
+			Verified:    true,
+		}))
+	}
+	if len(bindings) == 0 {
+		return
+	}
+	req.ResourceBindings = mergeResourceBindings(req.ResourceBindings, bindings)
+}
+
+func applySessionTargetRouteResourceProjection(req *runtimekernel.TurnRequest, decision sessionTargetRouteDecision) {
+	if req == nil || !decision.Applied || len(decision.HostIDs) == 0 {
+		return
+	}
+	bindings := make([]resourcebinding.ResourceBindingSnapshot, 0, len(decision.HostIDs))
+	for _, hostID := range decision.HostIDs {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			continue
+		}
+		bindings = append(bindings, resourcebinding.BuildHostBinding(resourcebinding.HostBindingInput{
+			HostID:      hostID,
+			DisplayName: hostID,
+			Source:      resourcebinding.BindingSourceSessionTarget,
+			VerifiedBy:  "appui.session_target_route",
+			Verified:    true,
+		}))
+	}
+	req.ResourceBindings = mergeResourceBindings(req.ResourceBindings, bindings)
+}
+
+func applyChatRuntimeSessionTargetRoleTrace(req *runtimekernel.TurnRequest, session *runtimekernel.SessionState, input string, mentions []hostops.HostMention) {
+	if req == nil {
+		return
+	}
+	if userClearsSessionTarget(input) {
+		req.SessionTargetSnapshot = resourcebinding.SessionTargetCleared(req.TurnID)
+		req.ResourceRoleBindings = nil
+		req.RoleBindingConflicts = nil
+		return
+	}
+	mentionIDs := hostMentionTokenIDs(mentions)
+	if len(mentionIDs) > 0 {
+		target := resourcebinding.SessionTargetFromVerifiedBindings(req.ResourceBindings, req.TurnID, mentionIDs)
+		req.SessionTargetSnapshot = target
+	} else if session != nil && session.SessionTargetSnapshot != nil {
+		next := session.SessionTargetSnapshot.NextTurn()
+		if next != nil && !next.Expired() {
+			req.SessionTargetSnapshot = next
+		}
+	}
+	extraction := resourcebinding.ExtractRoleBindings(input, resourcebinding.RoleCandidatesFromBindings(req.ResourceBindings), req.TurnID)
+	if len(extraction.Bindings) > 0 {
+		req.ResourceRoleBindings = extraction.Bindings
+	}
+	if len(extraction.Conflicts) > 0 {
+		req.RoleBindingConflicts = extraction.Conflicts
+	}
+}
+
+func applySessionTargetRouteMetadata(req *runtimekernel.TurnRequest, decision sessionTargetRouteDecision) {
+	if req == nil || !decision.Enabled {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	req.Metadata["aiops.sessionTarget.route.enabled"] = "true"
+	req.Metadata["aiops.sessionTarget.route.applied"] = boolMetadataString(decision.Applied)
+	req.Metadata["aiops.sessionTarget.route.requiresClarification"] = boolMetadataString(decision.RequiresClarification)
+	if strings.TrimSpace(decision.Reason) != "" {
+		req.Metadata["aiops.sessionTarget.route.reason"] = strings.TrimSpace(decision.Reason)
+	}
+	if strings.TrimSpace(decision.TargetSetID) != "" {
+		req.Metadata["aiops.sessionTarget.route.targetSetId"] = strings.TrimSpace(decision.TargetSetID)
+	}
+	if strings.TrimSpace(decision.SourceTurnID) != "" {
+		req.Metadata["aiops.sessionTarget.route.sourceTurnId"] = strings.TrimSpace(decision.SourceTurnID)
+	}
+	if len(decision.HostIDs) > 0 {
+		req.Metadata["aiops.sessionTarget.route.hostIds"] = strings.Join(decision.HostIDs, ",")
+	}
+}
+
+func userClearsSessionTarget(input string) bool {
+	input = strings.ToLower(strings.TrimSpace(input))
+	for _, phrase := range []string{"清除主机上下文", "清空主机上下文", "不要用刚才", "不要用上次", "换一台"} {
+		if strings.Contains(input, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostMentionTokenIDs(mentions []hostops.HostMention) []string {
+	var ids []string
+	for _, mention := range mentions {
+		if id := strings.TrimSpace(mention.TokenID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func resourceBindingsContainHost(bindings []resourcebinding.ResourceBindingSnapshot, hostID string) bool {
+	hostID = strings.TrimSpace(hostID)
+	if hostID == "" {
+		return false
+	}
+	for _, binding := range bindings {
+		if binding.Ref.Type == resourcebinding.ResourceTypeHost && strings.TrimSpace(binding.Ref.ID) == hostID {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeResourceBindings(base, extra []resourcebinding.ResourceBindingSnapshot) []resourcebinding.ResourceBindingSnapshot {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := map[string]struct{}{}
+	out := make([]resourcebinding.ResourceBindingSnapshot, 0, len(base)+len(extra))
+	for _, binding := range append(append([]resourcebinding.ResourceBindingSnapshot(nil), base...), extra...) {
+		key := strings.TrimSpace(binding.TraceHash)
+		if key == "" {
+			key = binding.Ref.IdentityHash() + "\x00" + binding.Source + "\x00" + binding.TrustLevel
+		}
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, binding)
+	}
+	return out
+}
+
 func firstRouteMentionHostID(mentions []hostops.HostMention) string {
 	for _, mention := range mentions {
 		if hostID := strings.TrimSpace(mention.HostID); hostID != "" {
@@ -300,6 +486,8 @@ func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute C
 		req.Metadata = map[string]string{}
 	}
 	frame = intentFrameForActiveRoute(frame, activeRoute)
+	typedFrame := runtimecontract.NormalizeIntentFrame(frame)
+	req.IntentFrame = &typedFrame
 	req.Metadata[runtimecontract.MetadataIntentKind] = string(frame.Kind)
 	req.Metadata[runtimecontract.MetadataIntentConfidence] = firstNonEmptyString(frame.Confidence, runtimecontract.ConfidenceLow)
 	req.Metadata["aiops.intent.routingMode"] = intentFrameRoutingMode(routingMode)
@@ -323,6 +511,22 @@ func applyIntentFrameRouteMetadata(req *runtimekernel.TurnRequest, legacyRoute C
 	} else {
 		req.Metadata[runtimecontract.MetadataRouteDiff] = "[]"
 	}
+}
+
+func applyRuntimeMutationPolicies(req *runtimekernel.TurnRequest, frame runtimecontract.IntentFrame) {
+	if req == nil {
+		return
+	}
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	mutates := frame.Kind == runtimecontract.IntentKindChange || frame.Kind == runtimecontract.IntentKindConfigure ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskWrite) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskDestruct)
+	if !mutates {
+		return
+	}
+	req.PermissionProfile = runtimekernel.RuntimePermissionProfileApprovalRequired
+	req.RollbackPolicy = runtimekernel.RuntimeRollbackPolicyActionContractRequired
 }
 
 func intentFrameForActiveRoute(frame runtimecontract.IntentFrame, route ChatRuntimeRoute) runtimecontract.IntentFrame {
@@ -443,6 +647,33 @@ func applyHostOpsManagerRuntimeMetadata(metadata map[string]string) {
 	metadata["agentProfile"] = hostOpsManagerProfile
 	metadata["runtimeProfile"] = hostOpsManagerRuntimeProfile
 	metadata["enableToolPack"] = appendMetadataListValue(metadata["enableToolPack"], hostops.ToolPackHostOps)
+}
+
+func applyWorkflowAgentRuntimeMetadata(req *runtimekernel.TurnRequest) {
+	if req == nil {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(req.Metadata["aiops.workflowAgent.enabled"]) != "true" {
+		return
+	}
+	req.HostID = ""
+	req.SessionType = runtimekernel.SessionTypeWorkspace
+	req.Mode = runtimekernel.ModePlan
+	req.Metadata["profile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["toolProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["agentProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["runtimeProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["runtimeRoute"] = runtimekernel.RuntimePromptProfileWorkflowAgent
+	req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "workflow_editor")
+	req.Metadata["aiops.target.binding"] = "none"
+	req.Metadata["aiops.target.hostId"] = ""
+	req.Metadata["aiops.target.summary"] = "Workflow AI Drawer"
+	req.Metadata["aiops.tool.execCommandAllowed"] = "false"
+	req.Metadata["aiops.tool.hostMutationAllowed"] = "false"
+	req.Metadata["aiops.workflowAgent.routeApplied"] = "true"
 }
 
 func firstRouteTargetHostID(targets []envcontext.TargetRef, mentions []hostops.HostMention) string {

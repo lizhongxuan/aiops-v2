@@ -1,7 +1,6 @@
 package runtimekernel
 
 import (
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -24,31 +23,137 @@ func TestDepthProfileFromTurnRequestClassifiesRCA(t *testing.T) {
 	}
 }
 
-func TestDepthProfileFromTurnRequestUsesIntentFrameMetadata(t *testing.T) {
-	frame := runtimecontract.IntentFrame{
-		Kind:       runtimecontract.IntentKindResearch,
-		DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopePublicWeb},
-		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly},
-	}
-	data, err := json.Marshal(frame)
-	if err != nil {
-		t.Fatalf("Marshal(IntentFrame) error = %v", err)
-	}
-
+func TestDepthProfileFromTurnRequestDoesNotParseIntentMetadata(t *testing.T) {
 	profile := depthProfileFromTurnRequest(TurnRequest{
 		SessionType: SessionTypeWorkspace,
 		Mode:        ModeChat,
-		Input:       "compare common scheduling tradeoffs",
+		Input:       "hello",
 		Metadata: map[string]string{
-			runtimecontract.MetadataIntentFrame: string(data),
+			runtimecontract.MetadataIntentFrame:      `{"kind":"change","risk_budget":["write"],"confidence":"high"}`,
+			runtimecontract.MetadataIntentKind:       string(runtimecontract.IntentKindChange),
+			runtimecontract.MetadataIntentRiskBudget: string(runtimecontract.ActionRiskWrite),
 		},
 	})
+
+	if profile.Level != taskdepth.LevelTrivial {
+		t.Fatalf("level = %s, want trivial from text-only compatibility fallback; profile=%+v", profile.Level, profile)
+	}
+	if profile.RequiresApproval || profile.RequiresValidation {
+		t.Fatalf("compatibility fallback reparsed intent metadata: %+v", profile)
+	}
+}
+
+func TestDepthProfileFromAdmissionFactsUsesIntentFrame(t *testing.T) {
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent: &runtimecontract.IntentFrame{
+			Kind:       runtimecontract.IntentKindResearch,
+			DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopePublicWeb},
+			RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly},
+			Confidence: runtimecontract.ConfidenceHigh,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+
+	profile := depthProfileFromAdmissionFacts(TurnRequest{
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		Input:       "compare common scheduling tradeoffs",
+	}, facts)
 
 	if profile.Level != taskdepth.LevelInvestigation {
 		t.Fatalf("level = %s, want investigation from public_web intent frame; profile=%+v", profile.Level, profile)
 	}
 	if !profile.RequiresPlan || !profile.RequiresEvidence {
 		t.Fatalf("profile should require plan/evidence from structured intent frame: %+v", profile)
+	}
+}
+
+func TestDepthProfileFromAdmissionFactsPreservesLegacyDepthPolicyWithoutTypedIntent(t *testing.T) {
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	profile := depthProfileFromAdmissionFacts(TurnRequest{
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		Input:       "总结当前告警",
+		Metadata:    map[string]string{"taskDepth": string(taskdepth.LevelSimpleRead)},
+	}, facts)
+
+	if profile.Level != taskdepth.LevelSimpleRead {
+		t.Fatalf("level = %s, want legacy simple_read policy when no typed intent exists; profile=%+v", profile.Level, profile)
+	}
+}
+
+func TestDepthProfileFromAdmissionFactsTreatsNoTargetDiagnosisAsAnalysisOnly(t *testing.T) {
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent: &runtimecontract.IntentFrame{
+			Kind:       runtimecontract.IntentKindDiagnose,
+			DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopePublicWeb},
+			RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskNetwork},
+			Evidence: runtimecontract.EvidenceEnvelope{
+				HasUserProvidedEvidence: true,
+				EvidenceKinds:           []string{"log"},
+			},
+			Confidence: runtimecontract.ConfidenceHigh,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	profile := depthProfileFromAdmissionFacts(TurnRequest{
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		Input:       "只基于日志分析，不要连接主机",
+	}, facts)
+
+	if !profile.AnalysisOnly || !profile.ExecutionProhibited {
+		t.Fatalf("profile = %+v, want no-target diagnosis to be analysis-only and execution-prohibited", profile)
+	}
+	if profile.RequiresApproval || profile.RequiresValidation {
+		t.Fatalf("profile = %+v, want no approval/validation for no-target analysis", profile)
+	}
+}
+
+func TestDepthProfileFromAdmissionFactsPrefersTypedIntentOverConflictingMetadata(t *testing.T) {
+	conflictingMetadata := map[string]string{
+		runtimecontract.MetadataIntentFrame:      `{"kind":"change","risk_budget":["write"],"confidence":"high"}`,
+		runtimecontract.MetadataIntentKind:       string(runtimecontract.IntentKindChange),
+		runtimecontract.MetadataIntentRiskBudget: string(runtimecontract.ActionRiskWrite),
+		"aiops.route.mode":                       "host_bound_ops",
+		"aiops.tool.execCommandAllowed":          "true",
+		"aiops.tool.hostMutationAllowed":         "true",
+		"taskDepth":                              string(taskdepth.LevelOperations),
+	}
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent: &runtimecontract.IntentFrame{
+			Kind:       runtimecontract.IntentKindExplain,
+			RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly},
+			Confidence: runtimecontract.ConfidenceHigh,
+		},
+		Metadata: conflictingMetadata,
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	if err := runtimecontract.ValidateAdmissionFactsIntegrity(facts); err != nil {
+		t.Fatalf("ValidateAdmissionFactsIntegrity() error = %v", err)
+	}
+
+	profile := depthProfileFromAdmissionFacts(TurnRequest{
+		SessionType: SessionTypeWorkspace,
+		Mode:        ModeChat,
+		Input:       "explain one concept",
+		Metadata:    conflictingMetadata,
+	}, facts)
+
+	if profile.Level != taskdepth.LevelSimpleRead {
+		t.Fatalf("level = %s, want simple_read from frozen typed intent; profile=%+v", profile.Level, profile)
+	}
+	if profile.RequiresApproval || profile.RequiresValidation {
+		t.Fatalf("conflicting metadata promoted typed read-only intent: %+v", profile)
 	}
 }
 
@@ -76,6 +181,47 @@ func TestApplyTurnPromptProfileMetadata(t *testing.T) {
 	}
 	if ctx.AnswerStyle != "concise" {
 		t.Fatalf("AnswerStyle = %q, want concise", ctx.AnswerStyle)
+	}
+}
+
+func TestApplyTurnPromptProfileMetadataAddsCompleteFollowupPrompt(t *testing.T) {
+	ctx := applyTurnPromptProfileMetadata(emptyCompileContextForDepthTest(), map[string]string{
+		"aiops.answer.requireCompleteFollowup": "true",
+		"reasoningEffort":                      "medium",
+		"answerStyle":                          "complete_explanation",
+	})
+	if ctx.ReasoningEffort != "medium" {
+		t.Fatalf("ReasoningEffort = %q, want medium", ctx.ReasoningEffort)
+	}
+	if ctx.AnswerStyle != "complete_explanation" {
+		t.Fatalf("AnswerStyle = %q, want complete_explanation", ctx.AnswerStyle)
+	}
+	if got := strings.Join(ctx.SkillPromptAssets, "\n"); !strings.Contains(got, "Complete follow-up answer") ||
+		!strings.Contains(got, "standalone answer") ||
+		!strings.Contains(got, "implementation details") ||
+		!strings.Contains(got, "thread-safety") ||
+		!strings.Contains(got, "blocking") {
+		t.Fatalf("complete followup prompt missing expected guidance:\n%s", got)
+	}
+}
+
+func TestApplyTurnPromptProfileMetadataAddsSmalltalkPrompt(t *testing.T) {
+	ctx := applyTurnPromptProfileMetadata(emptyCompileContextForDepthTest(), map[string]string{
+		"aiops.answer.smalltalkOnly": "true",
+		"reasoningEffort":            "low",
+		"answerStyle":                "smalltalk",
+	})
+	if ctx.ReasoningEffort != "low" {
+		t.Fatalf("ReasoningEffort = %q, want low", ctx.ReasoningEffort)
+	}
+	if ctx.AnswerStyle != "smalltalk" {
+		t.Fatalf("AnswerStyle = %q, want smalltalk", ctx.AnswerStyle)
+	}
+	got := strings.Join(ctx.SkillPromptAssets, "\n")
+	if !strings.Contains(got, "Small-talk turn") ||
+		!strings.Contains(got, "Do not continue a previous Coroot") ||
+		!strings.Contains(got, "Do not call tools") {
+		t.Fatalf("smalltalk prompt missing expected guidance:\n%s", got)
 	}
 }
 

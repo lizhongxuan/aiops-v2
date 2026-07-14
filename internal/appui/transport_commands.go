@@ -14,34 +14,38 @@ import (
 type TransportCommandType string
 
 const (
-	TransportCommandTypeAddMessage        TransportCommandType = "add-message"
-	TransportCommandTypeStop              TransportCommandType = "aiops.stop"
-	TransportCommandTypeRetry             TransportCommandType = "aiops.retry"
-	TransportCommandTypeApprovalDecision  TransportCommandType = "aiops.approval-decision"
-	TransportCommandTypeChoiceAnswer      TransportCommandType = "aiops.choice-answer"
-	TransportCommandTypeMCPAction         TransportCommandType = "aiops.mcp-action"
-	TransportCommandTypeMCPRefresh        TransportCommandType = "aiops.mcp-refresh"
-	TransportCommandTypeMCPPin            TransportCommandType = "aiops.mcp-pin"
-	TransportCommandTypeHostPlanAccept    TransportCommandType = "aiops.host-plan-accept"
-	TransportCommandTypeHostPlanRevise    TransportCommandType = "aiops.host-plan-revise"
-	TransportCommandTypeChildAgentMessage TransportCommandType = "aiops.child-agent-message"
-	TransportCommandTypeChildAgentStop    TransportCommandType = "aiops.child-agent-stop"
+	TransportCommandTypeAddMessage          TransportCommandType = "add-message"
+	TransportCommandTypeStop                TransportCommandType = "aiops.stop"
+	TransportCommandTypeRetry               TransportCommandType = "aiops.retry"
+	TransportCommandTypeApprovalDecision    TransportCommandType = "aiops.approval-decision"
+	TransportCommandTypeChoiceAnswer        TransportCommandType = "aiops.choice-answer"
+	TransportCommandTypeMCPAction           TransportCommandType = "aiops.mcp-action"
+	TransportCommandTypeMCPRefresh          TransportCommandType = "aiops.mcp-refresh"
+	TransportCommandTypeMCPPin              TransportCommandType = "aiops.mcp-pin"
+	TransportCommandTypeSpecialInputClear   TransportCommandType = "aiops.special-input-clear"
+	TransportCommandTypeSpecialInputConfirm TransportCommandType = "aiops.special-input-confirm"
+	TransportCommandTypeHostPlanAccept      TransportCommandType = "aiops.host-plan-accept"
+	TransportCommandTypeHostPlanRevise      TransportCommandType = "aiops.host-plan-revise"
+	TransportCommandTypeChildAgentMessage   TransportCommandType = "aiops.child-agent-message"
+	TransportCommandTypeChildAgentStop      TransportCommandType = "aiops.child-agent-stop"
 )
 
 type TransportCommand struct {
-	Type              TransportCommandType
-	AddMessage        *TransportAddMessageCommand
-	Stop              *TransportStopCommand
-	Retry             *TransportRetryCommand
-	ApprovalDecision  *TransportApprovalDecisionCommand
-	ChoiceAnswer      *TransportChoiceAnswerCommand
-	MCPAction         *TransportMCPActionCommand
-	MCPRefresh        *TransportMCPRefreshCommand
-	MCPPin            *TransportMCPPinCommand
-	HostPlanAccept    *TransportHostPlanAcceptCommand
-	HostPlanRevise    *TransportHostPlanReviseCommand
-	ChildAgentMessage *TransportChildAgentMessageCommand
-	ChildAgentStop    *TransportChildAgentStopCommand
+	Type                TransportCommandType
+	AddMessage          *TransportAddMessageCommand
+	Stop                *TransportStopCommand
+	Retry               *TransportRetryCommand
+	ApprovalDecision    *TransportApprovalDecisionCommand
+	ChoiceAnswer        *TransportChoiceAnswerCommand
+	MCPAction           *TransportMCPActionCommand
+	MCPRefresh          *TransportMCPRefreshCommand
+	MCPPin              *TransportMCPPinCommand
+	SpecialInputClear   *TransportSpecialInputClearCommand
+	SpecialInputConfirm *TransportSpecialInputConfirmCommand
+	HostPlanAccept      *TransportHostPlanAcceptCommand
+	HostPlanRevise      *TransportHostPlanReviseCommand
+	ChildAgentMessage   *TransportChildAgentMessageCommand
+	ChildAgentStop      *TransportChildAgentStopCommand
 }
 
 type TransportUserMessage struct {
@@ -50,6 +54,8 @@ type TransportUserMessage struct {
 
 type TransportAddMessageCommand struct {
 	SessionID       string
+	SessionType     string
+	Mode            string
 	ThreadID        string
 	ParentID        string
 	SourceID        string
@@ -96,6 +102,20 @@ type TransportMCPRefreshCommand struct {
 type TransportMCPPinCommand struct {
 	SurfaceID string
 	Pinned    bool
+}
+
+type TransportSpecialInputClearCommand struct {
+	SessionID    string
+	ResourceKind string
+	ResourceID   string
+	CanonicalKey string
+}
+
+type TransportSpecialInputConfirmCommand struct {
+	SessionID    string
+	ResourceKind string
+	ResourceID   string
+	CanonicalKey string
 }
 
 type TransportHostPlanAcceptCommand struct {
@@ -170,6 +190,10 @@ func (h *TransportCommandHandler) Apply(ctx context.Context, state AiopsTranspor
 		return h.applyMCPRefresh(ctx, next, command.MCPRefresh)
 	case TransportCommandTypeMCPPin:
 		return h.applyMCPPin(next, command.MCPPin), TransportCommandResult{}, nil
+	case TransportCommandTypeSpecialInputClear:
+		return h.applySpecialInputClear(ctx, next, command.SpecialInputClear)
+	case TransportCommandTypeSpecialInputConfirm:
+		return h.applySpecialInputConfirm(ctx, next, command.SpecialInputConfirm)
 	case TransportCommandTypeHostPlanAccept:
 		return h.applyHostPlanAccept(ctx, next, command.HostPlanAccept)
 	case TransportCommandTypeHostPlanRevise:
@@ -181,6 +205,55 @@ func (h *TransportCommandHandler) Apply(ctx context.Context, state AiopsTranspor
 	default:
 		return next, TransportCommandResult{}, nil
 	}
+}
+
+func (h *TransportCommandHandler) applySpecialInputConfirm(ctx context.Context, state AiopsTransportState, command *TransportSpecialInputConfirmCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.chat == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	sessionID := strings.TrimSpace(state.SessionID)
+	if command != nil && strings.TrimSpace(command.SessionID) != "" {
+		sessionID = strings.TrimSpace(command.SessionID)
+	}
+	resp, err := h.chat.SendMessage(ctx, ChatCommand{
+		SessionID: sessionID,
+		Content:   "确认",
+		Metadata: map[string]string{
+			"aiops.specialInput.command": "confirm",
+		},
+	})
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state.SessionID = firstNonEmptyString(resp.SessionID, state.SessionID)
+	state.Status = AiopsTransportStatusIdle
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
+}
+
+func (h *TransportCommandHandler) applySpecialInputClear(ctx context.Context, state AiopsTransportState, command *TransportSpecialInputClearCommand) (AiopsTransportState, TransportCommandResult, error) {
+	if h == nil || h.chat == nil {
+		return state, TransportCommandResult{}, nil
+	}
+	sessionID := strings.TrimSpace(state.SessionID)
+	if command != nil && strings.TrimSpace(command.SessionID) != "" {
+		sessionID = strings.TrimSpace(command.SessionID)
+	}
+	resp, err := h.chat.SendMessage(ctx, ChatCommand{
+		SessionID: sessionID,
+		Content:   "忘记当前主机",
+		Metadata: map[string]string{
+			"aiops.specialInput.command": "clear",
+		},
+	})
+	if err != nil {
+		return state, TransportCommandResult{}, err
+	}
+	state.SessionID = firstNonEmptyString(resp.SessionID, state.SessionID)
+	state.SpecialInputContext = nil
+	state.Status = AiopsTransportStatusIdle
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
 }
 
 func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state AiopsTransportState, command *TransportAddMessageCommand) (AiopsTransportState, TransportCommandResult, error) {
@@ -195,6 +268,8 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 	}
 	resp, err := h.chat.SendMessage(ctx, ChatCommand{
 		SessionID:       strings.TrimSpace(firstNonEmptyString(command.SessionID, state.SessionID)),
+		SessionType:     strings.TrimSpace(command.SessionType),
+		Mode:            strings.TrimSpace(command.Mode),
 		Content:         messageText,
 		HostID:          hostID,
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),
@@ -276,6 +351,7 @@ func buildChatRuntimeTransportRoute(messageText string, metadata map[string]stri
 	applyUserEvidenceMetadata(req, evidence)
 	applyInputMentionDiagnosticValues(req, mentionSource, mentionValidation)
 	applyChatRuntimeRouteHostBinding(req, activeRoute, mentions)
+	applyWorkflowAgentRuntimeMetadata(req)
 
 	decision := hostops.RouteDecision{Kind: hostops.RouteKindNormalChat, Mentions: append([]hostops.HostMention(nil), mentions...), Reason: strings.Join(activeRoute.Reasons, "; ")}
 	_, addWorkflowRequest := parseAddWorkflowMention(messageText)

@@ -59,6 +59,7 @@ import (
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
 	"aiops-v2/internal/tooling"
+	"aiops-v2/internal/workfloweditor"
 )
 
 func main() {
@@ -357,7 +358,8 @@ func run() error {
 	httpOptions := []server.HTTPServerOption{
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
-		server.WithPromptTraceService(appui.NewPromptTraceService(modeltrace.DefaultRootDir(dataDir))),
+		server.WithPromptTraceService(newAIServerPromptTraceService(dataDir, kernel)),
+		server.WithWorkflowEditorService(workfloweditor.NewService(nil, workfloweditor.WithEditPlanner(workfloweditor.ModelRouterWorkflowEditPlanner{Router: router}))),
 	}
 	httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	hostAgentTokenStore := appui.NewLocalHostAgentTokenStore(secretDir)
@@ -448,6 +450,10 @@ func run() error {
 
 	log.Println("ai-server: stopped")
 	return nil
+}
+
+func newAIServerPromptTraceService(dataDir string, reader appui.CanonicalRolloutReader) appui.PromptTraceService {
+	return appui.NewPromptTraceServiceWithRolloutReader(modeltrace.DefaultRootDir(dataDir), reader)
 }
 
 // ---------------------------------------------------------------------------

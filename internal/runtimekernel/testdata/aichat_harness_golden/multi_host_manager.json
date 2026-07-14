@@ -1,0 +1,15 @@
+{
+  "name": "multi_host_manager",
+  "userInput": "比较 host-a 和 host-b 的网络情况",
+  "modelFinalOutput": "需要先确认两个目标主机的绑定范围，当前不直接执行主机命令。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "unknown",
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

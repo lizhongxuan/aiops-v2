@@ -177,14 +177,24 @@ type WebSettings struct {
 // CorootConfig stores the Coroot connection configured from the Coroot
 // observability page.
 type CorootConfig struct {
-	BaseURL       string    `json:"baseUrl,omitempty"`
-	Token         string    `json:"token,omitempty"`
-	Project       string    `json:"project,omitempty"`
-	IframeURL     string    `json:"iframeUrl,omitempty"`
-	Timeout       string    `json:"timeout,omitempty"`
-	LastSuccessAt string    `json:"lastSuccessAt,omitempty"`
-	CreatedAt     time.Time `json:"createdAt,omitempty"`
-	UpdatedAt     time.Time `json:"updatedAt,omitempty"`
+	BaseURL          string    `json:"baseUrl,omitempty"`
+	Token            string    `json:"token,omitempty"`
+	Username         string    `json:"username,omitempty"`
+	Password         string    `json:"password,omitempty"`
+	Project          string    `json:"project,omitempty"`
+	IframeURL        string    `json:"iframeUrl,omitempty"`
+	Timeout          string    `json:"timeout,omitempty"`
+	LastSuccessAt    string    `json:"lastSuccessAt,omitempty"`
+	UiGatewayEnabled bool      `json:"uiGatewayEnabled,omitempty"`
+	GatewayBasePath  string    `json:"gatewayBasePath,omitempty"`
+	ProductBasePath  string    `json:"productBasePath,omitempty"`
+	EmbedMode        string    `json:"embedMode,omitempty"`
+	AuthMode         string    `json:"authMode,omitempty"`
+	EmbedTrustSecret string    `json:"embedTrustSecret,omitempty"`
+	AllowedViews     []string  `json:"allowedViews,omitempty"`
+	ReturnFallback   string    `json:"returnFallback,omitempty"`
+	CreatedAt        time.Time `json:"createdAt,omitempty"`
+	UpdatedAt        time.Time `json:"updatedAt,omitempty"`
 }
 
 // HostRecord stores one managed host entry for inventory-oriented pages.
@@ -1648,6 +1658,7 @@ func cloneWebSettings(src WebSettings) WebSettings {
 }
 
 func cloneCorootConfig(src CorootConfig) CorootConfig {
+	src.AllowedViews = append([]string(nil), src.AllowedViews...)
 	return src
 }
 

@@ -7,11 +7,15 @@ import (
 	"sort"
 	"strings"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/diagnostics"
 	mt "aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/runtimecontract"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/taskdepth"
 )
 
@@ -23,6 +27,7 @@ type RuntimeTraceDebugRequest struct {
 	Compiled                      promptcompiler.CompiledPrompt
 	ModelInput                    []promptinput.ModelInputItem
 	VisibleTools                  []string
+	PreviousPromptFingerprint     map[string]string
 	PromptInputTrace              promptinput.PromptInputTrace
 	PromptInputDiff               *promptinput.TraceDiff
 	DiagnosticTrace               diagnostics.DiagnosticTrace
@@ -34,6 +39,10 @@ type RuntimeTraceDebugRequest struct {
 	PlanCompletionGate            *promptinput.PlanCompletionGateTrace
 	ReasoningEffort               string
 	AnswerStyle                   string
+	AssemblySource                string
+	PromptCompilerSource          string
+	ToolSurfaceSource             string
+	AdapterName                   string
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
 	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot
@@ -63,39 +72,56 @@ type RuntimeTraceDebugRequest struct {
 	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
-	ResourceLocks                 []promptinput.ResourceLockTrace
-	OwnerWriteTraces              []OwnerWriteTrace
-	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
-	AgentNotifications            []promptinput.AgentNotificationTrace
-	VerificationAgentReport       *promptinput.VerificationAgentReportTrace
-	VerificationReportRef         string
-	VerificationStatus            string
-	CompletionGate                *promptinput.CompletionGateTrace
-	SafetySignals                 []promptinput.SafetySignalTrace
-	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
-	ApprovalScope                 *promptinput.ApprovalScopeTrace
-	FinalEvidenceState            *FinalEvidenceState
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding
+	ResourceCapabilities          []resourcebinding.ResourceCapability
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef
+	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot
+	RoleBindingConflicts          []resourcebinding.RoleBindingConflict
+	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot
+	// Deprecated: read-only compatibility trace; runtime control consumes TurnAssembly.
+	LegacyAgentAssemblySnapshot *agentassembly.AgentAssemblySnapshot
+	TurnAssembly                *agentassembly.TurnAssembly
+	TurnAssemblyShadow          *TurnAssemblyShadowTrace
+	SpecialInputWorldState      *specialinputmemory.SpecialInputWorldStateSection
+	ResourceLocks               []promptinput.ResourceLockTrace
+	OwnerWriteTraces            []OwnerWriteTrace
+	AgentFinalGate              *promptinput.AgentFinalGateDecisionTrace
+	AgentNotifications          []promptinput.AgentNotificationTrace
+	VerificationAgentReport     *promptinput.VerificationAgentReportTrace
+	VerificationReportRef       string
+	VerificationStatus          string
+	CompletionGate              *promptinput.CompletionGateTrace
+	SafetySignals               []promptinput.SafetySignalTrace
+	UnexpectedStateGate         *promptinput.UnexpectedStateGateTrace
+	ApprovalScope               *promptinput.ApprovalScopeTrace
+	FinalEvidenceState          *FinalEvidenceState
 }
 
-func buildModelInput(history []Message, compiled promptcompiler.CompiledPrompt) ([]promptinput.ModelInputItem, error) {
-	result, err := buildPromptInput(history, compiled)
-	if err != nil {
-		return nil, err
-	}
-	return append([]promptinput.ModelInputItem(nil), result.Items...), nil
-}
-
-func buildPromptInput(history []Message, compiled promptcompiler.CompiledPrompt) (promptinput.BuildResult, error) {
-	return buildPromptInputWithContextGovernance(history, compiled, nil)
-}
-
-func buildPromptInputWithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent) (promptinput.BuildResult, error) {
+func buildRuntimePromptInputV2WithContextGovernance(history []Message, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent, iteration int, cause *StepRevisionCause) (promptinput.BuildResult, error) {
 	promptHistory, contextDedupe := promptInputMessagesFromRuntimeWithContextDedupe(history)
-	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{
-		History:           promptHistory,
-		Compiled:          compiled,
-		ContextGovernance: promptInputContextGovernanceFromRuntime(governance),
-	})
+	promptHistory = promptHistoryWithEffectiveUsers(promptHistory)
+	if compiled.EnvelopeV2.SchemaVersion != promptcompiler.PromptEnvelopeV2SchemaVersion {
+		return promptinput.BuildResult{}, fmt.Errorf("runtime prompt requires validated prompt envelope v2")
+	}
+	kind, currentUser, continuation, err := runtimePromptCurrentInput(promptHistory, iteration, cause)
+	if err != nil {
+		return promptinput.BuildResult{}, err
+	}
+	return buildPromptInputRequest(promptinput.BuildRequest{
+		Envelope:                compiled.EnvelopeV2,
+		History:                 promptHistory,
+		Iteration:               iteration,
+		CurrentInputKind:        kind,
+		CurrentUserInput:        currentUser,
+		ContinuationInstruction: continuation,
+		Compiled:                compiled,
+		ContextGovernance:       promptInputContextGovernanceFromRuntime(governance),
+	}, compiled, governance, contextDedupe)
+}
+
+func buildPromptInputRequest(req promptinput.BuildRequest, compiled promptcompiler.CompiledPrompt, governance []ContextGovernanceEvent, contextDedupe *promptinput.ContextDedupeTrace) (promptinput.BuildResult, error) {
+	result, err := promptinput.Builder{}.Build(req)
 	if err != nil {
 		return promptinput.BuildResult{}, err
 	}
@@ -108,6 +134,67 @@ func buildPromptInputWithContextGovernance(history []Message, compiled promptcom
 		Governance: governance,
 	})
 	return result, nil
+}
+
+func runtimePromptCurrentInput(history []promptinput.Message, iteration int, cause *StepRevisionCause) (promptinput.CurrentInputKind, string, string, error) {
+	if iteration < 0 {
+		return "", "", "", fmt.Errorf("runtime prompt iteration must be non-negative")
+	}
+	if cause != nil {
+		if err := cause.Validate(); err != nil {
+			return "", "", "", fmt.Errorf("runtime prompt step cause: %w", err)
+		}
+	}
+	if iteration == 0 {
+		if cause != nil && cause.Kind != StepRevisionKindModelRetryResumed && strings.TrimSpace(cause.Kind) != "" {
+			return "", "", "", fmt.Errorf("initial runtime prompt cannot have resume cause")
+		}
+		current := latestPromptInputUserContent(history)
+		if current == "" {
+			return "", "", "", fmt.Errorf("initial runtime prompt requires current user input")
+		}
+		return promptinput.CurrentInputKindInitialUser, current, "", nil
+	}
+	if cause != nil && cause.Kind == StepRevisionKindUserInputResumed {
+		current := latestPromptInputUserContent(history)
+		if current == "" {
+			return "", "", "", fmt.Errorf("resumed runtime prompt requires current user input")
+		}
+		return promptinput.CurrentInputKindResumedUser, current, "", nil
+	}
+	return promptinput.CurrentInputKindContinuation, "", runtimeContinuationInstruction(iteration, cause), nil
+}
+
+func latestPromptInputUserContent(history []promptinput.Message) string {
+	for index := len(history) - 1; index >= 0; index-- {
+		content := strings.TrimSpace(history[index].Content)
+		if strings.TrimSpace(history[index].Role) == "user" && content != "" {
+			return content
+		}
+	}
+	return ""
+}
+
+func promptHistoryWithEffectiveUsers(history []promptinput.Message) []promptinput.Message {
+	out := make([]promptinput.Message, 0, len(history))
+	for _, message := range history {
+		if strings.TrimSpace(message.Role) == "user" && strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+func runtimeContinuationInstruction(iteration int, cause *StepRevisionCause) string {
+	switch {
+	case cause != nil && cause.Kind == StepRevisionKindApprovalResumed:
+		return fmt.Sprintf("Continue runtime iteration %d after approval resume using completed L4 tool results and current L5 runtime context.", iteration)
+	case cause != nil && cause.Kind == StepRevisionKindModelRetryResumed:
+		return fmt.Sprintf("Continue runtime iteration %d after model retry using preserved L4 history and current L5 runtime context; do not assume the previous model request completed.", iteration)
+	default:
+		return fmt.Sprintf("Continue runtime iteration %d from the completed L4 tool results and current L5 runtime context.", iteration)
+	}
 }
 
 func modelVisibleMessagesWithObservationDedupe(session *SessionState, history []Message) ([]Message, []ContextGovernanceEvent) {
@@ -169,10 +256,11 @@ func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
 	}
 	return ResourceReadRecord{
 		Identity: ResourceIdentity{
-			URI:     uri,
-			Version: firstNonBlankRuntimeString(ref.Version, ref.ID),
-			Digest:  ref.Digest,
-			Range:   ref.Range,
+			URI:                uri,
+			Version:            firstNonBlankRuntimeString(ref.Version, ref.ID),
+			Digest:             ref.Digest,
+			TargetIdentityHash: strings.TrimSpace(msg.ToolResult.TargetIdentityHash),
+			Range:              ref.Range,
 		},
 		SourceRef:      firstNonBlankRuntimeString(ref.ID, uri),
 		Summary:        firstNonBlankRuntimeString(ref.Summary, msg.ToolResult.Summary),
@@ -181,6 +269,28 @@ func resourceReadRecordFromMessage(msg Message) (ResourceReadRecord, bool) {
 		ContentType:    ref.ContentType,
 		Bytes:          ref.Bytes,
 	}, true
+}
+
+func resourceTargetIdentityHash(facts runtimecontract.AdmissionFacts) string {
+	refs := append([]resourcebinding.ResourceRef(nil), facts.TargetRefs...)
+	if len(refs) == 0 && facts.SessionTarget.IdentityHash() != "" {
+		refs = append(refs, facts.SessionTarget)
+	}
+	identities := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		if hash := resourcebinding.NormalizeRef(ref).IdentityHash(); hash != "" {
+			identities = append(identities, hash)
+		}
+	}
+	identities = uniqueSortedHarnessStrings(identities)
+	switch len(identities) {
+	case 0:
+		return ""
+	case 1:
+		return identities[0]
+	default:
+		return resourcebinding.StableTraceHash("resource-read.target-set", identities)
+	}
 }
 
 func observationRecordFromMessage(msg Message) (ObservationRecord, bool) {
@@ -352,10 +462,13 @@ func promptInputMessagesFromRuntimeWithContextDedupe(history []Message) ([]promp
 			toolResult.Content = compactChartPayloadForModel(toolResult.Content)
 		}
 		out = append(out, promptinput.Message{
-			Role:       msg.Role,
-			Content:    content,
-			ToolCalls:  promptInputToolCallsFromRuntime(msg.ToolCalls),
-			ToolResult: toolResult,
+			Role:             msg.Role,
+			Content:          content,
+			ReasoningContent: msg.ReasoningContent,
+			ToolCalls:        promptInputToolCallsFromRuntime(msg.ToolCalls),
+			ToolResult:       toolResult,
+			ContextKind:      strings.TrimSpace(msg.Metadata["runtime.context.kind"]),
+			ContextRef:       strings.TrimSpace(msg.Metadata["runtime.context.ref"]),
 		})
 	}
 	return out, dedupe.Trace()
@@ -969,10 +1082,11 @@ func runtimeMessagesFromPromptInput(messages []promptinput.Message) []Message {
 	out := make([]Message, 0, len(messages))
 	for _, msg := range messages {
 		out = append(out, Message{
-			Role:       msg.Role,
-			Content:    msg.Content,
-			ToolCalls:  runtimeToolCallsFromPromptInput(msg.ToolCalls),
-			ToolResult: runtimeToolResultFromPromptInput(msg.ToolResult),
+			Role:             msg.Role,
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			ToolCalls:        runtimeToolCallsFromPromptInput(msg.ToolCalls),
+			ToolResult:       runtimeToolResultFromPromptInput(msg.ToolResult),
 		})
 	}
 	return out
@@ -1036,6 +1150,18 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	}
 	if promptTrace.ToolSurfacePolicySnapshotHash == "" {
 		promptTrace.ToolSurfacePolicySnapshotHash = req.ToolSurfacePolicySnapshotHash
+	}
+	if strings.TrimSpace(promptTrace.AssemblySource) == "" {
+		promptTrace.AssemblySource = firstNonBlankRuntimeString(req.AssemblySource, "runtimekernel.buildModelInputTraceRequest")
+	}
+	if strings.TrimSpace(promptTrace.PromptCompilerSource) == "" {
+		promptTrace.PromptCompilerSource = firstNonBlankRuntimeString(req.PromptCompilerSource, "promptcompiler.Compiler")
+	}
+	if strings.TrimSpace(promptTrace.ToolSurfaceSource) == "" {
+		promptTrace.ToolSurfaceSource = firstNonBlankRuntimeString(req.ToolSurfaceSource, "runtimekernel.applyToolSurfacePolicyToCompileContext")
+	}
+	if strings.TrimSpace(promptTrace.AdapterName) == "" {
+		promptTrace.AdapterName = firstNonBlankRuntimeString(req.AdapterName, "eino")
 	}
 	if len(promptTrace.DeferredToolDirectory) == 0 {
 		promptTrace.DeferredToolDirectory = cloneDeferredToolDirectoryForTrace(req.Compiled.Tools.DeferredDirectory)
@@ -1138,6 +1264,30 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 	if len(promptTrace.AgentParallelTraceGroups) == 0 {
 		promptTrace.AgentParallelTraceGroups = append([]promptinput.AgentParallelTraceGroup(nil), req.AgentParallelTraceGroups...)
 	}
+	if len(promptTrace.ResourceBindings) == 0 {
+		promptTrace.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...)
+	}
+	if len(promptTrace.ResourceRoleBindings) == 0 {
+		promptTrace.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+	}
+	if len(promptTrace.ResourceCapabilities) == 0 {
+		promptTrace.ResourceCapabilities = append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...)
+	}
+	if len(promptTrace.ResourceEvidenceRefs) == 0 {
+		promptTrace.ResourceEvidenceRefs = append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...)
+	}
+	if promptTrace.SessionTargetSnapshot == nil && req.SessionTargetSnapshot != nil {
+		promptTrace.SessionTargetSnapshot = req.SessionTargetSnapshot
+	}
+	if len(promptTrace.RoleBindingConflicts) == 0 {
+		promptTrace.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	}
+	if promptTrace.AgentAssemblySnapshot == nil && req.AgentAssemblySnapshot != nil {
+		promptTrace.AgentAssemblySnapshot = req.AgentAssemblySnapshot
+	}
+	if promptTrace.SpecialInputWorldState == nil && req.SpecialInputWorldState != nil {
+		promptTrace.SpecialInputWorldState = specialinputmemory.CloneWorldStateSection(req.SpecialInputWorldState)
+	}
 	if len(promptTrace.ResourceLocks) == 0 {
 		promptTrace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
 	}
@@ -1230,6 +1380,10 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 		PromptFingerprint:             promptFingerprintMap(req.Compiled.Fingerprint),
 		ToolSurfaceFingerprint:        promptTrace.ToolSurfaceFingerprint,
 		ToolSurfacePolicySnapshotHash: promptTrace.ToolSurfacePolicySnapshotHash,
+		AssemblySource:                promptTrace.AssemblySource,
+		PromptCompilerSource:          promptTrace.PromptCompilerSource,
+		ToolSurfaceSource:             promptTrace.ToolSurfaceSource,
+		AdapterName:                   promptTrace.AdapterName,
 		LoadedToolsDelta:              promptTrace.LoadedToolsDelta,
 		LoadedPacksDelta:              promptTrace.LoadedPacksDelta,
 		SkillIndexHash:                promptTrace.SkillIndexHash,
@@ -1245,6 +1399,14 @@ func buildModelInputTraceRequest(req RuntimeTraceDebugRequest) mt.Request {
 		ParallelDispatchGroups:        promptTrace.ParallelDispatchGroups,
 		TaskClaims:                    promptTrace.TaskClaims,
 		FailedToolSummaries:           promptTrace.FailedToolSummaries,
+		ResourceBindings:              promptTrace.ResourceBindings,
+		ResourceRoleBindings:          promptTrace.ResourceRoleBindings,
+		ResourceCapabilities:          promptTrace.ResourceCapabilities,
+		ResourceEvidenceRefs:          promptTrace.ResourceEvidenceRefs,
+		SessionTargetSnapshot:         promptTrace.SessionTargetSnapshot,
+		RoleBindingConflicts:          promptTrace.RoleBindingConflicts,
+		AgentAssemblySnapshot:         promptTrace.AgentAssemblySnapshot,
+		SpecialInputWorldState:        promptTrace.SpecialInputWorldState,
 		VerificationReportRef:         promptTrace.VerificationReportRef,
 		VerificationStatus:            promptTrace.VerificationStatus,
 		CompletionGate:                promptTrace.CompletionGate,
@@ -1464,6 +1626,16 @@ func promptFingerprintMap(fp promptcompiler.PromptFingerprint) map[string]string
 	}
 	add("version", fp.Version)
 	add("compilerVersion", fp.CompilerVersion)
+	add("absoluteSystemHash", fp.AbsoluteSystemHash)
+	add("roleProfileHash", fp.RoleProfileHash)
+	add("stableRuntimeContractHash", fp.StableRuntimeContractHash)
+	add("stablePrefixHash", fp.StablePrefixHash)
+	add("turnStableHash", fp.TurnStableHash)
+	add("turnPrefixHash", fp.TurnPrefixHash)
+	add("conversationHistoryHash", fp.ConversationHistoryHash)
+	add("dynamicContextHash", fp.DynamicContextHash)
+	add("currentUserInputHash", fp.CurrentUserInputHash)
+	add("modelInputHash", fp.ModelInputHash)
 	add("stableHash", fp.StableHash)
 	add("systemHash", fp.SystemHash)
 	add("developerHash", fp.DeveloperHash)

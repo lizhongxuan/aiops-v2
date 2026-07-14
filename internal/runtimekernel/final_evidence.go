@@ -5,6 +5,9 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 )
 
 const (
@@ -21,6 +24,10 @@ type FinalEvidenceState struct {
 	Checked            []CheckedEvidence  `json:"checked,omitempty"`
 	NotChecked         []NotCheckedItem   `json:"notChecked,omitempty"`
 	FailedTools        []FailedToolImpact `json:"failedTools,omitempty"`
+	ApprovedActions    []string           `json:"approvedActions,omitempty"`
+	PerformedActions   []string           `json:"performedActions,omitempty"`
+	PostChecks         []string           `json:"postChecks,omitempty"`
+	RequiredPostChecks []string           `json:"requiredPostChecks,omitempty"`
 	Confidence         string             `json:"confidence"`
 	ExecCommandAllowed bool               `json:"execCommandAllowed"`
 	TargetBound        bool               `json:"targetBound"`
@@ -59,8 +66,11 @@ type FinalEvidenceVerification struct {
 
 func BuildFinalEvidenceState(snapshot *TurnSnapshot, session *SessionState) FinalEvidenceState {
 	state := FinalEvidenceState{
-		Checked:     checkedEvidenceFromSnapshot(snapshot),
-		FailedTools: failedToolImpactsFromSnapshot(snapshot),
+		Checked:            checkedEvidenceFromSnapshot(snapshot),
+		FailedTools:        failedToolImpactsFromSnapshot(snapshot),
+		ApprovedActions:    approvedActionsFromSnapshot(snapshot),
+		PerformedActions:   performedActionsFromSnapshot(snapshot),
+		RequiredPostChecks: requiredMutationPostChecksFromSnapshot(snapshot),
 	}
 	state.Checked = append(userProvidedEvidenceFromSnapshot(snapshot), state.Checked...)
 	if session != nil {
@@ -73,96 +83,100 @@ func BuildFinalEvidenceState(snapshot *TurnSnapshot, session *SessionState) Fina
 	return state
 }
 
-func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceVerification {
+func approvedActionsFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var actions []string
+	for _, item := range snapshot.AgentItems {
+		if item.Type != agentstate.TurnItemTypeApprovalDecided || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		var data approvalAgentItemData
+		if json.Unmarshal(item.Payload.Data, &data) != nil || data.Status != "approved" {
+			continue
+		}
+		if ref := finalActionRef(data.ToolName, data.ToolCallID); ref != "" {
+			actions = append(actions, ref)
+		}
+	}
+	return uniqueSortedHarnessStrings(actions)
+}
+
+func performedActionsFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var actions []string
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if !invocation.Mutating || invocation.Status != ToolInvocationCompleted {
+				continue
+			}
+			if ref := finalActionRef(invocation.ToolName, invocation.ToolCallID); ref != "" {
+				actions = append(actions, ref)
+			}
+		}
+	}
+	return uniqueSortedHarnessStrings(actions)
+}
+
+func requiredMutationPostChecksFromSnapshot(snapshot *TurnSnapshot) []string {
+	if snapshot == nil {
+		return nil
+	}
+	var refs []string
+	for _, iteration := range snapshot.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if invocation.Mutating {
+				refs = append(refs, invocation.RequiredPostCheckRefs...)
+			}
+		}
+	}
+	return uniqueSortedHarnessStrings(refs)
+}
+
+func finalActionRef(toolName, toolCallID string) string {
+	toolName = strings.TrimSpace(toolName)
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolName == "" {
+		return toolCallID
+	}
+	if toolCallID == "" {
+		return toolName
+	}
+	return toolName + "#" + toolCallID
+}
+
+// VerifyFinalEvidence is retained as a source-compatible adapter. Display text
+// is deliberately ignored so wording cannot change the runtime decision.
+func VerifyFinalEvidence(_ string, state FinalEvidenceState) FinalEvidenceVerification {
+	return VerifyFinalEvidenceFacts(state)
+}
+
+func VerifyFinalEvidenceFacts(state FinalEvidenceState) FinalEvidenceVerification {
 	state.Confidence = normalizeFinalEvidenceConfidence(state.Confidence)
 	decision := FinalEvidenceVerification{
 		Action:     FinalEvidenceActionAllow,
 		Confidence: state.Confidence,
 		State:      state,
 	}
-	answer = strings.TrimSpace(answer)
-	claimsChecked := finalAnswerClaimsChecked(answer)
-	highConfidenceClaim := finalAnswerClaimsHighConfidence(answer)
-	missingEvidenceClaim := finalAnswerClaimsMissingEvidence(answer)
-	if safeTerminal := EvaluateSafeTerminalFinal(answer); len(safeTerminal.TerminalStates) > 0 {
-		decision.Confidence = FinalEvidenceConfidenceLow
-		for _, reason := range safeTerminal.Reasons {
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, reason)
-		}
-		for _, state := range safeTerminal.TerminalStates {
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, state)
-		}
-		if !safeTerminal.Valid {
-			decision.Action = FinalEvidenceActionBlock
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "partial_mutation_missing_required_fields")
-			for _, field := range safeTerminal.MissingFields {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, field)
-			}
-			return decision
-		}
-		if claimsChecked || highConfidenceClaim {
-			decision.Action = FinalEvidenceActionDowngrade
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "safe_terminal_requires_low_confidence")
-			if missingEvidenceClaim && highConfidenceClaim {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "missing_evidence_claim_requires_low_confidence")
-			}
-			return decision
-		}
-		decision.Action = FinalEvidenceActionAllow
-		return decision
-	}
-
-	if len(state.FailedTools) > 0 && highConfidenceClaim {
+	if len(state.FailedTools) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
 		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceMedium)
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "failed_tool_requires_lower_confidence")
 	}
-	if missingEvidenceClaim && highConfidenceClaim {
-		decision.Action = FinalEvidenceActionDowngrade
-		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
-		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "missing_evidence_claim_requires_low_confidence")
-	}
-	if len(state.NotChecked) > 0 && (claimsChecked || highConfidenceClaim) {
+	if len(state.NotChecked) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
 		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceLow)
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "not_checked_item_requires_lower_confidence")
 	}
-	if claimsChecked && len(state.Checked) == 0 {
+	if len(outstandingRequiredPostChecks(state)) > 0 {
 		decision.Action = FinalEvidenceActionDowngrade
-		decision.Confidence = FinalEvidenceConfidenceLow
-		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "checked_claim_without_checked_evidence")
+		decision.Confidence = minFinalEvidenceConfidence(decision.Confidence, FinalEvidenceConfidenceMedium)
+		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "required_postcheck_incomplete")
 	}
-	if risky := EvaluateRiskyOperationalAdvice(answer); risky.RequiresEvidenceGate {
-		if risky.Category == riskyAdviceCategoryUngatedMutationCommandAdvice {
-			if !state.ExecCommandAllowed || !state.TargetBound {
-				decision.Action = FinalEvidenceActionBlock
-				decision.Confidence = FinalEvidenceConfidenceLow
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-				if !state.ExecCommandAllowed {
-					decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "exec_command_not_allowed")
-				}
-				if !state.TargetBound {
-					decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "no_explicit_target_binding")
-				}
-				return decision
-			}
-			if len(state.Checked) == 0 {
-				decision.Action = FinalEvidenceActionDowngrade
-				decision.Confidence = FinalEvidenceConfidenceLow
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-			}
-		} else {
-			decision.Action = FinalEvidenceActionDowngrade
-			decision.Confidence = FinalEvidenceConfidenceLow
-			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "risky_operational_advice_requires_evidence_gate")
-			if risky.Category != "" {
-				decision.Reasons = appendFinalEvidenceReason(decision.Reasons, risky.Category)
-			}
-		}
-	}
-	if state.MutationIntentWithoutTarget && !finalAnswerAsksExplicitTargetBinding(answer) {
+	if state.MutationIntentWithoutTarget {
 		decision.Action = FinalEvidenceActionBlock
 		decision.Confidence = FinalEvidenceConfidenceLow
 		decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "mutation_intent_requires_explicit_target_binding")
@@ -170,52 +184,21 @@ func VerifyFinalEvidence(answer string, state FinalEvidenceState) FinalEvidenceV
 		if !state.ExecCommandAllowed {
 			decision.Reasons = appendFinalEvidenceReason(decision.Reasons, "exec_command_not_allowed")
 		}
-		return decision
-	}
-	if len(decision.Reasons) == 0 {
-		decision.Action = FinalEvidenceActionAllow
 	}
 	return decision
 }
 
-func finalEvidenceExecCommandAllowed(snapshot *TurnSnapshot, session *SessionState) bool {
-	if snapshot != nil {
-		metadata := snapshot.Metadata
-		if metadataBool(metadata["aiops.tool.execCommandAllowed"]) || metadataBool(metadata["aiops.route.allowsExecCommand"]) {
-			return true
-		}
-		if snapshot.SessionType == SessionTypeHost && snapshot.Mode == ModeExecute && strings.TrimSpace(sessionHostID(session)) != "" {
-			return true
-		}
-	}
-	return false
+func finalEvidenceExecCommandAllowed(snapshot *TurnSnapshot, _ *SessionState) bool {
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && control.ExecAllowed
 }
 
-func finalEvidenceTargetBound(snapshot *TurnSnapshot, session *SessionState) bool {
-	if snapshot != nil {
-		metadata := snapshot.Metadata
-		binding := strings.ToLower(strings.TrimSpace(metadata["aiops.target.binding"]))
-		if binding == "host" || binding == "multi_host" || binding == "resource" {
-			return true
-		}
-		if strings.TrimSpace(metadata["aiops.target.hostId"]) != "" || strings.TrimSpace(metadata["aiops.target.refs"]) != "" {
-			return true
-		}
-		if snapshot.SessionType == SessionTypeHost && strings.TrimSpace(sessionHostID(session)) != "" {
-			return true
-		}
-	}
-	return strings.TrimSpace(sessionHostID(session)) != ""
+func finalEvidenceTargetBound(snapshot *TurnSnapshot, _ *SessionState) bool {
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	return ok && control.TargetBound
 }
 
-func sessionHostID(session *SessionState) string {
-	if session == nil {
-		return ""
-	}
-	return strings.TrimSpace(session.HostID)
-}
-
-func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, session *SessionState, state FinalEvidenceState) bool {
+func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, _ *SessionState, state FinalEvidenceState) bool {
 	if state.TargetBound || state.ExecCommandAllowed {
 		return false
 	}
@@ -225,54 +208,35 @@ func finalEvidenceMutationIntentWithoutTarget(snapshot *TurnSnapshot, session *S
 	if !finalEvidenceNoTargetBindingGuardApplies(snapshot) {
 		return false
 	}
-	return finalEvidenceLatestUserMutationIntent(session)
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	if ok {
+		return frozenTurnMutationRequired(snapshot, control) && !control.TargetBound
+	}
+	return snapshot != nil && snapshot.TaskDepth.RequiresApproval
 }
 
 func finalEvidenceAnalysisOnlyOrUserEvidenceRCA(snapshot *TurnSnapshot) bool {
 	if snapshot == nil {
 		return false
 	}
-	metadata := snapshot.Metadata
-	if metadataBool(metadata["taskDepth.analysisOnly"]) ||
-		metadataBool(metadata["taskDepth.executionProhibited"]) ||
-		metadataBool(metadata["aiops.execution.prohibited"]) ||
-		metadataBool(metadata["aiops.route.userProhibitedHostExec"]) {
+	if snapshot.TaskDepth.AnalysisOnly || snapshot.TaskDepth.ExecutionProhibited {
 		return true
 	}
-	mode := strings.ToLower(strings.TrimSpace(metadata["aiops.route.mode"]))
-	if mode == "evidence_rca" && metadataBool(metadata["aiops.userEvidence.present"]) {
-		return true
+	if control, ok := frozenTurnControlFromSnapshot(snapshot); ok && !control.TargetBound && control.Admission.Intent.Evidence.HasUserProvidedEvidence {
+		switch control.Admission.Intent.Kind {
+		case runtimecontract.IntentKindDiagnose, runtimecontract.IntentKindVerify:
+			return true
+		}
 	}
 	return false
 }
 
 func finalEvidenceNoTargetBindingGuardApplies(snapshot *TurnSnapshot) bool {
-	if snapshot == nil {
-		return false
+	control, ok := frozenTurnControlFromSnapshot(snapshot)
+	if ok {
+		return frozenTurnMutationRequired(snapshot, control) && !control.TargetBound
 	}
-	metadata := snapshot.Metadata
-	if strings.EqualFold(strings.TrimSpace(metadata["aiops.target.binding"]), "none") {
-		return true
-	}
-	switch strings.ToLower(strings.TrimSpace(metadata["aiops.route.mode"])) {
-	case "chat_advisory", "advisory":
-		return true
-	default:
-		return false
-	}
-}
-
-func finalEvidenceLatestUserMutationIntent(session *SessionState) bool {
-	if session == nil {
-		return false
-	}
-	for i := len(session.Messages) - 1; i >= 0; i-- {
-		msg := session.Messages[i]
-		if strings.EqualFold(strings.TrimSpace(msg.Role), "user") {
-			return containsOperationalMutationIntent(msg.Content)
-		}
-	}
-	return false
+	return snapshot != nil && snapshot.TaskDepth.RequiresApproval
 }
 
 func containsOperationalMutationIntent(text string) bool {
@@ -380,28 +344,6 @@ func looksLikeOperationalAnalysisQuestion(lower string) bool {
 	return true
 }
 
-func finalAnswerAsksExplicitTargetBinding(answer string) bool {
-	lower := strings.ToLower(strings.TrimSpace(answer))
-	if lower == "" {
-		return false
-	}
-	return hasAnyRiskMarker(lower, []string{
-		"@host",
-		"@ip",
-		"明确绑定",
-		"绑定目标",
-		"选择目标",
-		"指定目标",
-		"指定主机",
-		"目标主机",
-		"选择主机",
-		"select a target",
-		"bind a target",
-		"explicit target",
-		"target binding",
-	})
-}
-
 func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 	if snapshot == nil {
 		return nil
@@ -415,6 +357,9 @@ func checkedEvidenceFromSnapshot(snapshot *TurnSnapshot) []CheckedEvidence {
 		}
 		for _, result := range iter.ToolResults {
 			if strings.TrimSpace(result.Error) != "" {
+				continue
+			}
+			if isCoveredReadReuseResult(result) {
 				continue
 			}
 			toolName := strings.TrimSpace(toolNames[result.ToolCallID])
@@ -456,6 +401,12 @@ func checkedEvidenceSummaryForToolResult(toolName string, result ToolResult) str
 	}
 	if looksLikeToolDiscoveryPayload(summary) || looksLikeToolDiscoveryPayload(result.Content) {
 		return ""
+	}
+	if structured := structuredEvidenceSummaryForUser(toolName, summary); structured != "" {
+		return structured
+	}
+	if structured := structuredEvidenceSummaryForUser(toolName, result.Content); structured != "" {
+		return structured
 	}
 	if containsInternalFinalFallbackText(summary) {
 		return ""
@@ -586,11 +537,23 @@ func failedToolImpactsFromSnapshot(snapshot *TurnSnapshot) []FailedToolImpact {
 		return nil
 	}
 	out := make([]FailedToolImpact, 0, len(summaries))
+	seen := map[string]bool{}
 	for _, summary := range summaries {
+		toolName := strings.TrimSpace(summary.Tool)
+		failureClass := strings.TrimSpace(summary.FailureClass)
+		key := toolName + "\x00" + failureClass
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		impact := "证据读取失败，不能作为已检查结果"
+		if failureClass == "partial_result" {
+			impact = "部分子任务未完成，聚合结果不完整"
+		}
 		out = append(out, FailedToolImpact{
-			ToolName:     strings.TrimSpace(summary.Tool),
-			FailureClass: strings.TrimSpace(summary.FailureClass),
-			Impact:       "required evidence may be missing; do not use this failed tool as checked evidence",
+			ToolName:     toolName,
+			FailureClass: failureClass,
+			Impact:       impact,
 		})
 	}
 	return out
@@ -628,7 +591,7 @@ func inferFinalEvidenceConfidence(state FinalEvidenceState) string {
 	if len(state.Checked) == 0 {
 		return FinalEvidenceConfidenceLow
 	}
-	if len(state.FailedTools) > 0 || len(state.NotChecked) > 0 {
+	if len(state.FailedTools) > 0 || len(state.NotChecked) > 0 || len(outstandingRequiredPostChecks(state)) > 0 {
 		return FinalEvidenceConfidenceMedium
 	}
 	return FinalEvidenceConfidenceHigh
@@ -665,86 +628,6 @@ func finalEvidenceConfidenceRank(value string) int {
 	default:
 		return 1
 	}
-}
-
-func finalAnswerClaimsChecked(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{
-		"已检查", "已确认", "确认全部", "全部检查", "checked", "verified", "confirmed", "inspected",
-	} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalAnswerClaimsHighConfidence(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{"高置信", "confirmed", "definitely", "no issue", "normal"} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	compact := compactFinalEvidenceText(text)
-	for _, marker := range []string{"置信度:高", "置信度：高", "置信度高", "confidence:high", "confidence：high"} {
-		if strings.Contains(compact, marker) {
-			return true
-		}
-	}
-	for _, marker := range []string{"确定", "明确", "正常"} {
-		if containsAffirmedChineseMarker(text, marker) {
-			return true
-		}
-	}
-	return false
-}
-
-func finalAnswerClaimsMissingEvidence(answer string) bool {
-	text := strings.ToLower(answer)
-	for _, marker := range []string{
-		"缺失证据", "缺乏", "无法收集", "无法获取", "无法完成", "无法确定", "未配置", "not_configured", "not configured", "missing_evidence", "missing evidence",
-	} {
-		if strings.Contains(text, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-func compactFinalEvidenceText(text string) string {
-	replacer := strings.NewReplacer(" ", "", "\t", "", "\n", "", "\r", "")
-	return replacer.Replace(text)
-}
-
-func containsAffirmedChineseMarker(text, marker string) bool {
-	for offset := 0; ; {
-		index := strings.Index(text[offset:], marker)
-		if index < 0 {
-			return false
-		}
-		absolute := offset + index
-		if !hasChineseNegationPrefix(text[:absolute]) {
-			return true
-		}
-		offset = absolute + len(marker)
-	}
-}
-
-func hasChineseNegationPrefix(prefix string) bool {
-	runes := []rune(prefix)
-	if len(runes) > 6 {
-		runes = runes[len(runes)-6:]
-	}
-	tail := string(runes)
-	for _, marker := range []string{
-		"无法", "不能", "未能", "不可", "不", "并未", "没有", "缺乏",
-	} {
-		if strings.Contains(tail, marker) {
-			return true
-		}
-	}
-	return false
 }
 
 func appendFinalEvidenceReason(reasons []string, reason string) []string {

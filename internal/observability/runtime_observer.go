@@ -95,13 +95,23 @@ func (o RuntimeObserver) StartModelCall(ctx context.Context, attrs runtimekernel
 
 func appendPromptFingerprintAttrs(attrs []attribute.KeyValue, fp map[string]string) []attribute.KeyValue {
 	mapping := map[string]string{
-		"version":           "prompt.version",
-		"compilerVersion":   "prompt.compiler_version",
-		"systemHash":        "prompt.system_hash",
-		"developerHash":     "prompt.developer_hash",
-		"toolRegistryHash":  "prompt.tool_registry_hash",
-		"runtimePolicyHash": "prompt.runtime_policy_hash",
-		"protocolStateHash": "prompt.protocol_state_hash",
+		"version":                   "prompt.version",
+		"compilerVersion":           "prompt.compiler_version",
+		"absoluteSystemHash":        "prompt.absolute_system_hash",
+		"roleProfileHash":           "prompt.role_profile_hash",
+		"stableRuntimeContractHash": "prompt.stable_runtime_contract_hash",
+		"stablePrefixHash":          "prompt.stable_prefix_hash",
+		"turnStableHash":            "prompt.turn_stable_hash",
+		"turnPrefixHash":            "prompt.turn_prefix_hash",
+		"conversationHistoryHash":   "prompt.conversation_history_hash",
+		"dynamicContextHash":        "prompt.dynamic_context_hash",
+		"currentUserInputHash":      "prompt.current_user_input_hash",
+		"modelInputHash":            "prompt.model_input_hash",
+		"systemHash":                "prompt.system_hash",
+		"developerHash":             "prompt.developer_hash",
+		"toolRegistryHash":          "prompt.tool_registry_hash",
+		"runtimePolicyHash":         "prompt.runtime_policy_hash",
+		"protocolStateHash":         "prompt.protocol_state_hash",
 	}
 	for source, attrName := range mapping {
 		if value := strings.TrimSpace(fp[source]); value != "" {

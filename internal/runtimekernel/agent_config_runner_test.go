@@ -146,9 +146,96 @@ func TestAgentConfigRunnerBindsOnlyConfiguredChildTools(t *testing.T) {
 	}
 }
 
+func TestAgentConfigRunnerPrefersTypedEnvelopeAndRebuildsCurrentStepFacts(t *testing.T) {
+	staleTool := &tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "stale_tool_marker", Description: "stale tool surface"}}
+	upstream, err := promptcompiler.NewCompiler().Compile(promptcompiler.CompileContext{
+		SessionType:          "host",
+		Mode:                 "execute",
+		HostContext:          "stale-host-marker",
+		RuntimePolicy:        "stale_runtime_marker",
+		HostTaskPromptAssets: []string{"delegated_task_marker"},
+		AssembledTools:       []tooling.Tool{staleTool},
+	})
+	if err != nil {
+		t.Fatalf("upstream Compile() error = %v", err)
+	}
+
+	currentTool := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{Name: "current_tool_marker", Description: "current tool surface"},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "current tool evidence"}, nil
+		},
+	}
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("", []schema.ToolCall{{
+			ID:       "call-current-tool",
+			Type:     "function",
+			Function: schema.FunctionCall{Name: "current_tool_marker", Arguments: `{}`},
+		}}),
+		schema.AssistantMessage("typed envelope ok", nil),
+	}}
+	runner := NewAgentConfigRunner(AgentConfigRunnerConfig{
+		Policy:    &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()},
+		Projector: &testMockEventEmitter{},
+	})
+	output, err := runner.Run(context.Background(), agentConfigRunnerTestConfig{
+		kind:             "host",
+		model:            model,
+		promptEnvelopeV2: upstream.EnvelopeV2,
+		instructions:     []*schema.Message{{Role: schema.System, Content: "legacy_override_marker"}},
+		assembledTools:   []tooling.Tool{currentTool},
+		maxIterations:    1,
+		hostID:           "current-host-marker",
+		sessionID:        "typed-envelope-child-session",
+		input:            "execute delegated task",
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if output != "typed envelope ok" {
+		t.Fatalf("Run() output = %q", output)
+	}
+
+	got := schemaMessagesText(flattenMessageBatches(model.inputs))
+	for _, want := range []string{"delegated_task_marker", "current_tool_marker", "current-host-marker"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("current typed model input missing %q:\n%s", want, got)
+		}
+	}
+	for _, forbidden := range []string{"legacy_override_marker", "stale_tool_marker", "stale_runtime_marker", "stale-host-marker"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("typed envelope allowed stale/legacy fact %q to override current step:\n%s", forbidden, got)
+		}
+	}
+}
+
+func TestAgentConfigRunnerRejectsInvalidTypedEnvelopeWithoutLegacyFallback(t *testing.T) {
+	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("must not run", nil)}}
+	runner := NewAgentConfigRunner(AgentConfigRunnerConfig{
+		Policy:    &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()},
+		Projector: &testMockEventEmitter{},
+	})
+	_, err := runner.Run(context.Background(), agentConfigRunnerTestConfig{
+		kind:             "host",
+		model:            model,
+		promptEnvelopeV2: promptcompiler.PromptEnvelopeV2{SchemaVersion: promptcompiler.PromptEnvelopeV2SchemaVersion},
+		instructions:     []*schema.Message{{Role: schema.System, Content: "legacy fallback must not mask invalid typed input"}},
+		hostID:           "host-a",
+		sessionID:        "invalid-typed-envelope-session",
+		input:            "inspect",
+	})
+	if err == nil || !strings.Contains(err.Error(), "prompt envelope v2") {
+		t.Fatalf("Run() error = %v, want invalid typed envelope rejection", err)
+	}
+	if len(model.inputs) != 0 {
+		t.Fatalf("model calls = %d, want fail closed before provider", len(model.inputs))
+	}
+}
+
 func TestFixedAgentCompilerProducesSectionEnvelope(t *testing.T) {
+	instructionContext := classifyFixedAgentInstructions([]*schema.Message{{Role: schema.System, Content: "host child instructions"}})
 	compiler := fixedAgentCompiler{
-		instructionsText: modelrouter.EinoInstructionMessagesText([]*schema.Message{{Role: schema.System, Content: "host child instructions"}}),
+		roleContent: instructionContext.Role, dynamicContent: instructionContext.Dynamic,
 	}
 	compiled, err := compiler.Compile(promptcompiler.CompileContext{
 		Mode:          "execute",
@@ -173,6 +260,77 @@ func TestFixedAgentCompilerProducesSectionEnvelope(t *testing.T) {
 	if strings.Contains(strings.Join(layers, ","), "system") {
 		t.Fatalf("fixed child compiler should not use legacy prompt layers: %#v", layers)
 	}
+	if err := compiled.EnvelopeV2.Validate(); err != nil {
+		t.Fatalf("EnvelopeV2.Validate() error = %v", err)
+	}
+	if strings.Contains(compiled.EnvelopeV2.Sections[1].Content, "host child instructions") {
+		t.Fatalf("untyped child instructions leaked into L1: %#v", compiled.EnvelopeV2.Sections[1])
+	}
+	if !strings.Contains(promptEnvelopeV2LayerText(compiled, promptcompiler.LayerStepDynamicContext), "host child instructions") {
+		t.Fatalf("child instructions missing from L5: %#v", compiled.EnvelopeV2.Sections)
+	}
+}
+
+func TestFixedAgentCompilerReclassifiesLegacyAgentConfigInstructions(t *testing.T) {
+	upstream, err := promptcompiler.NewCompiler().Compile(promptcompiler.CompileContext{
+		SessionType: "host", Mode: "execute", HostContext: "stale-host",
+		RuntimePolicy:        "stale_runtime_marker",
+		HostTaskPromptAssets: []string{"delegated_host_task_marker"},
+		AssembledTools: []tooling.Tool{
+			&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "stale_tool", Description: "stale tool surface"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("upstream Compile() error = %v", err)
+	}
+	instructions := make([]*schema.Message, 0, len(upstream.Envelope.Sections))
+	for _, section := range upstream.Envelope.Sections {
+		message := schema.SystemMessage(section.Content)
+		message.Extra = map[string]any{"source_section_id": section.ID, "source_layer": section.Layer}
+		instructions = append(instructions, message)
+	}
+	instructionContext := classifyFixedAgentInstructions(instructions)
+	compiled, err := (fixedAgentCompiler{
+		roleContent: instructionContext.Role, dynamicContent: instructionContext.Dynamic,
+	}).Compile(promptcompiler.CompileContext{
+		SessionType: "host", Mode: "execute", HostContext: "current-host",
+		RuntimePolicy: "current_runtime_marker",
+		AssembledTools: []tooling.Tool{
+			&tooling.StaticTool{Meta: tooling.ToolMetadata{Name: "current_tool", Description: "current tool surface"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("fixed Compile() error = %v", err)
+	}
+	l1 := promptEnvelopeV2LayerText(compiled, promptcompiler.LayerRoleProfileCore)
+	l5 := promptEnvelopeV2LayerText(compiled, promptcompiler.LayerStepDynamicContext)
+	for _, forbidden := range []string{"stale_tool", "stale_runtime_marker", "delegated_host_task_marker", "current_tool", "current_runtime_marker", "stale-host", "current-host"} {
+		if strings.Contains(l1, forbidden) {
+			t.Fatalf("L1 leaked %q:\n%s", forbidden, l1)
+		}
+	}
+	if strings.Contains(l5, "stale_tool") || strings.Contains(l5, "stale_runtime_marker") {
+		t.Fatalf("L5 retained stale rebuilt facts:\n%s", l5)
+	}
+	for marker, want := range map[string]int{
+		"delegated_host_task_marker": 1,
+		"current_tool":               1,
+		"current_runtime_marker":     1,
+	} {
+		if got := strings.Count(l5, marker); got != want {
+			t.Fatalf("L5 marker %q count = %d, want %d:\n%s", marker, got, want, l5)
+		}
+	}
+}
+
+func promptEnvelopeV2LayerText(compiled promptcompiler.CompiledPrompt, layer promptcompiler.PromptLogicalLayer) string {
+	var parts []string
+	for _, section := range compiled.EnvelopeV2.Sections {
+		if section.LogicalLayer == layer {
+			parts = append(parts, section.Content)
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 func flattenMessageBatches(batches [][]*schema.Message) []*schema.Message {
@@ -184,17 +342,22 @@ func flattenMessageBatches(batches [][]*schema.Message) []*schema.Message {
 }
 
 type agentConfigRunnerTestConfig struct {
-	kind           string
-	model          modelrouter.ChatModel
-	instructions   []*schema.Message
-	tools          []tool.BaseTool
-	assembledTools []tooling.Tool
-	maxIterations  int
-	hostID         string
-	missionID      string
-	sessionID      string
-	input          string
-	metadata       map[string]string
+	kind             string
+	model            modelrouter.ChatModel
+	promptEnvelopeV2 promptcompiler.PromptEnvelopeV2
+	instructions     []*schema.Message
+	tools            []tool.BaseTool
+	assembledTools   []tooling.Tool
+	maxIterations    int
+	hostID           string
+	missionID        string
+	sessionID        string
+	input            string
+	metadata         map[string]string
+}
+
+func (c agentConfigRunnerTestConfig) RuntimePromptEnvelopeV2() promptcompiler.PromptEnvelopeV2 {
+	return c.promptEnvelopeV2
 }
 
 func (c agentConfigRunnerTestConfig) RuntimeKind() string {

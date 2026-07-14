@@ -16,9 +16,11 @@ import (
 
 // SessionManager manages the lifecycle of Host and Workspace sessions.
 type SessionManager struct {
-	mu       sync.RWMutex
-	sessions map[string]*SessionState
-	repo     SessionRepository
+	mu             sync.RWMutex
+	sessions       map[string]*SessionState
+	snapshots      map[string]*SessionState
+	snapshotErrors map[string]error
+	repo           SessionRepository
 }
 
 // SessionRepository is the persistence abstraction used by SessionManager.
@@ -39,8 +41,10 @@ func NewSessionManager(repo ...SessionRepository) *SessionManager {
 		backing = repo[0]
 	}
 	return &SessionManager{
-		sessions: make(map[string]*SessionState),
-		repo:     backing,
+		sessions:       make(map[string]*SessionState),
+		snapshots:      make(map[string]*SessionState),
+		snapshotErrors: make(map[string]error),
+		repo:           backing,
 	}
 }
 
@@ -65,8 +69,10 @@ func (sm *SessionManager) GetOrCreate(sessionID string, sessionType SessionType,
 
 		if repo != nil {
 			if persisted, err := repo.GetSession(sessionID); err == nil && persisted != nil {
+				snapshot, snapshotErr := cloneSessionSnapshot(persisted)
 				sm.mu.Lock()
 				sm.sessions[persisted.ID] = persisted
+				sm.publishSnapshotLocked(persisted.ID, snapshot, snapshotErr)
 				sm.mu.Unlock()
 				return persisted
 			}
@@ -89,8 +95,10 @@ func (sm *SessionManager) GetOrCreate(sessionID string, sessionType SessionType,
 		UpdatedAt: now,
 	}
 
+	snapshot, snapshotErr := cloneSessionSnapshot(session)
 	sm.mu.Lock()
 	sm.sessions[id] = session
+	sm.publishSnapshotLocked(id, snapshot, snapshotErr)
 	repo := sm.repo
 	sm.mu.Unlock()
 
@@ -111,8 +119,10 @@ func (sm *SessionManager) Get(sessionID string) *SessionState {
 	}
 	if repo != nil && sessionID != "" {
 		if persisted, err := repo.GetSession(sessionID); err == nil && persisted != nil {
+			snapshot, snapshotErr := cloneSessionSnapshot(persisted)
 			sm.mu.Lock()
 			sm.sessions[persisted.ID] = persisted
+			sm.publishSnapshotLocked(persisted.ID, snapshot, snapshotErr)
 			sm.mu.Unlock()
 			return persisted
 		}
@@ -129,8 +139,10 @@ func (sm *SessionManager) Update(session *SessionState) {
 	repo := sm.repo
 	sm.mu.RUnlock()
 	session.UpdatedAt = time.Now()
+	snapshot, snapshotErr := cloneSessionSnapshot(session)
 	sm.mu.Lock()
 	sm.sessions[session.ID] = session
+	sm.publishSnapshotLocked(session.ID, snapshot, snapshotErr)
 	sm.mu.Unlock()
 	if repo != nil {
 		_ = repo.SaveSession(session)
@@ -144,6 +156,8 @@ func (sm *SessionManager) Delete(sessionID string) {
 	sm.mu.RUnlock()
 	sm.mu.Lock()
 	delete(sm.sessions, sessionID)
+	delete(sm.snapshots, sessionID)
+	delete(sm.snapshotErrors, sessionID)
 	sm.mu.Unlock()
 	if repo != nil {
 		_ = repo.DeleteSession(sessionID)
@@ -157,12 +171,23 @@ func (sm *SessionManager) List() []*SessionState {
 	sm.mu.RUnlock()
 	if repo != nil {
 		if persisted, err := repo.ListSessions(); err == nil {
-			sm.mu.Lock()
+			type publishedSession struct {
+				session  *SessionState
+				snapshot *SessionState
+				err      error
+			}
+			published := make([]publishedSession, 0, len(persisted))
 			for _, sess := range persisted {
 				if sess == nil || sess.ID == "" {
 					continue
 				}
-				sm.sessions[sess.ID] = sess
+				snapshot, snapshotErr := cloneSessionSnapshot(sess)
+				published = append(published, publishedSession{session: sess, snapshot: snapshot, err: snapshotErr})
+			}
+			sm.mu.Lock()
+			for _, item := range published {
+				sm.sessions[item.session.ID] = item.session
+				sm.publishSnapshotLocked(item.session.ID, item.snapshot, item.err)
 			}
 			sm.mu.Unlock()
 		}

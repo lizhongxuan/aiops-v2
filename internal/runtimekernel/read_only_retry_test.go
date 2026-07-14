@@ -184,6 +184,7 @@ func TestReadOnlyRetryDoesNotRetryDynamicDestructiveTool(t *testing.T) {
 		destructive: true,
 	}
 	dispatcher := NewToolDispatcher(readOnlyRetryLookup(executor), nil, &testMockEventEmitter{}).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithToolSurfaceFingerprint("surface-1").
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfig{
 			Enabled:     true,

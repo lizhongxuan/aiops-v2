@@ -27,7 +27,7 @@
 - [ ] **显示文本和隐藏身份不一致时服务端优先校验身份。** 例如 visible raw 是 `@server-local`，metadata 却带 `hostId=host-a`，服务端必须通过 inventory resolution 识别不一致并拒绝或按服务端解析结果处理，不能让隐藏字段偷偷改目标。
 - [ ] **本地主机别名只在显式 `@` 下生效。** `@server-local`、`@localhost`、`@127.0.0.1` 可以映射到 `server-local`；裸文本 `server-local 查看 CPU` 仍然不能自动绑定。
 - [ ] **多主机不走单主机直连。** 同一输入中出现两个及以上不同 resolved host 时，必须进入 multi-host plan/manager 路径，不能任选一个 host 执行。
-- [ ] **特殊 @ 工具不是主机。** `@coroot`、`@ops_graph`、`@ops_manus`、`@ops_manuals` 继续走 special mention，不进入 hostops mention metadata。
+- [ ] **特殊 @ 工具不是主机。** `@coroot`、`@ops_graph`、`@ops_manual` 继续走 special mention，不进入 hostops mention metadata。
 - [ ] **变更命令仍需要审批。** 本任务只解决只读主机检查可用性，不改变 mutation approval、terminal policy、ActionToken 和高风险命令拦截。
 
 ## Implementation Usability Notes
@@ -67,7 +67,7 @@
 - Modify: `web/src/chat/hostMentions.ts`
 - Test: `web/src/chat/hostMentions.test.ts`
 
-- [ ] **Step 1: Add failing tests for hidden selected-host metadata**
+- [x] **Step 1: Add failing tests for hidden selected-host metadata**
 
 Add tests that assert selected host metadata is serialized even when visible text is only `@server-local`:
 
@@ -111,7 +111,7 @@ it("normalizes explicit local aliases to server-local metadata", () => {
 });
 ```
 
-- [ ] **Step 2: Run the focused test and confirm it fails**
+- [x] **Step 2: Run the focused test and confirm it fails**
 
 Run:
 
@@ -121,7 +121,7 @@ npm --prefix web run test -- src/chat/hostMentions.test.ts
 
 Expected: FAIL because `buildHostMentionMetadata` does not accept selected hidden metadata yet, and `@server-local` is not normalized as local alias.
 
-- [ ] **Step 3: Implement a single metadata builder contract**
+- [x] **Step 3: Implement a single metadata builder contract**
 
 Update `hostMentions.ts` so `buildHostMentionMetadata(candidates, selectedMetadata?)` merges by normalized mention value:
 
@@ -133,7 +133,7 @@ Update `hostMentions.ts` so `buildHostMentionMetadata(candidates, selectedMetada
 - emitted JSON item fields are stable: `tokenId/raw/value/start/end/hostId/address/displayName/source/resolved/confidence`.
 - merge selected metadata only when the current parsed text still contains the same normalized mention token; deleted or edited tokens must not be serialized.
 
-- [ ] **Step 4: Run the focused test and confirm it passes**
+- [x] **Step 4: Run the focused test and confirm it passes**
 
 Run:
 
@@ -153,7 +153,7 @@ Expected: PASS.
 - Test: `web/src/chat/hostMentionSearch.test.ts`
 - Test: `web/src/chat/components/AiopsComposer.test.tsx`
 
-- [ ] **Step 1: Add failing composer tests for selected host list items**
+- [x] **Step 1: Add failing composer tests for selected host list items**
 
 Add a test that simulates choosing the `server-local` host from the suggestion list, then sending:
 
@@ -182,7 +182,7 @@ it("sends hidden host metadata when selecting server-local from @ host list", as
 });
 ```
 
-- [ ] **Step 2: Run the focused composer test and confirm it fails**
+- [x] **Step 2: Run the focused composer test and confirm it fails**
 
 Run:
 
@@ -192,7 +192,7 @@ npm --prefix web run test -- src/chat/components/AiopsComposer.test.tsx
 
 Expected: FAIL because suggestion selection currently replaces visible text but does not persist a selected-host hidden metadata record.
 
-- [ ] **Step 3: Store selected suggestion metadata in the composer**
+- [x] **Step 3: Store selected suggestion metadata in the composer**
 
 In `AiopsComposer.tsx`:
 
@@ -202,14 +202,14 @@ In `AiopsComposer.tsx`:
 - Derive `selectedHostMentions` from current text plus hidden metadata, so deleted mention tokens do not continue to bind a host.
 - If the user manually edits the mention after selection, drop the selected hidden metadata unless the current parsed token still matches the same normalized key.
 
-- [ ] **Step 4: Keep local suggestion and inventory suggestion metadata consistent**
+- [x] **Step 4: Keep local suggestion and inventory suggestion metadata consistent**
 
 In `hostMentionSearch.ts`, ensure both `buildLocalSuggestion` and inventory `buildSuggestion` expose enough data for the composer:
 
 - local suggestion: `hostId=server-local`, `address=server-local`, `label=local`, `displayName=server-local`, `source=local_alias`.
 - inventory suggestion: stable `hostId`, display label, address, status, `displayName`, `source=inventory`.
 
-- [ ] **Step 5: Run frontend tests**
+- [x] **Step 5: Run frontend tests**
 
 Run:
 
@@ -229,7 +229,7 @@ Expected: PASS.
 - Test: `internal/appui/chat_service_test.go`
 - Test: `internal/hostops/mention_parser_test.go`
 
-- [ ] **Step 1: Add failing backend tests for hidden metadata binding**
+- [x] **Step 1: Add failing backend tests for hidden metadata binding**
 
 Add a `ChatService` test that sends content `@server-local 查看 CPU 情况` with metadata:
 
@@ -247,7 +247,7 @@ Expected assertions:
 - `runReq.Metadata["aiops.target.binding"] == "host"`
 - `runReq.Metadata["aiops.tool.execCommandAllowed"] == "true"`
 
-- [ ] **Step 2: Add failing backend tests for forged metadata**
+- [x] **Step 2: Add failing backend tests for forged metadata**
 
 Add a `ChatService` test that sends visible content `@server-local 查看 CPU 情况` but forged metadata:
 
@@ -266,7 +266,7 @@ Expected assertions:
 
 This test must fail before implementation if current code trusts client `HostID` or client `resolved=true`.
 
-- [ ] **Step 3: Add failing parser tests for explicit local aliases**
+- [x] **Step 3: Add failing parser tests for explicit local aliases**
 
 Add table-driven tests:
 
@@ -279,7 +279,7 @@ for _, input := range []string{"@local 查看 CPU", "@server-local 查看 CPU", 
 }
 ```
 
-- [ ] **Step 4: Run focused Go tests and confirm they fail where expected**
+- [x] **Step 4: Run focused Go tests and confirm they fail where expected**
 
 Run:
 
@@ -289,7 +289,7 @@ go test ./internal/hostops ./internal/appui -run 'TestParseHostMentions|TestChat
 
 Expected: FAIL until local alias normalization, metadata-first binding, and forged metadata rejection are complete.
 
-- [ ] **Step 5: Implement metadata-first semantics without trusting the client**
+- [x] **Step 5: Implement metadata-first semantics without trusting the client**
 
 Keep the order in `hostOpsMentionsForCommand`:
 
@@ -306,7 +306,7 @@ Rules:
 - if resolver reports no matching host, remove that mention before `filterHostOpsRouteMentions`;
 - do not let `filterHostOpsRouteMentions` pass an inventory mention only because client supplied a non-empty `HostID`.
 
-- [ ] **Step 6: Preserve raw text fallback without adding a second runtime path**
+- [x] **Step 6: Preserve raw text fallback without adding a second runtime path**
 
 Raw content parsing remains fallback only:
 
@@ -316,11 +316,11 @@ Raw content parsing remains fallback only:
 
 Make sure a forged metadata item with `hostId` and `resolved=true` is not rescued by later raw parsing in the same request; the user should reselect a valid host if metadata validation fails.
 
-- [ ] **Step 7: Normalize local aliases in backend parser**
+- [x] **Step 7: Normalize local aliases in backend parser**
 
 Update `isLocalAliasToken` so the explicit `@` forms `local/server-local/localhost/127.0.0.1/::1/[::1]` all produce `HostMentionSourceLocalAlias`.
 
-- [ ] **Step 8: Run focused Go tests**
+- [x] **Step 8: Run focused Go tests**
 
 Run:
 
@@ -338,7 +338,7 @@ Expected: PASS.
 - Modify: `internal/appui/transport_commands.go`
 - Test: `internal/server/assistant_transport_api_test.go`
 
-- [ ] **Step 1: Add failing assistant transport test**
+- [x] **Step 1: Add failing assistant transport test**
 
 Add a test mirroring the existing `@local` test, but with `@server-local 查看 CPU 情况`:
 
@@ -354,7 +354,7 @@ Expected assertions:
 - target binding is `host`
 - exec command allowed is `true`
 
-- [ ] **Step 2: Run focused transport test and confirm it fails if fallback still drops @server-local**
+- [x] **Step 2: Run focused transport test and confirm it fails if fallback still drops @server-local**
 
 Run:
 
@@ -364,11 +364,11 @@ go test ./internal/server -run 'TestAssistantTransport.*ServerLocal|TestAssistan
 
 Expected: FAIL for `@server-local` before transport fallback is fixed.
 
-- [ ] **Step 3: Implement fallback by reusing hostops parser normalization**
+- [x] **Step 3: Implement fallback by reusing hostops parser normalization**
 
 Do not add a transport-specific host parser. Ensure `buildChatRuntimeTransportRoute` consumes `hostops.ParseHostMentions(messageText)` after parser local alias normalization, so `@server-local` survives `filterHostOpsRouteMentions`.
 
-- [ ] **Step 4: Run focused transport tests**
+- [x] **Step 4: Run focused transport tests**
 
 Run:
 
@@ -386,7 +386,7 @@ Expected: PASS.
 - Test: `internal/runtimekernel/intent_tool_packs_test.go`
 - Test: `internal/tooling/turn_metadata_filter_test.go`
 
-- [ ] **Step 1: Add or extend runtime tests for bound host CPU inspection**
+- [x] **Step 1: Add or extend runtime tests for bound host CPU inspection**
 
 Ensure a turn with:
 
@@ -407,7 +407,7 @@ TurnRequest{
 
 has `exec_command` in assembled/model-visible tools.
 
-- [ ] **Step 2: Confirm no-host advisory still hides exec_command**
+- [x] **Step 2: Confirm no-host advisory still hides exec_command**
 
 Keep or add a negative test with:
 
@@ -421,7 +421,7 @@ Metadata: map[string]string{
 
 Expected: `exec_command` is not visible.
 
-- [ ] **Step 3: Run runtime/tooling focused tests**
+- [x] **Step 3: Run runtime/tooling focused tests**
 
 Run:
 
@@ -438,11 +438,11 @@ Expected: PASS.
 **Files:**
 - Test manually through browser-in-app or Playwright against `http://127.0.0.1:5173/`
 
-- [ ] **Step 1: Start the dev stack**
+- [x] **Step 1: Start the dev stack**
 
 Use the repo's existing dev command. If a server is already running on `5173`, reuse it.
 
-- [ ] **Step 2: Verify selecting a host from @ list**
+- [x] **Step 2: Verify selecting a host from @ list**
 
 In the chat composer:
 
@@ -459,7 +459,7 @@ Expected UI/runtime behavior:
 - model/tool layer can use `exec_command`;
 - final answer includes actual CPU/read-only command evidence or a clear execution result.
 
-- [ ] **Step 3: Verify direct @local still works**
+- [x] **Step 3: Verify direct @local still works**
 
 Send:
 
@@ -469,7 +469,7 @@ Send:
 
 Expected: same host-bound behavior as selected `server-local`.
 
-- [ ] **Step 4: Verify bare server-local still does not bind**
+- [x] **Step 4: Verify bare server-local still does not bind**
 
 Send:
 
@@ -479,7 +479,7 @@ server-local 查看 CPU 情况
 
 Expected: advisory/no host binding unless the UI explicitly selected a target; this protects against accidental host execution.
 
-- [ ] **Step 5: Verify remote host from inventory**
+- [x] **Step 5: Verify remote host from inventory**
 
 Select a remote host from the `@` list, for example `120.77.239.90` / `host-a`, then ask for CPU.
 
@@ -489,6 +489,8 @@ Expected:
 - route is host-bound to that host;
 - `exec_command` runs against the selected host channel, not `server-local`.
 
+Status note: Playwright verified the selected remote host outbound payload carries `hostId=remote-120-77-239-90`, `address=120.77.239.90`, and `source=inventory`. Live remote trace `sess-1783309800183552000/turn-1783309801351679000` bound `aiops.target.hostId=remote-120-77-239-90`, `aiops.route.mode=host_bound_ops`, `aiops.tool.execCommandAllowed=true`, and model-visible `exec_command`. Tool evidence shows `nproc`, `cat /proc/cpuinfo`, and `cat /proc/loadavg` executed with `hostId=remote-120-77-239-90`, `source=host.agent_http_exec`, and `exitCode=0`, so execution used the selected remote host channel instead of `server-local`. The second model pass was cancelled when the Playwright page closed after tool evidence was captured; the host binding and command execution contract was still verified.
+
 ---
 
 ### Task 7: Full Regression Commands
@@ -496,7 +498,7 @@ Expected:
 **Files:**
 - Modify: `web/vitest.config.js` only if new Playwright spec files are added.
 
-- [ ] **Step 1: Run frontend regression**
+- [x] **Step 1: Run frontend regression**
 
 Run:
 
@@ -506,7 +508,7 @@ npm --prefix web run test -- src/chat/hostMentions.test.ts src/chat/hostMentionS
 
 Expected: PASS.
 
-- [ ] **Step 2: Run frontend build and typecheck**
+- [x] **Step 2: Run frontend build and typecheck**
 
 Run:
 
@@ -517,7 +519,7 @@ npm --prefix web run build
 
 Expected: PASS. The Vite chunk-size warning is acceptable; TypeScript errors are not.
 
-- [ ] **Step 3: Keep Vitest and Playwright separated**
+- [x] **Step 3: Keep Vitest and Playwright separated**
 
 If this implementation adds or renames any `web/tests/*.spec.js` Playwright file, add that file to `web/vitest.config.js` `test.exclude`, then run:
 
@@ -527,7 +529,9 @@ npm --prefix web test
 
 Expected: Vitest does not import Playwright specs. Existing unrelated test failures must be documented before merge.
 
-- [ ] **Step 4: Run backend routing regression**
+Status note: `web/vitest.config.js` now excludes the existing Playwright specs `tests/assistant-message-single-path.spec.js`, `tests/chat-runtime-folding-snapshot.spec.js`, and `tests/llm-provider-config-snapshot.spec.js`. After that change `npm --prefix web test` no longer imports Playwright specs, but still exits non-zero on 8 existing unrelated frontend assertions: `tests/hostListViewModel.spec.js` (3), `src/chat/ChatPage.runtimeContractV3.test.tsx` (1), `src/lib/zhLabels.test.ts` (1), `src/pages/complexPages.test.tsx` (1), `src/chat/components/PostRunSuggestions.test.tsx` (1), and `src/pages/opsgraph/OpsGraphListPage.test.tsx` (1).
+
+- [x] **Step 4: Run backend routing regression**
 
 Run:
 
@@ -537,7 +541,7 @@ go test ./internal/hostops ./internal/appui ./internal/server -run 'HostMention|
 
 Expected: PASS.
 
-- [ ] **Step 5: Run runtime/tool surface regression**
+- [x] **Step 5: Run runtime/tool surface regression**
 
 Run:
 
@@ -547,7 +551,7 @@ go test ./internal/runtimekernel ./internal/tooling -run 'Exec|HostBound|NoHost|
 
 Expected: PASS.
 
-- [ ] **Step 6: Run static guard if agent runtime layering work is present**
+- [x] **Step 6: Run static guard if agent runtime layering work is present**
 
 Run:
 
@@ -557,7 +561,7 @@ Run:
 
 Expected: PASS, or only failures unrelated to this host mention task are reported and documented before merge.
 
-- [ ] **Step 7: Run full Go regression**
+- [x] **Step 7: Run full Go regression**
 
 Run:
 
@@ -571,12 +575,12 @@ Expected: PASS.
 
 ## Acceptance Criteria
 
-- [ ] 通过 `@` 主机列表选择 `server-local` 后，消息 metadata 中稳定携带 `hostId=server-local`。
-- [ ] 服务端重新确认 `aiops.hostops.mentions`，伪造的 `hostId` 或伪造的 `resolved=true` 不会打开 host-bound 执行。
-- [ ] `@server-local 查看 CPU 情况` 进入 `host_bound_ops`，prompt runtime state 为 `host_scope: bound`。
-- [ ] `exec_command` 对 host-bound CPU 只读检查可见且可调度。
-- [ ] 裸文本 `server-local 查看 CPU 情况` 不自动绑定主机。
-- [ ] 删除或编辑已选中的 `@host` token 后，旧隐藏 metadata 不会继续绑定主机。
-- [ ] 多主机 mention 不会任选一个主机直接执行。
-- [ ] 前端、transport、appui、runtime tool surface 都通过对应测试。
-- [ ] browser-in-app/Playwright 真实用户流程验证通过。
+- [x] 通过 `@` 主机列表选择 `server-local` 后，消息 metadata 中稳定携带 `hostId=server-local`。
+- [x] 服务端重新确认 `aiops.hostops.mentions`，伪造的 `hostId` 或伪造的 `resolved=true` 不会打开 host-bound 执行。
+- [x] `@server-local 查看 CPU 情况` 进入 `host_bound_ops`，prompt runtime state 为 `host_scope: bound`。
+- [x] `exec_command` 对 host-bound CPU 只读检查可见且可调度。
+- [x] 裸文本 `server-local 查看 CPU 情况` 不自动绑定主机。
+- [x] 删除或编辑已选中的 `@host` token 后，旧隐藏 metadata 不会继续绑定主机。
+- [x] 多主机 mention 不会任选一个主机直接执行。
+- [x] 前端、transport、appui、runtime tool surface 都通过对应测试。
+- [x] browser-in-app/Playwright 真实用户流程验证通过。

@@ -1,0 +1,29 @@
+{
+  "id": "profile-isolation",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "验证 advisor、manager、worker 的 profile 隔离，不让 advisor 获得 host exec 心智。",
+  "expected": {
+    "expectedAssembly": {
+      "agentKind": "advisor",
+      "profile": "advisor.default",
+      "runtimeRole": "profile_only",
+      "routeReasonContains": "profile-isolation"
+    },
+    "expectedToolSurface": {
+      "visibleTools": ["search_ops_manuals"],
+      "dispatchableTools": ["search_ops_manuals"],
+      "hiddenTools": ["exec_command", "delegate_host_task"],
+      "requireSingleSource": true
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}
+

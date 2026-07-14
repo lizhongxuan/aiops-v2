@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"aiops-v2/internal/opssemantic"
+	"aiops-v2/internal/resourcebinding"
 )
 
 // HostMentionSource identifies how a textual @mention was interpreted.
@@ -121,20 +122,23 @@ type PlanRevision struct {
 }
 
 type HostOperationMission struct {
-	ID             string                      `json:"id"`
-	SessionID      string                      `json:"sessionId,omitempty"`
-	ThreadID       string                      `json:"threadId"`
-	UserTurnID     string                      `json:"userTurnId"`
-	ManagerAgentID string                      `json:"managerAgentId,omitempty"`
-	Status         HostMissionStatus           `json:"status"`
-	SemanticTask   opssemantic.OpsSemanticTask `json:"semanticTask"`
-	Plan           HostOperationPlan           `json:"plan"`
-	PlanRequired   bool                        `json:"planRequired"`
-	PlanAccepted   bool                        `json:"planAccepted"`
-	Mentions       []HostMention               `json:"mentions"`
-	ChildAgentIDs  []string                    `json:"childAgentIds"`
-	CreatedAt      time.Time                   `json:"createdAt"`
-	UpdatedAt      time.Time                   `json:"updatedAt"`
+	ID                           string                                `json:"id"`
+	SessionID                    string                                `json:"sessionId,omitempty"`
+	ThreadID                     string                                `json:"threadId"`
+	UserTurnID                   string                                `json:"userTurnId"`
+	ManagerAgentID               string                                `json:"managerAgentId,omitempty"`
+	Status                       HostMissionStatus                     `json:"status"`
+	SemanticTask                 opssemantic.OpsSemanticTask           `json:"semanticTask"`
+	Plan                         HostOperationPlan                     `json:"plan"`
+	PlanRequired                 bool                                  `json:"planRequired"`
+	PlanAccepted                 bool                                  `json:"planAccepted"`
+	Mentions                     []HostMention                         `json:"mentions"`
+	RoleBindings                 []resourcebinding.ResourceRoleBinding `json:"roleBindings,omitempty"`
+	RoleConflicts                []resourcebinding.RoleBindingConflict `json:"roleConflicts,omitempty"`
+	RoleBindingAssignmentEnabled bool                                  `json:"roleBindingAssignmentEnabled,omitempty"`
+	ChildAgentIDs                []string                              `json:"childAgentIds"`
+	CreatedAt                    time.Time                             `json:"createdAt"`
+	UpdatedAt                    time.Time                             `json:"updatedAt"`
 }
 
 type HostChildAgent struct {
@@ -146,6 +150,8 @@ type HostChildAgent struct {
 	HostAddress       string               `json:"hostAddress"`
 	HostDisplayName   string               `json:"hostDisplayName,omitempty"`
 	Role              string               `json:"role"`
+	BoundRole         string               `json:"boundRole,omitempty"`
+	RoleBindingHash   string               `json:"roleBindingHash,omitempty"`
 	Task              string               `json:"task"`
 	Status            HostChildAgentStatus `json:"status"`
 	PlanStepIDs       []string             `json:"planStepIds"`
@@ -163,6 +169,8 @@ type HostSubTask struct {
 	PlanStepID            string                       `json:"planStepId"`
 	HostAgentID           string                       `json:"hostAgentId"`
 	HostID                string                       `json:"hostId"`
+	BoundRole             string                       `json:"boundRole,omitempty"`
+	RoleBindingHash       string                       `json:"roleBindingHash,omitempty"`
 	Goal                  string                       `json:"goal"`
 	Constraints           []string                     `json:"constraints,omitempty"`
 	ActionType            opssemantic.OpsActionType    `json:"actionType,omitempty"`
@@ -182,18 +190,20 @@ type HostTaskCommandRecord struct {
 }
 
 type HostTaskReport struct {
-	MissionID    string                  `json:"missionId"`
-	PlanStepID   string                  `json:"planStepId"`
-	HostAgentID  string                  `json:"hostAgentId"`
-	HostID       string                  `json:"hostId"`
-	Status       string                  `json:"status"`
-	Summary      string                  `json:"summary,omitempty"`
-	Commands     []HostTaskCommandRecord `json:"commands,omitempty"`
-	EvidenceRefs []string                `json:"evidenceRefs,omitempty"`
-	Evidence     []HostTaskEvidence      `json:"evidence,omitempty"`
-	Errors       []string                `json:"errors,omitempty"`
-	Blockers     []string                `json:"blockers,omitempty"`
-	NextSteps    []string                `json:"nextSteps,omitempty"`
+	MissionID       string                  `json:"missionId"`
+	PlanStepID      string                  `json:"planStepId"`
+	HostAgentID     string                  `json:"hostAgentId"`
+	HostID          string                  `json:"hostId"`
+	BoundRole       string                  `json:"boundRole,omitempty"`
+	RoleBindingHash string                  `json:"roleBindingHash,omitempty"`
+	Status          string                  `json:"status"`
+	Summary         string                  `json:"summary,omitempty"`
+	Commands        []HostTaskCommandRecord `json:"commands,omitempty"`
+	EvidenceRefs    []string                `json:"evidenceRefs,omitempty"`
+	Evidence        []HostTaskEvidence      `json:"evidence,omitempty"`
+	Errors          []string                `json:"errors,omitempty"`
+	Blockers        []string                `json:"blockers,omitempty"`
+	NextSteps       []string                `json:"nextSteps,omitempty"`
 }
 
 type HostTaskReportStatus string

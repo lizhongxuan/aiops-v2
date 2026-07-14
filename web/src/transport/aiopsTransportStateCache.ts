@@ -15,6 +15,22 @@ export function getCachedAiopsTransportState(scope: AiopsTransportCacheScope): A
   return state ? cloneAiopsTransportState(state) : null;
 }
 
+export function getActiveAiopsTransportSessionId(scope: AiopsTransportCacheScope): string {
+  return activeSessionByScope.get(scope) || "";
+}
+
+export function getCachedAiopsTransportStateForSession(
+  scope: AiopsTransportCacheScope,
+  sessionId: string,
+): AiopsTransportState | null {
+  const normalizedSessionId = sessionId.trim();
+  if (!normalizedSessionId) {
+    return null;
+  }
+  const state = stateByKey.get(cacheKey(scope, normalizedSessionId));
+  return state ? cloneAiopsTransportState(state) : null;
+}
+
 export function setCachedAiopsTransportState(scope: AiopsTransportCacheScope, state: Partial<AiopsTransportState> | AiopsTransportState | null | undefined) {
   if (!state) {
     return;

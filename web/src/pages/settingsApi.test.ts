@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  fetchHosts,
+  fetchLlmConfig,
+  fetchSessions,
+  fetchTerminalSessions,
   normalizeLlmContextTokens,
   normalizeLlmMaxOutputTokens,
   normalizeLlmRequestTimeoutMs,
@@ -24,6 +28,38 @@ describe("settingsApi", () => {
     );
 
     await expect(updateLlmConfig({ provider: "openai", model: "gpt-5.4" })).rejects.toThrow(/ai-server.*127\.0\.0\.1:18080/);
+  });
+
+  it("passes AbortSignal through read APIs", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+      Promise.resolve(new Response(JSON.stringify({ items: [], sessions: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      })),
+    );
+    const controller = new AbortController();
+
+    await fetchHosts({ signal: controller.signal });
+    await fetchSessions({ signal: controller.signal });
+    await fetchTerminalSessions({ signal: controller.signal });
+    await fetchLlmConfig({ signal: controller.signal });
+
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/hosts",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/sessions",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/terminal/sessions",
+      expect.objectContaining({ signal: controller.signal }),
+    );
+    expect(fetchSpy).toHaveBeenCalledWith(
+      "/api/v1/llm-config",
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 
   it("keeps non-json error bodies visible instead of replacing them with a generic status", async () => {

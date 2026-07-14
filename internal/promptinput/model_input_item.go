@@ -36,19 +36,22 @@ type ModelInputToolResult struct {
 }
 
 type ModelInputItem struct {
-	ID           string                  `json:"id"`
-	ProviderRole ProviderRole            `json:"providerRole"`
-	SemanticRole string                  `json:"semanticRole,omitempty"`
-	Content      string                  `json:"content,omitempty"`
-	ContentParts []ModelInputContentPart `json:"contentParts,omitempty"`
-	Name         string                  `json:"name,omitempty"`
-	ToolCalls    []ModelInputToolCall    `json:"toolCalls,omitempty"`
-	ToolCallID   string                  `json:"toolCallId,omitempty"`
-	ToolResult   *ModelInputToolResult   `json:"toolResult,omitempty"`
-	Source       ModelInputSource        `json:"source,omitempty"`
-	Phase        string                  `json:"phase,omitempty"`
-	CacheGroup   string                  `json:"cacheGroup,omitempty"`
-	Metadata     map[string]string       `json:"metadata,omitempty"`
+	ID           string       `json:"id"`
+	ProviderRole ProviderRole `json:"providerRole"`
+	SemanticRole string       `json:"semanticRole,omitempty"`
+	Content      string       `json:"content,omitempty"`
+	// ReasoningContent must be preserved for OpenAI-compatible providers whose
+	// thinking mode requires assistant reasoning to be returned in history.
+	ReasoningContent string                  `json:"reasoningContent,omitempty"`
+	ContentParts     []ModelInputContentPart `json:"contentParts,omitempty"`
+	Name             string                  `json:"name,omitempty"`
+	ToolCalls        []ModelInputToolCall    `json:"toolCalls,omitempty"`
+	ToolCallID       string                  `json:"toolCallId,omitempty"`
+	ToolResult       *ModelInputToolResult   `json:"toolResult,omitempty"`
+	Source           ModelInputSource        `json:"source,omitempty"`
+	Phase            string                  `json:"phase,omitempty"`
+	CacheGroup       string                  `json:"cacheGroup,omitempty"`
+	Metadata         map[string]string       `json:"metadata,omitempty"`
 }
 
 func (i ModelInputItem) ToolResultToolCallID() string {

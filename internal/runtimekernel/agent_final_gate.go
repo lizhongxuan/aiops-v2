@@ -1,33 +1,28 @@
 package runtimekernel
 
 import (
+	"fmt"
+	"sort"
 	"strings"
 
+	"aiops-v2/internal/agentruntime"
 	"aiops-v2/internal/promptinput"
 )
 
-func EvaluateRuntimeAgentFinalGate(finalText string, notifications []promptinput.AgentNotificationTrace) promptinput.AgentFinalGateDecisionTrace {
-	text := strings.ToLower(finalText)
+const runtimeAgentFinalGateRetryMetadataKey = "agentFinalGateRetry"
+
+func EvaluateRuntimeAgentFinalGate(_ string, notifications []promptinput.AgentNotificationTrace) promptinput.AgentFinalGateDecisionTrace {
 	var pending []string
 	var unverified []string
 	for _, notification := range notifications {
 		status := strings.ToLower(strings.TrimSpace(notification.Status))
-		referenced := runtimeFinalReferencesAgent(text, notification)
 		switch status {
-		case "running", "waiting", "idle":
-			if referenced && !runtimeFinalStatesPending(text) {
-				pending = append(pending, notification.AgentID)
-			}
 		case "completed":
 			continue
-		case "":
-			if referenced {
-				unverified = append(unverified, notification.AgentID)
-			}
+		case "failed", "cancelled", "killed":
+			unverified = append(unverified, notification.AgentID)
 		default:
-			if runtimeFinalReferencesEvidence(text, notification) {
-				unverified = append(unverified, notification.AgentID)
-			}
+			pending = append(pending, notification.AgentID)
 		}
 	}
 	if len(pending) > 0 {
@@ -47,30 +42,60 @@ func EvaluateRuntimeAgentFinalGate(finalText string, notifications []promptinput
 	return promptinput.AgentFinalGateDecisionTrace{Action: "allow"}
 }
 
-func runtimeFinalReferencesAgent(text string, notification promptinput.AgentNotificationTrace) bool {
-	if notification.AgentID != "" && strings.Contains(text, strings.ToLower(notification.AgentID)) {
-		return true
+func runtimeAgentNotifications(snapshot *TurnSnapshot) []promptinput.AgentNotificationTrace {
+	latest := map[string]promptinput.AgentNotificationTrace{}
+	if snapshot == nil {
+		return nil
 	}
-	return runtimeFinalReferencesEvidence(text, notification)
-}
-
-func runtimeFinalReferencesEvidence(text string, notification promptinput.AgentNotificationTrace) bool {
-	if notification.Summary != "" && strings.Contains(text, strings.ToLower(notification.Summary)) {
-		return true
-	}
-	for _, ref := range notification.ResultRefs {
-		if ref != "" && strings.Contains(text, strings.ToLower(ref)) {
-			return true
+	for _, iteration := range snapshot.Iterations {
+		for _, result := range iteration.ToolResults {
+			toolName := runtimeAgentResultToolName(iteration, result.ToolCallID)
+			var data []byte
+			if result.Display != nil && len(result.Display.Data) > 0 {
+				data = result.Display.Data
+			} else {
+				data = []byte(result.Content)
+			}
+			facts, ok := agentruntime.ParseWorkerStatusContract(toolName, data)
+			if !ok {
+				continue
+			}
+			for _, child := range facts {
+				id := strings.TrimSpace(child.AgentID)
+				status := strings.ToLower(strings.TrimSpace(child.Status))
+				if id != "" && status != "" {
+					latest[id] = promptinput.AgentNotificationTrace{AgentID: id, Status: status}
+				}
+			}
 		}
 	}
-	return false
+	ids := make([]string, 0, len(latest))
+	for id := range latest {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]promptinput.AgentNotificationTrace, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, latest[id])
+	}
+	return out
 }
 
-func runtimeFinalStatesPending(text string) bool {
-	for _, marker := range []string{"pending", "still running", "not confirmed", "unconfirmed", "尚未确认", "仍在运行"} {
-		if strings.Contains(text, marker) {
-			return true
+func runtimeAgentResultToolName(iteration IterationState, toolCallID string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	for _, call := range iteration.ToolCalls {
+		if strings.TrimSpace(call.ID) == toolCallID {
+			return strings.TrimSpace(call.Name)
 		}
 	}
-	return false
+	for _, invocation := range iteration.ToolInvocations {
+		if strings.TrimSpace(invocation.ToolCallID) == toolCallID {
+			return strings.TrimSpace(invocation.ToolName)
+		}
+	}
+	return ""
+}
+
+func runtimeAgentFinalGateRetryPrompt(decision promptinput.AgentFinalGateDecisionTrace) string {
+	return fmt.Sprintf("## Worker completion gate\nPending worker IDs: %s. Continue the task and use the available orchestration status tool until every worker reaches a typed terminal state before producing a final answer.", strings.Join(decision.PendingAgents, ", "))
 }

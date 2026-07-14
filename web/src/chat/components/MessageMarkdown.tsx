@@ -4,7 +4,7 @@ type MessageMarkdownProps = {
   text: string;
 };
 
-const TOOL_TRIGGER_NAMES = new Set(["add_workflow", "coroot", "ops_graph", "ops_manus", "ops_manuals"]);
+const TOOL_TRIGGER_NAMES = new Set(["coroot", "ops_graph", "ops_manual"]);
 
 const markdown = new MarkdownIt({
   breaks: true,

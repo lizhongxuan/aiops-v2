@@ -94,19 +94,22 @@ func TestToolDispatcher_DispatchApprovedEmitsStartedAfterApprovalGate(t *testing
 				ToolNames: []string{"restart_service"},
 			},
 		},
-	}))
+	})).WithToolSurfaceFingerprint("sha256:approval-router")
+	call := ToolCall{
+		ID:        "tool-restart-1",
+		Name:      "restart_service",
+		Arguments: json.RawMessage(`{"service":"redis"}`),
+	}
+	verified := verifiedActionTokenForDispatcherTest(t, dispatcher, "turn-approval", call)
 
 	result := dispatcher.DispatchApproved(
 		context.Background(),
 		"sess-approval",
 		"turn-approval",
-		ToolCall{
-			ID:        "tool-restart-1",
-			Name:      "restart_service",
-			Arguments: json.RawMessage(`{"service":"redis"}`),
-		},
+		call,
 		SessionTypeHost,
 		ModeExecute,
+		verified,
 	)
 
 	if result.Content != "restarted" {
@@ -179,8 +182,8 @@ func TestToolDispatcher_SessionApprovalGrantBypassesToolPermissionGate(t *testin
 	emitter := &testMockEventEmitter{}
 	executor := &permissionCheckingExecutor{
 		decision: tooling.PermissionDecision{
-			Action: tooling.PermissionActionNeedEvidence,
-			Reason: "missing action token",
+			Action: tooling.PermissionActionNeedApproval,
+			Reason: "explicit approval required",
 		},
 	}
 	lookup := &mockToolLookup{
@@ -540,7 +543,7 @@ func TestDispatcherRejectsToolNotInRuntimeStepDispatchableTools(t *testing.T) {
 	}
 }
 
-func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
+func TestToolUnavailablePayloadIncludesHarnessContractFields(t *testing.T) {
 	emitter := &testMockEventEmitter{}
 	executor := &mockToolExecutor{result: "should-not-run"}
 	dispatcher := NewToolDispatcher(&mockToolLookup{tools: map[string]mockToolEntry{
@@ -572,10 +575,12 @@ func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
 		t.Fatalf("executor calls = %d, want 0", executor.calls)
 	}
 	var payload struct {
-		SchemaVersion string `json:"schemaVersion"`
-		ToolName      string `json:"toolName"`
-		Reason        string `json:"reason"`
-		Instruction   string `json:"instruction"`
+		SchemaVersion  string `json:"schemaVersion"`
+		ToolName       string `json:"toolName"`
+		FailureClass   string `json:"failureClass"`
+		Reason         string `json:"reason"`
+		Retryable      bool   `json:"retryable"`
+		RequiredAction string `json:"requiredAction"`
 	}
 	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
 		t.Fatalf("unmarshal unavailable result: %v; content=%s", err, result.Content)
@@ -583,7 +588,8 @@ func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
 	if payload.SchemaVersion != "aiops.tool_unavailable/v1" ||
 		payload.ToolName != "exec_command" ||
 		payload.Reason != "profile_disallowed" ||
-		payload.Instruction != "Continue without this tool or ask for explicit host target." {
+		payload.FailureClass == "" ||
+		payload.RequiredAction == "" {
 		t.Fatalf("payload = %#v, want structured unavailable result", payload)
 	}
 	if result.Result.Content != result.Content {
@@ -593,6 +599,41 @@ func TestDispatchHiddenToolReturnsUnavailableResult(t *testing.T) {
 		if event.Type == EventToolStarted || event.Type == EventToolFailed {
 			t.Fatalf("emitted %s for hidden unavailable tool", event.Type)
 		}
+	}
+}
+
+func TestToolUnavailableFailureClassifiesHostAgentAndFallbackFailures(t *testing.T) {
+	for _, tc := range []struct {
+		reason       string
+		wantClass    string
+		wantRetry    bool
+		wantRequired string
+	}{
+		{
+			reason:       "exec_command failed: Post \"http://172.18.13.12:7072/exec\": dial tcp 172.18.13.12:7072: connect: connection refused",
+			wantClass:    "needs_host_agent",
+			wantRetry:    true,
+			wantRequired: "start_or_repair_host_agent",
+		},
+		{
+			reason:       "ssh fallback failed: ssh fallback requires a read-only command",
+			wantClass:    "fallback_denied",
+			wantRetry:    false,
+			wantRequired: "use_read_only_command_or_request_scoped_execution",
+		},
+	} {
+		t.Run(tc.wantClass, func(t *testing.T) {
+			gotClass := toolUnavailableFailureClass(tc.reason)
+			if gotClass != tc.wantClass {
+				t.Fatalf("failure class = %q, want %q", gotClass, tc.wantClass)
+			}
+			if gotRetry := toolUnavailableRetryable(gotClass); gotRetry != tc.wantRetry {
+				t.Fatalf("retryable = %v, want %v", gotRetry, tc.wantRetry)
+			}
+			if gotRequired := toolUnavailableRequiredAction(gotClass); gotRequired != tc.wantRequired {
+				t.Fatalf("required action = %q, want %q", gotRequired, tc.wantRequired)
+			}
+		})
 	}
 }
 
@@ -807,7 +848,8 @@ func TestToolDispatcher_MutatingMetadataDeniedInInspectMode(t *testing.T) {
 			},
 		},
 	}
-	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter)
+	dispatcher := NewToolDispatcher(lookup, &policyengine.Engine{ModePolicy: policyengine.NewDefaultModePolicies()}, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test")
 
 	result := dispatcher.Dispatch(context.Background(), "sess-mut", "turn-mut", ToolCall{
 		ID:   "call-mut",

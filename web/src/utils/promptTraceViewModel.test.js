@@ -112,6 +112,21 @@ describe("parsePromptTrace", () => {
     expect(vm.summary.messageCount).toBe(1);
   });
 
+  it("reads top-level modelInput when stepContext is hash-only", () => {
+    const vm = parsePromptTrace({
+      schemaVersion: "aiops.trace/v2",
+      sessionId: "session-step-hash",
+      turnId: "turn-step-hash",
+      stepContext: { hash: "step-hash", turnAssemblyHash: "assembly-hash" },
+      modelInput: [{ id: "user-1", providerRole: "user", semanticRole: "user", content: "hello" }],
+      toolSurface: { modelVisibleTools: [], dispatchableTools: [] },
+    });
+
+    expect(vm.layers).toHaveLength(1);
+    expect(vm.layers[0].content).toBe("hello");
+    expect(vm.warnings.some((item) => item.message.includes("没有 modelInput"))).toBe(false);
+  });
+
   it("parses a real-shaped prompt trace into summary, layers, tools, and fingerprints", () => {
     const vm = parsePromptTrace(sampleTrace());
 
@@ -135,10 +150,271 @@ describe("parsePromptTrace", () => {
     expect(vm.fingerprints.find((item) => item.key === "stableHash").shortValue).toBe("40a0e0f6...bd6e4a");
   });
 
+  it("projects canonical control facts without exposing dynamic payload text", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      previousPromptFingerprint: {
+        absoluteSystemHash: "hash-absolute-system",
+        roleProfileHash: "hash-role-profile-old",
+        stableRuntimeContractHash: "hash-stable-runtime",
+        stablePrefixHash: "hash-stable-prefix",
+        turnStableHash: "hash-turn-stable",
+        conversationHistoryHash: "hash-history",
+        dynamicContextHash: "hash-dynamic-old",
+        currentUserInputHash: "hash-user-input",
+        modelInputHash: "hash-model-old",
+      },
+      promptFingerprint: {
+        absoluteSystemHash: "hash-absolute-system",
+        roleProfileHash: "hash-role-profile",
+        stableRuntimeContractHash: "hash-stable-runtime",
+        stablePrefixHash: "hash-stable-prefix",
+        turnStableHash: "hash-turn-stable",
+        conversationHistoryHash: "hash-history",
+        dynamicContextHash: "hash-dynamic",
+        currentUserInputHash: "hash-user-input",
+        modelInputHash: "hash-model",
+      },
+      stepContext: {
+        ...sampleTrace().stepContext,
+        hash: "hash-step-context",
+        turnAssemblyHash: "hash-turn-assembly",
+        checkpointRef: "checkpoint:pending-1",
+        toolPolicyHash: "hash-tool-policy",
+        stepReference: {
+          transition: {
+            revisions: [{ kind: "approval_resumed" }],
+          },
+        },
+      },
+      toolSurface: {
+        modelVisibleTools: ["inspect_service", "restart_service"],
+        dispatchableTools: ["inspect_service"],
+        hiddenReasons: { restart_service: "approval_required" },
+      },
+		promptInputTrace: {
+			promptSections: [
+				{ id: "base.contract", kind: "stable", hash: "hash-base", cache: "hit" },
+				{ id: "dynamic.context", kind: "dynamic", hash: "hash-dynamic", cache: "invalidated", cacheMissReason: "hash_changed" },
+			],
+		},
+      controlChain: {
+        schemaVersion: "aiops.canonical-rollout.v1",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        available: true,
+        headRef: { sequence: 3, eventId: "event:3", hash: "hash-event-3" },
+        events: [
+          {
+            sequence: 3,
+            kind: "approval_decided",
+            eventId: "event:3",
+            hash: "hash-event-3",
+            owner: "approval",
+            turnAssemblyHash: "hash-turn-assembly",
+            stepContextHash: "hash-step-context",
+            stepRevisionKind: "approval_resumed",
+            sourceRefs: ["checkpoint:pending-1"],
+            payloadRefs: {
+              approvalId: "approval-1",
+              mismatchFields: ["permission"],
+              checkpointRef: "checkpoint:pending-1",
+            },
+            payload: { secret: "must-not-reach-view-model" },
+          },
+          {
+            sequence: 1,
+            kind: "admission",
+            eventId: "event:1",
+            hash: "hash-event-1",
+            ownerModule: "appui.admission",
+          },
+        ],
+      },
+    }));
+
+    expect(vm.controlFacts).toMatchObject({
+      turnAssemblyHash: "hash-turn-assembly",
+      stepContextHash: "hash-step-context",
+      stepRevisionKind: "approval_resumed",
+      checkpointRef: "checkpoint:pending-1",
+      rolloutRef: {
+        sequence: 3,
+        eventId: "event:3",
+        hash: "hash-event-3",
+        ref: "hash-event-3",
+      },
+    });
+    expect(vm.promptHashes.stable.map((item) => item.key)).toEqual([
+      "absoluteSystemHash",
+      "roleProfileHash",
+      "stableRuntimeContractHash",
+      "stablePrefixHash",
+      "turnStableHash",
+    ]);
+    expect(vm.promptHashes.dynamic.map((item) => item.key)).toEqual([
+      "conversationHistoryHash",
+      "dynamicContextHash",
+      "currentUserInputHash",
+      "modelInputHash",
+    ]);
+    expect(vm.promptHashes.all.map((item) => item.layer)).toEqual(["L0", "L1", "L2", "L0-L2", "L3", "L4", "L5", "L6", "L0-L6"]);
+    expect(vm.promptHashes.stable.find((item) => item.key === "absoluteSystemHash").change).toBe("unchanged");
+    expect(vm.promptHashes.stable.find((item) => item.key === "roleProfileHash").change).toBe("changed");
+    expect(vm.promptHashes.dynamic.find((item) => item.key === "dynamicContextHash").change).toBe("changed");
+		expect(vm.promptCache.sections).toEqual([
+			{
+				id: "base.contract",
+				kind: "stable",
+				cache: "hit",
+				missReason: "",
+				hash: "hash-base",
+				shortHash: "hash-base",
+			},
+			{
+				id: "dynamic.context",
+				kind: "dynamic",
+				cache: "invalidated",
+				missReason: "hash_changed",
+				hash: "hash-dynamic",
+				shortHash: "hash-dynamic",
+			},
+		]);
+		expect(vm.promptCache.summary).toEqual({ hit: 1, miss: 0, invalidated: 1, unknown: 0 });
+    expect(vm.toolControl).toMatchObject({
+      modelVisible: ["inspect_service", "restart_service"],
+      dispatchable: ["inspect_service"],
+      hidden: [{ tool: "restart_service", reason: "approval_required" }],
+      policyHash: "hash-tool-policy",
+      diff: {
+        visibleNotDispatchable: ["restart_service"],
+        dispatchableNotVisible: [],
+      },
+    });
+    expect(vm.controlChain.events.map((event) => event.sequence)).toEqual([1, 3]);
+    expect(vm.controlChain.firstDivergence).toMatchObject({
+      sequence: 3,
+      kind: "approval_decided",
+      ownerModule: "approval",
+      mismatchFields: ["permission"],
+    });
+    expect(vm.approvalControl).toMatchObject({
+      approvalId: "approval-1",
+      mismatchFields: ["permission"],
+      checkpointRef: "checkpoint:pending-1",
+      rolloutRef: {
+        sequence: 3,
+        eventId: "event:3",
+        hash: "hash-event-3",
+        ref: "hash-event-3",
+      },
+    });
+    expect(vm.controlChain.events[1].payloadRefs).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: "mismatchFields", ref: "permission" }),
+    ]));
+    expect(JSON.stringify(vm.controlChain)).not.toContain("must-not-reach-view-model");
+  });
+
+  it("does not infer a replay divergence from failed tool status text", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      controlChain: {
+        schemaVersion: "aiops.canonical-rollout.v1",
+        sessionId: "sess-1",
+        turnId: "turn-1",
+        available: true,
+        events: [{
+          sequence: 1,
+          kind: "tool_result",
+          eventId: "event:tool-result",
+          hash: "hash:tool-result",
+          owner: "router",
+          payload: { outcome: "failed", errorClass: "tool_not_found" },
+          payloadRefs: { callId: "call-1", name: "missing_tool" },
+        }],
+      },
+    }));
+
+    expect(vm.controlChain.firstDivergence).toBeNull();
+    expect(vm.controlChain.events[0].isDivergence).toBe(false);
+  });
+
+  it("uses stable empty control-chain fallbacks when optional fields are absent", () => {
+    const vm = parsePromptTrace(sampleTrace());
+
+    expect(vm.controlFacts).toEqual({
+      turnAssemblyHash: "",
+      stepContextHash: "",
+      stepRevisionKind: "",
+      checkpointRef: "",
+      rolloutRef: { sequence: null, eventId: "", hash: "", ref: "" },
+    });
+    expect(vm.controlChain.events).toEqual([]);
+    expect(vm.controlChain.firstDivergence).toBeNull();
+    expect(vm.approvalControl.mismatchFields).toEqual([]);
+    expect(vm.promptHashes.all).toHaveLength(9);
+    expect(vm.promptHashes.all.every((item) => item.change === "unknown")).toBe(true);
+  });
+
   it("accepts a JSON string", () => {
     const vm = parsePromptTrace(JSON.stringify(sampleTrace()));
     expect(vm.summary.sessionId).toBe("sess-1");
     expect(vm.layers).toHaveLength(5);
+  });
+
+  it("parses special input world state from prompt input trace", () => {
+    const vm = parsePromptTrace(sampleTrace({
+      promptInputTrace: {
+        specialInputWorldState: {
+          schemaVersion: "aiops.special_input_memory.v1",
+          turnId: "turn-special",
+          modelSummary: "active host host-a from previous confirmed mention",
+          activeExecutionScope: {
+            id: "grant-host-a",
+            resourceKind: "host",
+            resourceId: "host-a",
+            allowedActions: ["inspect", "read"],
+            validationHash: "validation-hash-a",
+          },
+          activeRoleBindings: [{
+            id: "role-primary",
+            roleKey: "pg_primary",
+            runtimeName: "primary",
+            resourceKind: "host",
+            resourceId: "host-a",
+            environmentKey: "prod",
+            clusterKey: "orders",
+            bindingHash: "role-hash-a",
+          }],
+          pendingConfirmations: [{
+            id: "pending-raw",
+            kind: "target",
+            reason: "raw_typed_requires_confirmation",
+            candidateIds: ["raw-1"],
+          }],
+          conflicts: [{
+            id: "conflict-role",
+            kind: "role_binding",
+            roleKey: "pg_primary",
+            environmentKey: "prod",
+            clusterKey: "orders",
+            resourceIds: ["host-a", "host-b"],
+            reasons: ["unique_role_bound_to_multiple_resources"],
+          }],
+          readPlan: {
+            activeGrantId: "grant-host-a",
+            activeResourceKind: "host",
+            activeResourceId: "host-a",
+            pendingConfirmationIds: ["pending-raw"],
+          },
+        },
+      },
+    }));
+
+    expect(vm.specialInput.summary.hasActiveGrant).toBe(true);
+    expect(vm.specialInput.activeGrant.resourceId).toBe("host-a");
+    expect(vm.specialInput.roleBindings[0].bindingHash).toBe("role-hash-a");
+    expect(vm.specialInput.pendingConfirmations[0].reason).toBe("raw_typed_requires_confirmation");
+    expect(vm.specialInput.conflicts[0].resourceIds).toEqual(["host-a", "host-b"]);
+    expect(vm.specialInput.readPlan.activeGrantId).toBe("grant-host-a");
   });
 
   it("returns a warning view model for invalid JSON", () => {

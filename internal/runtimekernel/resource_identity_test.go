@@ -4,7 +4,11 @@ import (
 	"strings"
 	"testing"
 
+	"aiops-v2/internal/agentassembly"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/runtimecontract"
+	"aiops-v2/internal/tooling"
 )
 
 func TestResourceIdentityRepeatedReadReturnsUnchangedStub(t *testing.T) {
@@ -108,6 +112,49 @@ func TestResourceIdentitySameDigestDifferentVersionReturnsUnchanged(t *testing.T
 	}
 	if strings.Contains(result.ModelVisibleContent, "full content should not repeat") {
 		t.Fatalf("unchanged result repeated content: %q", result.ModelVisibleContent)
+	}
+}
+
+func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupeAtStateBoundary(t *testing.T) {
+	state := NewObservationState()
+	baseIdentity := ResourceIdentity{
+		URI:    "resource://shared/system-status",
+		Digest: "sha256:same",
+		Range:  ResourceRange{Offset: 0, Limit: 20},
+	}
+	hostA := ResourceReadRecord{
+		Identity:  baseIdentity,
+		SourceRef: "artifact-host-a",
+		Summary:   "host-a status",
+		Content:   "host-a full status",
+	}
+	hostA.Identity.TargetIdentityHash = "resource-ref-hash:host-a"
+	state.CheckResource(hostA)
+
+	hostB := ResourceReadRecord{
+		Identity:  baseIdentity,
+		SourceRef: "artifact-host-b",
+		Summary:   "host-b status",
+		Content:   "host-b full status",
+	}
+	hostB.Identity.TargetIdentityHash = "resource-ref-hash:host-b"
+	differentTarget := state.CheckResource(hostB)
+	if !differentTarget.Miss || differentTarget.Unchanged || differentTarget.Changed {
+		t.Fatalf("different target result = %#v, want independent miss", differentTarget)
+	}
+	if differentTarget.Record.SourceRef != "artifact-host-b" {
+		t.Fatalf("different target reused source ref %q, want artifact-host-b", differentTarget.Record.SourceRef)
+	}
+	if len(state.ResourceRecords) != 2 {
+		t.Fatalf("resource records = %d, want separate records per typed target", len(state.ResourceRecords))
+	}
+
+	sameTarget := state.CheckResource(hostB)
+	if !sameTarget.Unchanged || sameTarget.Miss || sameTarget.Changed {
+		t.Fatalf("same target result = %#v, want unchanged dedupe hit", sameTarget)
+	}
+	if sameTarget.Record.SourceRef != "artifact-host-b" {
+		t.Fatalf("same target reused source ref %q, want artifact-host-b", sameTarget.Record.SourceRef)
 	}
 }
 
@@ -219,6 +266,73 @@ func TestModelVisibleMessagesDedupeReportsDigestChange(t *testing.T) {
 	}
 	if strings.Contains(content, "new full content should not repeat") {
 		t.Fatalf("changed stub repeated full content: %q", content)
+	}
+}
+
+func TestResourceIdentitySameURIAndDigestDifferentTargetDoesNotDedupe(t *testing.T) {
+	session := &SessionState{ID: "sess-target-namespaced-dedupe"}
+	hostAHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}.IdentityHash()
+	hostBHash := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}.IdentityHash()
+	hostA := resourceToolMessage(
+		"msg-host-a",
+		"resource://shared/system-status",
+		"sha256:same",
+		resourceio.Range{Offset: 0, Limit: 20},
+		"host-a full status",
+	)
+	hostA.ToolResult.TargetIdentityHash = hostAHash
+	session.CurrentTurn = resourceIdentityFrozenTargetTurn(t, "turn-host-b", "host-b")
+	hostB := resourceToolMessage(
+		"msg-host-b",
+		"resource://shared/system-status",
+		"sha256:same",
+		resourceio.Range{Offset: 0, Limit: 20},
+		"host-b full status",
+	)
+	hostB.ToolResult.TargetIdentityHash = hostBHash
+	out, combinedEvents := modelVisibleMessagesWithObservationDedupe(session, []Message{hostA, hostB})
+	if len(combinedEvents) != 2 || combinedEvents[0].Kind != "resource.dedupe.miss" || combinedEvents[1].Kind != "resource.dedupe.miss" {
+		t.Fatalf("combined cross-turn history events = %#v, want independent misses", combinedEvents)
+	}
+	if out[0].ToolResult == nil || out[0].ToolResult.Content != "host-a full status" || out[1].ToolResult == nil || out[1].ToolResult.Content != "host-b full status" {
+		t.Fatalf("cross-turn history reused wrong target content: %#v", out)
+	}
+	if len(session.ObservationState.ResourceRecords) != 2 {
+		t.Fatalf("resource records = %#v, want one namespace per frozen target", session.ObservationState.ResourceRecords)
+	}
+	seen := map[string]string{}
+	for _, record := range session.ObservationState.ResourceRecords {
+		seen[record.Identity.TargetIdentityHash] = record.SourceRef
+	}
+	if seen[hostAHash] != "msg-host-a-ref" || seen[hostBHash] != "msg-host-b-ref" {
+		t.Fatalf("target namespaces/source refs = %#v, want host-a and host-b isolated", seen)
+	}
+
+	repeated, repeatedEvents := modelVisibleMessagesWithObservationDedupe(session, []Message{hostB})
+	if len(repeatedEvents) != 1 || repeatedEvents[0].Kind != "resource.dedupe.hit" {
+		t.Fatalf("same frozen target events = %#v, want hit", repeatedEvents)
+	}
+	if repeated[0].ToolResult == nil || !strings.Contains(repeated[0].ToolResult.Content, "msg-host-b-ref") {
+		t.Fatalf("same target did not reuse its own source ref: %#v", repeated[0].ToolResult)
+	}
+}
+
+func TestMaterializeToolResultCapturesFrozenTargetIdentity(t *testing.T) {
+	snapshot := resourceIdentityFrozenTargetTurn(t, "turn-materialize-host-a", "host-a")
+	session := &SessionState{ID: snapshot.SessionID, Type: SessionTypeHost, Mode: ModeInspect, Context: ContextWindow{MaxTokens: DefaultMaxTokens}, CurrentTurn: snapshot}
+	kernel := &RuntimeKernel{}
+	result, err := kernel.materializeToolResult(session, snapshot, 0, ToolCall{ID: "call-resource", Name: "resource.read"}, tooling.ToolMetadata{Name: "resource.read"}, tooling.ToolResult{
+		Content: "host-a status",
+		References: []tooling.ResultReference{{
+			Kind: tooling.ResultReferenceKindMCPResource, URI: "resource://shared/system-status", Digest: "sha256:same",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("materializeToolResult() error = %v", err)
+	}
+	want := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}.IdentityHash()
+	if result.TargetIdentityHash != want {
+		t.Fatalf("TargetIdentityHash = %q, want frozen target %q", result.TargetIdentityHash, want)
 	}
 }
 
@@ -339,4 +453,31 @@ func resourceToolMessage(id, uri, digest string, rng resourceio.Range, content s
 			}},
 		},
 	}
+}
+
+func resourceIdentityFrozenTargetTurn(t *testing.T, turnID, hostID string) *TurnSnapshot {
+	t.Helper()
+	target := resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: hostID}
+	facts, err := runtimecontract.BuildAdmissionFacts(runtimecontract.AdmissionInput{
+		Intent:        &runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindDiagnose, RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskReadOnly}},
+		SessionTarget: target,
+		TargetRefs:    []resourcebinding.ResourceRef{target},
+		SourceRefs:    []string{"resource-identity-test"},
+	})
+	if err != nil {
+		t.Fatalf("BuildAdmissionFacts() error = %v", err)
+	}
+	assembly, err := agentassembly.BuildTurnAssembly(agentassembly.TurnAssemblyInput{
+		AdmissionFacts:      facts,
+		CapabilityPolicy:    agentassembly.CapabilityPolicySnapshot{PolicyHash: "sha256:resource-identity-test"},
+		ContextPolicy:       agentassembly.ContextSelectorSnapshot{Policy: "bounded"},
+		LoopPolicy:          agentassembly.LoopPolicySnapshot{MaxIterations: 2, ToolCallPolicy: "governed"},
+		FinalContractPolicy: agentassembly.FinalContractSnapshot{Shape: "typed"},
+		RollbackPolicy:      "not-required-for-read-only",
+		SourceRefs:          []string{"resource-identity-test"},
+	})
+	if err != nil {
+		t.Fatalf("BuildTurnAssembly() error = %v", err)
+	}
+	return &TurnSnapshot{ID: turnID, SessionID: "sess-target-namespaced-dedupe", TurnAssembly: &assembly}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 const metadataInputMentionsV1 = "aiops.input.mentions.v1"
@@ -196,6 +197,70 @@ func inputMentionHostHintsToHostMentions(hints []inputMentionHostHint) []hostops
 		})
 	}
 	return mentions
+}
+
+func inputMentionsToSpecialInputObservations(parsed parsedInputMentions) []specialinputmemory.MentionObservation {
+	if !parsed.Present || parsed.Invalid {
+		return nil
+	}
+	observations := make([]specialinputmemory.MentionObservation, 0, len(parsed.Hosts)+len(parsed.Resources)+len(parsed.Capabilities))
+	for _, host := range parsed.Hosts {
+		hostID := strings.TrimSpace(host.HostID)
+		if hostID == "" {
+			continue
+		}
+		observations = append(observations, specialinputmemory.MentionObservation{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:" + hostID,
+			Display:      firstNonEmptyString(strings.TrimSpace(host.DisplayName), hostID),
+			RawText:      strings.TrimSpace(host.Raw),
+			Path:         "host://" + hostID,
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   hostID,
+		})
+	}
+	for _, resource := range parsed.Resources {
+		kind := strings.TrimSpace(resource.Kind)
+		id := strings.TrimSpace(resource.ID)
+		if kind == "" || id == "" {
+			continue
+		}
+		resourceKind := kind
+		switch kind {
+		case "ops_manual":
+			resourceKind = specialinputmemory.ResourceKindOpsManual
+		case "ops_graph":
+			resourceKind = specialinputmemory.ResourceKindOpsGraph
+		}
+		observations = append(observations, specialinputmemory.MentionObservation{
+			Kind:         resourceKind,
+			CanonicalKey: resourceKind + ":" + id,
+			Display:      firstNonEmptyString(strings.TrimSpace(resource.Title), id),
+			RawText:      strings.TrimSpace(resource.Raw),
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+			ResourceKind: resourceKind,
+			ResourceID:   id,
+		})
+	}
+	for _, capability := range parsed.Capabilities {
+		capability = strings.TrimSpace(strings.ToLower(capability))
+		if capability == "" || capability == "ops_manuals" || capability == "ops_graph" {
+			continue
+		}
+		observations = append(observations, specialinputmemory.MentionObservation{
+			Kind:         specialinputmemory.FactKindCapability,
+			CanonicalKey: "capability:" + capability,
+			Display:      capability,
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+			ResourceKind: specialinputmemory.ResourceKindCapability,
+			ResourceID:   capability,
+		})
+	}
+	return observations
 }
 
 func inputMentionUTF16RangeToByteOffsets(input string, start, end int) (int, int, bool) {

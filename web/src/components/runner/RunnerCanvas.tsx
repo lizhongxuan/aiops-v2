@@ -55,6 +55,7 @@ type RunnerCanvasProps = {
   };
   focusNodeId?: string;
   selectedNodeId?: string;
+  aiHighlightedNodeIds?: string[];
   fullscreen?: boolean;
   onUpdateGraph: (graph: RunnerGraph) => void;
   onSelectNode: (nodeId: string) => void;
@@ -269,18 +270,20 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
     () => getRunnerFocusNodeId({ graph: props.graph, runState: props.runState, explicitNodeId: explicitFocusNodeId }),
     [explicitFocusNodeId, props.graph, props.runState],
   );
+  const aiHighlightedNodeIds = useMemo(() => new Set((props.aiHighlightedNodeIds || []).map(String)), [props.aiHighlightedNodeIds]);
   const nodes = useMemo(
     () =>
       flowModel.nodes.map((node) => ({
         ...node,
         data: {
           ...node.data,
+          aiHighlighted: aiHighlightedNodeIds.has(node.id),
           runState: getRunnerNodeRunState(props.runState, node.id),
           onOpenConfig: props.onOpenNodeConfig,
           onNodeAction: props.onNodeAction,
         },
       })) as Node[],
-    [flowModel.nodes, props.onOpenNodeConfig, props.onNodeAction, props.runState],
+    [aiHighlightedNodeIds, flowModel.nodes, props.onOpenNodeConfig, props.onNodeAction, props.runState],
   );
   const edges = useMemo(
     () =>

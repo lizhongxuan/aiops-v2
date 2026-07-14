@@ -882,22 +882,6 @@ func publicWebToolResult(env publicweb.ResultEnvelope, opts Options) tooling.Too
 	}
 }
 
-func webSearchToolResult(req webSearchInput, content, source string, opts Options) tooling.ToolResult {
-	payload := map[string]string{
-		"query":   req.Query,
-		"source":  source,
-		"content": truncateString(content, opts.MaxOutputBytes),
-	}
-	data, _ := json.Marshal(payload)
-	return tooling.ToolResult{
-		Content: string(data),
-		Display: &tooling.ToolDisplayPayload{
-			Type:  "web_search",
-			Title: req.Query,
-		},
-	}
-}
-
 type commandInput struct {
 	Command     string   `json:"command"`
 	Args        []string `json:"args"`
@@ -1055,27 +1039,6 @@ func displayCommand(command string, args []string) string {
 
 func isForbiddenExecCommand(command string, args []string) bool {
 	return terminalpolicy.IsHardDeniedCommand(command, args)
-}
-
-func unwrapShellCommand(base string, args []string) (string, []string, bool) {
-	switch base {
-	case "bash", "sh", "zsh":
-	default:
-		return "", nil, false
-	}
-	if len(args) != 2 {
-		return "", nil, false
-	}
-	switch strings.TrimSpace(args[0]) {
-	case "-c", "-lc":
-	default:
-		return "", nil, false
-	}
-	command, commandArgs, ok := terminalpolicy.SplitCommandLine(args[1])
-	if !ok {
-		return "", nil, false
-	}
-	return command, commandArgs, true
 }
 
 func execRiskRank(risk actionproposal.Risk) int {

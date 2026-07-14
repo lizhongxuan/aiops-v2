@@ -212,8 +212,8 @@ export function fetchStateSnapshot() {
   return request<{ hosts?: HostRecord[]; selectedHost?: HostRecord; sessionId?: string }>("/api/v1/state");
 }
 
-export function fetchSessions() {
-  return request<SessionListResponse>("/api/v1/sessions");
+export function fetchSessions(options: RequestOptions = {}) {
+  return request<SessionListResponse>("/api/v1/sessions", options);
 }
 
 export function createSession(kind: SessionKind = "single_host", hostId?: string) {
@@ -231,12 +231,15 @@ export function selectHost(hostId: string) {
   return request<{ snapshot?: JsonMap }>("/api/v1/host/select", { method: "POST", body: { hostId } });
 }
 
-export function fetchTerminalSessions() {
-  return request<{ items?: JsonMap[]; sessions?: JsonMap[] }>("/api/v1/terminal/sessions");
+export function fetchTerminalSessions(options: RequestOptions = {}) {
+  return request<{ items?: JsonMap[]; sessions?: JsonMap[] }>(
+    "/api/v1/terminal/sessions",
+    options,
+  );
 }
 
-export function fetchHosts() {
-  return request<{ items?: HostRecord[] }>("/api/v1/hosts");
+export function fetchHosts(options: RequestOptions = {}) {
+  return request<{ items?: HostRecord[] }>("/api/v1/hosts", options);
 }
 
 export function createHost(payload: JsonMap) {
@@ -259,8 +262,8 @@ export function testHostSSH(hostId: string, payload: JsonMap) {
   return request<JsonMap>(`/api/v1/hosts/${encodeURIComponent(hostId)}/ssh/test`, { method: "POST", body: payload });
 }
 
-export function fetchLlmConfig() {
-  return request<LlmConfigView>("/api/v1/llm-config");
+export function fetchLlmConfig(options: RequestOptions = {}) {
+  return request<LlmConfigView>("/api/v1/llm-config", options);
 }
 
 export function updateLlmConfig(payload: LlmConfigUpdate) {

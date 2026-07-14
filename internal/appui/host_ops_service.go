@@ -10,6 +10,7 @@ import (
 
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/opssemantic"
+	"aiops-v2/internal/resourcebinding"
 )
 
 var ErrHostOpsInvalidMission = errors.New("invalid host operation mission")
@@ -56,16 +57,19 @@ func (s *defaultHostOpsService) CreateMission(ctx context.Context, command HostM
 		status = hostops.HostMissionStatusWaitingPlanAcceptance
 	}
 	mission := hostops.HostOperationMission{
-		ID:             firstNonEmptyHostOpsString(command.ID, deterministicMissionID(command, mentions)),
-		SessionID:      strings.TrimSpace(command.SessionID),
-		ThreadID:       firstNonEmptyHostOpsString(command.ThreadID, command.SessionID),
-		UserTurnID:     strings.TrimSpace(command.UserTurnID),
-		ManagerAgentID: strings.TrimSpace(command.ManagerAgentID),
-		Status:         status,
-		SemanticTask:   semantic,
-		PlanRequired:   planRequired,
-		PlanAccepted:   false,
-		Mentions:       mentions,
+		ID:                           firstNonEmptyHostOpsString(command.ID, deterministicMissionID(command, mentions)),
+		SessionID:                    strings.TrimSpace(command.SessionID),
+		ThreadID:                     firstNonEmptyHostOpsString(command.ThreadID, command.SessionID),
+		UserTurnID:                   strings.TrimSpace(command.UserTurnID),
+		ManagerAgentID:               strings.TrimSpace(command.ManagerAgentID),
+		Status:                       status,
+		SemanticTask:                 semantic,
+		PlanRequired:                 planRequired,
+		PlanAccepted:                 false,
+		Mentions:                     mentions,
+		RoleBindings:                 append([]resourcebinding.ResourceRoleBinding(nil), command.RoleBindings...),
+		RoleConflicts:                append([]resourcebinding.RoleBindingConflict(nil), command.RoleConflicts...),
+		RoleBindingAssignmentEnabled: command.RoleBindingAssignmentEnabled,
 	}
 	if hostCount > 0 && planRequired {
 		plan, err := hostops.BuildPlanForMission(mission)

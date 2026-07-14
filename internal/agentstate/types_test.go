@@ -59,13 +59,17 @@ func TestTurnItemTimelineTypesAreStandardized(t *testing.T) {
 		TurnItemTypeToolResult,
 		TurnItemTypeApprovalRequested,
 		TurnItemTypeApprovalDecided,
+		TurnItemTypeEvidenceRequested,
+		TurnItemTypeEvidenceCollected,
 		TurnItemTypeChildAgentStarted,
 		TurnItemTypeChildAgentResult,
 		TurnItemTypeContextCompacted,
-		TurnItemTypePendingInputAccepted,
-		TurnItemTypeTurnCancelled,
 		TurnItemTypePermissionSnapshot,
 		TurnItemTypeResourceLock,
+		TurnItemTypeCheckpoint,
+		TurnItemTypeFinalResponse,
+		TurnItemTypeTurnCancelled,
+		TurnItemTypeTurnFailed,
 	}
 
 	seen := map[TurnItemType]bool{}

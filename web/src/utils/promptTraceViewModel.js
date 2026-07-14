@@ -36,10 +36,44 @@ const DETAIL_EMPTY_TEXT = {
   duration: "暂无耗时",
 };
 const SENSITIVE_VALUE = "[已脱敏]";
+const PROMPT_CONTROL_HASH_GROUPS = {
+  stable: [
+    ["absoluteSystemHash", "Absolute System", "L0"],
+    ["roleProfileHash", "Role Profile", "L1"],
+    ["stableRuntimeContractHash", "Runtime Contract", "L2"],
+    ["stablePrefixHash", "Stable Prefix", "L0-L2"],
+    ["turnStableHash", "Turn Stable", "L3"],
+  ],
+  dynamic: [
+    ["conversationHistoryHash", "Conversation History", "L4"],
+    ["dynamicContextHash", "Dynamic Context", "L5"],
+    ["currentUserInputHash", "Current User Input", "L6"],
+    ["modelInputHash", "Model Input", "L0-L6"],
+  ],
+};
+const CONTROL_OWNER_BY_KIND = {
+  admission: "appui.admission",
+  assembly: "agentassembly",
+  prompt: "promptcompiler",
+  provider_request: "runtimekernel.provider",
+  provider_response: "runtimekernel.provider",
+  tool_proposed: "runtimekernel.tool",
+  tool_dispatched: "tooling.dispatcher",
+  tool_result: "tooling.executor",
+  approval_requested: "runtimekernel.approval",
+  approval_decided: "runtimekernel.approval",
+  checkpoint: "runtimekernel.checkpoint",
+  final_facts: "runtimekernel.final",
+  transport_projection: "appui.transport",
+  recorder_degraded: "modeltrace.recorder",
+};
 
-export function parsePromptTrace(input) {
+export function parsePromptTrace(input, controlChainOverride) {
   const warnings = [];
-  const payload = parseInput(input, warnings);
+  const parsedPayload = parseInput(input, warnings);
+  const payload = isPlainObject(controlChainOverride)
+    ? { ...parsedPayload, controlChain: controlChainOverride }
+    : parsedPayload;
   const isTraceV2 = payload.schemaVersion === "aiops.trace/v2";
   if (!isTraceV2) {
     warnings.push(warning("danger", "当前 PromptTrace UI 只支持 aiops.trace/v2 trace document。"));
@@ -47,8 +81,10 @@ export function parsePromptTrace(input) {
   const stepContext = isPlainObject(payload.stepContext) ? payload.stepContext : {};
   const modelInput = Array.isArray(stepContext.modelInput)
     ? stepContext.modelInput
+    : Array.isArray(payload.modelInput)
+      ? payload.modelInput
     : [];
-  if (!Array.isArray(stepContext.modelInput)) {
+  if (!Array.isArray(stepContext.modelInput) && !Array.isArray(payload.modelInput)) {
     warnings.push(warning("warning", "trace 中没有 modelInput[]，只能展示空输入。"));
   }
 
@@ -115,6 +151,13 @@ export function parsePromptTrace(input) {
   const agentUiSources = buildAgentUiSources(payload, layers, { caseId, sessionId, turnId });
   const contextGovernance = buildContextGovernanceViewModel(payload);
   const toolSurface = buildToolSurfaceViewModel(payload, visibleTools);
+  const controlChain = buildControlChainViewModel(payload);
+  const controlFacts = buildControlFactsViewModel(payload, stepContext, controlChain);
+  const promptHashes = buildPromptControlHashes(payload, promptFingerprint);
+  const promptCache = buildPromptCacheViewModel(payload);
+  const toolControl = buildToolControlViewModel(payload, stepContext, toolSurface);
+  const approvalControl = buildApprovalControlViewModel(controlChain, controlFacts);
+  const specialInput = buildSpecialInputViewModel(payload);
   const providerRequest = isPlainObject(payload.providerRequest) ? payload.providerRequest : {};
   const rawPayloadRefs = Array.isArray(payload.rawPayloadRefs)
     ? payload.rawPayloadRefs.map((ref) => ({
@@ -156,12 +199,310 @@ export function parsePromptTrace(input) {
       surface: toolSurface,
     },
     toolSurface,
+    controlFacts,
+    controlChain,
+    promptHashes,
+    promptCache,
+    toolControl,
+    approvalControl,
     providerRequest,
     rawPayloadRefs,
     agentUiSources,
     agentUiArtifacts: agentUiSources.flatArtifacts,
     contextGovernance,
+    specialInput,
     warnings,
+  };
+}
+
+function buildPromptCacheViewModel(payload = {}) {
+  const sections = firstCollection(payload.promptInputTrace?.promptSections)
+    .filter(isPlainObject)
+    .map((section) => {
+      const cache = compactText(section.cache) || "unknown";
+      const hash = redactSensitiveText(compactText(section.hash));
+      return {
+        id: redactSensitiveText(compactText(section.id)) || "unknown",
+        kind: redactSensitiveText(compactText(section.kind)) || "unknown",
+        cache,
+        missReason: cache === "hit" ? "" : redactSensitiveText(compactText(section.cacheMissReason)) || "unknown",
+        hash,
+        shortHash: shortHash(hash),
+      };
+    });
+  const summary = { hit: 0, miss: 0, invalidated: 0, unknown: 0 };
+  for (const section of sections) {
+    if (Object.hasOwn(summary, section.cache)) summary[section.cache] += 1;
+    else summary.unknown += 1;
+  }
+  return { sections, summary };
+}
+
+function buildControlChainViewModel(payload = {}) {
+  const source = isPlainObject(payload.controlChain) ? payload.controlChain : {};
+  let events = (Array.isArray(source.events) ? source.events : [])
+    .filter(isPlainObject)
+    .map(normalizeControlChainEvent)
+    .sort((left, right) => left.sequence - right.sequence);
+  const markedDivergence = findMarkedControlDivergence(events, source.firstDivergence);
+  if (markedDivergence) {
+    events = events.map((event) => event === markedDivergence ? { ...event, isDivergence: true } : event);
+  }
+  const firstDivergence = events.find((event) => event.isDivergence) || null;
+  return {
+    schemaVersion: compactText(source.schemaVersion),
+    sessionId: compactText(source.sessionId || payload.sessionId),
+    turnId: compactText(source.turnId || payload.turnId),
+    available: source.available === true,
+    unavailableReason: redactSensitiveText(compactText(source.unavailableReason)),
+    headRef: normalizeControlHeadRef(source.headRef),
+    events,
+    firstDivergence,
+    summary: {
+      eventCount: events.length,
+      hasDivergence: Boolean(firstDivergence),
+      firstDivergenceSequence: firstDivergence?.sequence ?? null,
+      firstDivergenceOwner: firstDivergence?.ownerModule || "",
+    },
+  };
+}
+
+function normalizeControlChainEvent(source = {}) {
+  const payload = isPlainObject(source.payload) ? source.payload : {};
+  const payloadRefMap = isPlainObject(source.payloadRefs) ? source.payloadRefs : {};
+  const sequence = Number.isFinite(Number(source.sequence)) ? Number(source.sequence) : Number.MAX_SAFE_INTEGER;
+  const kind = redactSensitiveText(compactText(source.kind));
+  const mismatchFields = collectStringList(
+    source.mismatchFields,
+    source.mismatchField,
+    payload.mismatchFields,
+    payload.mismatchField,
+    payloadRefMap.mismatchFields,
+    payloadRefMap.mismatchField,
+  );
+  const sourceRefs = collectStringList(source.sourceRefs);
+  const payloadRefs = normalizeControlPayloadRefs(source.payloadRefs, payload.sourceRefs, payload.evidenceRefs);
+  const checkpointRef = redactSensitiveText(firstText(
+    source.checkpointRef,
+    payload.checkpointRef,
+    payload.checkpointId,
+    payloadRefMap.checkpointRef,
+    payloadRefMap.checkpointId,
+    sourceRefs.find((ref) => ref.toLowerCase().includes("checkpoint")),
+  ));
+  const rolloutRef = redactSensitiveText(firstText(source.rolloutRef, payload.rolloutRef, payloadRefMap.rolloutRef));
+  const outcome = redactSensitiveText(firstText(payload.outcome, payload.status));
+  const errorClass = redactSensitiveText(firstText(payload.errorClass));
+  const isDivergence = Boolean(
+    source.firstDivergence ||
+    source.diverged ||
+    source.divergence ||
+    payload.firstDivergence ||
+    payload.diverged ||
+    payload.divergence ||
+    payloadRefMap.firstDivergence ||
+    payloadRefMap.divergence ||
+    mismatchFields.length ||
+    (compactText(firstText(payload.expectedHash, payloadRefMap.expectedHash)) &&
+      compactText(firstText(payload.actualHash, payloadRefMap.actualHash)) &&
+      compactText(firstText(payload.expectedHash, payloadRefMap.expectedHash)) !== compactText(firstText(payload.actualHash, payloadRefMap.actualHash)))
+  );
+  return {
+    sequence,
+    kind,
+    eventId: redactSensitiveText(compactText(source.eventId)),
+    hash: redactSensitiveText(compactText(source.hash)),
+    ownerModule: redactSensitiveText(firstText(source.owner, source.ownerModule, payload.owner, payload.ownerModule, CONTROL_OWNER_BY_KIND[kind], "未记录 owner")),
+    turnAssemblyHash: redactSensitiveText(compactText(source.turnAssemblyHash)),
+    stepContextHash: redactSensitiveText(compactText(source.stepContextHash)),
+    stepRevisionKind: redactSensitiveText(firstText(
+      source.stepRevisionKind,
+      payload.stepRevisionKind,
+      payloadRefMap.stepRevisionKind,
+      Array.isArray(payloadRefMap.stepRevisionKinds) ? payloadRefMap.stepRevisionKinds.at(-1) : "",
+    )),
+    sourceRefs,
+    payloadRefs,
+    mismatchFields,
+    isDivergence,
+    facts: {
+      toolCallId: redactSensitiveText(firstText(payload.toolCallId, payload.callId, payloadRefMap.toolCallId, payloadRefMap.callId)),
+      toolName: redactSensitiveText(firstText(payload.toolName, payload.name, payloadRefMap.toolName, payloadRefMap.name)),
+      outcome,
+      errorClass,
+      approvalId: redactSensitiveText(firstText(payload.approvalId, payloadRefMap.approvalId)),
+      actionTokenHash: redactSensitiveText(firstText(payload.actionTokenHash, payloadRefMap.actionTokenHash)),
+      permissionHash: redactSensitiveText(firstText(payload.permissionHash, payloadRefMap.permissionHash)),
+      checkpointRef,
+      rolloutRef,
+      checkpointHash: redactSensitiveText(firstText(payload.checkpointHash, payloadRefMap.checkpointHash)),
+      checkpointKind: redactSensitiveText(firstText(payload.checkpointKind, payloadRefMap.checkpointKind)),
+      decision: redactSensitiveText(firstText(payload.decision)),
+      status: redactSensitiveText(firstText(payload.status)),
+    },
+  };
+}
+
+function findMarkedControlDivergence(events, marker) {
+  if (!marker) return null;
+  if (typeof marker === "number") return events.find((event) => event.sequence === marker) || null;
+  if (typeof marker === "string") return events.find((event) => event.eventId === marker || event.hash === marker) || null;
+  if (!isPlainObject(marker)) return null;
+  return events.find((event) => (
+    (compactText(marker.eventId) && event.eventId === compactText(marker.eventId)) ||
+    (Number.isFinite(Number(marker.sequence)) && event.sequence === Number(marker.sequence))
+  )) || null;
+}
+
+function normalizeControlHeadRef(value) {
+  if (!isPlainObject(value)) {
+    const ref = redactSensitiveText(compactText(value));
+    return { sequence: null, eventId: "", hash: "", ref };
+  }
+  const sequence = Number.isFinite(Number(value.sequence)) ? Number(value.sequence) : null;
+  const eventId = redactSensitiveText(compactText(value.eventId));
+  const hash = redactSensitiveText(compactText(value.hash));
+  return { sequence, eventId, hash, ref: hash || eventId || (sequence == null ? "" : `sequence:${sequence}`) };
+}
+
+function normalizeControlPayloadRefs(value, ...fallbacks) {
+  const entries = [];
+  const add = (key, ref) => {
+    const text = redactSensitiveText(compactText(ref));
+    if (!text) return;
+    const id = `${key}:${text}`;
+    if (!entries.some((entry) => entry.id === id)) entries.push({ id, key, ref: text });
+  };
+  const addValue = (key, refValue) => {
+    if (Array.isArray(refValue)) {
+      for (const ref of refValue) addValue(key, ref);
+      return;
+    }
+    if (isPlainObject(refValue)) {
+      for (const [nestedKey, ref] of Object.entries(refValue)) addValue(`${key}.${nestedKey}`, ref);
+      return;
+    }
+    add(key, refValue);
+  };
+  if (isPlainObject(value)) {
+    for (const [key, refValue] of Object.entries(value)) {
+      addValue(redactSensitiveText(key), refValue);
+    }
+  } else {
+    addValue("ref", value);
+  }
+  for (const fallback of fallbacks) {
+    addValue("ref", fallback);
+  }
+  return entries.sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function buildControlFactsViewModel(payload = {}, stepContext = {}, controlChain = {}) {
+  const events = controlChain.events || [];
+  const eventWithAssembly = findLast(events, (event) => event.turnAssemblyHash);
+  const eventWithStep = findLast(events, (event) => event.stepContextHash);
+  const eventWithRevision = findLast(events, (event) => event.stepRevisionKind);
+  const revisions = firstCollection(
+    stepContext.stepReference?.transition?.revisions,
+    stepContext.stepReference?.revisions,
+    stepContext.revisions,
+  );
+  const revision = revisions.length ? revisions[revisions.length - 1] : null;
+  const checkpointEvent = findLast(events, (event) => event.facts?.checkpointRef);
+  return {
+    turnAssemblyHash: redactSensitiveText(firstText(stepContext.turnAssemblyHash, payload.turnAssembly?.hash, eventWithAssembly?.turnAssemblyHash)),
+    stepContextHash: redactSensitiveText(firstText(stepContext.hash, payload.stepContextHash, eventWithStep?.stepContextHash)),
+    stepRevisionKind: redactSensitiveText(firstText(stepContext.stepRevisionKind, revision?.kind, eventWithRevision?.stepRevisionKind)),
+    checkpointRef: redactSensitiveText(firstText(stepContext.checkpointRef, checkpointEvent?.facts?.checkpointRef)),
+    rolloutRef: controlChain.headRef?.ref ? controlChain.headRef : normalizeControlHeadRef(payload.rolloutRef),
+  };
+}
+
+function buildPromptControlHashes(payload = {}, promptFingerprint = {}) {
+  const promptInputDiff = isPlainObject(payload.promptInputDiff) ? payload.promptInputDiff : {};
+  const previous = firstObject(
+    payload.previousPromptFingerprint,
+    promptInputDiff.previousPromptFingerprint,
+    promptInputDiff.previousHashes,
+    promptInputDiff.previous,
+  );
+  const changedSections = [
+    ...firstCollection(promptInputDiff.changedSections),
+    ...firstCollection(payload.promptInputTrace?.changedSections),
+  ];
+  const buildGroup = (definitions, group) => definitions.map(([key, label, layer]) => {
+    const value = redactSensitiveText(compactText(promptFingerprint[key]));
+    const previousValue = redactSensitiveText(compactText(previous[key]));
+    const changedSection = changedSections.find((section) => (
+      compactText(section.currentHash) === value ||
+      compactText(section.id).toLowerCase().includes(key.replace(/Hash$/, "").toLowerCase())
+    ));
+    const inferredPrevious = previousValue || redactSensitiveText(compactText(changedSection?.previousHash));
+    let change = "unknown";
+    if (inferredPrevious) change = inferredPrevious === value ? "unchanged" : "changed";
+    else if (changedSection) change = "changed";
+    return {
+      key,
+      label,
+      layer,
+      group,
+      value,
+      shortValue: shortHash(value),
+      previousValue: inferredPrevious,
+      change,
+      missing: !value,
+    };
+  });
+  const stable = buildGroup(PROMPT_CONTROL_HASH_GROUPS.stable, "stable");
+  const dynamic = buildGroup(PROMPT_CONTROL_HASH_GROUPS.dynamic, "dynamic");
+  return { stable, dynamic, all: [...stable, ...dynamic] };
+}
+
+function buildToolControlViewModel(payload = {}, stepContext = {}, toolSurface = {}) {
+  const modelVisible = collectStringList(toolSurface.visible);
+  const dispatchable = collectStringList(toolSurface.dispatchable);
+  const hiddenReasons = isPlainObject(toolSurface.hiddenReasons) ? toolSurface.hiddenReasons : {};
+  const hidden = Object.entries(hiddenReasons)
+    .map(([tool, reason]) => ({
+      tool: redactSensitiveText(tool),
+      reason: redactSensitiveText(compactText(reason)),
+    }))
+    .sort((left, right) => left.tool.localeCompare(right.tool));
+  const visibleSet = new Set(modelVisible);
+  const dispatchableSet = new Set(dispatchable);
+  return {
+    modelVisible,
+    dispatchable,
+    hidden,
+    policyHash: redactSensitiveText(firstText(
+      stepContext.toolPolicyHash,
+      payload.toolSurface?.toolPolicyHash,
+      payload.promptInputTrace?.toolSurfacePolicySnapshotHash,
+    )),
+    fingerprint: redactSensitiveText(firstText(
+      stepContext.toolSurfaceFingerprint,
+      payload.toolSurface?.fingerprint,
+      payload.promptInputTrace?.toolSurfaceFingerprint,
+    )),
+    diff: {
+      visibleNotDispatchable: modelVisible.filter((tool) => !dispatchableSet.has(tool)),
+      dispatchableNotVisible: dispatchable.filter((tool) => !visibleSet.has(tool)),
+    },
+  };
+}
+
+function buildApprovalControlViewModel(controlChain = {}, controlFacts = {}) {
+  const approvalEvents = (controlChain.events || []).filter((event) => event.kind.startsWith("approval_"));
+  const event = approvalEvents.find((candidate) => candidate.isDivergence) || approvalEvents[approvalEvents.length - 1] || null;
+  return {
+    approvalId: event?.facts?.approvalId || "",
+    actionTokenHash: event?.facts?.actionTokenHash || "",
+    permissionHash: event?.facts?.permissionHash || "",
+    mismatchFields: event?.mismatchFields || [],
+    checkpointRef: event?.facts?.checkpointRef || controlFacts.checkpointRef || "",
+    rolloutRef: event?.facts?.rolloutRef ? normalizeControlHeadRef(event.facts.rolloutRef) : controlChain.headRef || controlFacts.rolloutRef,
+    eventId: event?.eventId || "",
+    eventHash: event?.hash || "",
   };
 }
 
@@ -541,6 +882,80 @@ function buildToolSurfaceViewModel(payload = {}, visibleTools = []) {
     toolSearchEvents,
     selectedTools,
     rejectedToolReasons,
+  };
+}
+
+function buildSpecialInputViewModel(payload = {}) {
+  const promptTrace = isPlainObject(payload.promptInputTrace) ? payload.promptInputTrace : {};
+  const state = firstObject(promptTrace.specialInputWorldState, payload.specialInputWorldState);
+  if (!isPlainObject(state) || Object.keys(state).length === 0) return null;
+  const activeGrant = firstObject(state.activeExecutionScope, state.activeGrant);
+  const roleBindings = collectionToRecords(firstCollection(state.activeRoleBindings, state.roleBindings), "id")
+    .map((binding) => ({
+      id: redactSensitiveText(firstText(binding.id, binding.bindingHash)),
+      roleKey: redactSensitiveText(firstText(binding.roleKey, binding.role, binding.targetRole)),
+      runtimeName: redactSensitiveText(firstText(binding.runtimeName, binding.runtime_name)),
+      resourceKind: redactSensitiveText(firstText(binding.resourceKind, binding.resource_kind)),
+      resourceId: redactSensitiveText(firstText(binding.resourceId, binding.resourceID, binding.resource_id)),
+      environmentKey: redactSensitiveText(firstText(binding.environmentKey, binding.environment_key)),
+      clusterKey: redactSensitiveText(firstText(binding.clusterKey, binding.cluster_key)),
+      bindingHash: redactSensitiveText(firstText(binding.bindingHash, binding.binding_hash)),
+    }))
+    .filter((binding) => binding.roleKey || binding.resourceId || binding.bindingHash);
+  const pendingConfirmations = collectionToRecords(state.pendingConfirmations, "id")
+    .map((pending) => ({
+      id: redactSensitiveText(firstText(pending.id)),
+      kind: redactSensitiveText(firstText(pending.kind)),
+      reason: redactSensitiveText(firstText(pending.reason)),
+      roleKey: redactSensitiveText(firstText(pending.roleKey, pending.role_key)),
+      candidateIds: collectStringList(pending.candidateIds, pending.candidate_ids),
+    }))
+    .filter((pending) => pending.id || pending.reason);
+  const conflicts = collectionToRecords(state.conflicts, "id")
+    .map((conflict) => ({
+      id: redactSensitiveText(firstText(conflict.id, conflict.traceHash, conflict.trace_hash)),
+      kind: redactSensitiveText(firstText(conflict.kind)),
+      roleKey: redactSensitiveText(firstText(conflict.roleKey, conflict.role_key)),
+      environmentKey: redactSensitiveText(firstText(conflict.environmentKey, conflict.environment_key)),
+      clusterKey: redactSensitiveText(firstText(conflict.clusterKey, conflict.cluster_key)),
+      resourceIds: collectStringList(conflict.resourceIds, conflict.resource_ids),
+      reasons: collectStringList(conflict.reasons),
+    }))
+    .filter((conflict) => conflict.id || conflict.roleKey || conflict.reasons.length);
+  const readPlan = firstObject(state.readPlan);
+
+  return {
+    schemaVersion: redactSensitiveText(firstText(state.schemaVersion)),
+    turnId: redactSensitiveText(firstText(state.turnId, state.turn_id)),
+    modelSummary: redactSensitiveText(firstText(state.modelSummary, state.summary)),
+    activeGrant: isPlainObject(activeGrant) && Object.keys(activeGrant).length ? {
+      id: redactSensitiveText(firstText(activeGrant.id)),
+      resourceKind: redactSensitiveText(firstText(activeGrant.resourceKind, activeGrant.resource_kind)),
+      resourceId: redactSensitiveText(firstText(activeGrant.resourceId, activeGrant.resourceID, activeGrant.resource_id)),
+      display: redactSensitiveText(firstText(activeGrant.display)),
+      allowedActions: collectStringList(activeGrant.allowedActions, activeGrant.allowed_actions),
+      validationHash: redactSensitiveText(firstText(activeGrant.validationHash, activeGrant.validation_hash)),
+      status: redactSensitiveText(firstText(activeGrant.status)),
+      trustLevel: redactSensitiveText(firstText(activeGrant.trustLevel, activeGrant.trust_level)),
+    } : null,
+    roleBindings,
+    pendingConfirmations,
+    conflicts,
+    readPlan: isPlainObject(readPlan) && Object.keys(readPlan).length ? {
+      activeGrantId: redactSensitiveText(firstText(readPlan.activeGrantId, readPlan.active_grant_id)),
+      activeResourceKind: redactSensitiveText(firstText(readPlan.activeResourceKind, readPlan.active_resource_kind)),
+      activeResourceId: redactSensitiveText(firstText(readPlan.activeResourceId, readPlan.active_resource_id)),
+      visibleFactIds: collectStringList(readPlan.visibleFactIds, readPlan.visible_fact_ids),
+      candidateFactIds: collectStringList(readPlan.candidateFactIds, readPlan.candidate_fact_ids),
+      roleBindingHashes: collectStringList(readPlan.roleBindingHashes, readPlan.role_binding_hashes),
+      pendingConfirmationIds: collectStringList(readPlan.pendingConfirmationIds, readPlan.pending_confirmation_ids),
+    } : null,
+    summary: {
+      hasActiveGrant: isPlainObject(activeGrant) && Object.keys(activeGrant).length > 0,
+      roleBindingCount: roleBindings.length,
+      pendingConfirmationCount: pendingConfirmations.length,
+      conflictCount: conflicts.length,
+    },
   };
 }
 

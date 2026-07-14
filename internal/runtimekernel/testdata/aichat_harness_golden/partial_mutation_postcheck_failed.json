@@ -1,0 +1,16 @@
+{
+  "name": "partial_mutation_postcheck_failed",
+  "hostId": "host-a",
+  "userInput": "总结刚才变更后的状态",
+  "modelFinalOutput": "partial_mutation: what may have partially executed: package install; known evidence refs: evidence-1; unknown state: package database lock; required post-check: rpm -q demo-package.",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "host",
+    "finalStatus": "unknown",
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

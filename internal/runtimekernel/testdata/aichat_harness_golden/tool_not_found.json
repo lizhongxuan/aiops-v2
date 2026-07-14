@@ -12,5 +12,13 @@
   "expectedStatus": "completed",
   "expectedVisibleStates": ["running", "failed", "completed"],
   "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
-  "expectedFailureKind": "tool_not_found"
+  "expectedFailureKind": "tool_not_found",
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "toolCalls": ["coroot_missing_tool"],
+    "finalStatus": "tool_unavailable",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
 }

@@ -19,6 +19,7 @@ import type {
   AiopsTransportApproval,
   AiopsTransportMcpSurface,
   AiopsTransportState,
+  AiopsTransportTurn,
 } from "@/transport/aiopsTransportTypes";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
@@ -56,12 +57,23 @@ function shouldAutoResumeProtocolState(state: AiopsTransportState) {
   return state.status === "working" || state.status === "blocked" || Object.keys(state.runtimeLiveness?.activeTurns || {}).length > 0;
 }
 
+export function protocolTurnTranscript(turn?: AiopsTransportTurn) {
+  const blocks = (turn?.blockOrder || []).flatMap((id) => {
+    const block = turn?.blocksById?.[id];
+    return block ? [block] : [];
+  });
+  return {
+    process: blocks.filter((block) => block.type !== "final_answer" && block.type !== "artifact"),
+    final: blocks.find((block) => block.type === "final_answer"),
+  };
+}
+
 function ProtocolWorkspaceContent() {
   const state = useAssistantTransportState() as AiopsTransportState;
   const commands = useAiopsTransportCommands();
   const turns = state.turnOrder.map((turnId) => state.turns[turnId]).filter(Boolean);
   const currentTurn = state.currentTurnId ? state.turns[state.currentTurnId] : turns[turns.length - 1];
-  const process = currentTurn?.process || [];
+  const transcript = protocolTurnTranscript(currentTurn);
   const approvals = Object.values(state.pendingApprovals || {});
   const surfaces = Object.values(state.mcpSurfaces || {});
   const artifacts = Object.values(state.artifacts || {});
@@ -122,8 +134,8 @@ function ProtocolWorkspaceContent() {
                 <div className="grid gap-3">
                   {currentTurn.user?.text ? <MessageBlock tone="dark" text={currentTurn.user.text} /> : null}
                   {currentTurn.intent?.text ? <MessageBlock tone="info" text={currentTurn.intent.text} /> : null}
-                  {process.length ? <ProcessBlocks items={process} /> : null}
-                  {currentTurn.final?.text ? <MessageBlock tone="light" text={currentTurn.final.text} /> : null}
+                  {transcript.process.length ? <ProcessBlocks items={transcript.process} /> : null}
+                  {transcript.final?.text ? <MessageBlock tone="light" text={transcript.final.text} /> : null}
                 </div>
               ) : (
                 <EmptyPanel title="暂无 protocol turn" description="发送消息后，主 Agent 的过程和结论会显示在这里。" />

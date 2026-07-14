@@ -112,6 +112,18 @@ func TestBuildIntentFrameHostResourceExplanationDoesNotRequestHostRuntime(t *tes
 	}
 }
 
+func TestBuildIntentFrameDeploymentIsTypedMutation(t *testing.T) {
+	input := "帮我部署服务"
+	frame := BuildIntentFrame(input, BuildEvidenceEnvelope(input, nil, nil), nil)
+
+	if frame.Kind != runtimecontract.IntentKindChange {
+		t.Fatalf("Kind = %q, want change", frame.Kind)
+	}
+	if !runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskWrite) {
+		t.Fatalf("RiskBudget = %#v, want write", frame.RiskBudget)
+	}
+}
+
 func containsEvidenceKind(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {

@@ -1,0 +1,48 @@
+{
+  "name": "mutation_missing_rollback",
+  "hostId": "host-a",
+  "mode": "execute",
+  "userInput": "重启 nginx 服务",
+  "availableTools": [
+    {
+      "name": "restart_service",
+      "description": "Restart a service on the selected host.",
+      "inputSchema": {
+        "type": "object",
+        "required": ["service"],
+        "properties": {
+          "service": { "type": "string" }
+        }
+      },
+      "mutating": true,
+      "approval": {
+        "reason": "restart requires approval",
+        "risk": "high",
+        "source": "golden",
+        "expectedEffect": "restart nginx"
+      }
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_restart",
+      "name": "restart_service",
+      "arguments": {
+        "service": "nginx"
+      }
+    }
+  ],
+  "expectedStatus": "blocked",
+  "expectedVisibleStates": ["running", "blocked"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "execute",
+    "targetBinding": "host",
+    "modelVisibleTools": ["restart_service"],
+    "toolCalls": ["restart_service"],
+    "approvalRequested": false,
+    "rollbackContractRequired": false,
+    "timelineOrder": ["assistant_message", "tool_call"]
+  }
+}

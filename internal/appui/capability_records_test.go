@@ -31,3 +31,27 @@ func TestCapabilityRecordMapsConnectorCatalogItemAsDataCapability(t *testing.T) 
 		t.Fatalf("Connection facet = %+v, want type and permission", record.Facets.Connection)
 	}
 }
+
+func TestCapabilityRecordMapsRunnerMCPAsAutomationCapability(t *testing.T) {
+	record := capabilityRecordFromMcpCatalogItem(McpCatalogItem{
+		ID:             "runner",
+		Name:           "Runner Workflow Editor",
+		Type:           "local",
+		Source:         "builtin",
+		SourceScope:    "mcp",
+		DefaultEnabled: true,
+		Permission:     "reviewed_mutation",
+		RuntimeStatus:  "connected",
+		Risk:           "high",
+	})
+
+	if record.Kind != "capability" || record.Category != "automation" {
+		t.Fatalf("record = %+v, want automation capability", record)
+	}
+	if record.Facets.Plugin != nil {
+		t.Fatalf("runner MCP capability should not be represented as plugin: %+v", record)
+	}
+	if record.Facets.Connection == nil || record.Facets.Connection.Permission != "reviewed_mutation" {
+		t.Fatalf("connection facet = %+v, want reviewed mutation MCP connection", record.Facets.Connection)
+	}
+}

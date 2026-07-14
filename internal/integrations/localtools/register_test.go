@@ -973,6 +973,10 @@ func TestEnsurePostgreSQLInstalledRequiresApprovalWhenMissing(t *testing.T) {
 		HostAgentCommandRunner: runner,
 	})
 	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{HostID: "host-pg"})
+	metadata := tool.Metadata()
+	if metadata.Rollback == nil || !metadata.Rollback.DeclarativelyReady() {
+		t.Fatalf("rollback metadata = %#v, want declaratively ready manual takeover", metadata.Rollback)
+	}
 
 	decision := tool.CheckPermissions(ctx, json.RawMessage(`{}`))
 	if decision.Action != tooling.PermissionActionNeedApproval {

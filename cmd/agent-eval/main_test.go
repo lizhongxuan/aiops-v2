@@ -142,6 +142,63 @@ func TestRunCLIFiltersCasesByPriority(t *testing.T) {
 	}
 }
 
+func TestRunCLISelectsNamedSuite(t *testing.T) {
+	casesRoot := t.TempDir()
+	suiteDir := filepath.Join(casesRoot, "multi_agent_assembly")
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLIRawCase(t, filepath.Join(suiteDir, "suite-case.json"), `{"id":"suite-case","category":"multi_agent_assembly","priority":"P0","input":"Run suite","expected":{"mustInclude":["mock agent"]}}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesRoot,
+		"-suite", "multi_agent_assembly",
+		"-priority", "P0",
+		"-out", outDir,
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "- suite-case [PASS]") {
+		t.Fatalf("stdout missing suite case:\n%s", stdout.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if report.CasesDir != suiteDir || report.Metadata["suite"] != "multi_agent_assembly" {
+		t.Fatalf("report suite metadata = casesDir %q metadata %#v", report.CasesDir, report.Metadata)
+	}
+}
+
+func TestRunCLIMarksHarnessContractSuiteMetadata(t *testing.T) {
+	casesRoot := t.TempDir()
+	suiteDir := filepath.Join(casesRoot, "harness_contract")
+	outDir := filepath.Join(t.TempDir(), "out")
+	writeCLIRawCase(t, filepath.Join(suiteDir, "harness-case.json"), `{"id":"harness-case","category":"harness_contract","priority":"P0","input":"Run harness","expected":{"mustInclude":["mock agent"]}}`)
+
+	var stdout, stderr bytes.Buffer
+	code := runCLI(context.Background(), []string{
+		"-agent", "mock",
+		"-cases", casesRoot,
+		"-suite", "harness_contract",
+		"-out", outDir,
+	}, &stdout, &stderr, fixedEvalNow)
+
+	if code != 0 {
+		t.Fatalf("runCLI exit code = %d, stderr=%s", code, stderr.String())
+	}
+	report, err := eval.LoadReport(filepath.Join(outDir, "report.json"))
+	if err != nil {
+		t.Fatalf("load report: %v", err)
+	}
+	if report.Metadata["suite"] != "harness_contract" ||
+		report.Metadata["harness_contract_schema"] != "aiops.harness.golden.v1" {
+		t.Fatalf("report harness metadata = %#v", report.Metadata)
+	}
+}
+
 func TestRunCLIRecordsRunPhaseRepetitionsAndFlagMetadata(t *testing.T) {
 	casesDir := t.TempDir()
 	outDir := filepath.Join(t.TempDir(), "out")
@@ -189,26 +246,53 @@ func TestRunCLIExecutesServerAgent(t *testing.T) {
 	outDir := filepath.Join(t.TempDir(), "out")
 	writeCLICase(t, casesDir, "server-basic")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/chat/message":
-			writeCLIJSONResponse(t, w, map[string]any{
-				"accepted":  true,
-				"sessionId": "sess-cli-server",
-				"turnId":    "turn-cli-server",
-				"status":    "accepted",
-			})
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/state":
-			writeCLIJSONResponse(t, w, map[string]any{
-				"sessionId": "sess-cli-server",
-				"cards": []map[string]any{
-					{"role": "assistant", "text": "server adapter completed the local turn through /api/v1/state, with verification: go test ./internal/eval"},
-				},
-				"runtime": map[string]any{
-					"turn": map[string]any{"active": false, "phase": "completed"},
-				},
-			})
-		default:
+		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/assistant/transport" {
 			http.NotFound(w, r)
+			return
+		}
+		var request struct {
+			Commands []struct {
+				Message struct {
+					ID       string            `json:"id"`
+					Metadata map[string]string `json:"metadata"`
+				} `json:"message"`
+			} `json:"commands"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode AssistantTransport request: %v", err)
+		}
+		if len(request.Commands) != 1 {
+			t.Fatalf("commands = %d, want one", len(request.Commands))
+		}
+		message := request.Commands[0].Message
+		clientTurnID := message.Metadata["clientTurnId"]
+		if message.ID == "" || clientTurnID == "" {
+			t.Fatalf("missing client correlation: message=%#v", message)
+		}
+		answer := "server adapter completed the local turn through AssistantTransport, with verification: go test ./internal/eval"
+		ops := []map[string]any{
+			{"type": "set", "path": []any{"currentTurnId"}, "value": "turn-cli-server"},
+			{"type": "set", "path": []any{"turns", "turn-cli-server"}, "value": map[string]any{
+				"id": "turn-cli-server", "clientTurnId": clientTurnID, "clientMessageId": message.ID,
+				"status": "completed", "agentItems": []any{},
+				"blockOrder": []string{"final-cli-server"},
+				"blocksById": map[string]any{
+					"final-cli-server": map[string]any{
+						"type": "final_answer", "id": "final-cli-server", "kind": "assistant", "displayKind": "assistant.message",
+						"phase": "final_answer", "streamState": "complete", "status": "completed", "text": answer,
+						"finalContract": map[string]any{"id": "final-cli-server", "text": answer, "answerText": answer, "status": "completed"},
+					},
+				},
+			}},
+			{"type": "set", "path": []any{"status"}, "value": "idle"},
+		}
+		payload, err := json.Marshal(ops)
+		if err != nil {
+			t.Fatalf("marshal AssistantTransport ops: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := w.Write(append(append([]byte("aui-state:"), payload...), '\n')); err != nil {
+			t.Fatalf("write AssistantTransport response: %v", err)
 		}
 	}))
 	defer server.Close()

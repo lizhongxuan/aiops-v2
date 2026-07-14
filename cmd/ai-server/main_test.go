@@ -48,6 +48,32 @@ func (r fakeLLMConfigRepo) GetLLMConfig() (*store.LLMConfig, error) {
 	return r.cfg, nil
 }
 
+type registryAdapterCorootConfigRepo struct {
+	cfg *store.CorootConfig
+	err error
+}
+
+func (r *registryAdapterCorootConfigRepo) GetCorootConfig() (*store.CorootConfig, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	if r.cfg == nil {
+		return nil, fmt.Errorf("coroot config not found")
+	}
+	cp := *r.cfg
+	return &cp, nil
+}
+
+func (r *registryAdapterCorootConfigRepo) SaveCorootConfig(config *store.CorootConfig) error {
+	if config == nil {
+		return fmt.Errorf("config is nil")
+	}
+	cp := *config
+	r.cfg = &cp
+	r.err = nil
+	return nil
+}
+
 type failingHostCommandRunner struct {
 	err error
 }
@@ -1233,6 +1259,68 @@ func TestRegistryAdapterUsesSameMetadataAssemblyForPromptAndRuntimePools(t *test
 	}
 	if info.Name != "host_read" {
 		t.Fatalf("tool pool Info().Name = %q, want host_read", info.Name)
+	}
+}
+
+func TestRegistryAdapterKeepsCorootMCPVisibleForAdvisoryToolProfile(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	repo := &registryAdapterCorootConfigRepo{cfg: &store.CorootConfig{
+		BaseURL: "http://coroot.example",
+		Token:   "saved-token",
+		Project: "saved-project",
+		Timeout: "1s",
+	}}
+	if _, err := registerBuiltinPlugins(&plugins.Registrar{MCP: mcpRegistry}, repo); err != nil {
+		t.Fatalf("registerBuiltinPlugins() error = %v", err)
+	}
+	adapter := newRegistryAdapter(tooling.NewAssembler(tooling.NewRegistry(), mcpRegistry), nil)
+
+	tools := adapter.CompileContextWithMetadata(runtimekernel.SessionType("workspace"), runtimekernel.Mode("chat"), map[string]string{
+		"toolProfile":                       "chat_advisory",
+		"aiops.coroot.explicitRCA":          "true",
+		"aiops.tool.corootRCAAllowed":       "true",
+		"aiops.toolPack.coroot_rca.allowed": "true",
+		"enableToolPack":                    "coroot_rca",
+	})
+	names := registryAdapterToolNames(tools)
+	if !registryAdapterHasToolByName(names, "coroot.collect_rca_context") {
+		t.Fatalf("CompileContextWithMetadata tools = %v, want coroot.collect_rca_context", names)
+	}
+}
+
+func TestRegistryAdapterEnablesBroadCorootAnomalyTools(t *testing.T) {
+	mcpRegistry := mcp.NewRegistry()
+	repo := &registryAdapterCorootConfigRepo{cfg: &store.CorootConfig{
+		BaseURL: "http://coroot.example",
+		Token:   "saved-token",
+		Project: "saved-project",
+		Timeout: "1s",
+	}}
+	if _, err := registerBuiltinPlugins(&plugins.Registrar{MCP: mcpRegistry}, repo); err != nil {
+		t.Fatalf("registerBuiltinPlugins() error = %v", err)
+	}
+	adapter := newRegistryAdapter(tooling.NewAssembler(tooling.NewRegistry(), mcpRegistry), nil)
+	catalog := adapter.AssembleToolsWithOptions("workspace", "chat", tooling.AssembleOptions{IncludeDeferredCatalog: true})
+	matches := tooling.MatchToolPacksByMetadata(catalog, "@Coroot 查看有哪些异常")
+	var enabledPacks []string
+	for _, match := range matches {
+		enabledPacks = append(enabledPacks, match.Pack)
+	}
+
+	tools := adapter.CompileContextWithMetadata(runtimekernel.SessionType("workspace"), runtimekernel.Mode("chat"), map[string]string{
+		"toolProfile":                               "chat_advisory",
+		"aiops.coroot.explicitRCA":                  "true",
+		"aiops.tool.corootRCAAllowed":               "true",
+		"aiops.toolPack.coroot_rca.allowed":         "true",
+		"aiops.toolPack.coroot_incident.allowed":    "true",
+		"aiops.toolPack.mcp_dynamic_coroot.allowed": "true",
+		"enableToolPack":                            strings.Join(enabledPacks, ","),
+	})
+	names := registryAdapterToolNames(tools)
+	for _, want := range []string{"coroot.list_services", "coroot.incidents"} {
+		if !registryAdapterHasToolByName(names, want) {
+			t.Fatalf("CompileContextWithMetadata tools = %v, want %s for broad Coroot anomaly prompt; matches=%v", names, want, matches)
+		}
 	}
 }
 

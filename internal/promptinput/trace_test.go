@@ -6,11 +6,12 @@ import (
 	"testing"
 
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/tooling"
 )
 
 func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System: promptcompiler.SystemPrompt{Content: "system layer"},
 			Tools:  promptcompiler.ToolPromptSet{Content: "tool index"},
@@ -24,6 +25,7 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 		},
 		History: []Message{
 			{Role: "user", Content: "triage"},
+			{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-1", Name: "read_logs"}}},
 			{Role: "tool", Content: "log output", ToolResult: &ToolResult{ToolCallID: "call-1", Content: "log output"}},
 		},
 	})
@@ -37,8 +39,8 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	}
 	jsonTrace := string(data)
 	for _, want := range []string{
-		`"source":"stable_prompt"`,
-		`"semanticRole":"tool_index"`,
+		`"source":"runtime"`,
+		`"semanticRole":"L2_stable_runtime_contract"`,
 		`"providerRole":"system"`,
 		`"source":"protocol_state"`,
 		`"semanticRole":"tool_result"`,
@@ -51,8 +53,9 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	markdown := RenderMarkdown(result.Trace)
 	for _, want := range []string{
 		"# Prompt Input Trace",
-		"stable_prompt",
-		"tool_index",
+		"L0_absolute_system_core",
+		"L2_stable_runtime_contract",
+		"dynamic.tool_surface",
 		"protocol_state",
 		"tool_result",
 		"provider",
@@ -63,8 +66,65 @@ func TestPromptInputTraceJSONAndMarkdownExplainSources(t *testing.T) {
 	}
 }
 
+func TestPromptInputTraceIncludesSpecialInputWorldState(t *testing.T) {
+	worldState := &specialinputmemory.SpecialInputWorldStateSection{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		TurnID:        "turn-special",
+		ActiveExecutionScope: &specialinputmemory.ExecutionScopeGrantTrace{
+			ID:             "grant-host-a",
+			ResourceKind:   specialinputmemory.ResourceKindHost,
+			ResourceID:     "host-a",
+			AllowedActions: []string{specialinputmemory.ActionRead},
+			ValidationHash: "hash-a",
+		},
+		ActiveRoleBindings: []specialinputmemory.RoleBindingTrace{{
+			RoleKey:        "pg_primary",
+			RuntimeName:    "primary",
+			ResourceKind:   specialinputmemory.ResourceKindHost,
+			ResourceID:     "host-a",
+			EnvironmentKey: "prod",
+			ClusterKey:     "orders",
+			BindingHash:    "role-hash-a",
+		}},
+		PendingConfirmations: []specialinputmemory.PendingConfirmation{{ID: "pending-raw", Kind: "target", Reason: "raw_typed_requires_confirmation"}},
+		ReadPlan: &specialinputmemory.MemoryReadPlanTrace{
+			ActiveGrantID:          "grant-host-a",
+			ActiveResourceKind:     specialinputmemory.ResourceKindHost,
+			ActiveResourceID:       "host-a",
+			PendingConfirmationIDs: []string{"pending-raw"},
+		},
+		ModelSummary: "active host host-a from previous confirmed mention",
+	}
+
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{SpecialInputWorldState: worldState})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if result.Trace.SpecialInputWorldState == nil || result.Trace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("SpecialInputWorldState = %#v, want host-a", result.Trace.SpecialInputWorldState)
+	}
+	worldState.ActiveExecutionScope.AllowedActions[0] = specialinputmemory.ActionMutate
+	if result.Trace.SpecialInputWorldState.ActiveExecutionScope.AllowedActions[0] != specialinputmemory.ActionRead {
+		t.Fatalf("trace did not clone world state: %#v", result.Trace.SpecialInputWorldState)
+	}
+
+	data, err := json.Marshal(result.Trace)
+	if err != nil {
+		t.Fatalf("marshal trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"specialInputWorldState"`) || !strings.Contains(string(data), `"grant-host-a"`) {
+		t.Fatalf("json trace missing special input state:\n%s", string(data))
+	}
+	markdown := RenderMarkdown(result.Trace)
+	for _, want := range []string{"## Special Input Memory", "grant-host-a", "pg_primary", "pending-raw"} {
+		if !strings.Contains(markdown, want) {
+			t.Fatalf("markdown missing %q:\n%s", want, markdown)
+		}
+	}
+}
+
 func TestPromptInputTraceIncludesOpsContextBudgetMetrics(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			System: promptcompiler.SystemPrompt{Content: "system layer"},
 		},
@@ -98,7 +158,7 @@ func TestPromptInputTraceIncludesOpsContextBudgetMetrics(t *testing.T) {
 }
 
 func TestPromptInputRendersCompactPlanModeAndTaskState(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		Compiled: promptcompiler.CompiledPrompt{
 			Dynamic: promptcompiler.DynamicPromptDelta{
 				ProtocolState: promptcompiler.ProtocolPromptState{
@@ -147,7 +207,7 @@ func TestPromptInputRendersCompactPlanModeAndTaskState(t *testing.T) {
 }
 
 func TestPromptInputRendersCompactVerificationSafetyState(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		VerificationReportRef: "artifact://synthetic/verification-report",
 		VerificationStatus:    "PARTIAL",
 		CompletionGate: &CompletionGateTrace{
@@ -207,7 +267,7 @@ func TestPromptInputRendersCompactVerificationSafetyState(t *testing.T) {
 }
 
 func TestPromptInputRendersGenericityTraceDepthAndCoverage(t *testing.T) {
-	result, err := Builder{}.Build(BuildRequest{
+	result, err := buildCanonicalPromptInputForTest(t, BuildRequest{
 		TaskDepth: &TaskDepthTrace{
 			Level:              "investigation",
 			Reasons:            []string{"cross_resource_evidence"},
@@ -293,7 +353,7 @@ func TestPromptInputTraceCarriesContextGovernance(t *testing.T) {
 			RetryMax:     3,
 		}},
 	}
-	result, err := Builder{}.Build(req)
+	result, err := buildCanonicalPromptInputForTest(t, req)
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
@@ -311,6 +371,34 @@ func TestPromptInputTraceCarriesContextGovernance(t *testing.T) {
 		got[0].RetryAttempt != 1 ||
 		got[0].RetryMax != 3 {
 		t.Fatalf("context governance trace = %#v", got[0])
+	}
+}
+
+func TestPromptInputTraceNormalizesPromptSectionHarnessMetadata(t *testing.T) {
+	req := BuildRequest{
+		Compiled: promptcompiler.CompiledPrompt{
+			System: promptcompiler.SystemPrompt{Content: "system layer"},
+			PromptSections: []promptcompiler.PromptSectionTrace{{
+				ID:             "protocol.state",
+				Kind:           "system",
+				Source:         "compiler",
+				Hash:           "sha256:protocol",
+				TokensEstimate: 8,
+				RetentionRank:  promptcompiler.RetentionRankP0,
+				CompactAction:  promptcompiler.CompactActionKeptOriginal,
+			}},
+		},
+	}
+	result, err := buildCanonicalPromptInputForTest(t, req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if len(result.Trace.PromptSections) != 1 {
+		t.Fatalf("prompt sections = %#v", result.Trace.PromptSections)
+	}
+	section := result.Trace.PromptSections[0]
+	if section.TokenEstimate != 8 || section.Action != "kept" || section.RetentionRank != promptcompiler.RetentionRankP0 {
+		t.Fatalf("prompt section harness metadata = %#v", section)
 	}
 }
 

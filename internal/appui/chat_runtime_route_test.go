@@ -6,6 +6,7 @@ import (
 
 	"aiops-v2/internal/envcontext"
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
 )
@@ -103,6 +104,7 @@ func TestChatRouteExplicitHostMentionEnablesHostContext(t *testing.T) {
 	route := BuildChatRuntimeRoute("@local 帮我检查 PG 状态", mentions, UserEvidenceExtraction{})
 	applyChatRuntimeRouteHostBinding(&req, route, mentions)
 	applyChatRuntimeRouteMetadata(&req, route)
+	applyChatRuntimeResourceProjection(&req, mentions)
 
 	if route.Mode != ChatRouteHostBoundOps {
 		t.Fatalf("Mode = %q, want host-bound ops", route.Mode)
@@ -112,6 +114,65 @@ func TestChatRouteExplicitHostMentionEnablesHostContext(t *testing.T) {
 	}
 	if req.HostID != "server-local" || req.Metadata["aiops.target.hostId"] != "server-local" {
 		t.Fatalf("request = %#v metadata=%#v, want only explicit host target", req, req.Metadata)
+	}
+	if len(req.ResourceBindings) != 1 || !req.ResourceBindings[0].Verified() || req.ResourceBindings[0].Ref.ID != "server-local" {
+		t.Fatalf("resource bindings = %#v, want verified server-local", req.ResourceBindings)
+	}
+}
+
+func TestChatRouteAdvisoryDoesNotForgeResourceBinding(t *testing.T) {
+	req := runtimekernel.TurnRequest{Metadata: map[string]string{}}
+	route := BuildChatRuntimeRoute("解释一下 checkpoint", nil, UserEvidenceExtraction{})
+	applyChatRuntimeRouteHostBinding(&req, route, nil)
+	applyChatRuntimeRouteMetadata(&req, route)
+	applyChatRuntimeResourceProjection(&req, nil)
+
+	if len(req.ResourceBindings) != 0 {
+		t.Fatalf("resource bindings = %#v, want none for advisory route", req.ResourceBindings)
+	}
+}
+
+func TestChatRouteTraceOnlySessionTargetSnapshot(t *testing.T) {
+	mentions := []hostops.HostMention{
+		{TokenID: "m2", Raw: "@hostB", HostID: "host-b", DisplayName: "hostB", Source: hostops.HostMentionSourceInventory, Resolved: true},
+		{TokenID: "m1", Raw: "@hostA", HostID: "host-a", DisplayName: "hostA", Source: hostops.HostMentionSourceInventory, Resolved: true},
+	}
+	req := runtimekernel.TurnRequest{TurnID: "turn-1", Metadata: map[string]string{}}
+	route := BuildChatRuntimeRoute("@hostA @hostB 检查 PG", mentions, UserEvidenceExtraction{})
+	applyChatRuntimeRouteHostBinding(&req, route, mentions)
+	applyChatRuntimeResourceProjection(&req, mentions)
+	applyChatRuntimeSessionTargetRoleTrace(&req, nil, "@hostA @hostB 检查 PG", mentions)
+
+	if req.SessionTargetSnapshot == nil || req.SessionTargetSnapshot.BindingMode != "multi_host" {
+		t.Fatalf("session target = %#v, want multi_host", req.SessionTargetSnapshot)
+	}
+	if got := req.SessionTargetSnapshot.HostIDs; len(got) != 2 || got[0] != "host-a" || got[1] != "host-b" {
+		t.Fatalf("host ids = %#v, want sorted host-a host-b", got)
+	}
+	if req.HostID != "" {
+		t.Fatalf("HostID = %q, want empty for multi-host route", req.HostID)
+	}
+}
+
+func TestChatRouteReadsSessionTargetTraceWithoutRestoringRoute(t *testing.T) {
+	session := &runtimekernel.SessionState{
+		SessionTargetSnapshot: resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+			HostIDs:           []string{"host-a", "host-b"},
+			SourceTurnID:      "turn-1",
+			ExpiresAfterTurns: 2,
+		}),
+	}
+	req := runtimekernel.TurnRequest{TurnID: "turn-2", Metadata: map[string]string{}}
+	route := BuildChatRuntimeRoute("继续检查复制状态", nil, UserEvidenceExtraction{})
+	applyChatRuntimeRouteHostBinding(&req, route, nil)
+	applyChatRuntimeResourceProjection(&req, nil)
+	applyChatRuntimeSessionTargetRoleTrace(&req, session, "继续检查复制状态", nil)
+
+	if req.HostID != "" || req.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("request = %#v, want no route restoration in trace-only phase", req)
+	}
+	if req.SessionTargetSnapshot == nil || req.SessionTargetSnapshot.ExpiresAfterTurns != 1 {
+		t.Fatalf("session target = %#v, want next-turn trace snapshot", req.SessionTargetSnapshot)
 	}
 }
 
@@ -195,10 +256,101 @@ func TestMultiHostProfileEnablesHostManagerRuntimeMetadata(t *testing.T) {
 	}
 }
 
-func TestBuildChatRuntimeRouteCorootMentionDoesNotBecomeHostOps(t *testing.T) {
+func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
+	mentions := []hostops.HostMention{{Raw: "@local", HostID: "server-local", Resolved: true}}
+	route := BuildChatRuntimeRoute("@local 修改当前 Workflow 的执行步骤", mentions, UserEvidenceExtraction{})
+	req := runtimekernel.TurnRequest{
+		Input: "@local 修改当前 Workflow 的执行步骤",
+		Metadata: map[string]string{
+			"aiops.workflowAgent.enabled":   "true",
+			"aiops.workflow.sessionIntent":  "edit",
+			"aiops.workflow.id":             "workflow",
+			"aiops.workflow.baseRevision":   "rev",
+			"aiops.workflow.selectedNodeId": "execute",
+		},
+	}
+
+	applyChatRuntimeRouteHostBinding(&req, route, mentions)
+	applyChatRuntimeToolSurfaceMetadata(&req, route)
+	applyChatRuntimeRouteMetadata(&req, route)
+	applyWorkflowAgentRuntimeMetadata(&req)
+
+	if req.HostID != "" {
+		t.Fatalf("HostID = %q, want empty for workflow agent drawer route", req.HostID)
+	}
+	if req.SessionType != runtimekernel.SessionTypeWorkspace || req.Mode != runtimekernel.ModePlan {
+		t.Fatalf("request session/mode = %s/%s, want workspace/plan", req.SessionType, req.Mode)
+	}
+	for key, want := range map[string]string{
+		"profile":                          runtimekernel.RuntimePromptProfileWorkflowAgent,
+		"toolProfile":                      runtimekernel.RuntimePromptProfileWorkflowAgent,
+		"aiops.tool.execCommandAllowed":    "false",
+		"aiops.tool.hostMutationAllowed":   "false",
+		"aiops.workflowAgent.routeApplied": "true",
+	} {
+		if got := req.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, req.Metadata)
+		}
+	}
+	if !strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
+		t.Fatalf("enableToolPack = %q, want workflow_editor", req.Metadata["enableToolPack"])
+	}
+}
+
+func TestApplyRuntimeMutationPoliciesProjectsTrustedTypedPolicies(t *testing.T) {
+	mutation := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&mutation, runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindChange,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite},
+	})
+	if mutation.PermissionProfile != runtimekernel.RuntimePermissionProfileApprovalRequired ||
+		mutation.RollbackPolicy != runtimekernel.RuntimeRollbackPolicyActionContractRequired {
+		t.Fatalf("mutation policies = %q/%q", mutation.PermissionProfile, mutation.RollbackPolicy)
+	}
+
+	hostExec := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&hostExec, runtimecontract.IntentFrame{
+		Kind:       runtimecontract.IntentKindVerify,
+		RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskHostExec},
+	})
+	if hostExec.PermissionProfile == "" || hostExec.RollbackPolicy == "" {
+		t.Fatalf("host execution is missing high-risk policies: %#v", hostExec)
+	}
+
+	readOnly := runtimekernel.TurnRequest{}
+	applyRuntimeMutationPolicies(&readOnly, runtimecontract.IntentFrame{Kind: runtimecontract.IntentKindExplain})
+	if readOnly.PermissionProfile != "" || readOnly.RollbackPolicy != "" {
+		t.Fatalf("risk-free read received mutation policies: %#v", readOnly)
+	}
+}
+
+func TestWorkflowAgentRuntimeMetadataRequiresExplicitDrawerFlag(t *testing.T) {
+	req := runtimekernel.TurnRequest{
+		HostID:      "server-local",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeExecute,
+		Metadata: map[string]string{
+			"aiops.workflow.id": "workflow",
+		},
+	}
+
+	applyWorkflowAgentRuntimeMetadata(&req)
+
+	if req.HostID != "server-local" || req.SessionType != runtimekernel.SessionTypeHost || req.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("request = %#v, should not change without explicit workflow agent flag", req)
+	}
+	if req.Metadata["profile"] == runtimekernel.RuntimePromptProfileWorkflowAgent || strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
+		t.Fatalf("metadata = %#v, should not enable workflow agent without explicit drawer flag", req.Metadata)
+	}
+}
+
+func TestBuildChatRuntimeRouteCorootMentionBecomesReadOnlyEvidenceRCA(t *testing.T) {
 	route := BuildChatRuntimeRoute("@Coroot 分析 order-api 延迟", nil, UserEvidenceExtraction{})
-	if route.Mode != ChatRouteAdvisory {
-		t.Fatalf("Mode = %q, want advisory without host mention", route.Mode)
+	if route.Mode != ChatRouteEvidenceRCA {
+		t.Fatalf("Mode = %q, want %q for Coroot evidence route", route.Mode, ChatRouteEvidenceRCA)
+	}
+	if route.AllowsExecCommand || route.RequiresHostBinding {
+		t.Fatalf("route = %#v, Coroot route should not become host-bound ops", route)
 	}
 	if !route.AllowsCorootRCA {
 		t.Fatalf("AllowsCorootRCA = false, want true")
@@ -281,6 +433,9 @@ func TestApplyIntentFrameRouteMetadataWritesShadowDiffWithoutChangingLegacy(t *t
 
 	applyChatRuntimeRouteMetadata(&req, legacy)
 	applyIntentFrameRouteMetadata(&req, legacy, intentRoute, legacy, frame, intentFrameRoutingTraceOnly)
+	if req.IntentFrame == nil || req.IntentFrame.Kind != runtimecontract.IntentKindResearch {
+		t.Fatalf("typed intent frame = %#v, want research", req.IntentFrame)
+	}
 
 	if req.Metadata["aiops.route.mode"] != string(ChatRouteAdvisory) || req.Metadata["aiops.route.allowsWebLearn"] != "false" {
 		t.Fatalf("legacy metadata changed unexpectedly: %#v", req.Metadata)

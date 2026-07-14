@@ -50,7 +50,9 @@ func TestToolDispatcherAcquiresAndReleasesResourceLockForMutatingTool(t *testing
 			executor: executor,
 		},
 	}}
-	dispatcher := NewToolDispatcher(lookup, nil, emitter).WithResourceLockGate(gate)
+	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
+		WithResourceLockGate(gate)
 
 	result := dispatcher.Dispatch(context.Background(), "sess-lock", "turn-lock", ToolCall{
 		ID:        "call-lock",
@@ -106,7 +108,9 @@ func TestToolDispatcherBlocksMutatingToolOnResourceLockConflict(t *testing.T) {
 			executor: executor,
 		},
 	}}
-	dispatcher := NewToolDispatcher(lookup, nil, emitter).WithResourceLockGate(gate)
+	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
+		WithResourceLockGate(gate)
 
 	result := dispatcher.Dispatch(context.Background(), "sess-lock", "turn-lock", ToolCall{
 		ID:        "call-lock",
@@ -154,10 +158,12 @@ func TestToolDispatcherResourceLockMutationRetryGuardDeniesMutationWithoutSafety
 	if err != nil {
 		t.Fatalf("hash input: %v", err)
 	}
-	dispatcher := NewToolDispatcher(lookup, nil, emitter).WithSessionApprovalGrants([]SessionApprovalGrant{{
-		ToolName:  "write_config",
-		InputHash: hash,
-	}})
+	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
+		WithSessionApprovalGrants([]SessionApprovalGrant{{
+			ToolName:  "write_config",
+			InputHash: hash,
+		}})
 
 	result := dispatcher.Dispatch(context.Background(), "sess-lock", "turn-lock", ToolCall{
 		ID:        "call-lock",
@@ -211,6 +217,7 @@ func TestMutationRetryGuardFailureRequiresPostCheck(t *testing.T) {
 		t.Fatalf("hash input: %v", err)
 	}
 	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithResourceLockGate(&recordingToolResourceLockGate{}).
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfig{Enabled: true, MaxPerCall: 1, MaxPerTurn: 1}).
 		WithSessionApprovalGrants([]SessionApprovalGrant{{

@@ -11,6 +11,7 @@ import (
 
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/terminal"
+	"aiops-v2/internal/workfloweditor"
 )
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ type HTTPServer struct {
 	mux                            *http.ServeMux
 	web                            http.Handler
 	runnerStudioHandler            http.Handler
+	workflowEditor                 *workfloweditor.Service
 	terminalManager                *terminal.Manager
 	appWSHeartbeatTick             time.Duration
 	appSnapshots                   *AppSnapshotBroadcaster
@@ -147,6 +149,12 @@ func WithRunnerStudioHandler(handler http.Handler) HTTPServerOption {
 	}
 }
 
+func WithWorkflowEditorService(service *workfloweditor.Service) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.workflowEditor = service
+	}
+}
+
 // NewHTTPServer creates a new HTTPServer wired to the given application services.
 func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer {
 	agentEvents := appui.NewAgentEventService(nil)
@@ -157,13 +165,20 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 			agentEvents = provided
 		}
 	}
+	promptTraces := appui.NewPromptTraceService("")
+	if provider, ok := ui.(interface {
+		PromptTraceService() appui.PromptTraceService
+	}); ok && provider.PromptTraceService() != nil {
+		promptTraces = provider.PromptTraceService()
+	}
 	s := &HTTPServer{
 		ui:                 ui,
 		mux:                http.NewServeMux(),
+		workflowEditor:     workfloweditor.NewService(nil),
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
 		agentEvents:        agentEvents,
-		promptTraces:       appui.NewPromptTraceService(""),
+		promptTraces:       promptTraces,
 		appSnapshots:       NewAppSnapshotBroadcaster(ui.StateService(), agentEvents),
 	}
 	for _, opt := range opts {
@@ -237,14 +252,17 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/runbooks/", s.handleRunbooks)
 	s.mux.HandleFunc("/api/v1/erp/", s.handleERPContext)
 	s.mux.HandleFunc("/api/v1/changes/", s.handleChanges)
+	s.mux.HandleFunc("/api/runner-studio/workflow-ai/", s.handleRunnerStudioWorkflowAI)
 	s.mux.HandleFunc("/api/runner-studio/ai/", s.handleRunnerStudioAI)
 	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 
 	resourceOpts := []ResourceServerOption{}
+	var corootRepo appui.CorootConfigRepository
 	if provider, ok := s.ui.(interface {
 		CorootConfigRepository() appui.CorootConfigRepository
 	}); ok {
 		if repo := provider.CorootConfigRepository(); repo != nil {
+			corootRepo = repo
 			resourceOpts = append(resourceOpts, WithCorootConfigRepository(repo))
 		}
 	}
@@ -266,6 +284,12 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/turn/resume", s.handleResumeTurn)
 	s.mux.HandleFunc("/api/v1/turn/cancel", s.handleCancelTurn)
 	s.mux.Handle("/ws", s.appWebSocketHandler())
+
+	if corootRepo != nil {
+		gateway := newCorootUIGateway(corootRepo)
+		s.mux.Handle("/_coroot/", gateway)
+		s.mux.Handle("/_coroot", gateway)
+	}
 
 	if s.web != nil {
 		s.mux.Handle("/", s.web)

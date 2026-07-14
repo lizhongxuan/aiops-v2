@@ -3,10 +3,11 @@ package runtimekernel
 import "strings"
 
 const (
-	RuntimePromptProfileAdvisor     = "advisor"
-	RuntimePromptProfileEvidenceRCA = "evidence_rca"
-	RuntimePromptProfileHostWorker  = "host_worker"
-	RuntimePromptProfileHostManager = "host_manager"
+	RuntimePromptProfileAdvisor       = "advisor"
+	RuntimePromptProfileEvidenceRCA   = "evidence_rca"
+	RuntimePromptProfileHostWorker    = "host_worker"
+	RuntimePromptProfileHostManager   = "host_manager"
+	RuntimePromptProfileWorkflowAgent = "workflow_agent"
 )
 
 type RuntimeCapability string
@@ -156,6 +157,46 @@ func HostAgentRuntimeProfile(hostID string) AgentRuntimeProfile {
 func HostWorkerRuntimeProfile(hostID string) AgentRuntimeProfile {
 	profile := HostAgentRuntimeProfile(hostID)
 	profile.Name = RuntimePromptProfileHostWorker
+	return profile
+}
+
+func WorkflowAgentRuntimeProfile() AgentRuntimeProfile {
+	profile := BaseAgentRuntimeProfile()
+	profile.Name = RuntimePromptProfileWorkflowAgent
+	profile.Profile = RuntimePromptProfileWorkflowAgent
+	profile.AgentKind = "workflow_planner"
+	profile.SessionType = SessionTypeWorkspace
+	profile.Mode = ModePlan
+	profile.AllowedActions = []string{
+		"create_workflow_from_requirement",
+		"inspect_workflow",
+		"inspect_workflow_step",
+		"inspect_action_catalog",
+		"create_workflow_edit_plan",
+		"propose_workflow_patch",
+		"validate_workflow_patch",
+		"preview_workflow_patch",
+		"describe_workflow_after_patch",
+		"detect_noop_or_duplicate_patch",
+		"apply_confirmed_workflow_patch",
+		"undo_last_ai_patch",
+		"save_workflow_draft",
+		"propose_ops_manual_candidate",
+		"propose_ops_manual_update",
+	}
+	profile.ForbiddenActions = []string{
+		"publish_workflow",
+		"execute_workflow",
+		"direct_host_command",
+		"host_mutation",
+		"bypass_workflow_editor_api",
+		"modify_ops_manual_without_preview",
+		"auto_apply_unapproved_patch",
+		"replace_full_graph_without_confirmation",
+		"bypass_workflow_review",
+		"mark_ops_manual_verified",
+		"ordinary_chat_add_workflow",
+	}
 	return profile
 }
 

@@ -89,10 +89,17 @@ func ApplyPromptSectionCache(previous, current []PromptSectionTrace) []PromptSec
 		switch {
 		case !ok:
 			out[i].Cache = PromptSectionCacheMiss
+			if len(previous) == 0 {
+				out[i].CacheMissReason = PromptSectionCacheMissReasonNoPreviousTrace
+			} else {
+				out[i].CacheMissReason = PromptSectionCacheMissReasonSectionAdded
+			}
 		case prev.Hash == out[i].Hash:
 			out[i].Cache = PromptSectionCacheHit
+			out[i].CacheMissReason = ""
 		default:
 			out[i].Cache = PromptSectionCacheInvalidated
+			out[i].CacheMissReason = PromptSectionCacheMissReasonHashChanged
 		}
 	}
 	return out
@@ -101,20 +108,24 @@ func ApplyPromptSectionCache(previous, current []PromptSectionTrace) []PromptSec
 func promptSectionTrace(id, kind, source, content, cache string) PromptSectionTrace {
 	trimmed := strings.TrimSpace(content)
 	contract := LookupPromptSectionContract(id)
+	tokensEstimate := promptSectionEstimateTokens(trimmed)
 	return PromptSectionTrace{
-		ID:             id,
-		Kind:           kind,
-		Source:         source,
-		Hash:           "sha256:" + hashPromptText(trimmed),
-		Bytes:          len([]byte(trimmed)),
-		TokensEstimate: promptSectionEstimateTokens(trimmed),
-		Cache:          cache,
-		RetentionRank:  contract.RetentionRank,
-		RetentionClass: contract.RetentionClass,
-		CompactAction:  CompactActionKeptOriginal,
-		CompactSchema:  contract.CompactSchema,
-		Redaction:      contract.RedactionPolicy,
-		Purpose:        contract.Purpose,
+		ID:              id,
+		Kind:            kind,
+		Source:          source,
+		Hash:            "sha256:" + hashPromptText(trimmed),
+		Bytes:           len([]byte(trimmed)),
+		TokensEstimate:  tokensEstimate,
+		TokenEstimate:   tokensEstimate,
+		Cache:           cache,
+		CacheMissReason: PromptSectionCacheMissReasonNoPreviousTrace,
+		RetentionRank:   contract.RetentionRank,
+		RetentionClass:  contract.RetentionClass,
+		CompactAction:   CompactActionKeptOriginal,
+		Action:          "kept",
+		CompactSchema:   contract.CompactSchema,
+		Redaction:       contract.RedactionPolicy,
+		Purpose:         contract.Purpose,
 	}
 }
 

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -17,12 +18,12 @@ import (
 const hostAgentHeartbeatStaleAfter = time.Minute
 
 type defaultHostService struct {
-	writer           SessionStore
-	repo             HostRepository
-	builder          *SnapshotBuilder
-	bootstrap        *HostBootstrapService
-	sshPasswordStore HostSSHPasswordStore
-	agentTokenStore  HostAgentTokenStore
+	writer            SessionStore
+	repo              HostRepository
+	builder           *SnapshotBuilder
+	bootstrap         *HostBootstrapService
+	sshPasswordStore  HostSSHPasswordStore
+	agentTokenStore   HostAgentTokenStore
 	nodeHealthChecker HostNodeHealthChecker
 }
 
@@ -408,6 +409,82 @@ func (s *defaultHostService) saveHostSSHTestState(host *store.HostRecord, creden
 	_ = s.repo.SaveHost(&next)
 }
 
+func (s *defaultHostService) refreshAIOPSPullHostHealth(ctx context.Context) {
+	if s == nil || s.repo == nil || s.nodeHealthChecker == nil {
+		return
+	}
+	records, err := s.repo.ListHosts()
+	if err != nil {
+		return
+	}
+	for _, record := range records {
+		if !shouldRefreshAIOPSPullHostHealth(record) {
+			continue
+		}
+		health, err := s.nodeHealthChecker.CheckHostNodeHealth(ctx, record)
+		if err != nil || !hostNodeHealthIsOnline(health) {
+			continue
+		}
+		next := cloneHostRecord(record)
+		next.Status = "online"
+		next.AgentStatus = "online"
+		next.RuntimeReachability = "agent_online"
+		next.Transport = firstNonEmpty(next.Transport, "agent_http")
+		next.ConnectionMode = HostConnectionModeAIOPSPull
+		next.InstallState = firstNonEmpty(next.InstallState, "installed")
+		next.ControlMode = firstNonEmpty(next.ControlMode, "managed")
+		next.Executable = true
+		next.TerminalCapable = true
+		next.LastHeartbeat = hostNodeHealthHeartbeat(health, time.Now().UTC())
+		next.LastError = ""
+		if version := strings.TrimSpace(health.AgentVersion); version != "" {
+			next.AgentVersion = version
+		}
+		_ = s.repo.SaveHost(&next)
+	}
+}
+
+func shouldRefreshAIOPSPullHostHealth(record store.HostRecord) bool {
+	if NormalizeHostConnectionMode(record.ConnectionMode) != HostConnectionModeAIOPSPull {
+		return false
+	}
+	if strings.TrimSpace(record.AgentURL) == "" {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(record.InstallState)) != "installed" {
+		return false
+	}
+	if hostAgentStatus(record) == "stale" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(record.RuntimeReachability)) {
+	case "agent_stale", "agent_unreachable", "offline", "inventory_only":
+		return true
+	}
+	return !isOnlineHostStatus(record.Status) || !isOnlineHostStatus(record.AgentStatus)
+}
+
+func hostNodeHealthIsOnline(health HostNodeHealth) bool {
+	switch strings.ToLower(strings.TrimSpace(health.Status)) {
+	case "ok", "online", "ready", "healthy":
+		return true
+	default:
+		return false
+	}
+}
+
+func hostNodeHealthHeartbeat(health HostNodeHealth, now time.Time) string {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(health.LastHeartbeat)); err == nil && !parsed.IsZero() {
+		if now.Sub(parsed.UTC()) <= hostAgentHeartbeatStaleAfter {
+			return isoStamp(parsed)
+		}
+	}
+	return isoStamp(now)
+}
+
 func (s *defaultHostService) resolveCreateHostID(payload HostUpsert) (string, error) {
 	if id := strings.TrimSpace(payload.ID); id != "" {
 		return id, nil
@@ -462,6 +539,63 @@ func (s *defaultHostService) ensureHostNameUnique(name, excludeID string) error 
 		}
 	}
 	return nil
+}
+
+type httpHostNodeHealthChecker struct {
+	client *http.Client
+}
+
+func newHTTPHostNodeHealthChecker() HostNodeHealthChecker {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
+	return &httpHostNodeHealthChecker{
+		client: &http.Client{
+			Timeout:   1500 * time.Millisecond,
+			Transport: transport,
+		},
+	}
+}
+
+func (c *httpHostNodeHealthChecker) CheckHostNodeHealth(ctx context.Context, host store.HostRecord) (HostNodeHealth, error) {
+	agentURL := strings.TrimRight(strings.TrimSpace(host.AgentURL), "/")
+	if agentURL == "" {
+		return HostNodeHealth{}, fmt.Errorf("host %s has no Node agent URL", strings.TrimSpace(host.ID))
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, agentURL+"/health", nil)
+	if err != nil {
+		return HostNodeHealth{}, err
+	}
+	client := c.client
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return HostNodeHealth{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return HostNodeHealth{}, fmt.Errorf("Node health returned status %d", resp.StatusCode)
+	}
+	var payload struct {
+		Status       string   `json:"status"`
+		HostID       string   `json:"host_id"`
+		Version      string   `json:"version"`
+		LastBeat     string   `json:"last_beat"`
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&payload); err != nil {
+		return HostNodeHealth{}, fmt.Errorf("decode Node health: %w", err)
+	}
+	if payload.HostID != "" && strings.TrimSpace(host.ID) != "" && payload.HostID != strings.TrimSpace(host.ID) {
+		return HostNodeHealth{}, fmt.Errorf("Node health host_id %q does not match host %q", payload.HostID, strings.TrimSpace(host.ID))
+	}
+	return HostNodeHealth{
+		Status:        payload.Status,
+		LastHeartbeat: payload.LastBeat,
+		AgentVersion:  payload.Version,
+		Capabilities:  append([]string(nil), payload.Capabilities...),
+	}, nil
 }
 
 func buildNewHostRecord(payload HostUpsert) (*store.HostRecord, error) {

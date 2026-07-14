@@ -1,0 +1,100 @@
+{
+  "name": "mutation_missing_rollback",
+  "sessionType": "host",
+  "mode": "execute",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-missing-rollback",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "@host-a 重启 demo 服务"
+        }
+      ],
+      "metadata": {
+        "enableTool": "restart_service",
+        "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
+      }
+    }
+  },
+  "providerResponses": [],
+  "toolOutcomes": [
+    {
+      "name": "restart_service",
+      "description": "Restart a service.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "service"
+        ],
+        "properties": {
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "risk": "high",
+      "mutating": true,
+      "approval": {
+        "reason": "restart requires approval",
+        "risk": "high",
+        "source": "story",
+        "expectedEffect": "restart demo"
+      }
+    }
+  ],
+  "want": {
+    "providerCallCount": 0,
+    "turnStatus": "failed",
+    "lifecycle": "failed",
+    "messages": [],
+    "modelVisibleTools": [],
+    "actualTools": [],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
+    },
+    "finalFacts": {
+      "checkedEvidenceRefs": [],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "requiredPostChecks": [],
+      "limitations": []
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "failed",
+      "turnStatus": "failed",
+      "processKinds": [
+        "system"
+      ],
+      "processStatuses": [
+        "failed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "error"
+      ],
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [],
+    "traceHashes": {
+      "promptFingerprint": {},
+      "stablePromptHash": "",
+      "stableToolFingerprint": "",
+      "toolSurfaceFingerprints": [],
+      "toolPolicyHashes": [],
+      "governanceSnapshot": ""
+    }
+  }
+}

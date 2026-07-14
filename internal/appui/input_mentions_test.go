@@ -1,6 +1,10 @@
 package appui
 
-import "testing"
+import (
+	"testing"
+
+	"aiops-v2/internal/specialinputmemory"
+)
 
 func TestParseInputMentionsValidHostAndCapability(t *testing.T) {
 	raw := `{"version":1,"mentions":[` +
@@ -97,5 +101,30 @@ func TestParseInputMentionsAbsentWhenMetadataMissing(t *testing.T) {
 	}
 	if parsed.Source != "absent" || parsed.Validation != "absent" {
 		t.Fatalf("Source/Validation = %q/%q, want absent/absent", parsed.Source, parsed.Validation)
+	}
+}
+
+func TestInputMentionsBuildSpecialInputObservations(t *testing.T) {
+	raw := `{"version":1,"mentions":[` +
+		`{"version":1,"tokenId":"mention-0-host","sigil":"@","display":"@host-a","rawText":"@host-a","kind":"host","path":"host://host-a","source":"selection","range":{"start":0,"end":7},"payload":{"hostId":"host-a","address":"10.0.0.1","displayName":"pg-a"}},` +
+		`{"version":1,"tokenId":"mention-8-manual","sigil":"@","display":"Redis 内存压力排障","rawText":"@manual-redis","kind":"ops_manual","path":"ops-manual://manual-redis","source":"selection","range":{"start":8,"end":21},"payload":{"manualId":"manual-redis","title":"Redis 内存压力排障"}}` +
+		`]}`
+	parsed := parseInputMentions("@host-a @manual-redis 检查", map[string]string{metadataInputMentionsV1: raw})
+
+	observations := inputMentionsToSpecialInputObservations(parsed)
+
+	if len(observations) != 2 {
+		t.Fatalf("observations len = %d, want 2: %#v", len(observations), observations)
+	}
+	if observations[0].Kind != specialinputmemory.FactKindHost ||
+		observations[0].CanonicalKey != "host:host-a" ||
+		observations[0].ResourceID != "host-a" ||
+		observations[0].TrustLevel != specialinputmemory.TrustLevelServerConfirmed {
+		t.Fatalf("host observation = %#v", observations[0])
+	}
+	if observations[1].Kind != specialinputmemory.FactKindOpsManual ||
+		observations[1].CanonicalKey != "ops_manual:manual-redis" ||
+		observations[1].ResourceID != "manual-redis" {
+		t.Fatalf("manual observation = %#v", observations[1])
 	}
 }

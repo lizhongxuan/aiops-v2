@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -203,6 +204,22 @@ type assistantTransportAPITestRuntime struct {
 	delay    time.Duration
 	runReq   runtimekernel.TurnRequest
 	runCh    chan runtimekernel.TurnRequest
+}
+
+type assistantTransportSessionSourceWithoutSnapshots struct {
+	manager *runtimekernel.SessionManager
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) Get(id string) *runtimekernel.SessionState {
+	return s.manager.Get(id)
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) GetLatest() *runtimekernel.SessionState {
+	return s.manager.GetLatest()
+}
+
+func (s assistantTransportSessionSourceWithoutSnapshots) List() []*runtimekernel.SessionState {
+	return s.manager.List()
 }
 
 func waitForAssistantTransportRunTurn(t *testing.T, runtime *assistantTransportAPITestRuntime) runtimekernel.TurnRequest {
@@ -474,9 +491,157 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	if !strings.Contains(text, "append-text") {
 		t.Fatalf("response = %q, want append-text for final text", text)
 	}
+	if !strings.Contains(text, `"blocksById"`) || strings.Contains(text, `"final","text"`) {
+		t.Fatalf("response = %q, want canonical blocksById final delta and no legacy turn.final path", text)
+	}
 	if !strings.Contains(text, "final answer") {
 		t.Fatalf("response = %q, want streamed final answer", text)
 	}
+}
+
+func TestAssistantTransportAPIRejectsSessionSourceWithoutSnapshots(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, assistantTransportSessionSourceWithoutSnapshots{manager: sessions}))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-no-snapshots", "inspect service")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s, want 503", resp.StatusCode, body)
+	}
+	select {
+	case req := <-runtime.runCh:
+		t.Fatalf("runtime started without snapshot capability: %+v", req)
+	default:
+	}
+}
+
+func TestAssistantTransportAPIRuntimeControlsAndClientIDsReachTurnRequest(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportRuntimeControlPayload(t,
+		map[string]any{"sessionType": "host", "mode": "execute"},
+		map[string]any{
+			"id":       "client-message-controls",
+			"role":     "user",
+			"metadata": map[string]string{"clientTurnId": "client-turn-controls"},
+			"content":  []map[string]any{{"type": "text", "text": "@local inspect runtime controls"}},
+		},
+	)
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body=%s", resp.StatusCode, body)
+	}
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeHost || runReq.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("TurnRequest runtime controls = %q/%q, want host/execute", runReq.SessionType, runReq.Mode)
+	}
+	if runReq.ClientMessageID != "client-message-controls" || runReq.ClientTurnID != "client-turn-controls" {
+		t.Fatalf("TurnRequest client ids = %q/%q", runReq.ClientMessageID, runReq.ClientTurnID)
+	}
+}
+
+func TestAssistantTransportAPIMissingRuntimeControlsUseExistingDefaults(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportRuntimeControlPayload(t, nil, map[string]any{
+		"role":    "user",
+		"content": []map[string]any{{"type": "text", "text": "use existing defaults"}},
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST AssistantTransport: %v", err)
+	}
+	defer resp.Body.Close()
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace || runReq.Mode != runtimekernel.ModeChat {
+		t.Fatalf("TurnRequest defaults = %q/%q, want workspace/chat", runReq.SessionType, runReq.Mode)
+	}
+	if runReq.ClientMessageID != "" || runReq.ClientTurnID != "" {
+		t.Fatalf("missing client ids were synthesized: %q/%q", runReq.ClientMessageID, runReq.ClientTurnID)
+	}
+}
+
+func TestAssistantTransportAPIRejectsInvalidRuntimeControlConfig(t *testing.T) {
+	tests := []struct {
+		name   string
+		config map[string]any
+	}{
+		{name: "unknown session type", config: map[string]any{"sessionType": "tenant"}},
+		{name: "non-string session type", config: map[string]any{"sessionType": 7}},
+		{name: "unknown mode", config: map[string]any{"mode": "destroy"}},
+		{name: "non-string mode", config: map[string]any{"mode": true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sessions := runtimekernel.NewSessionManager()
+			runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
+			server := NewHTTPServer(appui.NewServices(runtime, sessions))
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+
+			payload := assistantTransportRuntimeControlPayload(t, tt.config, map[string]any{
+				"role":    "user",
+				"content": []map[string]any{{"type": "text", "text": "reject invalid config"}},
+			})
+			resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+			if err != nil {
+				t.Fatalf("POST AssistantTransport: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusBadRequest {
+				body, _ := io.ReadAll(resp.Body)
+				t.Fatalf("status = %d body=%s, want 400", resp.StatusCode, body)
+			}
+			select {
+			case req := <-runtime.runCh:
+				t.Fatalf("runtime started for invalid config: %+v", req)
+			default:
+			}
+		})
+	}
+}
+
+func assistantTransportRuntimeControlPayload(t *testing.T, config map[string]any, message map[string]any) []byte {
+	t.Helper()
+	body := map[string]any{
+		"state": map[string]any{
+			"schemaVersion": "aiops.transport.v2", "sessionId": "", "threadId": "thread-controls", "status": "idle",
+			"turns": map[string]any{}, "turnOrder": []any{}, "pendingApprovals": map[string]any{},
+			"mcpSurfaces": map[string]any{}, "artifacts": map[string]any{}, "runtimeLiveness": map[string]any{},
+			"seq": 0, "updatedAt": time.Now().UTC().Format(time.RFC3339Nano),
+		},
+		"threadId": "thread-controls",
+		"commands": []map[string]any{{"type": "add-message", "message": message}},
+	}
+	if config != nil {
+		body["config"] = config
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal AssistantTransport payload: %v", err)
+	}
+	return payload
 }
 
 func TestAssistantTransportAPIStopReturnsReprojectedCanceledProcess(t *testing.T) {
@@ -622,6 +787,45 @@ func TestAssistantTransportAPILocalMentionBindsServerLocal(t *testing.T) {
 	defer ts.Close()
 
 	payload := assistantTransportAddMessagePayload(t, "", "thread-v2-local-mention", "@local 帮我只读检查 PostgreSQL 状态")
+	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d body = %s", resp.StatusCode, string(raw))
+	}
+
+	runReq := waitForAssistantTransportRunTurn(t, runtime)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn hostId = %q, want server-local", runReq.HostID)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn sessionType = %q, want host", runReq.SessionType)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(appui.ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.target.binding"]; got != "host" {
+		t.Fatalf("target binding = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "true" {
+		t.Fatalf("exec allowed = %q; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestAssistantTransportAPIServerLocalMentionBindsServerLocal(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &assistantTransportAPITestRuntime{
+		sessions: sessions,
+		runCh:    make(chan runtimekernel.TurnRequest, 1),
+	}
+	server := NewHTTPServer(appui.NewServices(runtime, sessions))
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	payload := assistantTransportAddMessagePayload(t, "", "thread-v2-server-local-mention", "@server-local 查看 CPU 情况")
 	resp, err := http.Post(ts.URL+"/api/v1/assistant/transport", "application/json", bytes.NewReader(payload))
 	if err != nil {
 		t.Fatalf("POST /api/v1/assistant/transport error = %v", err)
@@ -1435,31 +1639,35 @@ func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionComp
 
 func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *testing.T) {
 	start := time.Date(2026, 5, 8, 10, 0, 0, 0, time.UTC)
+	finalBlock := func(text string) appui.AiopsTransportBlock {
+		return appui.AiopsTransportBlock{
+			Type: appui.AiopsTransportBlockTypeFinalAnswer,
+			AiopsProcessBlock: appui.AiopsProcessBlock{
+				ID: "final-1", Kind: appui.AiopsTransportProcessKindAssistant,
+				Phase: "final_answer", Status: appui.AiopsTransportProcessStatusRunning, Text: text,
+			},
+			FinalContract: &appui.AiopsTransportFinal{ID: "final-1", Text: text, AnswerText: text, Status: appui.AiopsTransportFinalStatusRunning},
+		}
+	}
 	prev := appui.NewAiopsTransportState("sess-1", "thread-1")
 	prev.TurnOrder = []string{"turn-1"}
 	prev.Turns["turn-1"] = appui.AiopsTransportTurn{
-		ID:        "turn-1",
-		Status:    appui.AiopsTransportTurnStatusWorking,
-		StartedAt: start.Format(time.RFC3339Nano),
-		UpdatedAt: start.Format(time.RFC3339Nano),
-		Final: &appui.AiopsTransportFinal{
-			ID:     "final-1",
-			Text:   "第一段",
-			Status: appui.AiopsTransportFinalStatusRunning,
-		},
+		ID:         "turn-1",
+		Status:     appui.AiopsTransportTurnStatusWorking,
+		StartedAt:  start.Format(time.RFC3339Nano),
+		UpdatedAt:  start.Format(time.RFC3339Nano),
+		BlockOrder: []string{"final-1"},
+		BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock("第一段")},
 	}
 	next := prev
 	next.Turns = map[string]appui.AiopsTransportTurn{
 		"turn-1": {
-			ID:        "turn-1",
-			Status:    appui.AiopsTransportTurnStatusWorking,
-			StartedAt: start.Format(time.RFC3339Nano),
-			UpdatedAt: start.Add(time.Second).Format(time.RFC3339Nano),
-			Final: &appui.AiopsTransportFinal{
-				ID:     "final-1",
-				Text:   "第一段第二段",
-				Status: appui.AiopsTransportFinalStatusRunning,
-			},
+			ID:         "turn-1",
+			Status:     appui.AiopsTransportTurnStatusWorking,
+			StartedAt:  start.Format(time.RFC3339Nano),
+			UpdatedAt:  start.Add(time.Second).Format(time.RFC3339Nano),
+			BlockOrder: []string{"final-1"},
+			BlocksByID: map[string]appui.AiopsTransportBlock{"final-1": finalBlock("第一段第二段")},
 		},
 	}
 
@@ -1475,11 +1683,30 @@ func TestAssistantTransportDiffPreservesFinalTextWhenTurnMetadataChanges(t *test
 	if !ok {
 		t.Fatalf("first op value = %T, want AiopsTransportTurn", ops[0].Value)
 	}
-	if turn.Final == nil || turn.Final.Text != "第一段" {
-		t.Fatalf("set turn final text = %+v, want previous text preserved", turn.Final)
+	if turn.BlocksByID["final-1"].Text != "第一段" {
+		t.Fatalf("set turn final block = %+v, want previous text preserved", turn.BlocksByID["final-1"])
+	}
+	setFinalBlock := turn.BlocksByID["final-1"]
+	if setFinalBlock.FinalContract == nil || setFinalBlock.FinalContract.Text != "第一段第二段" || setFinalBlock.FinalContract.AnswerText != "第一段第二段" {
+		t.Fatalf("set turn final contract = %+v, want current full contract", setFinalBlock.FinalContract)
 	}
 	if ops[1].Type != assistantTransportStreamOpAppendText || ops[1].Value != "第二段" {
 		t.Fatalf("second op = %+v, want append second chunk", ops[1])
+	}
+	if want := []any{"turns", "turn-1", "blocksById", "final-1", "text"}; !reflect.DeepEqual(ops[1].Path, want) {
+		t.Fatalf("second op path = %#v, want %#v", ops[1].Path, want)
+	}
+	appliedBlock := turn.BlocksByID["final-1"]
+	appliedBlock.Text += ops[1].Value.(string)
+	if appliedBlock.FinalContract == nil || appliedBlock.Text != appliedBlock.FinalContract.Text || appliedBlock.Text != appliedBlock.FinalContract.AnswerText {
+		t.Fatalf("applied final block = %+v, want block text and final contract text/answerText aligned", appliedBlock)
+	}
+	wire, err := json.Marshal(ops)
+	if err != nil {
+		t.Fatalf("json.Marshal(ops) error = %v", err)
+	}
+	if bytes.Contains(wire, []byte(`"process":`)) || bytes.Contains(wire, []byte(`"final":`)) {
+		t.Fatalf("transport ops leaked legacy transcript fields: %s", wire)
 	}
 }
 
@@ -1546,11 +1773,15 @@ func TestAssistantTransportAPIStreamsFailedStateAndErrorRecordOnBackendError(t *
 	}
 	raw, _ := io.ReadAll(resp.Body)
 	text := string(raw)
-	if !strings.Contains(text, "3:\"context deadline exceeded\"") {
-		t.Fatalf("response = %q, want error record", text)
+	const visibleStreamFailure = "模型流中断，已保留已生成内容"
+	if !strings.Contains(text, "3:\""+visibleStreamFailure+"\"") {
+		t.Fatalf("response = %q, want user-visible error record", text)
 	}
-	if !strings.Contains(text, "\"lastError\",\"value\":\"context deadline exceeded\"") && !strings.Contains(text, "context deadline exceeded") {
+	if !strings.Contains(text, "\"path\":[\"lastError\"],\"value\":\""+visibleStreamFailure+"\"") {
 		t.Fatalf("response = %q, want lastError update", text)
+	}
+	if !strings.Contains(text, context.DeadlineExceeded.Error()) {
+		t.Fatalf("response = %q, want raw backend error retained in timeline", text)
 	}
 	if !strings.Contains(text, "\"path\":[\"status\"],\"value\":\"failed\"") {
 		t.Fatalf("response = %q, want failed status update", text)
@@ -1583,8 +1814,8 @@ func TestAssistantTransportAPIBackendErrorMarksCurrentTurnFailed(t *testing.T) {
 	if state.Status != appui.AiopsTransportStatusFailed {
 		t.Fatalf("state.Status = %q, want failed", state.Status)
 	}
-	if state.LastError != context.DeadlineExceeded.Error() {
-		t.Fatalf("state.LastError = %q, want %q", state.LastError, context.DeadlineExceeded.Error())
+	if state.LastError != "模型流中断，已保留已生成内容" {
+		t.Fatalf("state.LastError = %q, want user-visible stream failure text", state.LastError)
 	}
 	if state.Turns[state.CurrentTurnID].Status != appui.AiopsTransportTurnStatusFailed {
 		t.Fatalf("turn status = %q, want failed", state.Turns[state.CurrentTurnID].Status)

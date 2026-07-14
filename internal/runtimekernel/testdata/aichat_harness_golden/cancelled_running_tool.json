@@ -1,0 +1,15 @@
+{
+  "name": "cancelled_running_tool",
+  "userInput": "取消当前运行中的检查",
+  "modelFinalOutput": "已记录取消请求；当前未确认任何运行中工具完成。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "unknown",
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

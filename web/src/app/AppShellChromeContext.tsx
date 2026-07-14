@@ -5,17 +5,33 @@ type AppShellChromeContextValue = {
   headerTitle: string | null;
   headerDescription: string | null;
   headerActions: ReactNode;
+  workspaceChrome: AppShellWorkspaceChrome;
 };
 
 type AppShellChromeWriterContextValue = {
   setHeaderContent: (content: ReactNode) => void;
   setHeaderPageChrome: (chrome: AppShellPageChrome) => void;
+  setWorkspaceChrome: (chrome: AppShellWorkspaceChrome) => void;
 };
 
 type AppShellPageChrome = {
   title?: string | null;
   description?: string | null;
   actions?: ReactNode | null;
+};
+
+export type AppShellMode = "default" | "coroot";
+
+export type AppShellWorkspaceSidebarState = {
+  collapsed: boolean;
+  toggleCollapsed: () => void;
+};
+
+export type AppShellWorkspaceChrome = {
+  mode?: AppShellMode;
+  sidebar?: ReactNode | ((state: AppShellWorkspaceSidebarState) => ReactNode) | null;
+  hideHeader?: boolean;
+  mainClassName?: string;
 };
 
 const noop = () => {};
@@ -25,11 +41,13 @@ const AppShellChromeContext = createContext<AppShellChromeContextValue>({
   headerTitle: null,
   headerDescription: null,
   headerActions: null,
+  workspaceChrome: { mode: "default" },
 });
 
 const AppShellChromeWriterContext = createContext<AppShellChromeWriterContextValue>({
   setHeaderContent: noop,
   setHeaderPageChrome: noop,
+  setWorkspaceChrome: noop,
 });
 
 export function AppShellChromeProvider({ children }: PropsWithChildren) {
@@ -37,6 +55,7 @@ export function AppShellChromeProvider({ children }: PropsWithChildren) {
   const [headerTitle, setHeaderTitle] = useState<string | null>(null);
   const [headerDescription, setHeaderDescription] = useState<string | null>(null);
   const [headerActions, setHeaderActions] = useState<ReactNode>(null);
+  const [workspaceChrome, setWorkspaceChromeState] = useState<AppShellWorkspaceChrome>({ mode: "default" });
 
   const setHeaderContent = useCallback((content: ReactNode) => {
     setHeaderContentState(content);
@@ -48,21 +67,27 @@ export function AppShellChromeProvider({ children }: PropsWithChildren) {
     if (Object.prototype.hasOwnProperty.call(chrome, "actions")) setHeaderActions(chrome.actions ?? null);
   }, []);
 
+  const setWorkspaceChrome = useCallback((chrome: AppShellWorkspaceChrome) => {
+    setWorkspaceChromeState({ mode: "default", ...chrome });
+  }, []);
+
   const value = useMemo(
     () => ({
       headerContent,
       headerTitle,
       headerDescription,
       headerActions,
+      workspaceChrome,
     }),
-    [headerActions, headerContent, headerDescription, headerTitle],
+    [headerActions, headerContent, headerDescription, headerTitle, workspaceChrome],
   );
   const writerValue = useMemo(
     () => ({
       setHeaderContent,
       setHeaderPageChrome,
+      setWorkspaceChrome,
     }),
-    [setHeaderContent, setHeaderPageChrome],
+    [setHeaderContent, setHeaderPageChrome, setWorkspaceChrome],
   );
 
   return (
@@ -104,4 +129,13 @@ export function useRegisterAppShellHeaderActions(actions: ReactNode) {
     setHeaderPageChrome({ actions });
     return () => setHeaderPageChrome({ actions: null });
   }, [actions, setHeaderPageChrome]);
+}
+
+export function useRegisterAppShellWorkspace(chrome: AppShellWorkspaceChrome) {
+  const { setWorkspaceChrome } = useContext(AppShellChromeWriterContext);
+
+  useEffect(() => {
+    setWorkspaceChrome(chrome);
+    return () => setWorkspaceChrome({ mode: "default", sidebar: null, hideHeader: false, mainClassName: undefined });
+  }, [chrome, setWorkspaceChrome]);
 }

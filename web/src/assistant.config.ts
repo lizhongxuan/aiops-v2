@@ -48,6 +48,20 @@ declare module "@assistant-ui/react" {
         surfaceId: string;
         pinned: boolean;
       };
+      aiopsSpecialInputClear: {
+        type: "aiops.special-input-clear";
+        sessionId?: string;
+        resourceKind?: string;
+        resourceId?: string;
+        canonicalKey?: string;
+      };
+      aiopsSpecialInputConfirm: {
+        type: "aiops.special-input-confirm";
+        sessionId?: string;
+        resourceKind?: string;
+        resourceId?: string;
+        canonicalKey?: string;
+      };
     }
   }
 }

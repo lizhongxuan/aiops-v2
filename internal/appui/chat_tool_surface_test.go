@@ -144,17 +144,22 @@ func TestChatRuntimeToolSurfaceEvidenceRCARequiresExplicitOpsManualMention(t *te
 		t.Fatalf("metadata = %#v, want exec false for evidence RCA", req.Metadata)
 	}
 	if strings.Contains(req.Metadata["enableToolPack"], "ops_manual_flow") {
-		t.Fatalf("metadata = %#v, ops_manual_flow requires @ops_manuals/@ops_manus", req.Metadata)
+		t.Fatalf("metadata = %#v, ops_manual_flow requires @ops_manual or a manual chip", req.Metadata)
 	}
 	if strings.Contains(req.Metadata["enableTool"], "search_ops_manuals") {
-		t.Fatalf("metadata = %#v, evidence RCA must not explicitly enable search_ops_manuals without @ops_manuals", req.Metadata)
+		t.Fatalf("metadata = %#v, evidence RCA must not explicitly enable search_ops_manuals without @ops_manual", req.Metadata)
+	}
+	req = runtimekernel.TurnRequest{Input: "@ops_manus 旧 typo 不应触发手册检索", Metadata: map[string]string{}}
+	applyChatRuntimeToolSurfaceMetadata(&req, ChatRuntimeRoute{Mode: ChatRouteEvidenceRCA})
+	if strings.Contains(req.Metadata["enableToolPack"], "ops_manual_flow") || strings.Contains(req.Metadata["enableTool"], "search_ops_manuals") {
+		t.Fatalf("metadata = %#v, old @ops_manus typo should not enable ops manual search", req.Metadata)
 	}
 }
 
 func TestChatRuntimeToolSurfaceEnablesOpsManualSearchForExplicitMention(t *testing.T) {
 	for _, input := range []string{
+		"@ops_manual 按运维手册分析这段报错",
 		"@ops_manuals 按运维手册分析这段报错",
-		"@ops_manus 按运维手册分析这段报错",
 	} {
 		req := runtimekernel.TurnRequest{Input: input, Metadata: map[string]string{}}
 		applyChatRuntimeToolSurfaceMetadata(&req, ChatRuntimeRoute{Mode: ChatRouteEvidenceRCA})
@@ -202,6 +207,50 @@ func TestChatRuntimeToolSurfaceMultiHostEnablesHostOpsPack(t *testing.T) {
 	}
 	if !strings.Contains(req.Metadata["enableToolPack"], "host_ops") {
 		t.Fatalf("metadata = %#v, want host_ops pack", req.Metadata)
+	}
+}
+
+func TestChatRuntimeToolSurfaceWorkflowAgentEnablesOnlyWorkflowEditorPack(t *testing.T) {
+	req := runtimekernel.TurnRequest{Metadata: map[string]string{
+		"aiops.workflowAgent.enabled": "true",
+		"aiops.workflow.id":           "workflow",
+		"aiops.workflow.baseRevision": "rev",
+	}}
+	applyChatRuntimeToolSurfaceMetadata(&req, ChatRuntimeRoute{Mode: ChatRouteAdvisory})
+	applyWorkflowAgentRuntimeMetadata(&req)
+
+	if req.Metadata["profile"] != runtimekernel.RuntimePromptProfileWorkflowAgent || req.Metadata["toolProfile"] != runtimekernel.RuntimePromptProfileWorkflowAgent {
+		t.Fatalf("metadata = %#v, want workflow agent profile", req.Metadata)
+	}
+	if req.Metadata["aiops.tool.execCommandAllowed"] != "false" || req.Metadata["aiops.tool.hostMutationAllowed"] != "false" {
+		t.Fatalf("metadata = %#v, want host exec/mutation disabled", req.Metadata)
+	}
+	if !strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
+		t.Fatalf("enableToolPack = %q, want workflow_editor", req.Metadata["enableToolPack"])
+	}
+
+	registry := tooling.NewRegistry()
+	for _, meta := range []tooling.ToolMetadata{
+		{Name: "exec_command", AlwaysLoad: true, Layer: tooling.ToolLayerCore, Profiles: []string{runtimekernel.RuntimePromptProfileHostWorker}},
+		{Name: "workflow.inspect", Layer: tooling.ToolLayerMCP, Pack: "workflow_editor", Profiles: []string{runtimekernel.RuntimePromptProfileWorkflowAgent}},
+		{Name: "workflow.apply_patch", Layer: tooling.ToolLayerMCP, Pack: "workflow_editor", Profiles: []string{runtimekernel.RuntimePromptProfileWorkflowAgent}},
+		{Name: "search_ops_manuals", Layer: tooling.ToolLayerMCP, Pack: "ops_manual_flow"},
+	} {
+		if err := registry.Register(&tooling.StaticTool{Meta: meta}); err != nil {
+			t.Fatalf("Register(%s) error = %v", meta.Name, err)
+		}
+	}
+
+	names := toolNamesForChatToolSurfaceTest(registry.CompileContextWithMetadata("workspace", "plan", req.Metadata))
+	for _, want := range []string{"workflow.inspect", "workflow.apply_patch"} {
+		if !containsChatToolSurfaceName(names, want) {
+			t.Fatalf("assembled tools = %v, want %s", names, want)
+		}
+	}
+	for _, forbidden := range []string{"exec_command", "search_ops_manuals"} {
+		if containsChatToolSurfaceName(names, forbidden) {
+			t.Fatalf("assembled tools = %v, should not include %s", names, forbidden)
+		}
 	}
 }
 

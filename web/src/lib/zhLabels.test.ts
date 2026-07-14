@@ -40,10 +40,12 @@ describe("zhLabels", () => {
     expect(zhNavigationTitle("/opsgraph/graphs")).toBe("OpsGraph 列表");
     expect(zhNavigationTitle("/runner")).toBe("Runner Workflow");
     expect(zhNavigationTitle("/settings/llm")).toBe("LLM 配置");
+    expect(zhNavigationTitle("/settings/coroot")).toBe("Coroot 监控");
     expect(zhNavigationTitle("/settings/hosts")).toBe("主机列表");
     expect(zhNavigationTitle("/settings/experience-packs")).toBe("运维手册");
     expect(zhNavigationTitle("/capabilities")).toBe("能力管理");
-    expect(zhNavigationTitle("/coroot")).toBe("未知导航（/coroot）");
+    expect(zhNavigationTitle("/coroot")).toBe("Coroot");
+    expect(zhNavigationTitle("/coroot/config")).toBe("Coroot 配置");
     expect(zhNavigationTitle("/agent-ui")).toBe("Agent UI");
     expect(zhNavigationTitle("/debug/prompts")).toBe("Prompt Trace");
   });
@@ -56,9 +58,9 @@ describe("navigation convergence", () => {
     expect(visiblePaths).toEqual([
       "/",
       "/incidents",
+      "/coroot",
       "/opsgraph",
       "/runner",
-      "/settings/llm",
       "/settings/hosts",
       "/settings/ops-manuals",
       "/capabilities",
@@ -70,7 +72,10 @@ describe("navigation convergence", () => {
   it("keeps hidden legacy routes in routeInventory for router compatibility", () => {
     const inventoryPaths = routeInventory.map((item) => item.path);
 
-    expect(inventoryPaths).not.toContain("/coroot");
+    expect(inventoryPaths).toContain("/coroot");
+    expect(inventoryPaths).toContain("/coroot/config");
+    expect(inventoryPaths).toContain("/coroot/p/:projectId/:view?/:id?/:report?");
+    expect(inventoryPaths).toContain("/settings/coroot");
     expect(inventoryPaths).toEqual(expect.arrayContaining([
       "/protocol",
       "/erp",

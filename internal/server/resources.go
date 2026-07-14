@@ -64,6 +64,7 @@ func (r *resourceCorootConfigRepository) GetCorootConfig() (*store.CorootConfig,
 		return nil, errCorootConfigNotFound
 	}
 	cp := *r.config
+	cp.AllowedViews = append([]string(nil), r.config.AllowedViews...)
 	return &cp, nil
 }
 
@@ -74,6 +75,7 @@ func (r *resourceCorootConfigRepository) SaveCorootConfig(config *store.CorootCo
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := *config
+	cp.AllowedViews = append([]string(nil), config.AllowedViews...)
 	r.config = &cp
 	return nil
 }

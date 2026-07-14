@@ -46,7 +46,7 @@ func TestCompletionEvaluatorAllowsExplicitBlockerFinal(t *testing.T) {
 	if decision.Action != "allow_blocker_final" {
 		t.Fatalf("Action = %q, want allow_blocker_final", decision.Action)
 	}
-	if !runtimeKernelTestContains(decision.Reasons, "explicit_blocker_final") {
-		t.Fatalf("Reasons = %#v, want explicit_blocker_final", decision.Reasons)
+	if !runtimeKernelTestContains(decision.Reasons, "typed_blocker_final") {
+		t.Fatalf("Reasons = %#v, want typed_blocker_final", decision.Reasons)
 	}
 }

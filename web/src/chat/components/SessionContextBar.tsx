@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, Ellipsis, Eraser, History, LaptopMinimal, LoaderCircle, Plus, Server, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
@@ -14,15 +15,17 @@ import {
 import {
   activateSession,
   createSession,
-  fetchHosts,
-  fetchLlmConfig,
-  fetchSessions,
   selectHost,
   type HostRecord,
   type LlmConfigView,
   type SessionKind,
+  type SessionListResponse,
   type SessionSummary,
 } from "@/pages/settingsApi";
+import { hostListQuery } from "@/queries/hostQueries";
+import { queryKeys } from "@/queries/queryKeys";
+import { normalizeSessionItems, sessionListQuery } from "@/queries/sessionQueries";
+import { llmConfigQuery } from "@/queries/settingsQueries";
 import { resolveUiFixtureSessions, resolveUiFixtureState } from "@/lib/uiFixtureRuntime";
 import { fetchAssistantTransportResumeState } from "@/transport/assistantTransportControl";
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
@@ -126,17 +129,23 @@ export function SessionContextBar({
   kind,
   title,
   newSessionLabel,
-  description,
   activeThreadId,
   skipInitialLoad = false,
   terminalHref,
   onThreadChange,
   children,
 }: SessionContextBarProps) {
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState(() => (skipInitialLoad ? activeThreadId : ""));
-  const [hosts, setHosts] = useState<HostRecord[]>([]);
-  const [llm, setLlm] = useState<LlmConfigView | null>(() => (skipInitialLoad ? null : readCachedLlmConfigForChat()));
+  const queryClient = useQueryClient();
+  const cachedLlmConfig = skipInitialLoad ? null : readCachedLlmConfigForChat();
+  const sessionQuery = useQuery({ ...sessionListQuery(), enabled: false });
+  const hostQuery = useQuery({ ...hostListQuery(), enabled: false });
+  const llmQuery = useQuery({ ...llmConfigQuery(cachedLlmConfig), enabled: false });
+  const [sessions, setSessions] = useState<SessionSummary[]>(() => normalizeSessionItems(sessionQuery.data));
+  const [activeSessionId, setActiveSessionId] = useState(() =>
+    skipInitialLoad ? activeThreadId : initialActiveSessionId(sessionQuery.data, kind, activeThreadId),
+  );
+  const [hosts, setHosts] = useState<HostRecord[]>(() => hostQuery.data?.items || []);
+  const [llm, setLlm] = useState<LlmConfigView | null>(() => (skipInitialLoad ? null : llmQuery.data || cachedLlmConfig));
   const [target, setTarget] = useState(fallbackTargetValue(kind));
   const [busy, setBusy] = useState(false);
   const [activeAction, setActiveAction] = useState<"create" | "refresh" | null>(null);
@@ -155,7 +164,7 @@ export function SessionContextBar({
   const targetContext = useMemo<SessionTargetContextValue>(
     () => ({
       targetValue: activeTarget?.value || fallbackTargetValue(kind),
-      targetKind: activeTarget?.kind || fallbackTargetKind(kind),
+      targetKind: activeTarget?.kind || fallbackTargetKind(),
       targetLabel: activeTarget?.label || fallbackTargetLabel(kind),
       targetDescription: activeTarget?.description || fallbackTargetDescription(kind),
       hostId: activeTarget?.hostId,
@@ -184,6 +193,29 @@ export function SessionContextBar({
     }, 1600);
   }
 
+  function writeSessionListCache(payload: SessionListResponse) {
+    queryClient.setQueryData(queryKeys.sessions.list(), payload);
+    void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+  }
+
+  const createSessionMutation = useMutation({
+    mutationFn: ({ sessionKind, hostId }: { sessionKind: SessionKind; hostId?: string }) => createSession(sessionKind, hostId),
+    onSuccess: writeSessionListCache,
+  });
+
+  const activateSessionMutation = useMutation({
+    mutationFn: activateSession,
+    onSuccess: writeSessionListCache,
+  });
+
+  const selectHostMutation = useMutation({
+    mutationFn: selectHost,
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.sessions.all });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.hosts.all });
+    },
+  });
+
   async function load() {
     const fixtureSessions = resolveUiFixtureSessions();
     const fixtureState = resolveUiFixtureState();
@@ -194,49 +226,59 @@ export function SessionContextBar({
       setSessions(nextSessions);
       setHosts(nextHosts);
       setLlm({ provider: "openai", model: "gpt-5.4", apiKeySet: true });
-      applySession(fixtureSessions.activeSessionId || nextSessions[0]?.id || activeThreadId, nextSessions, false, nextHosts);
+      applySession(fixtureSessions.activeSessionId || nextSessions[0]?.id || activeThreadId, nextSessions, nextHosts);
       return;
     }
     setActiveAction("refresh");
     setBusy(true);
     try {
       const [sessionResult, hostResult, llmResult] = await Promise.allSettled([
-        withSessionContextTimeout(fetchSessions(), SESSION_CONTEXT_TIMEOUT_MS, "加载会话"),
-        withSessionContextTimeout(fetchHosts(), SESSION_CONTEXT_TIMEOUT_MS, "加载主机"),
-        withSessionContextTimeout(fetchLlmConfig(), SESSION_CONTEXT_TIMEOUT_MS, "加载 LLM 配置"),
+        withSessionContextTimeout(sessionQuery.refetch(), SESSION_CONTEXT_TIMEOUT_MS, "加载会话"),
+        withSessionContextTimeout(hostQuery.refetch(), SESSION_CONTEXT_TIMEOUT_MS, "加载主机"),
+        withSessionContextTimeout(llmQuery.refetch(), SESSION_CONTEXT_TIMEOUT_MS, "加载 LLM 配置"),
       ]);
+      const sessionPayload =
+        sessionResult.status === "fulfilled" && !sessionResult.value.error ? sessionResult.value.data : undefined;
+      const hostPayload =
+        hostResult.status === "fulfilled" && !hostResult.value.error ? hostResult.value.data : undefined;
+      const llmPayload =
+        llmResult.status === "fulfilled" && !llmResult.value.error ? llmResult.value.data : undefined;
       const nextSessions =
-        sessionResult.status === "fulfilled" ? sessionResult.value.sessions || sessionResult.value.items || [] : sessions;
-      const nextHosts = hostResult.status === "fulfilled" ? hostResult.value.items || [] : hosts;
-      if (sessionResult.status === "rejected") {
+        sessionPayload ? normalizeSessionItems(sessionPayload) : sessions;
+      const nextHosts = hostPayload ? hostPayload.items || [] : hosts;
+      if (sessionResult.status === "rejected" || (sessionResult.status === "fulfilled" && sessionResult.value.error)) {
         setSessionInitError("会话初始化失败，请刷新重试");
       }
 
       setSessions(nextSessions);
       setHosts(nextHosts);
-      if (llmResult.status === "fulfilled") {
-        const nextLlm = normalizeCacheableLlmConfig(llmResult.value);
+      if (llmPayload) {
+        const nextLlm = normalizeCacheableLlmConfig(llmPayload);
         setLlm(nextLlm);
         writeCachedLlmConfigForChat(nextLlm);
       }
       const nextActive =
         firstText(
-          sessionResult.status === "fulfilled"
+          sessionPayload
             ? nextSessions.find(
-                (session) => session.id === sessionResult.value.activeSessionId && normalizeKind(session.kind) === kind,
+                (session) => session.id === sessionPayload.activeSessionId && normalizeKind(session.kind) === kind,
               )?.id
             : "",
           nextSessions.find((session) => normalizeKind(session.kind) === kind)?.id,
         ) || "";
-      if (!nextActive && sessionResult.status === "fulfilled") {
+      if (!nextActive && sessionPayload) {
         try {
-          const hostIdToBind = resolveNewSessionHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
-          const payload = await withSessionContextTimeout(createSession(kind, hostIdToBind), SESSION_CONTEXT_TIMEOUT_MS, "创建会话");
+          const hostIdToBind = resolveNewSessionHostTargetId(kind, buildTargetOptions(nextHosts, kind), target);
+          const payload = await withSessionContextTimeout(
+            createSessionMutation.mutateAsync({ sessionKind: kind, hostId: hostIdToBind }),
+            SESSION_CONTEXT_TIMEOUT_MS,
+            "创建会话",
+          );
           const createdSessions = payload.sessions || payload.items || [];
           const createdActive = payload.activeSessionId || createdSessions.find((session) => normalizeKind(session.kind) === kind)?.id || "";
           setSessions(createdSessions);
           if (createdActive) {
-            applySessionWithOverride(createdActive, createdSessions, true, nextHosts, hostIdToBind);
+            applySessionWithOverride(createdActive, createdSessions, nextHosts, hostIdToBind);
           } else {
             setSessionInitError("会话初始化失败，请刷新重试");
           }
@@ -247,7 +289,7 @@ export function SessionContextBar({
         return;
       }
       const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
-      applySession(nextActive, nextSessions, true, nextHosts, hydratedState);
+      applySession(nextActive, nextSessions, nextHosts, hydratedState);
     } finally {
       setBusy(false);
       setActiveAction(null);
@@ -259,15 +301,15 @@ export function SessionContextBar({
     setBusy(true);
     try {
       const nextHosts = hosts;
-      const hostIdToBind = resolveNewSessionHostTargetId(kind, targetOptions, target, nextHosts);
-      const payload = await createSession(kind, hostIdToBind);
+      const hostIdToBind = resolveNewSessionHostTargetId(kind, targetOptions, target);
+      const payload = await createSessionMutation.mutateAsync({ sessionKind: kind, hostId: hostIdToBind });
       const nextSessions = payload.sessions || payload.items || [];
       const nextActive = payload.activeSessionId || nextSessions[0]?.id || "";
       setSessions(nextSessions);
-      applySessionWithOverride(nextActive, nextSessions, true, nextHosts, hostIdToBind);
+      applySessionWithOverride(nextActive, nextSessions, nextHosts, hostIdToBind);
 
       if (hostIdToBind) {
-        await selectHost(hostIdToBind);
+        await selectHostMutation.mutateAsync(hostIdToBind);
         setSessions((items) =>
           items.map((item) => (item.id === nextActive ? { ...item, selectedHostId: hostIdToBind } : item)),
         );
@@ -289,12 +331,12 @@ export function SessionContextBar({
     if (!sessionId) return;
     setBusy(true);
     try {
-      const payload = await activateSession(sessionId);
+      const payload = await activateSessionMutation.mutateAsync(sessionId);
       const nextSessions = payload.sessions || payload.items || sessions;
       setSessions(nextSessions);
       const nextActive = payload.activeSessionId || sessionId;
       const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
-      applySession(nextActive, nextSessions, true, hosts, hydratedState);
+      applySession(nextActive, nextSessions, hosts, hydratedState);
       setComposerFocusNonce((value) => value + 1);
     } catch (error) {
       console.error(error);
@@ -311,7 +353,7 @@ export function SessionContextBar({
     }
     setBusy(true);
     try {
-      await selectHost(option.hostId);
+      await selectHostMutation.mutateAsync(option.hostId);
       setSessions((items) =>
         items.map((item) => (item.id === activeSessionId ? { ...item, selectedHostId: option.hostId } : item)),
       );
@@ -329,17 +371,15 @@ export function SessionContextBar({
   function applySession(
     sessionId: string,
     sourceSessions = sessions,
-    force = false,
     sourceHosts = hosts,
     hydratedInitialState?: AiopsTransportState | null,
   ) {
-    return applySessionWithOverride(sessionId, sourceSessions, force, sourceHosts, undefined, hydratedInitialState);
+    return applySessionWithOverride(sessionId, sourceSessions, sourceHosts, undefined, hydratedInitialState);
   }
 
   function applySessionWithOverride(
     sessionId: string,
     sourceSessions = sessions,
-    force = false,
     sourceHosts = hosts,
     hostIdOverride?: string,
     hydratedInitialState?: AiopsTransportState | null,
@@ -594,8 +634,8 @@ export function buildTargetOptionsForTest(hosts: HostRecord[], kind: SessionKind
   return buildTargetOptions(hosts, kind);
 }
 
-export function resolveHostTargetIdForTest(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
-  return resolveHostTargetId(kind, options, targetValue, hosts);
+export function resolveHostTargetIdForTest(kind: SessionKind, options: TargetOption[], targetValue: string) {
+  return resolveHostTargetId(kind, options, targetValue);
 }
 
 function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOption[] {
@@ -802,11 +842,11 @@ function targetValueFromSession(
   return hostExists ? `host:${selectedHostId}` : "all";
 }
 
-function resolveNewSessionHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+function resolveNewSessionHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string) {
   if (kind === "single_host") {
     return undefined;
   }
-  return resolveHostTargetId(kind, options, targetValue, hosts);
+  return resolveHostTargetId(kind, options, targetValue);
 }
 
 export function formatTargetButtonLabel(kind: SessionKind, label?: string) {
@@ -839,11 +879,32 @@ export function resolveComposerDisabledReason({
   return "";
 }
 
+function initialActiveSessionId(
+  payload: SessionListResponse | undefined,
+  kind: SessionKind,
+  activeThreadId: string,
+) {
+  const sessions = normalizeSessionItems(payload);
+  const activeFromPayload = sessions.find(
+    (session) =>
+      session.id === payload?.activeSessionId &&
+      normalizeKind(session.kind) === kind,
+  )?.id;
+  return (
+    firstText(
+      activeFromPayload,
+      sessions.find((session) => session.id === activeThreadId)?.id,
+      sessions.find((session) => normalizeKind(session.kind) === kind)?.id,
+      activeThreadId === "default" ? "" : activeThreadId,
+    ) || ""
+  );
+}
+
 function fallbackTargetValue(kind: SessionKind) {
   return kind === "single_host" ? "none" : "all";
 }
 
-function fallbackTargetKind(kind: SessionKind): SessionTargetContextValue["targetKind"] {
+function fallbackTargetKind(): SessionTargetContextValue["targetKind"] {
   return "all";
 }
 
@@ -865,7 +926,7 @@ function fallbackTargetMetadata(kind: SessionKind) {
   };
 }
 
-function resolveHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+function resolveHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string) {
   if (kind !== "single_host") {
     return undefined;
   }

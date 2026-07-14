@@ -199,6 +199,8 @@ function createFixtureTransportState({ sessionId, threadId, status, cards = [], 
     pendingApprovals,
     mcpSurfaces: {},
     artifacts: {},
+    hostMissions: {},
+    childAgents: {},
     runtimeLiveness: {
       activeTurns: active || blocked ? { [turnId]: true } : {},
       activeAgents: active ? { "agent-main": true } : {},
@@ -478,7 +480,7 @@ export function createSecondClosureApprovalCheckpointFixtureState(overrides = {}
         kind: "system",
         displayKind: "checkpoint.after_approval_request",
         status: "blocked",
-        text: "checkpoint after approval request: waiting to resume with approved command or fallback analysis",
+        text: "checkpoint after approval request: waiting to resume with approved command or limited analysis",
         checkpointId: "checkpoint-after-approval-request",
         targetSummary: "host:web-02 service:nginx",
         evidenceRefs: ["evidence-nginx-log"],
@@ -2165,7 +2167,7 @@ export function createUxModelGeneralityFixtureState(overrides = {}) {
         id: "user-ux-model-generality",
         type: "UserMessageCard",
         role: "user",
-        text: "synthetic_ux_model_generality_request: show abstract depth, gates, approval phase, resume policy, synthesis gate, coverage action, fallback policy, and genericity scan state.",
+        text: "synthetic_ux_model_generality_request: show abstract depth, gates, approval phase, resume policy, synthesis gate, coverage action, limited-path policy, and genericity scan state.",
         status: "completed",
         createdAt: now,
         updatedAt: now,
@@ -3344,6 +3346,145 @@ export function createProtocolFixtureSessions(overrides = {}) {
   };
 }
 
+export function createSpecialInputMemoryFixtureState(overrides = {}) {
+  const state = createChatFixtureState({
+    sessionId: "special-input-memory",
+    threadId: "special-input-memory",
+    status: "idle",
+    cards: [
+      {
+        id: "user-special-input-memory",
+        type: "UserMessageCard",
+        role: "user",
+        text: "@host-a 看进程",
+        createdAt: "2026-07-03T10:00:00Z",
+        updatedAt: "2026-07-03T10:00:00Z",
+      },
+    ],
+    runtime: {
+      turn: { active: false, phase: "completed", hostId: "host-a" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: { viewedFiles: [], searchedWebQueries: [], searchedContentQueries: [] },
+    },
+    finalText: "已基于 host-a 的短期授权完成只读检查。",
+    ...overrides,
+  });
+  const turnId = state.currentTurnId;
+  return {
+    ...state,
+    status: "idle",
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    specialInputContext: {
+      schemaVersion: "aiops.special_input_memory.v1",
+      turnId,
+      activeGrant: {
+        id: "grant-host-a",
+        factId: "fact-host-a",
+        resourceKind: "host",
+        resourceId: "host-a",
+        canonicalKey: "host:host-a",
+        display: "host-a",
+        allowedActions: ["inspect", "read", "exec_low_risk"],
+        trustLevel: "server_confirmed",
+        status: "active",
+        scope: "current_task",
+      },
+      visibleFacts: [
+        {
+          id: "fact-host-a",
+          kind: "host",
+          resourceKind: "host",
+          resourceId: "host-a",
+          canonicalKey: "host:host-a",
+          display: "host-a",
+          trustLevel: "server_confirmed",
+          status: "active",
+          environmentKey: "prod",
+          clusterKey: "pg-orders",
+        },
+      ],
+      candidateFacts: [
+        {
+          id: "fact-raw-ip",
+          kind: "host",
+          resourceKind: "host",
+          resourceId: "1.1.1.1",
+          canonicalKey: "host:1.1.1.1",
+          display: "1.1.1.1",
+          trustLevel: "raw_typed",
+          status: "active",
+        },
+      ],
+      roleBindings: [
+        specialInputMemoryRoleBinding("role-primary", "pg_primary", "host-a"),
+        specialInputMemoryRoleBinding("role-standby", "pg_standby", "host-b"),
+        specialInputMemoryRoleBinding("role-monitor", "pg_mon", "host-c"),
+      ],
+      conflicts: [
+        {
+          id: "conflict-primary",
+          kind: "role_binding",
+          roleKey: "pg_primary",
+          environmentKey: "prod",
+          clusterKey: "pg-orders",
+          resourceIds: ["host-a", "host-d"],
+          reasons: ["same role has multiple active bindings"],
+        },
+      ],
+      pendingConfirmations: [
+        {
+          id: "pending-raw-ip",
+          kind: "target",
+          reason: "raw_typed_requires_confirmation",
+          candidateIds: ["fact-raw-ip"],
+        },
+      ],
+      modelSummary: "active host grant host-a; candidate 1.1.1.1 requires confirmation",
+    },
+  };
+}
+
+export function createSpecialInputMemoryFixtureSessions(overrides = {}) {
+  return createChatFixtureSessions({
+    activeSessionId: "special-input-memory",
+    sessions: [
+      {
+        id: "special-input-memory",
+        kind: "single_host",
+        title: "Special input memory",
+        status: "idle",
+        messageCount: 1,
+        selectedHostId: "workspace",
+        preview: "@host-a 看进程",
+        lastActivityAt: "2026-07-03T10:00:10Z",
+      },
+    ],
+    ...overrides,
+  });
+}
+
+function specialInputMemoryRoleBinding(id, roleKey, resourceId) {
+  return {
+    id,
+    roleKey,
+    runtimeName: roleKey,
+    resourceKind: "host",
+    resourceId,
+    display: resourceId,
+    environmentKey: "prod",
+    clusterKey: "pg-orders",
+    bindingHash: `${roleKey}-${resourceId}-hash`,
+    status: "active",
+    confidence: 1,
+  };
+}
+
 export function resolveUiFixturePreset(key = "") {
   switch (String(key || "").trim().toLowerCase()) {
     case "chat":
@@ -3352,6 +3493,13 @@ export function resolveUiFixturePreset(key = "") {
         name: "chat",
         state: createChatFixtureState(),
         sessions: createChatFixtureSessions(),
+      };
+    case "special-input-memory":
+    case "special_input_memory":
+      return {
+        name: "special-input-memory",
+        state: createSpecialInputMemoryFixtureState(),
+        sessions: createSpecialInputMemoryFixtureSessions(),
       };
     case "context-compaction":
     case "context_compaction":

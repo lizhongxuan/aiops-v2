@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -7,6 +8,15 @@ import { AppShellChromeProvider } from "@/app/AppShellChromeContext";
 import { createAgentUiArtifactsClient } from "@/api/agentUiArtifactsClient";
 import { AppRouter } from "@/router";
 import { AgentUICenterPage } from "./AgentUICenterPage";
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
 
 const feedPayload = {
   total: 2,
@@ -136,9 +146,11 @@ describe("AgentUICenterPage", () => {
   it("is reachable from /agent-ui route", async () => {
     await act(async () => {
       root.render(
-        <MemoryRouter initialEntries={["/agent-ui"]}>
-          <AppRouter />
-        </MemoryRouter>,
+        <QueryClientProvider client={createTestQueryClient()}>
+          <MemoryRouter initialEntries={["/agent-ui"]}>
+            <AppRouter />
+          </MemoryRouter>
+        </QueryClientProvider>,
       );
     });
     await waitForEffects();

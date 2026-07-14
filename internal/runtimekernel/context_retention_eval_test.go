@@ -53,6 +53,37 @@ func TestContextRetentionEvalPreservesHostRuntimeAndExternalizesLargeOutputs(t *
 	}
 }
 
+func TestPromptSectionRetentionPolicyExposesHarnessSectionMetadata(t *testing.T) {
+	sections := []promptcompiler.PromptSectionTrace{{
+		ID:             "tool.result.command_output",
+		Kind:           "dynamic",
+		Source:         "tool_result",
+		Hash:           "sha256:tool-output",
+		TokensEstimate: 12000,
+	}}
+
+	annotated, _, err := ApplyPromptSectionRetentionPolicy(sections, DefaultContextRetentionPolicy())
+	if err != nil {
+		t.Fatalf("ApplyPromptSectionRetentionPolicy() error = %v", err)
+	}
+	if len(annotated) != 1 {
+		t.Fatalf("annotated len = %d, want 1", len(annotated))
+	}
+	section := annotated[0]
+	if section.ID == "" || section.Source == "" || section.Hash == "" {
+		t.Fatalf("section missing identity/source/hash: %#v", section)
+	}
+	if section.TokenEstimate != 12000 {
+		t.Fatalf("tokenEstimate = %d, want 12000", section.TokenEstimate)
+	}
+	if section.RetentionRank != promptcompiler.RetentionRankP4 {
+		t.Fatalf("retentionRank = %q, want P4", section.RetentionRank)
+	}
+	if section.Action != "externalized" {
+		t.Fatalf("action = %q, want externalized", section.Action)
+	}
+}
+
 func TestContextRetentionEvalBlocksUnsafeCompactionContracts(t *testing.T) {
 	policy := DefaultContextRetentionPolicy()
 	policy.RankBudgets[promptcompiler.RetentionRankP0] = 8

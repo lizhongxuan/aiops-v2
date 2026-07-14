@@ -53,6 +53,131 @@ func TestClientGetJSONUnwrapsCorootDataAndSetsAuth(t *testing.T) {
 	}
 }
 
+func TestClientGetJSONUsesCorootSessionCookieToken(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Cookie"); got != "coroot_session=session-value" {
+			http.Error(w, "unexpected cookie: "+got, http.StatusInternalServerError)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			http.Error(w, "unexpected bearer auth for session cookie: "+got, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"applications":[]}}`))
+	}))
+	defer upstream.Close()
+
+	client, err := NewClient(ClientConfig{
+		BaseURL: upstream.URL + "/coroot",
+		Token:   "coroot_session=session-value",
+		Timeout: time.Second,
+		Project: "prod",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var raw json.RawMessage
+	if _, err := client.GetJSON(context.Background(), "/api/project/prod/overview/applications", nil, &raw); err != nil {
+		t.Fatalf("GetJSON() error = %v", err)
+	}
+}
+
+func TestClientLoginStoresCorootSessionCookieForWebAPI(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/coroot/api/login":
+			if r.Method != http.MethodPost {
+				http.Error(w, "unexpected method", http.StatusInternalServerError)
+				return
+			}
+			http.SetCookie(w, &http.Cookie{Name: "coroot_session", Value: "login-session", Path: "/"})
+		case "/coroot/api/project/prod/overview/applications":
+			if got := r.Header.Get("Cookie"); got != "coroot_session=login-session" {
+				http.Error(w, "unexpected cookie: "+got, http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":{"applications":[{"id":"default:Deployment:checkout"}]}}`))
+		default:
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer upstream.Close()
+
+	client, err := NewClient(ClientConfig{BaseURL: upstream.URL + "/coroot", Timeout: time.Second, Project: "prod"})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	if err := client.Login(context.Background(), "admin", "secret"); err != nil {
+		t.Fatalf("Login() error = %v", err)
+	}
+	var raw json.RawMessage
+	if _, err := client.GetJSON(context.Background(), "/api/project/prod/overview/applications", nil, &raw); err != nil {
+		t.Fatalf("GetJSON() error = %v", err)
+	}
+}
+
+func TestClientBaseURLUsesConfiguredCorootProductBasePath(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/coroot/api/project/prod/overview/applications" {
+			http.Error(w, "unexpected path: "+r.URL.Path, http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"applications":[]}}`))
+	}))
+	defer upstream.Close()
+
+	client, err := NewClient(ClientConfig{
+		BaseURL:         upstream.URL,
+		ProductBasePath: "/coroot/",
+		Timeout:         time.Second,
+		Project:         "prod",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var raw json.RawMessage
+	if _, err := client.GetJSON(context.Background(), "/api/project/prod/overview/applications", nil, &raw); err != nil {
+		t.Fatalf("GetJSON() error = %v", err)
+	}
+}
+
+func TestClientGetJSONMapsHTMLResponseToAuthenticationError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(`<!doctype html><html><body>login</body></html>`))
+	}))
+	defer upstream.Close()
+
+	client, err := NewClient(ClientConfig{
+		BaseURL: upstream.URL + "/coroot",
+		Timeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var raw json.RawMessage
+	_, err = client.GetJSON(context.Background(), "/api/project/prod/overview/applications", nil, &raw)
+	if err == nil {
+		t.Fatal("GetJSON() error = nil, want authentication error")
+	}
+	var corootErr *CorootError
+	if !errors.As(err, &corootErr) {
+		t.Fatalf("error type = %T, want *CorootError", err)
+	}
+	if corootErr.Kind != "authentication_required" {
+		t.Fatalf("CorootError.Kind = %q, want authentication_required", corootErr.Kind)
+	}
+	if corootErr.StatusCode != http.StatusOK {
+		t.Fatalf("CorootError.StatusCode = %d, want 200", corootErr.StatusCode)
+	}
+}
+
 func TestClientResolveProjectTreatsDefaultAsPlaceholderWhenConfiguredProjectDiffers(t *testing.T) {
 	client, err := NewClient(ClientConfig{
 		BaseURL: "http://coroot.example",
@@ -70,6 +195,26 @@ func TestClientResolveProjectTreatsDefaultAsPlaceholderWhenConfiguredProjectDiff
 	}
 	if got := client.ResolveProject("prod-west"); got != "prod-west" {
 		t.Fatalf("ResolveProject(prod-west) = %q, want explicit project", got)
+	}
+}
+
+func TestClientBypassesProxyForPrivateCorootHosts(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{host: "172.18.13.11", want: true},
+		{host: "127.0.0.1", want: true},
+		{host: "localhost", want: true},
+		{host: "coroot.example.com", want: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.host, func(t *testing.T) {
+			if got := corootShouldBypassProxy(tc.host); got != tc.want {
+				t.Fatalf("corootShouldBypassProxy(%q) = %v, want %v", tc.host, got, tc.want)
+			}
+		})
 	}
 }
 

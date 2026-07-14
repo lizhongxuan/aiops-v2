@@ -34,6 +34,8 @@ const (
 	TurnItemTypeApprovalRequested    TurnItemType = "approval_requested"
 	TurnItemTypeApprovalDecided      TurnItemType = "approval_decided"
 	TurnItemTypeEvidence             TurnItemType = "evidence"
+	TurnItemTypeEvidenceRequested    TurnItemType = "evidence_requested"
+	TurnItemTypeEvidenceCollected    TurnItemType = "evidence_collected"
 	TurnItemTypeChildAgentStarted    TurnItemType = "child_agent_started"
 	TurnItemTypeChildAgentResult     TurnItemType = "child_agent_result"
 	TurnItemTypeContextCompacted     TurnItemType = "context_compacted"
@@ -41,6 +43,9 @@ const (
 	TurnItemTypeTurnCancelled        TurnItemType = "turn_cancelled"
 	TurnItemTypePermissionSnapshot   TurnItemType = "permission_snapshot"
 	TurnItemTypeResourceLock         TurnItemType = "resource_lock"
+	TurnItemTypeCheckpoint           TurnItemType = "checkpoint"
+	TurnItemTypeFinalResponse        TurnItemType = "final_response"
+	TurnItemTypeTurnFailed           TurnItemType = "turn_failed"
 	TurnItemTypeError                TurnItemType = "error"
 )
 
@@ -129,9 +134,11 @@ func (t TurnItemType) IsValid() bool {
 		TurnItemTypeRouteSelected, TurnItemTypeToolSurfaceSnapshot, TurnItemTypeAssistantMessage,
 		TurnItemTypeToolCall, TurnItemTypeToolResult, TurnItemTypePlan,
 		TurnItemTypeApproval, TurnItemTypeApprovalRequested, TurnItemTypeApprovalDecided,
-		TurnItemTypeEvidence, TurnItemTypeChildAgentStarted, TurnItemTypeChildAgentResult,
+		TurnItemTypeEvidence, TurnItemTypeEvidenceRequested, TurnItemTypeEvidenceCollected,
+		TurnItemTypeChildAgentStarted, TurnItemTypeChildAgentResult,
 		TurnItemTypeContextCompacted, TurnItemTypePendingInputAccepted, TurnItemTypeTurnCancelled,
-		TurnItemTypePermissionSnapshot, TurnItemTypeResourceLock, TurnItemTypeError:
+		TurnItemTypePermissionSnapshot, TurnItemTypeResourceLock, TurnItemTypeCheckpoint,
+		TurnItemTypeFinalResponse, TurnItemTypeTurnFailed, TurnItemTypeError:
 		return true
 	default:
 		return false

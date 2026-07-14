@@ -67,6 +67,47 @@ func TestPromptTraceAPIListsAndReadsFiles(t *testing.T) {
 	}
 }
 
+func TestPromptTraceAPIForwardsCanonicalControlChainQuery(t *testing.T) {
+	service := &recordingPromptTraceService{}
+	server := NewHTTPServer(promptTraceAPIServices{}, WithPromptTraceService(service))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/debug/model-input-traces?sessionId=session-api&turnId=turn-api&includeControlChain=true", nil)
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", recorder.Code, recorder.Body.String())
+	}
+	if service.listRequest.SessionID != "session-api" || service.listRequest.TurnID != "turn-api" || !service.listRequest.IncludeControlChain {
+		t.Fatalf("forwarded request = %#v", service.listRequest)
+	}
+}
+
+func TestPromptTraceAPIRejectsInvalidIncludeControlChain(t *testing.T) {
+	server := NewHTTPServer(promptTraceAPIServices{}, WithPromptTraceService(&recordingPromptTraceService{}))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/debug/model-input-traces?includeControlChain=definitely", nil)
+
+	server.Handler().ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+type recordingPromptTraceService struct {
+	listRequest appui.PromptTraceListRequest
+}
+
+func (s *recordingPromptTraceService) ListModelInputTraces(_ context.Context, req appui.PromptTraceListRequest) (appui.PromptTraceListResponse, error) {
+	s.listRequest = req
+	return appui.PromptTraceListResponse{}, nil
+}
+
+func (*recordingPromptTraceService) GetModelInputTraceFile(context.Context, appui.PromptTraceFileRequest) (appui.PromptTraceFileResponse, error) {
+	return appui.PromptTraceFileResponse{}, nil
+}
+
 type promptTraceAPIServices struct{}
 
 func (promptTraceAPIServices) ChatService() appui.ChatService                 { return nil }

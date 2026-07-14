@@ -1,0 +1,101 @@
+{
+  "name": "evidence_rca_no_exec",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-evidence-rca",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "只基于我贴的日志分析，不要连接主机：host-agent connection refused"
+        }
+      ]
+    }
+  },
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "content": "基于用户提供的日志，疑似 host-agent 未运行；当前未执行主机命令，证据仍不足。"
+    }
+  ],
+  "toolOutcomes": [],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "final_answer",
+        "text": "基于用户提供的日志，疑似 host-agent 未运行；当前未执行主机命令，证据仍不足。"
+      }
+    ],
+    "modelVisibleTools": [],
+    "actualTools": [],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "none",
+      "resourceRefs": []
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "unknown",
+      "confidence": "high",
+      "checkedEvidenceRefs": [],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "limitations": [
+        "missing_typed_evidence"
+      ]
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [],
+      "processStatuses": [],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "final_response"
+      ],
+      "finalStatus": "unknown",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [
+      "user_provided_evidence"
+    ],
+    "traceHashes": {
+      "promptFingerprint": {
+        "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
+        "compilerVersion": "prompt-fingerprint-v2",
+        "currentUserInputHash": "95b13f92515508fba5b74e2002e9df25958050870bd489d7506c041cfc6ce67b",
+        "developerHash": "5ad7f4d6fb223349637aee329bb8e59e06c8d4f43982aa7bea20b50340bc9101",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "roleProfileHash": "df50f2ed8e3fec7cc5ec440d41a5d79b13e71a3f52f682d61464e3b25ac3bb30",
+        "runtimePolicyHash": "461a8ebd06bedd18c0da6260e33eed5410f6cf6330228fd557a036d05a85d075",
+        "stableHash": "4015924a0917bfea65a4c98d6b2e5c1d4c06eb35e9204e5c2d5bc42367d6916d",
+        "stablePrefixHash": "28891ee7ea75c685f36e09ec6a39a2bfb0ebb007d35afe62cf0f3ac0fe9626f7",
+        "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "6c366e807e217f185e2c45e4ccce0e107892391f59d993a412618423b55f4983",
+        "turnPrefixHash": "2d45d78009ddc59e7869e880391df970da1493008d7d522c0dc46675e9c76cdf",
+        "turnStableHash": "61e49bf408512a051ba0833f07d1226aaf1e45105faa621def682b18500bde49",
+        "version": "prompt-fingerprint-v2"
+      },
+      "stablePromptHash": "28891ee7ea75c685f36e09ec6a39a2bfb0ebb007d35afe62cf0f3ac0fe9626f7",
+      "stableToolFingerprint": "sha256:e41556b1f3d31f5df9ae68a3382730e8ee9cca3b3b6463b0886325efcd407a56",
+      "toolSurfaceFingerprints": [
+        "sha256:e41556b1f3d31f5df9ae68a3382730e8ee9cca3b3b6463b0886325efcd407a56"
+      ],
+      "toolPolicyHashes": [
+        "9fd5eef048f55f86f1cf8fe170a85cc693ac944e104e62e71d46ace1ab574589"
+      ],
+      "governanceSnapshot": ""
+    }
+  }
+}

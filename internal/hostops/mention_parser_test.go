@@ -38,6 +38,20 @@ func TestParseHostMentionsIncludesLocalAlias(t *testing.T) {
 	}
 }
 
+func TestParseHostMentionsIncludesExplicitLocalAliases(t *testing.T) {
+	for _, input := range []string{
+		"@local 查看 CPU",
+		"@server-local 查看 CPU",
+		"@localhost 查看 CPU",
+		"@127.0.0.1 查看 CPU",
+	} {
+		mentions := ParseHostMentions(input)
+		if len(mentions) != 1 || mentions[0].Source != HostMentionSourceLocalAlias {
+			t.Fatalf("%q parsed as %#v, want one local_alias mention", input, mentions)
+		}
+	}
+}
+
 func TestParseHostMentionsSkipsCorootObservabilityMention(t *testing.T) {
 	mentions := ParseHostMentions("@Coroot 分析 order-api 延迟")
 	if len(mentions) != 0 {
@@ -60,5 +74,25 @@ func TestDetectInventoryHostMentionsSkipsBareServerLocal(t *testing.T) {
 	})
 	if len(mentions) != 0 {
 		t.Fatalf("mentions = %#v, want no bare server-local mention", mentions)
+	}
+}
+
+func TestResourceBindingProjectionFromMention(t *testing.T) {
+	mention := HostMention{
+		Raw:         "@db-a",
+		HostID:      "host-a",
+		DisplayName: "db-a",
+		Source:      HostMentionSourceInventory,
+		Resolved:    true,
+		Confidence:  1,
+	}
+
+	projection := ResourceBindingProjectionFromMention(mention)
+	if projection.HostID != "host-a" || projection.Source != string(HostMentionSourceInventory) || !projection.Resolved {
+		t.Fatalf("projection = %+v, want resolved host-a", projection)
+	}
+	ref := ResourceRefFromHostMention(mention)
+	if ref.Type != "host" || ref.ID != "host-a" {
+		t.Fatalf("resource ref = %+v, want host-a", ref)
 	}
 }

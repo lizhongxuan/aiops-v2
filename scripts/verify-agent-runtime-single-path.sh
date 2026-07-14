@@ -42,4 +42,6 @@ if rg -n 'outputPreview|json:"preview|Preview\s+string|\.Preview|Preview:' inter
   fail "prompt/provider request path still carries preview fields"
 fi
 
+bash scripts/check-aiops-runtime-boundary.sh
+
 echo "PASS: single runtime path guards"

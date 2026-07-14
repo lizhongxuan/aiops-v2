@@ -34,6 +34,7 @@ func TestContextUsageAnalyzerCategorizesModelInput(t *testing.T) {
 	}
 	history := []Message{
 		{Role: "user", Content: "current question"},
+		{Role: "assistant", ToolCalls: []ToolCall{{ID: "call-large", Name: "read_large_result"}}},
 		{Role: "tool", Content: secretToolPayload, ToolResult: &ToolResult{ToolCallID: "call-large", Content: secretToolPayload}},
 	}
 

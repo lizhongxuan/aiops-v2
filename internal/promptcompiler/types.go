@@ -159,8 +159,12 @@ type LoadedSkillPromptRef struct {
 
 // PromptSection is an additional prompt fragment injected into developer instructions.
 type PromptSection struct {
-	Title   string
-	Content string
+	Title       string
+	Content     string
+	SourceType  string
+	SourceRef   string
+	RetrievedAt string
+	TrustLevel  string
 }
 
 // DynamicContextSource is a bounded prompt-facing dynamic context block.
@@ -184,14 +188,16 @@ type DynamicContextSource struct {
 // during migration, but callers should prefer this ordered envelope for model
 // input assembly.
 type PromptCompiledSection struct {
-	ID        string
-	Layer     string
-	Role      string
-	Content   string
-	Stability string
-	MaxTokens int
-	Source    string
-	Required  bool
+	ID           string
+	Layer        string
+	LogicalLayer PromptLogicalLayer
+	BundleRef    string
+	Role         string
+	Content      string
+	Stability    string
+	MaxTokens    int
+	Source       string
+	Required     bool
 }
 
 // PromptEnvelope is the ordered prompt product consumed by model input
@@ -423,33 +429,46 @@ type DynamicPrompt = DynamicPromptDelta
 // PromptFingerprint is a privacy-safe digest of compiled prompt layers.
 // It intentionally carries hashes and versions only, never full prompt text.
 type PromptFingerprint struct {
-	Version           string `json:"version,omitempty"`
-	CompilerVersion   string `json:"compilerVersion,omitempty"`
-	StableHash        string `json:"stableHash,omitempty"`
-	SystemHash        string `json:"systemHash,omitempty"`
-	DeveloperHash     string `json:"developerHash,omitempty"`
-	ToolRegistryHash  string `json:"toolRegistryHash,omitempty"`
-	RuntimePolicyHash string `json:"runtimePolicyHash,omitempty"`
-	ProtocolStateHash string `json:"protocolStateHash,omitempty"`
+	Version                   string `json:"version,omitempty"`
+	CompilerVersion           string `json:"compilerVersion,omitempty"`
+	AbsoluteSystemHash        string `json:"absoluteSystemHash,omitempty"`
+	RoleProfileHash           string `json:"roleProfileHash,omitempty"`
+	StableRuntimeContractHash string `json:"stableRuntimeContractHash,omitempty"`
+	StablePrefixHash          string `json:"stablePrefixHash,omitempty"`
+	TurnStableHash            string `json:"turnStableHash,omitempty"`
+	TurnPrefixHash            string `json:"turnPrefixHash,omitempty"`
+	ConversationHistoryHash   string `json:"conversationHistoryHash,omitempty"`
+	DynamicContextHash        string `json:"dynamicContextHash,omitempty"`
+	CurrentUserInputHash      string `json:"currentUserInputHash,omitempty"`
+	ModelInputHash            string `json:"modelInputHash,omitempty"`
+	StableHash                string `json:"stableHash,omitempty"`
+	SystemHash                string `json:"systemHash,omitempty"`
+	DeveloperHash             string `json:"developerHash,omitempty"`
+	ToolRegistryHash          string `json:"toolRegistryHash,omitempty"`
+	RuntimePolicyHash         string `json:"runtimePolicyHash,omitempty"`
+	ProtocolStateHash         string `json:"protocolStateHash,omitempty"`
 }
 
 // PromptSectionTrace is a redaction-safe prompt-section summary. It stores
 // only stable identifiers, hashes, and size estimates, never section text.
 type PromptSectionTrace struct {
-	ID             string `json:"id"`
-	Kind           string `json:"kind"`
-	Source         string `json:"source"`
-	Hash           string `json:"hash"`
-	Bytes          int    `json:"bytes"`
-	TokensEstimate int    `json:"tokensEstimate"`
-	Cache          string `json:"cache,omitempty"`
-	RetentionRank  string `json:"retentionRank,omitempty"`
-	RetentionClass string `json:"retentionClass,omitempty"`
-	CompactAction  string `json:"compactAction,omitempty"`
-	CompactSchema  string `json:"compactSchema,omitempty"`
-	SourceRef      string `json:"sourceRef,omitempty"`
-	Redaction      string `json:"redaction,omitempty"`
-	Purpose        string `json:"purpose,omitempty"`
+	ID              string `json:"id"`
+	Kind            string `json:"kind"`
+	Source          string `json:"source"`
+	Hash            string `json:"hash"`
+	Bytes           int    `json:"bytes"`
+	TokensEstimate  int    `json:"tokensEstimate"`
+	TokenEstimate   int    `json:"tokenEstimate,omitempty"`
+	Cache           string `json:"cache,omitempty"`
+	CacheMissReason string `json:"cacheMissReason,omitempty"`
+	RetentionRank   string `json:"retentionRank,omitempty"`
+	RetentionClass  string `json:"retentionClass,omitempty"`
+	CompactAction   string `json:"compactAction,omitempty"`
+	Action          string `json:"action,omitempty"`
+	CompactSchema   string `json:"compactSchema,omitempty"`
+	SourceRef       string `json:"sourceRef,omitempty"`
+	Redaction       string `json:"redaction,omitempty"`
+	Purpose         string `json:"purpose,omitempty"`
 }
 
 // ChangedPromptSection records why one prompt section hash changed.
@@ -469,6 +488,10 @@ const (
 	// PromptSectionCacheInvalidated marks a known section whose hash changed
 	// since the previous model input in the same session.
 	PromptSectionCacheInvalidated = "invalidated"
+
+	PromptSectionCacheMissReasonNoPreviousTrace = "no_previous_trace"
+	PromptSectionCacheMissReasonSectionAdded    = "section_added"
+	PromptSectionCacheMissReasonHashChanged     = "hash_changed"
 
 	PromptSectionChangeInitial               = "initial"
 	PromptSectionChangeSystemRoleChanged     = "system_role_changed"
@@ -506,6 +529,10 @@ const (
 type CompiledPrompt struct {
 	// Envelope is the section-first prompt product consumed by model input assembly.
 	Envelope PromptEnvelope
+
+	// EnvelopeV2 is the canonical validated L0-L6 product consumed by runtime
+	// model-input assembly and the provider request path.
+	EnvelopeV2 PromptEnvelopeV2
 
 	// Stable is a derived compatibility view of stable envelope sections.
 	Stable StablePromptEnvelope

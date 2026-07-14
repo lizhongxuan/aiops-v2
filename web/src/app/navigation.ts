@@ -39,6 +39,7 @@ const coreItems: NavigationItem[] = [
   { path: "/", title: zhNavigationTitle("/"), description: "AI 对话", icon: MessageSquare, nav: true },
   { path: "/protocol", title: "协作工作台", description: "复杂运维 AI Chat", icon: ScrollText },
   { path: "/incidents", title: zhNavigationTitle("/incidents"), description: "Case 队列", icon: AlertTriangle, nav: true },
+  { path: "/coroot", title: "Coroot", description: "监控视图", icon: Activity, nav: true },
   { path: "/erp", title: "ERP", description: "ERP health workbench", icon: Activity },
   { path: "/opsgraph", title: zhNavigationTitle("/opsgraph"), description: "手工运维关系图谱", icon: Network, nav: true },
   { path: "/runbooks", title: "Runbooks", description: "Runbook catalog", icon: BookOpen },
@@ -50,8 +51,9 @@ const coreItems: NavigationItem[] = [
 
 const adminItems: NavigationItem[] = [
   { path: "/settings", title: "设置", description: "系统设置", icon: Settings },
-  { path: "/settings/llm", title: zhNavigationTitle("/settings/llm"), description: "", icon: Bot, nav: true },
-  { path: "/settings/runtime", title: zhNavigationTitle("/settings/runtime"), description: "运行期参数", icon: SlidersHorizontal, nav: true },
+  { path: "/settings/llm", title: zhNavigationTitle("/settings/llm"), description: "", icon: Bot },
+  { path: "/settings/runtime", title: zhNavigationTitle("/settings/runtime"), description: "运行期参数", icon: SlidersHorizontal },
+  { path: "/settings/coroot", title: zhNavigationTitle("/settings/coroot"), description: "监控连接与 MCP", icon: Activity },
   { path: "/settings/hosts", title: zhNavigationTitle("/settings/hosts"), description: "主机列表", icon: Server, nav: true },
   { path: "/settings/ops-manuals", title: zhNavigationTitle("/settings/ops-manuals"), description: "运维手册与工作流库", icon: BookOpen, nav: true },
   { path: "/settings/experience-packs", title: zhNavigationTitle("/settings/experience-packs"), description: "已迁移到运维手册", icon: LayoutGrid },
@@ -87,5 +89,7 @@ export const routeInventory: NavigationItem[] = [
   { path: "/opsgraph/graphs", title: zhNavigationTitle("/opsgraph/graphs"), description: "图谱列表", icon: Network },
   { path: "/opsgraph/:graphId", title: "OpsGraph Editor", description: "OpsGraph editor", icon: Network },
   { path: "/incidents/:incidentId", title: "Incident Detail", description: "Incident workbench", icon: AlertTriangle },
+  { path: "/coroot/config", title: zhNavigationTitle("/coroot/config"), description: "连接 Coroot", icon: Activity },
+  { path: "/coroot/p/:projectId/:view?/:id?/:report?", title: "Coroot", description: "监控工作区", icon: Activity },
   { path: "/runbooks/:runbookId", title: "Runbook Detail", description: "Runbook detail", icon: BookOpen },
 ];

@@ -9,8 +9,10 @@ import (
 	"time"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/store"
 )
 
@@ -22,6 +24,9 @@ type chatRuntimeCapture struct {
 	resumeCalled bool
 	resumeReq    runtimekernel.ResumeRequest
 	cancelReq    runtimekernel.CancelRequest
+	systemCalled bool
+	systemReq    runtimekernel.SystemTurnRequest
+	commitSystem func(context.Context, runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error)
 }
 
 type cancelledChatRuntime struct {
@@ -112,6 +117,15 @@ func (r *blockingChatRuntime) CancelTurn(context.Context, runtimekernel.CancelRe
 	return runtimekernel.TurnResult{}, nil
 }
 
+func (r *blockingChatRuntime) CommitSystemTurn(_ context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error) {
+	return runtimekernel.TurnResult{
+		SessionType: req.Turn.SessionType, Mode: req.Turn.Mode,
+		SessionID: req.Turn.SessionID, TurnID: req.Turn.TurnID,
+		ClientTurnID: req.Turn.ClientTurnID, ClientMessageID: req.Turn.ClientMessageID,
+		Status: "completed", Output: req.Output.FinalText,
+	}, nil
+}
+
 type lifecycleContextRuntime struct {
 	ctxErr chan error
 }
@@ -139,11 +153,11 @@ func (r *lifecycleContextRuntime) CancelTurn(context.Context, runtimekernel.Canc
 	return runtimekernel.TurnResult{}, nil
 }
 
-func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceSendMessageMigratesAddWorkflowToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
-	events := NewAgentEventService(nil)
-	service := NewChatService(runtime, sessions, events)
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	result, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID:       "sess-workflowgen",
@@ -156,42 +170,47 @@ func TestChatServiceSendMessageHandlesAddWorkflowWithoutRuntimeTools(t *testing.
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+		t.Fatalf("Status = %q, want completed migration notice", result.Status)
 	}
-	select {
-	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; @add_workflow should use controlled internal workflow generation")
-	default:
+	if !strings.Contains(result.Output, "Workflow 创建已经迁移到 Runner Studio") ||
+		!strings.Contains(result.Output, "Workflow AI Chat") {
+		t.Fatalf("Output = %q, want Runner Studio migration notice", result.Output)
+	}
+	if !strings.Contains(result.Output, "/runner?workflow_ai=create&prompt=") ||
+		strings.Contains(result.Output, "%40add_workflow") {
+		t.Fatalf("Output = %q, want runner create link with encoded requirement and no add_workflow mention", result.Output)
+	}
+	if _, called := runtime.runSnapshot(); called {
+		t.Fatal("runtime RunTurn was called; migrated @add_workflow should use the system-turn gateway")
+	}
+	systemReq, called := runtime.systemSnapshot()
+	if !called {
+		t.Fatal("runtime CommitSystemTurn was not called")
+	}
+	if systemReq.Turn.Input != "@add_workflow 每天早上8点自动抓取AI行业新闻，提取三条关键内容直接返回给我" ||
+		systemReq.Output.Kind != runtimekernel.SystemTurnKindNotice ||
+		systemReq.Output.ContractStatus != runtimekernel.FinalContractStatusPartial ||
+		systemReq.Output.FinalText != result.Output {
+		t.Fatalf("system turn request = %#v, want fixed migration notice facts", systemReq)
 	}
 	session := sessions.Get("sess-workflowgen")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write current turn")
+		t.Fatal("migration notice did not write current turn")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
-		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
+	if session.CurrentTurn.FinalOutput != result.Output {
+		t.Fatalf("FinalOutput = %q, want result output", session.CurrentTurn.FinalOutput)
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "初始生成大纲") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "拆分、合并或调整节点") {
-		t.Fatalf("FinalOutput = %q, want plan to be described as adjustable generation outline", session.CurrentTurn.FinalOutput)
-	}
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
+			t.Fatalf("agent item = %#v, migrated @add_workflow must not create runner_workflow_generation artifact", item)
 		}
-	}
-	if artifactPayload == "" {
-		t.Fatalf("agent items = %#v, want runner_workflow_generation artifact payload", session.CurrentTurn.AgentItems)
-	}
-	if !strings.Contains(artifactPayload, `"planIsProvisional":true`) ||
-		!strings.Contains(artifactPayload, `"status":"planned"`) {
-		t.Fatalf("artifact payload = %s, want provisional plan step status", artifactPayload)
 	}
 }
 
-func TestChatServiceSendMessageHandlesPlainWorkflowWritingRequestWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceSendMessageMigratesPlainWorkflowWritingRequestToRunnerStudio(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
 	result, err := service.SendMessage(context.Background(), ChatCommand{
@@ -205,52 +224,65 @@ func TestChatServiceSendMessageHandlesPlainWorkflowWritingRequestWithoutRuntimeT
 		t.Fatalf("SendMessage() error = %v", err)
 	}
 	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+		t.Fatalf("Status = %q, want completed migration notice", result.Status)
 	}
-	select {
-	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; plain workflow writing request should use controlled internal workflow generation")
-	default:
+	if !strings.Contains(result.Output, "Workflow 创建已经迁移到 Runner Studio") ||
+		!strings.Contains(result.Output, "Workflow AI Chat") {
+		t.Fatalf("Output = %q, want Runner Studio migration notice", result.Output)
+	}
+	if !strings.Contains(result.Output, "/runner?workflow_ai=create&prompt=") {
+		t.Fatalf("Output = %q, want runner create link", result.Output)
+	}
+	if _, called := runtime.runSnapshot(); called {
+		t.Fatal("runtime RunTurn was called; migrated plain workflow request should use the system-turn gateway")
+	}
+	if systemReq, called := runtime.systemSnapshot(); !called || systemReq.Output.FinalText != result.Output {
+		t.Fatalf("system turn request = %#v called=%t, want fixed migration notice", systemReq, called)
 	}
 	session := sessions.Get("sess-workflowgen-plain")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write current turn")
+		t.Fatal("migration notice did not write current turn")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "工作流计划") {
-		t.Fatalf("FinalOutput = %q, want workflow plan summary", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "主机A") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "主机B") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "主机C") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "pg_mon") {
-		t.Fatalf("FinalOutput = %q, want resource roles from user request", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "generate_resource_ops_workflow") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "pending_review") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "preflight") ||
-		!strings.Contains(session.CurrentTurn.FinalOutput, "verify") {
-		t.Fatalf("FinalOutput = %q, want resource workflow contract signals", session.CurrentTurn.FinalOutput)
-	}
-	var hasModelCall, hasEvidence bool
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
-		if item.Type == "model_call" {
-			hasModelCall = true
-		}
-		if item.Type == "evidence" {
-			hasEvidence = true
-		}
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
+			t.Fatalf("agent item = %#v, migrated workflow writing request must not create runner_workflow_generation artifact", item)
 		}
 	}
-	if !hasModelCall || !hasEvidence {
-		t.Fatalf("agent items = %#v, want model_call and evidence items", session.CurrentTurn.AgentItems)
+}
+
+func TestChatServiceWorkflowAIChatSourceBypassesWorkflowMigrationNotice(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := newBlockingChatRuntime()
+	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
+
+	result, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:       "sess-workflow-ai-chat",
+		SessionType:     "workflow",
+		Mode:            "chat",
+		Content:         "你是 AIOps Workflow AI。用户消息：你好。不要生成修改计划。",
+		ClientMessageID: "client-msg-workflow-ai-chat",
+		ClientTurnID:    "client-turn-workflow-ai-chat",
+		Metadata: map[string]string{
+			"source": "workflow_ai_chat",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
 	}
-	for _, want := range []string{"generate_resource_ops_workflow", "pending_review", "data_node", "monitor", "draft_until_reviewed", "secret_ref_only"} {
-		if !strings.Contains(artifactPayload, want) {
-			t.Fatalf("artifact payload = %s, want %q", artifactPayload, want)
+	t.Cleanup(func() { close(runtime.release) })
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted runtime turn", result.Status)
+	}
+	if strings.Contains(result.Output, "Workflow 创建已经迁移") {
+		t.Fatalf("Output = %q, workflow-ai chat source must not receive migration notice", result.Output)
+	}
+	select {
+	case req := <-runtime.started:
+		if req.Metadata["source"] != "workflow_ai_chat" {
+			t.Fatalf("runtime metadata[source] = %q", req.Metadata["source"])
 		}
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn was not called for Workflow AI chat source")
 	}
 }
 
@@ -359,17 +391,22 @@ func TestChatServiceDoesNotTreatWorkflowConfirmationAsNewPlainRequestWithoutActi
 	}
 }
 
-func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t *testing.T) {
+func TestChatServiceDoesNotGenerateWorkflowDraftFromConfirmationAfterMigration(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
-	runtime := newBlockingChatRuntime()
+	kernel := runtimekernel.NewRuntimeKernel(runtimekernel.RuntimeKernelConfig{Sessions: sessions})
+	runtime := &chatRuntimeCapture{commitSystem: kernel.CommitSystemTurn}
 	service := NewChatService(runtime, sessions, NewAgentEventService(nil))
 
-	if _, err := service.SendMessage(context.Background(), ChatCommand{
+	initial, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID: "sess-workflowgen-confirm",
 		Content:   "@add_workflow 每天早上8点抓取AI新闻，提取三条关键内容直接返回给我",
 		HostID:    "server-local",
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("initial SendMessage() error = %v", err)
+	}
+	if initial.Status != "completed" || !strings.Contains(initial.Output, "Workflow 创建已经迁移到 Runner Studio") {
+		t.Fatalf("initial response = %+v, want migration notice", initial)
 	}
 	result, err := service.SendMessage(context.Background(), ChatCommand{
 		SessionID: "sess-workflowgen-confirm",
@@ -380,36 +417,18 @@ func TestChatServiceGeneratesWorkflowDraftFromConfirmationWithoutRuntimeTools(t 
 	if err != nil {
 		t.Fatalf("confirmation SendMessage() error = %v", err)
 	}
-	if result.Status != "completed" {
-		t.Fatalf("Status = %q, want completed", result.Status)
+	if result.Status != "accepted" {
+		t.Fatalf("Status = %q, want accepted runtime path without active workflow generation session", result.Status)
 	}
-	select {
-	case <-runtime.started:
-		t.Fatal("runtime RunTurn was called; workflow draft generation should stay inside controlled service")
-	default:
-	}
+	_ = waitForRunTurn(t, runtime)
 	session := sessions.Get("sess-workflowgen-confirm")
 	if session == nil || session.CurrentTurn == nil {
-		t.Fatal("workflow generation did not write confirmation turn")
+		t.Fatal("session current turn missing")
 	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "静态验证通过") {
-		t.Fatalf("FinalOutput = %q, want static validation summary", session.CurrentTurn.FinalOutput)
-	}
-	if !strings.Contains(session.CurrentTurn.FinalOutput, "Docker") {
-		t.Fatalf("FinalOutput = %q, want Docker provider boundary mentioned", session.CurrentTurn.FinalOutput)
-	}
-	var artifactPayload string
 	for _, item := range session.CurrentTurn.AgentItems {
 		if item.Type == "tool_result" && strings.Contains(string(item.Payload.Data), "runner_workflow_generation") {
-			artifactPayload = string(item.Payload.Data)
-			break
+			t.Fatalf("agent item = %#v, migrated confirmation must not create runner_workflow_generation artifact", item)
 		}
-	}
-	if !strings.Contains(artifactPayload, `"scriptLanguage":"python"`) || !strings.Contains(artifactPayload, `"scriptPreview"`) {
-		t.Fatalf("artifact payload = %s, want generated node script details", artifactPayload)
-	}
-	if !strings.Contains(artifactPayload, `"validationDetails"`) || !strings.Contains(artifactPayload, `"mode":"static"`) {
-		t.Fatalf("artifact payload = %s, want validation details", artifactPayload)
 	}
 }
 
@@ -658,6 +677,23 @@ func (r *chatRuntimeCapture) CancelTurn(_ context.Context, req runtimekernel.Can
 	return runtimekernel.TurnResult{SessionID: req.SessionID, TurnID: req.TurnID, Status: "cancelled"}, nil
 }
 
+func (r *chatRuntimeCapture) CommitSystemTurn(ctx context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error) {
+	r.mu.Lock()
+	r.systemCalled = true
+	r.systemReq = req
+	commit := r.commitSystem
+	r.mu.Unlock()
+	if commit != nil {
+		return commit(ctx, req)
+	}
+	return runtimekernel.TurnResult{
+		SessionType: req.Turn.SessionType, Mode: req.Turn.Mode,
+		SessionID: req.Turn.SessionID, TurnID: req.Turn.TurnID,
+		ClientTurnID: req.Turn.ClientTurnID, ClientMessageID: req.Turn.ClientMessageID,
+		Status: "completed", Output: req.Output.FinalText,
+	}, nil
+}
+
 func (r *chatRuntimeCapture) runSnapshot() (runtimekernel.TurnRequest, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -681,6 +717,12 @@ func (r *chatRuntimeCapture) cancelSnapshot() runtimekernel.CancelRequest {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.cancelReq
+}
+
+func (r *chatRuntimeCapture) systemSnapshot() (runtimekernel.SystemTurnRequest, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.systemReq, r.systemCalled
 }
 
 func waitForRunTurn(t *testing.T, runtime *chatRuntimeCapture) runtimekernel.TurnRequest {
@@ -1044,6 +1086,231 @@ func TestChatService_SendMessageDoesNotMarkCorootRCAWithoutMention(t *testing.T)
 	}
 }
 
+func TestChatServiceCorootMentionPersistsForFollowupTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-coroot-followup", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-followup",
+		Content:   "@Coroot 查看有哪些异常",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-coroot","sigil":"@","display":"@Coroot","rawText":"@Coroot","kind":"capability","path":"capability://coroot","source":"selection","range":{"start":0,"end":7}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-followup",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("follow-up coroot allowed = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("follow-up route mode = %q, want %q; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "true" {
+		t.Fatalf("follow-up explicit RCA = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.mentions.observabilityProvider"]; got != "coroot" {
+		t.Fatalf("follow-up observability provider = %q, want coroot; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "special_input_memory" {
+		t.Fatalf("follow-up context source = %q, want special_input_memory; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceCorootMentionDoesNotPersistIntoGreetingTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-coroot-greeting", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-greeting",
+		Content:   "@Coroot 查看有哪些异常",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-0-coroot","sigil":"@","display":"@Coroot","rawText":"@Coroot","kind":"capability","path":"capability://coroot","source":"selection","range":{"start":0,"end":7}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-greeting",
+		Content:   "你好",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "false" {
+		t.Fatalf("greeting coroot allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteAdvisory) {
+		t.Fatalf("greeting route mode = %q, want %q; metadata=%#v", got, ChatRouteAdvisory, runReq.Metadata)
+	}
+	assertMetadataListNotContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListNotContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.explicitRCA"]; got != "false" {
+		t.Fatalf("greeting explicit RCA = %q, want false; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.mentions.observabilityProvider"]; got == "coroot" {
+		t.Fatalf("greeting observability provider = %q, want no coroot provider; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "" {
+		t.Fatalf("greeting context source = %q, want empty; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.answer.smalltalkOnly"]; got != "true" {
+		t.Fatalf("greeting smalltalk metadata = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["answerStyle"]; got != "smalltalk" {
+		t.Fatalf("greeting answerStyle = %q, want smalltalk; metadata=%#v", got, runReq.Metadata)
+	}
+	if runReq.SpecialInputReadPlan != nil {
+		t.Fatalf("greeting SpecialInputReadPlan = %#v, want nil so Coroot memory is not injected into model input", runReq.SpecialInputReadPlan)
+	}
+}
+
+func TestChatServiceRawCorootMentionPersistsForFollowupTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	sessions.GetOrCreate("sess-raw-coroot-followup", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-raw-coroot-followup",
+		Content:   "@coroot 查看有哪些异常",
+	})
+	if err != nil {
+		t.Fatalf("first SendMessage() error = %v", err)
+	}
+	firstReq := waitForRunTurn(t, runtime)
+	if got := firstReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("first coroot allowed = %q, want true; metadata=%#v", got, firstReq.Metadata)
+	}
+
+	runtime.resetRunSnapshot()
+	_, err = service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-raw-coroot-followup",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("second SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("follow-up coroot allowed = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("follow-up route mode = %q, want %q; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "special_input_memory" {
+		t.Fatalf("follow-up context source = %q, want special_input_memory; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceRestoresCorootContextFromLegacySessionHistory(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-coroot-legacy-history", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.Messages = append(session.Messages, runtimekernel.Message{
+		ID:      "msg-legacy-coroot",
+		Role:    "user",
+		Content: "@Coroot 查看有哪些异常",
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-coroot-legacy-history",
+		Content:   "aiops-host-agent",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata["aiops.tool.corootRCAAllowed"]; got != "true" {
+		t.Fatalf("coroot allowed = %q, want true from legacy session history; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteEvidenceRCA) {
+		t.Fatalf("route mode = %q, want %q from legacy session history; metadata=%#v", got, ChatRouteEvidenceRCA, runReq.Metadata)
+	}
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "mcp_dynamic_coroot")
+	assertMetadataListContainsForTest(t, runReq.Metadata["enableToolPack"], "coroot_rca")
+	if got := runReq.Metadata["aiops.coroot.contextSource"]; got != "session_history" {
+		t.Fatalf("context source = %q, want session_history; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestShouldActivatePriorCorootContextForInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{name: "greeting", input: "你好", want: false},
+		{name: "thanks", input: "谢谢", want: false},
+		{name: "ack", input: "好的", want: false},
+		{name: "service entity", input: "aiops-host-agent", want: true},
+		{name: "incident followup", input: "继续分析 rabbitmq-server 的异常", want: true},
+		{name: "service question", input: "这个服务为什么一直重启", want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := shouldActivatePriorCorootContextForInput(tt.input); got != tt.want {
+				t.Fatalf("shouldActivatePriorCorootContextForInput(%q)=%v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func assertMetadataListContainsForTest(t *testing.T, raw, want string) {
+	t.Helper()
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		if strings.EqualFold(strings.TrimSpace(part), strings.TrimSpace(want)) {
+			return
+		}
+	}
+	t.Fatalf("metadata list %q does not contain %q", raw, want)
+}
+
+func assertMetadataListNotContainsForTest(t *testing.T, raw, want string) {
+	t.Helper()
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n' || r == '\t' || r == ' '
+	}) {
+		if strings.EqualFold(strings.TrimSpace(part), strings.TrimSpace(want)) {
+			t.Fatalf("metadata list %q contains %q", raw, want)
+		}
+	}
+}
+
 func TestChatService_SendMessageDoesNotDefaultNewHostSessionToServerLocal(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
@@ -1256,6 +1523,87 @@ func TestChatServiceStructuredHostMentionBindsAfterServerResolution(t *testing.T
 	}
 }
 
+func TestChatServiceLegacyHostMetadataBindsAfterServerResolution(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "server-local",
+		Name:       "server-local",
+		Address:    "server-local",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://server-local:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-legacy-hostops-server-local",
+		Content:   "@server-local 查看 CPU 情况",
+		Metadata: map[string]string{
+			"aiops.hostops.mentions": `[{"raw":"@server-local","value":"server-local","hostId":"server-local","address":"server-local","displayName":"server-local","source":"inventory","resolved":true,"confidence":1}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "server-local" {
+		t.Fatalf("RunTurn HostID = %q, want server-local; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeHost {
+		t.Fatalf("RunTurn SessionType = %q, want host; metadata=%#v", runReq.SessionType, runReq.Metadata)
+	}
+	for key, want := range map[string]string{
+		"aiops.route.mode":              string(ChatRouteHostBoundOps),
+		"aiops.target.binding":          "host",
+		"aiops.tool.execCommandAllowed": "true",
+	} {
+		if got := runReq.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
+		}
+	}
+}
+
+func TestChatServiceLegacyHostMetadataFailsClosedWhenForged(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	runtime := &chatRuntimeCapture{}
+	hosts := newHostRepoStub(store.HostRecord{
+		ID:         "server-local",
+		Name:       "server-local",
+		Address:    "server-local",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://server-local:7072",
+	})
+	service := NewChatServiceWithHosts(runtime, sessions, hosts)
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-legacy-hostops-forged",
+		Content:   "@server-local 查看 CPU 情况",
+		Metadata: map[string]string{
+			"aiops.hostops.mentions": `[{"raw":"@server-local","value":"server-local","hostId":"does-not-exist","address":"10.255.255.255","displayName":"server-local","source":"inventory","resolved":true,"confidence":1}]`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty for forged metadata; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace {
+		t.Fatalf("RunTurn SessionType = %q, want workspace; metadata=%#v", runReq.SessionType, runReq.Metadata)
+	}
+	for key, want := range map[string]string{
+		"aiops.target.binding":          "none",
+		"aiops.tool.execCommandAllowed": "false",
+	} {
+		if got := runReq.Metadata[key]; got != want {
+			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, runReq.Metadata)
+		}
+	}
+}
+
 func TestChatServiceStructuredHostMentionFailsClosedWhenStale(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &chatRuntimeCapture{}
@@ -1305,6 +1653,401 @@ func TestChatServiceStructuredHostMentionFailsClosedWhenHostMissing(t *testing.T
 	}
 	if got := runReq.Metadata["aiops.input.mentionValidation"]; got != "invalid" {
 		t.Fatalf("mentionValidation = %q, want invalid; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceSessionTargetRouteExplicitDisableKeepsTraceOnlyBehavior(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-disabled", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:      []string{"host-a"},
+		SourceTurnID: "turn-source",
+		Confidence:   1,
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-a",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-disabled",
+		Content:   "继续检查 CPU 和磁盘",
+		Metadata:  map[string]string{"aiops.sessionTarget.route.enabled": "false"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want no route restoration when explicitly disabled; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionTarget.route.applied"]; got == "true" {
+		t.Fatalf("session target route applied when explicitly disabled; metadata=%#v", runReq.Metadata)
+	}
+}
+
+func TestChatServiceSessionTargetRouteRestoresSingleHostByDefault(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-default", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:      []string{"host-a"},
+		SourceTurnID: "turn-source",
+		Confidence:   1,
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-a",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-default",
+		Content:   "继续检查 CPU 和磁盘",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a from verified session target; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionTarget.route.applied"]; got != "true" {
+		t.Fatalf("session target route applied = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+}
+
+func TestChatServiceSpecialInputGrantRestoresSingleHostNextTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-special-memory", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.SpecialInputMemory, _ = specialinputmemory.Consolidate(session.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+		SessionID: session.ID,
+		TaskID:    "task-special-memory",
+		TurnID:    "turn-source",
+		Now:       now,
+		Mentions: []specialinputmemory.MentionObservation{{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:host-a",
+			Display:      "pg-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+		}},
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-a",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-special-memory",
+		Content:   "看看 CPU",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a from special input grant; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.specialInput.readPlan.activeGrantId"]; got == "" {
+		t.Fatalf("missing special input active grant metadata: %#v", runReq.Metadata)
+	}
+}
+
+func TestChatServiceSpecialInputCorrectionUpdatesMemoryWithoutRunningTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-special-correction", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	now := time.Now().UTC()
+	session.SpecialInputMemory, _ = specialinputmemory.Consolidate(session.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+		SessionID: session.ID,
+		TaskID:    "task-special-correction",
+		TurnID:    "turn-source",
+		Now:       now,
+		Mentions: []specialinputmemory.MentionObservation{{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:host-a",
+			Display:      "pg-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+		}},
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{ID: "host-c", Name: "pg-c", Status: "online", Executable: true}))
+
+	resp, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-special-correction",
+		Content:   "@host-c 不对",
+		Metadata: map[string]string{
+			metadataInputMentionsV1: `{"version":1,"mentions":[{"version":1,"tokenId":"mention-host-c","sigil":"@","display":"@host-c","rawText":"@host-c","kind":"host","path":"host://host-c","source":"selection","range":{"start":0,"end":7},"payload":{"hostId":"host-c","displayName":"pg-c"}}]}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("response status = %q, want completed", resp.Status)
+	}
+	if runtime.runCalled {
+		t.Fatal("RunTurn was called for special input correction")
+	}
+	updated := sessions.Get("sess-special-correction")
+	active := specialinputmemory.ActiveGrants(updated.SpecialInputMemory.Grants)
+	if len(active) != 1 || active[0].ResourceID != "host-c" {
+		t.Fatalf("active grants = %#v, want host-c", active)
+	}
+	if len(updated.SpecialInputMemory.Tombstones) == 0 {
+		t.Fatalf("expected tombstone after correction: %#v", updated.SpecialInputMemory)
+	}
+}
+
+func TestChatServiceSpecialInputForgetRevokesMemoryWithoutRunningTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-special-forget", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SpecialInputMemory, _ = specialinputmemory.Consolidate(session.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+		SessionID: session.ID,
+		TaskID:    "task-special-forget",
+		TurnID:    "turn-source",
+		Now:       time.Now().UTC(),
+		Mentions: []specialinputmemory.MentionObservation{{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:host-a",
+			Display:      "pg-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			Source:       specialinputmemory.SourceStructuredSelection,
+			TrustLevel:   specialinputmemory.TrustLevelServerConfirmed,
+		}},
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, nil)
+
+	resp, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-special-forget",
+		Content:   "忘记当前主机",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("response status = %q, want completed", resp.Status)
+	}
+	if runtime.runCalled {
+		t.Fatal("RunTurn was called for special input forget")
+	}
+	updated := sessions.Get("sess-special-forget")
+	if active := specialinputmemory.ActiveGrants(updated.SpecialInputMemory.Grants); len(active) != 0 {
+		t.Fatalf("active grants = %#v, want none", active)
+	}
+}
+
+func TestChatServiceSpecialInputConfirmPromotesRawCandidateWithoutRunningTurn(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-special-confirm", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SpecialInputMemory, _ = specialinputmemory.Consolidate(session.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+		SessionID: session.ID,
+		TaskID:    "task-special-confirm",
+		TurnID:    "turn-source",
+		Now:       time.Now().UTC(),
+		Mentions: []specialinputmemory.MentionObservation{{
+			Kind:         specialinputmemory.FactKindHost,
+			CanonicalKey: "host:addr:1.1.1.1",
+			Display:      "1.1.1.1",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "1.1.1.1",
+			Source:       specialinputmemory.SourceTypedFallback,
+			TrustLevel:   specialinputmemory.TrustLevelRawTyped,
+		}},
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, nil)
+
+	resp, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-special-confirm",
+		Content:   "确认",
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	if resp.Status != "completed" {
+		t.Fatalf("response status = %q, want completed", resp.Status)
+	}
+	if runtime.runCalled {
+		t.Fatal("RunTurn was called for special input confirm")
+	}
+	updated := sessions.Get("sess-special-confirm")
+	active := specialinputmemory.ActiveGrants(updated.SpecialInputMemory.Grants)
+	if len(active) != 1 || active[0].ResourceID != "1.1.1.1" {
+		t.Fatalf("active grants = %#v, want confirmed raw host", active)
+	}
+}
+
+func TestChatServiceSessionTargetRouteRestoresSingleHostWhenFlagEnabled(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-single", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:      []string{"host-a"},
+		SourceTurnID: "turn-source",
+		Confidence:   1,
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{
+		ID:         "host-a",
+		Name:       "pg-a",
+		Status:     "online",
+		Executable: true,
+		AgentURL:   "http://host-a:7072",
+	}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-single",
+		Content:   "继续检查 CPU 和磁盘",
+		Metadata:  map[string]string{"aiops.sessionTarget.route.enabled": "true"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "host-a" {
+		t.Fatalf("RunTurn HostID = %q, want host-a; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteHostBoundOps) {
+		t.Fatalf("route mode = %q, want host_bound_ops; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionTarget.route.applied"]; got != "true" {
+		t.Fatalf("session target route applied = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if len(runReq.ResourceBindings) != 1 || runReq.ResourceBindings[0].Ref.ID != "host-a" || runReq.ResourceBindings[0].Source != resourcebinding.BindingSourceSessionTarget {
+		t.Fatalf("resource bindings = %#v, want server-side session target host-a binding", runReq.ResourceBindings)
+	}
+}
+
+func TestChatServiceSessionTargetRouteRestoresMultiHostManagerWhenFlagEnabled(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-multi", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:      []string{"host-a", "host-b"},
+		SourceTurnID: "turn-source",
+		Confidence:   1,
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(
+		store.HostRecord{ID: "host-a", Name: "pg-a", Status: "online", Executable: true, AgentURL: "http://host-a:7072"},
+		store.HostRecord{ID: "host-b", Name: "pg-b", Status: "online", Executable: true, AgentURL: "http://host-b:7072"},
+	))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-multi",
+		Content:   "继续检查复制状态和 CPU",
+		Metadata:  map[string]string{"aiops.sessionTarget.route.enabled": "true"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want empty for multi-host manager route; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if runReq.SessionType != runtimekernel.SessionTypeWorkspace || runReq.Mode != runtimekernel.ModePlan {
+		t.Fatalf("session/mode = %s/%s, want workspace/plan; metadata=%#v", runReq.SessionType, runReq.Mode, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.route.mode"]; got != string(ChatRouteMultiHostOps) {
+		t.Fatalf("route mode = %q, want multi_host_ops; metadata=%#v", got, runReq.Metadata)
+	}
+	if len(runReq.ResourceBindings) != 2 {
+		t.Fatalf("resource bindings = %#v, want both session target hosts", runReq.ResourceBindings)
+	}
+}
+
+func TestChatServiceSessionTargetRouteDoesNotRestoreForExplanation(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-explain", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:      []string{"host-a"},
+		SourceTurnID: "turn-source",
+		Confidence:   1,
+	})
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{ID: "host-a", Name: "pg-a", Status: "online", Executable: true, AgentURL: "http://host-a:7072"}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-explain",
+		Content:   "解释一下 PG 复制原理",
+		Metadata:  map[string]string{"aiops.sessionTarget.route.enabled": "true"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" || runReq.Metadata["aiops.route.mode"] == string(ChatRouteHostBoundOps) {
+		t.Fatalf("request = %#v metadata=%#v, want explanation to stay non-exec", runReq, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionTarget.route.applied"]; got == "true" {
+		t.Fatalf("session target route applied to explanation; metadata=%#v", runReq.Metadata)
+	}
+}
+
+func TestChatServiceSessionTargetRouteRequiresClarificationForStaleOrConflictedTarget(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-target-conflict", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.SessionTargetSnapshot = resourcebinding.NewSessionTargetSnapshot(resourcebinding.SessionTargetInput{
+		HostIDs:              []string{"host-a"},
+		SourceTurnID:         "turn-source",
+		RequiresConfirmation: true,
+		Confidence:           1,
+	})
+	session.RoleBindingConflicts = []resourcebinding.RoleBindingConflict{{
+		ResourceID: "host-a",
+		Role:       "pg_primary",
+		Reasons:    []string{"tool_evidence_conflict"},
+	}}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatServiceWithHosts(runtime, sessions, newHostRepoStub(store.HostRecord{ID: "host-a", Name: "pg-a", Status: "online", Executable: true, AgentURL: "http://host-a:7072"}))
+
+	_, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID: "sess-target-conflict",
+		Content:   "继续检查 CPU 和磁盘",
+		Metadata:  map[string]string{"aiops.sessionTarget.route.enabled": "true"},
+	})
+	if err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if runReq.HostID != "" {
+		t.Fatalf("RunTurn HostID = %q, want no host route for stale/conflicted session target; metadata=%#v", runReq.HostID, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.sessionTarget.route.requiresClarification"]; got != "true" {
+		t.Fatalf("requiresClarification = %q, want true; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["aiops.tool.execCommandAllowed"]; got != "false" {
+		t.Fatalf("exec allowed = %q, want false; metadata=%#v", got, runReq.Metadata)
 	}
 }
 
@@ -1525,6 +2268,39 @@ func TestChatServiceShortFollowupUsesConcisePromptProfile(t *testing.T) {
 	}
 	if runReq.Metadata["reasoningEffort"] != "low" || runReq.Metadata["answerStyle"] != "concise" {
 		t.Fatalf("prompt profile metadata = %#v, want low/concise", runReq.Metadata)
+	}
+}
+
+func TestChatServiceCompleteExplanationFollowupKeepsDetailedPromptProfile(t *testing.T) {
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-followup-complete-profile", runtimekernel.SessionTypeWorkspace, runtimekernel.ModeChat)
+	session.Messages = []runtimekernel.Message{
+		{ID: "msg-user-1", Role: "user", Content: "讲一下 Go 并发基础", Timestamp: time.Now().Add(-time.Minute)},
+		{ID: "msg-assistant-1", Role: "assistant", Content: "先解释了 goroutine 和 mutex。", Timestamp: time.Now().Add(-30 * time.Second)},
+	}
+	sessions.Update(session)
+	runtime := &chatRuntimeCapture{}
+	service := NewChatService(runtime, sessions)
+
+	if _, err := service.SendMessage(context.Background(), ChatCommand{
+		SessionID:   session.ID,
+		SessionType: string(runtimekernel.SessionTypeWorkspace),
+		Content:     "继续追问的完整答案也要写出来，还缺 channel、map、slice 底层实现，线程安全和阻塞原理",
+	}); err != nil {
+		t.Fatalf("SendMessage() error = %v", err)
+	}
+	runReq := waitForRunTurn(t, runtime)
+	if got := runReq.Metadata[metadataTurnFollowup]; got != "true" {
+		t.Fatalf("followup metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata[metadataAnswerRequireCompleteFollowup]; got != "true" {
+		t.Fatalf("complete followup metadata = %q; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["reasoningEffort"]; got == "low" {
+		t.Fatalf("reasoningEffort = %q, want not lowered for complete followup; metadata=%#v", got, runReq.Metadata)
+	}
+	if got := runReq.Metadata["answerStyle"]; got == "concise" {
+		t.Fatalf("answerStyle = %q, want not concise for complete followup; metadata=%#v", got, runReq.Metadata)
 	}
 }
 

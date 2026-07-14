@@ -2,6 +2,7 @@ package appui
 
 import (
 	"encoding/json"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -9,7 +10,383 @@ import (
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 )
+
+func TestTransportProjectorPreservesCanonicalTurnFactsLosslessly(t *testing.T) {
+	now := time.Date(2026, 7, 12, 9, 30, 0, 0, time.UTC)
+	items := []agentstate.TurnItem{
+		{
+			ID:     "model-call-1",
+			Type:   agentstate.TurnItemTypeModelCall,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "model_call",
+				Summary: "sampled model",
+				Data:    json.RawMessage(`{"promptFingerprint":{"stableHash":"sha256:stable","developerHash":"sha256:developer"},"visibleTools":["inspect_service","restart_service"]}`),
+			},
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		},
+		{
+			ID:     "tool-call-1",
+			Type:   agentstate.TurnItemTypeToolCall,
+			Status: agentstate.ItemStatusRunning,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "tool_call",
+				Summary: "inspect service",
+				Data:    json.RawMessage(`{"toolCallId":"call-1","toolName":"inspect_service","arguments":{"target":{"hostId":"host-a"},"checks":["health","latency"]}}`),
+			},
+			CreatedAt: now.Add(2 * time.Second),
+			UpdatedAt: now.Add(3 * time.Second),
+		},
+		{
+			ID:     "approval-1",
+			Type:   agentstate.TurnItemTypeApprovalRequested,
+			Status: agentstate.ItemStatusBlocked,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "approval",
+				Summary: "approval required",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","toolCallId":"call-1","risk":{"level":"high","reasons":["mutation"]},"rollback":{"tool":"restore_service","arguments":{"hostId":"host-a"}}}`),
+			},
+			CreatedAt: now.Add(4 * time.Second),
+			UpdatedAt: now.Add(5 * time.Second),
+		},
+		{
+			ID:     "evidence-1",
+			Type:   agentstate.TurnItemTypeEvidenceCollected,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "evidence",
+				Summary: "service health evidence",
+				Data:    json.RawMessage(`{"evidenceId":"evidence-1","refs":[{"id":"metric-1","kind":"metric","labels":{"service":"api"}}],"facts":{"healthy":true}}`),
+			},
+			CreatedAt: now.Add(6 * time.Second),
+			UpdatedAt: now.Add(7 * time.Second),
+		},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:              "turn-lossless-facts",
+		ClientTurnID:    "client-turn-1",
+		ClientMessageID: "client-message-1",
+		SessionID:       "session-lossless-facts",
+		Lifecycle:       runtimekernel.TurnLifecycleRunning,
+		StartedAt:       now,
+		UpdatedAt:       now.Add(8 * time.Second),
+		AgentItems:      items,
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-lossless-facts"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if got.ClientTurnID != turn.ClientTurnID || got.ClientMessageID != turn.ClientMessageID {
+		t.Fatalf("client ids = %q/%q, want %q/%q", got.ClientTurnID, got.ClientMessageID, turn.ClientTurnID, turn.ClientMessageID)
+	}
+	assertTransportAgentItemsMatchCanonical(t, got.AgentItems, items)
+	encoded, err := json.Marshal(projected)
+	if err != nil {
+		t.Fatalf("json.Marshal(projected) error = %v", err)
+	}
+	var roundTripped AiopsTransportState
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal(projected) error = %v", err)
+	}
+	if got := roundTripped.Turns[turn.ID]; got.ClientTurnID != turn.ClientTurnID || got.ClientMessageID != turn.ClientMessageID || !reflect.DeepEqual(got.AgentItems, projected.Turns[turn.ID].AgentItems) {
+		t.Fatalf("transport JSON round trip lost canonical facts: %#v", got)
+	}
+}
+
+func assertTransportAgentItemsMatchCanonical(t *testing.T, got []AiopsTransportAgentItem, want []agentstate.TurnItem) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("AgentItems = %d, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if got[i].SchemaVersion != AiopsTransportAgentItemSchemaVersion || got[i].ID != want[i].ID || got[i].Type != string(want[i].Type) || got[i].Status != string(want[i].Status) || got[i].Payload.Kind != want[i].Payload.Kind || got[i].Payload.Summary != want[i].Payload.Summary || got[i].CreatedAt != transportTimestamp(want[i].CreatedAt) || got[i].UpdatedAt != transportTimestamp(want[i].UpdatedAt) {
+			t.Fatalf("AgentItems[%d] = %#v, want canonical metadata %#v", i, got[i], want[i])
+		}
+		var gotData, wantData any
+		if json.Unmarshal(got[i].Payload.Data, &gotData) != nil || json.Unmarshal(want[i].Payload.Data, &wantData) != nil || !reflect.DeepEqual(gotData, wantData) {
+			t.Fatalf("AgentItems[%d].Payload.Data = %s, want %s", i, got[i].Payload.Data, want[i].Payload.Data)
+		}
+	}
+}
+
+func TestTransportProjectorCanonicalTurnFactsAreMutationIsolated(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:              "turn-isolated-facts",
+		ClientTurnID:    "client-turn-isolated",
+		ClientMessageID: "client-message-isolated",
+		SessionID:       "session-isolated-facts",
+		Lifecycle:       runtimekernel.TurnLifecycleRunning,
+		StartedAt:       now,
+		UpdatedAt:       now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "model-1", Type: agentstate.TurnItemTypeModelCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"promptFingerprint":{"stableHash":"sha256:original"}}`)}},
+			{ID: "tool-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"arguments":{"hosts":["host-a","host-b"]}}`)}},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-isolated-facts"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	transportTurn := projected.Turns[turn.ID]
+
+	turn.AgentItems[0].ID = "source-mutated"
+	turn.AgentItems[0].Payload.Data[0] = '['
+	if transportTurn.AgentItems[0].ID != "model-1" || string(transportTurn.AgentItems[0].Payload.Data) != `{"promptFingerprint":{"stableHash":"sha256:original"}}` {
+		t.Fatalf("transport AgentItems changed after source mutation: %#v", transportTurn.AgentItems[0])
+	}
+
+	transportTurn.AgentItems[1].ID = "projection-mutated"
+	transportTurn.AgentItems[1].Payload.Data[0] = '['
+	if turn.AgentItems[1].ID != "tool-1" || string(turn.AgentItems[1].Payload.Data) != `{"arguments":{"hosts":["host-a","host-b"]}}` {
+		t.Fatalf("source AgentItems changed after projection mutation: %#v", turn.AgentItems[1])
+	}
+}
+
+func TestTransportProjectorCanonicalTurnFactsRedactAndBoundPayload(t *testing.T) {
+	now := time.Date(2026, 7, 12, 10, 30, 0, 0, time.UTC)
+	secret := "story-super-secret-value"
+	large := strings.Repeat("payload-", transportAgentItemPayloadByteBudget)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-private-facts",
+		SessionID: "session-private-facts",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now,
+		AgentItems: []agentstate.TurnItem{{
+			ID:     "tool-private",
+			Type:   agentstate.TurnItemTypeToolCall,
+			Status: agentstate.ItemStatusRunning,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "tool_call",
+				Summary: "Authorization: Bearer " + secret + " password=" + secret,
+				Data:    json.RawMessage(`{"toolCallId":"call-private","toolName":"inspect_service","arguments":{"authorization":"Bearer ` + secret + `","password":"` + secret + `","note":"token=` + secret + `"},"large":"` + large + `"}`),
+			},
+		}},
+	}
+
+	project := func() AiopsTransportTurn {
+		projected, err := NewTransportProjector().ProjectTurnSnapshot(
+			NewAiopsTransportState(turn.SessionID, "thread-private-facts"),
+			turn,
+		)
+		if err != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+		}
+		return projected.Turns[turn.ID]
+	}
+	first := project()
+	second := project()
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("privacy/budget projection is not deterministic\nfirst=%#v\nsecond=%#v", first, second)
+	}
+	if len(first.AgentItems) != 1 {
+		t.Fatalf("AgentItems = %d, want 1", len(first.AgentItems))
+	}
+	item := first.AgentItems[0]
+	if item.SchemaVersion != AiopsTransportAgentItemSchemaVersion {
+		t.Fatalf("schemaVersion = %q, want %q", item.SchemaVersion, AiopsTransportAgentItemSchemaVersion)
+	}
+	if !item.Truncated || item.OriginalBytes <= transportAgentItemPayloadByteBudget || item.ContentHash == "" || item.Ref == "" {
+		t.Fatalf("bounded item facts missing: %#v", item)
+	}
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	text := string(encoded)
+	for _, forbidden := range []string{secret, "Bearer " + secret, "password=" + secret, "token=" + secret} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("transport leaked %q: %s", forbidden, text)
+		}
+	}
+	for _, required := range []string{"call-private", "inspect_service", "arguments", "[REDACTED]"} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("transport lost required redacted fact %q: %s", required, text)
+		}
+	}
+	var roundTripped AiopsTransportTurn
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal(turn) error = %v", err)
+	}
+	wantWire := first
+	wantWire.Process = nil
+	wantWire.Final = nil
+	if !reflect.DeepEqual(roundTripped, wantWire) {
+		t.Fatalf("transport JSON round trip changed bounded facts\nwant=%#v\n got=%#v", wantWire, roundTripped)
+	}
+}
+
+func TestTransportProjectorRejectsInvalidOrTrailingAgentPayloadWithoutHashingSecrets(t *testing.T) {
+	project := func(secret string) AiopsTransportTurn {
+		turn := &runtimekernel.TurnSnapshot{
+			ID: "turn-invalid-private", SessionID: "session-invalid-private", Lifecycle: runtimekernel.TurnLifecycleRunning,
+			AgentItems: []agentstate.TurnItem{
+				{ID: "invalid", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`password="` + secret + `" Authorization:"Bearer ` + secret + `"`)}},
+				{ID: "trailing", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Data: json.RawMessage(`{"toolCallId":"call-trailing"} trailing password="` + secret + `"`)}},
+			},
+		}
+		projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-invalid-private"), turn)
+		if err != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+		}
+		return projected.Turns[turn.ID]
+	}
+	first := project("secret value")
+	second := project("public value")
+	encoded, err := json.Marshal(first)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	for _, forbidden := range []string{`secret value`, `Bearer secret value`, `password=`, `trailing password`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("invalid payload leaked %q: %s", forbidden, encoded)
+		}
+	}
+	for i, item := range first.AgentItems {
+		if !item.Truncated || item.ContentHash == "" || !strings.Contains(string(item.Payload.Data), "_transportInvalidPayload") {
+			t.Fatalf("AgentItems[%d] invalid payload facts = %#v", i, item)
+		}
+		if item.ContentHash != second.AgentItems[i].ContentHash {
+			t.Fatalf("AgentItems[%d] hash depends on secret: %q != %q", i, item.ContentHash, second.AgentItems[i].ContentHash)
+		}
+	}
+}
+
+func TestTransportProjectorRedactsIterationSearchResultFallback(t *testing.T) {
+	secret := "secret value"
+	turn := &runtimekernel.TurnSnapshot{
+		ID: "turn-private-search", SessionID: "session-private-search", Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		Iterations: []runtimekernel.IterationState{{
+			ID: "iteration-private-search", ToolResults: []runtimekernel.ToolResult{{
+				ToolCallID: "call-private-search",
+				Content:    `{"results":[{"title":"password=\"` + secret + `\"","url":"https://example.com","snippet":"Authorization:\"Bearer ` + secret + `\"","text":"token=` + secret + `"}]}`,
+			}},
+		}},
+		AgentItems: []agentstate.TurnItem{{
+			ID: "search-private", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Kind: "browser.search", Data: json.RawMessage(`{"toolCallId":"call-private-search","toolName":"web_search","displayKind":"browser.search","inputSummary":"safe query"}`)},
+		}},
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-private-search"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	if strings.Contains(string(encoded), secret) {
+		t.Fatalf("iteration fallback leaked secret: %s", encoded)
+	}
+	block := findTransportProcessBlock(t, got.Process, AiopsTransportProcessKindSearch)
+	if len(block.Results) != 1 || !strings.Contains(block.Results[0].Title+block.Results[0].Snippet+block.Results[0].Text, "[REDACTED]") {
+		t.Fatalf("search results = %#v, want structured redaction", block.Results)
+	}
+}
+
+func TestTransportProjectorRejectsTrailingJSONInIterationFallback(t *testing.T) {
+	secret := "secret value"
+	turn := &runtimekernel.TurnSnapshot{Iterations: []runtimekernel.IterationState{{
+		ToolResults: []runtimekernel.ToolResult{{
+			ToolCallID: "call-invalid-fallback",
+			Content:    `{"password":"` + secret + `"} trailing`,
+		}},
+	}}}
+	previews, payloads := transportToolResultFacts(turn)
+	encoded, err := json.Marshal(map[string]any{"previews": previews, "payloads": payloads})
+	if err != nil {
+		t.Fatalf("json.Marshal(fallback facts) error = %v", err)
+	}
+	if strings.Contains(string(encoded), secret) || !strings.Contains(string(encoded), "_transportInvalidPayload") {
+		t.Fatalf("invalid iteration fallback was not fail-closed: %s", encoded)
+	}
+}
+
+func TestTransportProjectorHardCapsHugeAgentItemAndTurnJSON(t *testing.T) {
+	huge := strings.Repeat("huge-field-", transportAgentItemsTurnByteBudget)
+	turn := &runtimekernel.TurnSnapshot{
+		ID: "turn-huge-agent-item", SessionID: "session-huge-agent-item", Lifecycle: runtimekernel.TurnLifecycleRunning,
+		AgentItems: []agentstate.TurnItem{{
+			ID: huge, Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{Kind: huge, Summary: huge, Data: json.RawMessage(`{"toolCallId":` + strconv.Quote(huge) + `,"outputSummary":` + strconv.Quote(huge) + `}`)},
+		}},
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-huge-agent-item"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	itemJSON, err := json.Marshal(got.AgentItems[0])
+	if err != nil {
+		t.Fatalf("json.Marshal(item) error = %v", err)
+	}
+	if len(itemJSON) > 32*1024 {
+		t.Fatalf("agent item bytes = %d, hard cap = %d", len(itemJSON), 32*1024)
+	}
+	turnJSON, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	if len(turnJSON) > transportAgentItemsTurnByteBudget {
+		t.Fatalf("turn bytes = %d, hard cap = %d", len(turnJSON), transportAgentItemsTurnByteBudget)
+	}
+	if !got.AgentItems[0].Truncated || got.AgentItems[0].ContentHash == "" || got.AgentItems[0].Ref == "" {
+		t.Fatalf("huge item truncation facts missing: %#v", got.AgentItems[0])
+	}
+}
+
+func TestTransportProjectorCanonicalTurnFactsEnforceDeterministicTurnBudget(t *testing.T) {
+	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
+	items := make([]agentstate.TurnItem, 0, transportAgentItemsPerTurnBudget+17)
+	for i := 0; i < transportAgentItemsPerTurnBudget+17; i++ {
+		items = append(items, agentstate.TurnItem{
+			ID:     "item-" + strconv.Itoa(i),
+			Type:   agentstate.TurnItemTypeEvidence,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "evidence",
+				Summary: "evidence " + strconv.Itoa(i),
+				Data:    json.RawMessage(`{"evidenceId":"evidence-` + strconv.Itoa(i) + `","facts":{"healthy":true}}`),
+			},
+		})
+	}
+	turn := &runtimekernel.TurnSnapshot{ID: "turn-budget", SessionID: "session-budget", Lifecycle: runtimekernel.TurnLifecycleRunning, StartedAt: now, UpdatedAt: now, AgentItems: items}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-budget"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if !got.AgentItemsTruncated || got.AgentItemsOriginalCount != len(items) || got.AgentItemsOriginalBytes <= 0 || got.AgentItemsHash == "" || got.AgentItemsRef == "" {
+		t.Fatalf("turn truncation facts missing: %#v", got)
+	}
+	if len(got.AgentItems) > transportAgentItemsPerTurnBudget {
+		t.Fatalf("AgentItems = %d, budget = %d", len(got.AgentItems), transportAgentItemsPerTurnBudget)
+	}
+	encoded, err := json.Marshal(got.AgentItems)
+	if err != nil {
+		t.Fatalf("json.Marshal(AgentItems) error = %v", err)
+	}
+	if len(encoded) > transportAgentItemsTurnByteBudget {
+		t.Fatalf("AgentItems bytes = %d, budget = %d", len(encoded), transportAgentItemsTurnByteBudget)
+	}
+	if got.AgentItems[0].ID != "item-0" || got.AgentItems[len(got.AgentItems)-1].ID != "item-"+strconv.Itoa(len(items)-1) {
+		t.Fatalf("turn budget must deterministically preserve head/tail facts: first=%q last=%q", got.AgentItems[0].ID, got.AgentItems[len(got.AgentItems)-1].ID)
+	}
+}
 
 func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
@@ -169,6 +546,148 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	}
 	if _, ok := projected.PendingApprovals["approval-1"]; !ok {
 		t.Fatalf("PendingApprovals = %#v, want approval-1", projected.PendingApprovals)
+	}
+}
+
+func TestTransportProjectorEmitsCanonicalOrderedBlocksWithoutLegacyTranscriptFields(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-canonical-blocks",
+		SessionID: "session-canonical-blocks",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "commentary-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "先检查运行状态。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`)}, CreatedAt: now},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "检查完成。", Data: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`)}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "thread-canonical-blocks"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if len(got.BlockOrder) != 2 || got.BlockOrder[1] != "final-1" {
+		t.Fatalf("BlockOrder = %#v, want commentary then final", got.BlockOrder)
+	}
+	if got.BlocksByID[got.BlockOrder[0]].Type != AiopsTransportBlockTypeCommentary {
+		t.Fatalf("commentary block = %#v", got.BlocksByID[got.BlockOrder[0]])
+	}
+	if final := got.BlocksByID["final-1"]; final.Type != AiopsTransportBlockTypeFinalAnswer || final.FinalContract == nil || final.Text != "检查完成。" {
+		t.Fatalf("final block = %#v", final)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("json.Marshal(turn) error = %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatalf("json.Unmarshal(turn) error = %v", err)
+	}
+	if _, ok := wire["process"]; ok {
+		t.Fatalf("legacy process leaked into wire: %s", encoded)
+	}
+	if _, ok := wire["final"]; ok {
+		t.Fatalf("legacy final leaked into wire: %s", encoded)
+	}
+}
+
+func TestTransportProjectorProjectsSpecialInputContext(t *testing.T) {
+	now := time.Date(2026, 7, 3, 10, 0, 0, 0, time.UTC)
+	state := NewAiopsTransportState("session-special-input", "thread-special-input")
+	grant := specialinputmemory.ExecutionScopeGrant{
+		ID:             "grant-host-a",
+		ResourceKind:   specialinputmemory.ResourceKindHost,
+		ResourceID:     "host-a",
+		CanonicalKey:   "host:host-a",
+		Display:        "host-a",
+		Status:         specialinputmemory.GrantStatusActive,
+		AllowedActions: []string{specialinputmemory.ActionExecLowRisk, specialinputmemory.ActionInspect, specialinputmemory.ActionRead},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-special-input",
+		SessionID:   "session-special-input",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleRunning,
+		ResumeState: runtimekernel.TurnResumeStateNone,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		SpecialInputReadPlan: &specialinputmemory.MemoryReadPlan{
+			SchemaVersion:        specialinputmemory.SchemaVersion,
+			TurnID:               "turn-special-input",
+			ActiveExecutionScope: &grant,
+			CandidateFacts: []specialinputmemory.MentionFact{{
+				ID:           "fact-raw",
+				Kind:         specialinputmemory.FactKindHost,
+				ResourceKind: specialinputmemory.ResourceKindHost,
+				ResourceID:   "1.1.1.1",
+				CanonicalKey: "host:1.1.1.1",
+				Display:      "1.1.1.1",
+				TrustLevel:   specialinputmemory.TrustLevelRawTyped,
+				Status:       specialinputmemory.FactStatusActive,
+			}},
+			PendingConfirmations: []specialinputmemory.PendingConfirmation{{
+				ID:     "pending-target",
+				Kind:   "target",
+				Reason: "active_grant_revalidate_failed",
+			}},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.SpecialInputContext == nil {
+		t.Fatal("SpecialInputContext is nil, want projected context")
+	}
+	if projected.SpecialInputContext.ActiveGrant == nil || projected.SpecialInputContext.ActiveGrant.ResourceID != "host-a" {
+		t.Fatalf("ActiveGrant = %#v, want host-a", projected.SpecialInputContext.ActiveGrant)
+	}
+	if len(projected.SpecialInputContext.CandidateFacts) != 1 || projected.SpecialInputContext.CandidateFacts[0].TrustLevel != specialinputmemory.TrustLevelRawTyped {
+		t.Fatalf("CandidateFacts = %#v, want raw typed candidate", projected.SpecialInputContext.CandidateFacts)
+	}
+	if len(projected.SpecialInputContext.PendingConfirmations) != 1 {
+		t.Fatalf("PendingConfirmations = %#v, want one", projected.SpecialInputContext.PendingConfirmations)
+	}
+}
+
+func TestTransportProjectorKeepsSpecialInputContextWhenLaterTurnHasNoReadPlan(t *testing.T) {
+	now := time.Date(2026, 7, 3, 10, 5, 0, 0, time.UTC)
+	state := NewAiopsTransportState("session-special-input-carry", "thread-special-input-carry")
+	state.SpecialInputContext = &specialinputmemory.TransportContext{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		TurnID:        "turn-with-read-plan",
+		ActiveGrant: &specialinputmemory.TransportGrant{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			CanonicalKey: "host:host-a",
+			Display:      "host-a",
+			Status:       specialinputmemory.GrantStatusActive,
+		},
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-without-read-plan",
+		SessionID:   "session-special-input-carry",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	if projected.SpecialInputContext == nil || projected.SpecialInputContext.ActiveGrant == nil {
+		t.Fatalf("SpecialInputContext = %#v, want previous active grant preserved", projected.SpecialInputContext)
+	}
+	if projected.SpecialInputContext.ActiveGrant.ResourceID != "host-a" {
+		t.Fatalf("ActiveGrant.ResourceID = %q, want host-a", projected.SpecialInputContext.ActiveGrant.ResourceID)
 	}
 }
 
@@ -789,6 +1308,64 @@ func TestTransportProjectorClearsStaleHostOpsMissionForHostBoundChat(t *testing.
 	}
 	if _, ok := projected.HostMissions["hostops:turn-host-bound"]; ok {
 		t.Fatalf("HostMissions still contains stale mission: %#v", projected.HostMissions)
+	}
+}
+
+func TestTransportProjectorMergesCanonicalHostMissionFromTypedToolPayload(t *testing.T) {
+	now := time.Date(2026, 7, 12, 11, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-host-mission", "thread-host-mission")
+	state.ActiveHostMissionID = "mission-runtime"
+	state.HostMissions["mission-runtime"] = AiopsTransportHostMission{
+		ID:           "mission-runtime",
+		TurnID:       "turn-host-mission",
+		Status:       "planning",
+		PlanRequired: true,
+		PlanAccepted: false,
+	}
+	toolPayload := json.RawMessage(`{
+		"toolCallId":"call-wait",
+		"toolName":"wait_host_agents",
+		"displayKind":"hostops.wait_host_agents",
+		"displayData":{
+			"schemaVersion":"aiops.hostops.wait/v1",
+			"mission":{"id":"mission-runtime","planRequired":true,"planAccepted":true,"status":"spawning_children"},
+			"children":[{"id":"child-a","childAgentId":"child-a","missionId":"mission-runtime","hostId":"host-a","hostDisplayName":"host-a","sessionId":"host-child:mission-runtime:host-a","status":"completed"}]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-host-mission",
+		SessionID: "session-host-mission",
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		Metadata: map[string]string{
+			"aiops.route.mode":             "multi_host_ops",
+			"aiops.hostops.missionId":      "mission-runtime",
+			"aiops.hostops.planRequired":   "true",
+			"aiops.hostops.planAccepted":   "false",
+			"aiops.hostops.managerAgentId": "manager-runtime",
+		},
+		AgentItems: []agentstate.TurnItem{{
+			ID: "wait-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted,
+			Payload:   agentstate.PayloadEnvelope{Kind: "tool", Summary: "host agents complete", Data: toolPayload},
+			CreatedAt: now.Add(time.Second), UpdatedAt: now.Add(time.Second),
+		}},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	mission, ok := projected.HostMissions["mission-runtime"]
+	if !ok {
+		t.Fatalf("HostMissions = %#v, want mission-runtime", projected.HostMissions)
+	}
+	if projected.ActiveHostMissionID != "mission-runtime" || !mission.PlanRequired || !mission.PlanAccepted {
+		t.Fatalf("projected mission = %#v, active = %q; want canonical accepted mission", mission, projected.ActiveHostMissionID)
+	}
+	if len(projected.HostMissions) != 1 || len(mission.ChildAgentIDs) != 1 || mission.ChildAgentIDs[0] != "child-a" {
+		t.Fatalf("projected mission = %#v, want one mission preserving child projection", mission)
 	}
 }
 
@@ -1568,7 +2145,8 @@ func TestTransportProjectorDeduplicatesTerminalRuntimeErrors(t *testing.T) {
 	now := time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-duplicate-error", "thread-duplicate-error")
-	errorText := "模型请求超时：约 1m0s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: dial tcp: i/o timeout"
+	errorText := `模型请求超时：约 20s 未收到模型服务响应，请检查 LLM 地址、网络连通性或代理配置: Post "https://provider.invalid/v1/chat/completions": net/http: TLS handshake timeout`
+	wantVisibleError := "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。"
 	turn := &runtimekernel.TurnSnapshot{
 		ID:        "turn-duplicate-error",
 		SessionID: "session-duplicate-error",
@@ -1595,8 +2173,16 @@ func TestTransportProjectorDeduplicatesTerminalRuntimeErrors(t *testing.T) {
 	if len(runtimeErrors) != 1 {
 		t.Fatalf("runtime error blocks = %#v, want one deduplicated error", runtimeErrors)
 	}
-	if runtimeErrors[0].Text != errorText {
-		t.Fatalf("runtime error text = %q, want %q", runtimeErrors[0].Text, errorText)
+	if runtimeErrors[0].Text != wantVisibleError {
+		t.Fatalf("runtime error text = %q, want %q", runtimeErrors[0].Text, wantVisibleError)
+	}
+	if projected.LastError != wantVisibleError {
+		t.Fatalf("LastError = %q, want sanitized runtime error", projected.LastError)
+	}
+	for _, forbidden := range []string{"provider.invalid", "chat/completions", "Post ", "TLS handshake timeout", "约 20s"} {
+		if strings.Contains(runtimeErrors[0].Text, forbidden) || strings.Contains(projected.LastError, forbidden) {
+			t.Fatalf("visible runtime error leaked %q: block=%q lastError=%q", forbidden, runtimeErrors[0].Text, projected.LastError)
+		}
 	}
 }
 
@@ -1733,6 +2319,460 @@ func TestTransportProjectorProjectsStreamingAssistantMessageFinal(t *testing.T) 
 		if block.Kind == AiopsTransportProcessKindAssistant {
 			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
 		}
+	}
+}
+
+func TestTransportProjectorProjectsFinalContractStatusAndEvidence(t *testing.T) {
+	now := time.Date(2026, 7, 2, 10, 0, 0, 0, time.UTC)
+	finalText := "无法在目标主机执行命令：host agent 不可用。"
+	finalData := json.RawMessage(`{
+		"displayKind":"assistant.message",
+		"phase":"final_answer",
+		"streamState":"complete",
+		"durationMs":321,
+		"finalContract":{
+			"schemaVersion":"aiops.harness.final.v1",
+			"status":"tool_unavailable",
+			"confidence":"low",
+			"answerText":"无法在目标主机执行命令：host agent 不可用。",
+			"checkedEvidenceRefs":["call-dns"],
+			"uncheckedRequirements":["exec_command:needs_host_agent"],
+			"failedToolImpacts":[{"toolName":"exec_command","toolCallId":"call-exec","failureClass":"needs_host_agent","impact":"host agent 7072 refused"}],
+			"limitations":["host_agent_unavailable"]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-final-contract",
+		SessionID:   "session-final-contract",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "final-contract-1", Type: agentstate.TurnItemTypeFinalResponse, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: finalText,
+				Data:    finalData,
+			}, CreatedAt: now, UpdatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-final-contract", "thread-final-contract"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	final := projected.Turns["turn-final-contract"].Final
+	if final == nil {
+		t.Fatal("turn.Final is nil, want projected final contract")
+	}
+	if final.Status != AiopsTransportFinalStatusToolUnavailable {
+		t.Fatalf("final status = %q, want tool_unavailable: %#v", final.Status, final)
+	}
+	if final.SchemaVersion != "aiops.harness.final.v1" || final.Confidence != "low" || final.DurationMs != 321 {
+		t.Fatalf("final contract fields = %#v", final)
+	}
+	if !containsString(final.CheckedEvidenceRefs, "call-dns") || !containsString(final.UncheckedRequirements, "exec_command:needs_host_agent") {
+		t.Fatalf("final evidence refs = checked=%#v unchecked=%#v", final.CheckedEvidenceRefs, final.UncheckedRequirements)
+	}
+	if len(final.FailedToolImpacts) != 1 || final.FailedToolImpacts[0].FailureClass != "needs_host_agent" {
+		t.Fatalf("failedToolImpacts = %#v", final.FailedToolImpacts)
+	}
+}
+
+func TestTransportProjectorTypedFactsOnlyFinalStatusIgnoresVerificationProse(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 0, 0, 0, time.UTC)
+	project := func(status runtimekernel.FinalContractStatus, evidenceRefs []string) AiopsTransportFinal {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{
+			"displayKind": "assistant.message",
+			"phase":       "final_answer",
+			"streamState": "complete",
+			"finalContract": runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              status,
+				AnswerText:          "所有检查均已完成。",
+				CheckedEvidenceRefs: evidenceRefs,
+			},
+		})
+		if err != nil {
+			t.Fatalf("json.Marshal() error = %v", err)
+		}
+		turnID := "turn-typed-final-" + string(status)
+		turn := &runtimekernel.TurnSnapshot{
+			ID:        turnID,
+			SessionID: "session-typed-final",
+			Lifecycle: runtimekernel.TurnLifecycleCompleted,
+			StartedAt: now,
+			UpdatedAt: now,
+			AgentItems: []agentstate.TurnItem{{
+				ID:     "final-typed",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "已验证：所有检查均已完成，证据充分。",
+					Data:    data,
+				},
+			}},
+		}
+		projected, err := NewTransportProjector().ProjectTurnSnapshot(
+			NewAiopsTransportState("session-typed-final", "thread-typed-final"),
+			turn,
+		)
+		if err != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+		}
+		if projected.Turns[turnID].Final == nil {
+			t.Fatal("turn.Final is nil")
+		}
+		return *projected.Turns[turnID].Final
+	}
+
+	verified := project(runtimekernel.FinalContractStatusVerified, []string{"evidence-verified"})
+	needsEvidence := project(runtimekernel.FinalContractStatusNeedsEvidence, nil)
+	if verified.Status != AiopsTransportFinalStatusVerified {
+		t.Fatalf("verified final status = %q, want verified", verified.Status)
+	}
+	if needsEvidence.Status != AiopsTransportFinalStatusNeedsEvidence {
+		t.Fatalf("needs-evidence final status = %q, want needs_evidence", needsEvidence.Status)
+	}
+}
+
+func TestCanonicalTransportUnknownFinalContractIsCompletedBlock(t *testing.T) {
+	turn := AiopsTransportTurn{
+		ID:     "turn-unknown-final",
+		Status: AiopsTransportTurnStatusCompleted,
+		Final: &AiopsTransportFinal{
+			ID:            "final-unknown",
+			SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+			Status:        AiopsTransportFinalStatusUnknown,
+			Text:          "只读说明已经完成。",
+			AnswerText:    "只读说明已经完成。",
+		},
+	}
+	order, blocks := projectCanonicalTransportBlocks(turn)
+	if len(order) != 1 || order[0] != "final-unknown" {
+		t.Fatalf("block order = %#v, want final-unknown", order)
+	}
+	block := blocks["final-unknown"]
+	if block.Status != AiopsTransportProcessStatusCompleted || block.StreamState != "complete" {
+		t.Fatalf("unknown final block status/stream = %q/%q, want completed/complete", block.Status, block.StreamState)
+	}
+	if block.FinalContract == nil || block.FinalContract.Status != AiopsTransportFinalStatusUnknown {
+		t.Fatalf("final contract = %#v, want preserved unknown evidence status", block.FinalContract)
+	}
+}
+
+func TestTransportProjectorNormalizesPersistedVerifiedContractInvariant(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name       string
+		contract   runtimekernel.FinalContract
+		wantStatus AiopsTransportFinalStatus
+	}{
+		{
+			name: "missing evidence is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+				Status:        runtimekernel.FinalContractStatusVerified,
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "unchecked requirement is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:         runtimekernel.FinalContractSchemaVersion,
+				Status:                runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs:   []string{"evidence://health"},
+				UncheckedRequirements: []string{"metrics:unavailable"},
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "outstanding postcheck is downgraded",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://precheck"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantStatus: AiopsTransportFinalStatusNeedsEvidence,
+		},
+		{
+			name: "complete verified contract stays verified",
+			contract: runtimekernel.FinalContract{
+				SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+				Status:              runtimekernel.FinalContractStatusVerified,
+				CheckedEvidenceRefs: []string{"evidence://health"},
+				PostChecks:          []string{"service_health"},
+				RequiredPostChecks:  []string{"service_health"},
+			},
+			wantStatus: AiopsTransportFinalStatusVerified,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{
+				"displayKind":   "assistant.message",
+				"phase":         "final_answer",
+				"streamState":   "complete",
+				"finalContract": tt.contract,
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			turn := &runtimekernel.TurnSnapshot{
+				ID:        "turn-persisted-final-" + strings.ReplaceAll(tt.name, " ", "-"),
+				SessionID: "session-persisted-final",
+				Lifecycle: runtimekernel.TurnLifecycleCompleted,
+				StartedAt: now,
+				UpdatedAt: now,
+				AgentItems: []agentstate.TurnItem{{
+					ID:     "persisted-final",
+					Type:   agentstate.TurnItemTypeAssistantMessage,
+					Status: agentstate.ItemStatusCompleted,
+					Payload: agentstate.PayloadEnvelope{
+						Summary: "显示文本不得改变结构化状态。",
+						Data:    data,
+					},
+				}},
+			}
+			projected, err := NewTransportProjector().ProjectTurnSnapshot(
+				NewAiopsTransportState(turn.SessionID, "thread-persisted-final"),
+				turn,
+			)
+			if err != nil {
+				t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+			}
+			final := projected.Turns[turn.ID].Final
+			if final == nil || final.Status != tt.wantStatus {
+				t.Fatalf("projected final = %#v, want status %q", final, tt.wantStatus)
+			}
+			if tt.wantStatus == AiopsTransportFinalStatusNeedsEvidence && !containsString(final.Limitations, "invalid_verified_contract_facts") {
+				t.Fatalf("projected limitations = %#v, want invalid verified facts limitation", final.Limitations)
+			}
+		})
+	}
+}
+
+func TestTransportProjectorTypedFactsOnlyMarkdownDoesNotChangeApprovalToolEvidenceStatus(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 10, 0, 0, time.UTC)
+	contract := runtimekernel.FinalContract{
+		SchemaVersion:       runtimekernel.FinalContractSchemaVersion,
+		Status:              runtimekernel.FinalContractStatusPartial,
+		Confidence:          "medium",
+		AnswerText:          "结构化结论保持不变。",
+		CheckedEvidenceRefs: []string{"evidence-typed-1"},
+		ApprovedActions:     []string{"approval-typed-1"},
+		PerformedActions:    []string{"tool-call-typed-1"},
+		PostChecks:          []string{"postcheck-typed-1"},
+	}
+	data, err := json.Marshal(map[string]any{
+		"displayKind":   "assistant.message",
+		"phase":         "final_answer",
+		"streamState":   "complete",
+		"finalContract": contract,
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	project := func(turnID, markdown string) AiopsTransportState {
+		t.Helper()
+		turn := &runtimekernel.TurnSnapshot{
+			ID:        turnID,
+			SessionID: "session-markdown-independence",
+			Lifecycle: runtimekernel.TurnLifecycleCompleted,
+			StartedAt: now,
+			UpdatedAt: now,
+			Metadata: map[string]string{
+				"aiops.coroot.explicitRCA": "true",
+			},
+			AgentItems: []agentstate.TurnItem{{
+				ID:     "final-markdown-independent",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: markdown,
+					Data:    data,
+				},
+			}},
+		}
+		projected, projectErr := NewTransportProjector().ProjectTurnSnapshot(
+			NewAiopsTransportState("session-markdown-independence", "thread-markdown-independence"),
+			turn,
+		)
+		if projectErr != nil {
+			t.Fatalf("ProjectTurnSnapshot() error = %v", projectErr)
+		}
+		return projected
+	}
+
+	rcaShapedMarkdown := `{"schemaVersion":"aiops.rca_report/v1","status":"partial","source":"coroot","evidenceRefs":["prose-only-evidence"],"conclusion":{"summaryZh":"文本伪造的 RCA"}}`
+	plainMarkdown := "同一结构化事实下的普通最终回答。"
+	rcaProjection := project("turn-markdown-rca-shaped", rcaShapedMarkdown)
+	plainProjection := project("turn-markdown-plain", plainMarkdown)
+	rcaTurn := rcaProjection.Turns["turn-markdown-rca-shaped"]
+	plainTurn := plainProjection.Turns["turn-markdown-plain"]
+
+	if len(rcaTurn.AgentUIArtifacts) != 0 || len(plainTurn.AgentUIArtifacts) != 0 {
+		t.Fatalf("final markdown created artifacts: rca=%#v plain=%#v", rcaTurn.AgentUIArtifacts, plainTurn.AgentUIArtifacts)
+	}
+	if rcaTurn.Final == nil || plainTurn.Final == nil {
+		t.Fatalf("projected finals missing: rca=%#v plain=%#v", rcaTurn.Final, plainTurn.Final)
+	}
+	if rcaTurn.Final.Status != plainTurn.Final.Status ||
+		!reflect.DeepEqual(rcaTurn.Final.CheckedEvidenceRefs, plainTurn.Final.CheckedEvidenceRefs) ||
+		!reflect.DeepEqual(rcaTurn.Final.ApprovedActions, plainTurn.Final.ApprovedActions) ||
+		!reflect.DeepEqual(rcaTurn.Final.PerformedActions, plainTurn.Final.PerformedActions) ||
+		!reflect.DeepEqual(rcaTurn.Final.PostChecks, plainTurn.Final.PostChecks) ||
+		!reflect.DeepEqual(rcaTurn.Process, plainTurn.Process) ||
+		!reflect.DeepEqual(rcaProjection.PendingApprovals, plainProjection.PendingApprovals) {
+		t.Fatalf("markdown changed typed projection: rca=%#v plain=%#v", rcaTurn, plainTurn)
+	}
+}
+
+func TestTransportProjectorTypedFactsOnlyApprovalDeniedComesFromFinalContract(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 20, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name           string
+		contractStatus runtimekernel.FinalContractStatus
+		errorText      string
+		wantStatus     AiopsTransportProcessStatus
+	}{
+		{
+			name:           "denial prose cannot override typed failed status",
+			contractStatus: runtimekernel.FinalContractStatusFailed,
+			errorText:      "approval denied",
+			wantStatus:     AiopsTransportProcessStatusFailed,
+		},
+		{
+			name:           "typed approval denial does not require denial prose",
+			contractStatus: runtimekernel.FinalContractStatusApprovalDenied,
+			errorText:      "runtime stopped",
+			wantStatus:     AiopsTransportProcessStatusRejected,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data, err := json.Marshal(map[string]any{
+				"displayKind": "assistant.message",
+				"phase":       "final_answer",
+				"streamState": "complete",
+				"finalContract": runtimekernel.FinalContract{
+					SchemaVersion: runtimekernel.FinalContractSchemaVersion,
+					Status:        tc.contractStatus,
+					AnswerText:    "控制状态由结构化事实提供。",
+				},
+			})
+			if err != nil {
+				t.Fatalf("json.Marshal() error = %v", err)
+			}
+			turn := &runtimekernel.TurnSnapshot{
+				ID:        "turn-typed-approval-" + string(tc.contractStatus),
+				SessionID: "session-typed-approval",
+				Lifecycle: runtimekernel.TurnLifecycleFailed,
+				StartedAt: now,
+				UpdatedAt: now,
+				Error:     tc.errorText,
+				AgentItems: []agentstate.TurnItem{
+					{
+						ID:     "approval-block",
+						Type:   agentstate.TurnItemTypeApproval,
+						Status: agentstate.ItemStatusBlocked,
+						Payload: agentstate.PayloadEnvelope{
+							Summary: "等待审批",
+							Data:    json.RawMessage(`{"approvalId":"approval-typed","approvalType":"tool"}`),
+						},
+					},
+					{
+						ID:     "final-typed-approval",
+						Type:   agentstate.TurnItemTypeAssistantMessage,
+						Status: agentstate.ItemStatusFailed,
+						Payload: agentstate.PayloadEnvelope{
+							Summary: "审批控制结论。",
+							Data:    data,
+						},
+					},
+				},
+			}
+			projected, err := NewTransportProjector().ProjectTurnSnapshot(
+				NewAiopsTransportState("session-typed-approval", "thread-typed-approval"),
+				turn,
+			)
+			if err != nil {
+				t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+			}
+			block := findTransportProcessBlock(t, projected.Turns[turn.ID].Process, AiopsTransportProcessKindApproval)
+			if block.Status != tc.wantStatus {
+				t.Fatalf("approval block status = %q, want %q (contract=%q error=%q)", block.Status, tc.wantStatus, tc.contractStatus, tc.errorText)
+			}
+		})
+	}
+}
+
+func TestTransportProjectorKeepsCompletedAndRequiredPostChecksDistinct(t *testing.T) {
+	now := time.Date(2026, 7, 12, 14, 0, 0, 0, time.UTC)
+	finalData := json.RawMessage(`{
+		"displayKind":"assistant.message",
+		"phase":"final_answer",
+		"streamState":"complete",
+		"finalContract":{
+			"schemaVersion":"aiops.harness.final.v1",
+			"status":"partial",
+			"answerText":"变更已执行，仍需完成外部核验。",
+			"postChecks":[" check-complete ","","check-complete","check-secondary"],
+			"requiredPostChecks":["check-required"," check-required ","check-fallback"]
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-post-check-contract",
+		SessionID: "session-post-check-contract",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{{
+			ID:     "final-post-check-contract",
+			Type:   agentstate.TurnItemTypeFinalResponse,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Summary: "变更已执行，仍需完成外部核验。",
+				Data:    finalData,
+			},
+		}},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-post-check-contract"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	final := projected.Turns[turn.ID].Final
+	if final == nil {
+		t.Fatal("turn.Final is nil, want projected final contract")
+	}
+	if want := []string{"check-complete", "check-secondary"}; !reflect.DeepEqual(final.PostChecks, want) {
+		t.Fatalf("postChecks = %#v, want completed checks %#v", final.PostChecks, want)
+	}
+	if want := []string{"check-required", "check-fallback"}; !reflect.DeepEqual(final.RequiredPostChecks, want) {
+		t.Fatalf("requiredPostChecks = %#v, want outstanding checks %#v", final.RequiredPostChecks, want)
+	}
+
+	turn.AgentItems[0].Payload.Data[0] = '['
+	if !reflect.DeepEqual(final.RequiredPostChecks, []string{"check-required", "check-fallback"}) {
+		t.Fatalf("requiredPostChecks changed after source payload mutation: %#v", final.RequiredPostChecks)
+	}
+
+	encoded, err := json.Marshal(final)
+	if err != nil {
+		t.Fatalf("json.Marshal(final) error = %v", err)
+	}
+	var roundTripped AiopsTransportFinal
+	if err := json.Unmarshal(encoded, &roundTripped); err != nil {
+		t.Fatalf("json.Unmarshal(final) error = %v", err)
+	}
+	if !reflect.DeepEqual(roundTripped, *final) {
+		t.Fatalf("transport final JSON round trip changed post-check facts\nwant=%#v\n got=%#v", *final, roundTripped)
 	}
 }
 
@@ -1895,6 +2935,81 @@ func TestTransportProjectorProjectsAssistantCommentaryMetadataBeforeTool(t *test
 	}
 	if process[1].Kind == AiopsTransportProcessKindAssistant {
 		t.Fatalf("process = %#v, final/tool order broken", process)
+	}
+}
+
+func TestTransportProjectorPreservesLedgerInterleavingWithApprovalAndFinalResponse(t *testing.T) {
+	now := time.Date(2026, 7, 2, 9, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-ledger-interleave",
+		SessionID: "session-ledger-interleave",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(9 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "assistant-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "先检查 agent 端口。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "tool-call-a", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "exec_command",
+				Data:    json.RawMessage(`{"toolCallId":"call-a","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"ss -tlnp"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+			{ID: "tool-result-a", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "ss unavailable",
+				Data:    json.RawMessage(`{"toolCallId":"call-a","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"ss -tlnp","outputSummary":"ss unavailable"}`),
+			}, CreatedAt: now.Add(3 * time.Second)},
+			{ID: "assistant-2", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "换用 /proc 继续查。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+			}, CreatedAt: now.Add(4 * time.Second)},
+			{ID: "tool-call-b", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "exec_command",
+				Data:    json.RawMessage(`{"toolCallId":"call-b","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"cat /proc/net/tcp"}`),
+			}, CreatedAt: now.Add(5 * time.Second)},
+			{ID: "tool-result-b", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "tcp rows",
+				Data:    json.RawMessage(`{"toolCallId":"call-b","toolName":"exec_command","displayKind":"terminal.command","inputSummary":"cat /proc/net/tcp","outputSummary":"tcp rows"}`),
+			}, CreatedAt: now.Add(6 * time.Second)},
+			{ID: "approval-requested-1", Type: agentstate.TurnItemTypeApprovalRequested, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{
+				Summary: "需要审批 restart",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","approvalType":"command","command":"systemctl restart aiops-host-agent","reason":"需要重启 agent"}`),
+			}, CreatedAt: now.Add(7 * time.Second)},
+			{ID: "approval-decided-1", Type: agentstate.TurnItemTypeApprovalDecided, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "审批通过",
+				Data:    json.RawMessage(`{"approvalId":"approval-1","approvalType":"command","command":"systemctl restart aiops-host-agent","reason":"用户批准"}`),
+			}, CreatedAt: now.Add(8 * time.Second)},
+			{ID: "final-response-1", Type: agentstate.TurnItemTypeFinalResponse, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "最终结论。",
+			}, CreatedAt: now.Add(9 * time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-ledger-interleave", "thread-ledger-interleave"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	process := projected.Turns["turn-ledger-interleave"].Process
+	if len(process) != 5 {
+		t.Fatalf("process len = %d, want assistant/tool/assistant/tool/approval: %#v", len(process), process)
+	}
+	if process[0].Kind != AiopsTransportProcessKindAssistant || !strings.Contains(process[0].Text, "先检查") {
+		t.Fatalf("process[0] = %+v", process[0])
+	}
+	if process[1].Kind != AiopsTransportProcessKindCommand || process[1].ToolCallID != "call-a" {
+		t.Fatalf("process[1] = %+v", process[1])
+	}
+	if process[2].Kind != AiopsTransportProcessKindAssistant || !strings.Contains(process[2].Text, "换用") {
+		t.Fatalf("process[2] = %+v", process[2])
+	}
+	if process[3].Kind != AiopsTransportProcessKindCommand || process[3].ToolCallID != "call-b" {
+		t.Fatalf("process[3] = %+v", process[3])
+	}
+	if process[4].Kind != AiopsTransportProcessKindApproval {
+		t.Fatalf("process[4] = %+v, want approval after second tool", process[4])
+	}
+	if final := projected.Turns["turn-ledger-interleave"].Final; final == nil || final.Text != "最终结论。" {
+		t.Fatalf("final = %+v", final)
 	}
 }
 
@@ -2614,6 +3729,100 @@ func TestTransportProjectorProjectsRunnerWorkflowGenerationArtifact(t *testing.T
 	}
 }
 
+func TestTransportProjectorProjectsWorkflowEditorToolResultCards(t *testing.T) {
+	now := time.Date(2026, 7, 6, 11, 30, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-workflow-editor", "thread-workflow-editor")
+	workflowPayload, _ := json.Marshal(map[string]any{
+		"status":        "changed",
+		"summary":       "Patch applied to Redis restart workflow.",
+		"workflow_id":   "workflow-redis",
+		"patch_id":      "patch-1",
+		"effect_status": "changed",
+	})
+	toolResultData := json.RawMessage(`{
+		"toolCallId":"call-workflow",
+		"toolName":"workflow.apply_patch",
+		"displayKind":"workflow_patch_result",
+		"outputPreview":` + string(workflowPayload) + `
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-workflow-editor",
+		SessionID:   "session-workflow-editor",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "tool-result-workflow-editor",
+				Type:   agentstate.TurnItemTypeToolResult,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Kind:    "workflow_patch_result",
+					Summary: "workflow patch applied",
+					Data:    toolResultData,
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-workflow-editor"].AgentUIArtifacts
+	if len(artifacts) != 1 {
+		t.Fatalf("AgentUIArtifacts len = %d, want 1: %#v", len(artifacts), artifacts)
+	}
+	artifact := artifacts[0]
+	if artifact.Type != "workflow_patch_result" || artifact.Source != "workflow_editor" || artifact.PermissionScope != "draft" {
+		t.Fatalf("artifact = %+v, want workflow editor patch result artifact", artifact)
+	}
+	if artifact.InlineData["patch_id"] != "patch-1" || artifact.InlineData["effect_status"] != "changed" {
+		t.Fatalf("inlineData = %#v, want patch and effect status", artifact.InlineData)
+	}
+}
+
+func TestTransportProjectorDoesNotCreateWorkflowSuccessCardFromFinalText(t *testing.T) {
+	now := time.Date(2026, 7, 6, 11, 35, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-workflow-final-only", "thread-workflow-final-only")
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-workflow-final-only",
+		SessionID:   "session-workflow-final-only",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{
+				ID:     "final-workflow-only",
+				Type:   agentstate.TurnItemTypeAssistantMessage,
+				Status: agentstate.ItemStatusCompleted,
+				Payload: agentstate.PayloadEnvelope{
+					Summary: "Workflow patch_result 已应用，patch_id=patch-1。",
+				},
+				CreatedAt: now,
+			},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	artifacts := projected.Turns["turn-workflow-final-only"].AgentUIArtifacts
+	for _, artifact := range artifacts {
+		if strings.HasPrefix(artifact.Type, "workflow_") {
+			t.Fatalf("AgentUIArtifacts = %#v, want no workflow artifact from final prose", artifacts)
+		}
+	}
+}
+
 func TestTransportProjectorProjectsCorootServiceMetricsChartArtifact(t *testing.T) {
 	now := time.Date(2026, 5, 19, 9, 30, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -2932,7 +4141,7 @@ func TestTransportProjectorProjectsCorootChartArtifactFromRawToolResultContent(t
 	}
 }
 
-func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.T) {
+func TestTransportProjectorDoesNotProjectRCAReportArtifactFromFinalPayload(t *testing.T) {
 	now := time.Date(2026, 5, 18, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-final-rca", "thread-final-rca")
@@ -2970,18 +4179,8 @@ func TestTransportProjectorProjectsRCAReportArtifactFromFinalPayload(t *testing.
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
 	artifacts := projected.Turns["turn-final-rca"].AgentUIArtifacts
-	if len(artifacts) != 1 {
-		t.Fatalf("AgentUIArtifacts len = %d, want 1", len(artifacts))
-	}
-	artifact := artifacts[0]
-	if artifact.Type != "rca_report" || artifact.Status != "partial" || artifact.Source != "coroot" {
-		t.Fatalf("artifact = %+v, want partial coroot rca_report", artifact)
-	}
-	if artifact.InlineData == nil || artifact.InlineData["schemaVersion"] != "aiops.rca_report/v1" {
-		t.Fatalf("artifact inline data = %#v, want rca payload", artifact.InlineData)
-	}
-	if artifact.SummaryZh != "checkout 延迟升高与 catalog 依赖相关。" {
-		t.Fatalf("summaryZh = %q, want conclusion summary", artifact.SummaryZh)
+	if len(artifacts) != 0 {
+		t.Fatalf("AgentUIArtifacts = %#v, want final text to remain presentation-only", artifacts)
 	}
 }
 

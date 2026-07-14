@@ -1,0 +1,39 @@
+{
+  "id": "trace-explainability",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "验证一次 turn 能解释 agent、resource、role、tool、prompt section 和 final contract 来源。",
+  "expected": {
+    "expectedAssembly": {
+      "agentKind": "verifier",
+      "profile": "verifier.default",
+      "runtimeRole": "profile_only",
+      "routeReasonContains": "trace"
+    },
+    "expectedResources": {
+      "verifiedIds": ["hostA"],
+      "rejectedIds": ["hostB"]
+    },
+    "expectedRoleBindings": [
+      {
+        "resourceId": "hostA",
+        "role": "pg_primary",
+        "conflictState": "none"
+      }
+    ],
+    "expectedToolSurface": {
+      "visibleTools": ["read_evidence"],
+      "dispatchableTools": ["read_evidence"],
+      "hiddenTools": ["exec_command"],
+      "requireSingleSource": true
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}

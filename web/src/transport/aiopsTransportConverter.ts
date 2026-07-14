@@ -6,6 +6,9 @@ import type {
 import type {
   AiopsTransportState,
   AiopsTransportAgentUiArtifact,
+  AiopsTransportBlock,
+  AiopsTransportFinal,
+  AiopsProcessBlock,
   AiopsTransportTurn,
 } from "./aiopsTransportTypes";
 import { normalizeAiopsTransportState } from "./aiopsTransportRuntime";
@@ -16,12 +19,15 @@ type ConverterResult = {
   state: AiopsTransportState;
 };
 
+export const AIOPS_TURN_DATA_PART = "aiops.transport.turn";
+export const AIOPS_BLOCK_DATA_PART = "aiops.transport.block";
+
 export function createAiopsTransportConverter() {
   return (
     state: AiopsTransportState,
     connectionMetadata: AssistantTransportConnectionMetadata,
   ): ConverterResult => {
-    const normalizedState = normalizeAiopsTransportState(state);
+    const normalizedState = canonicalizeTransportTranscript(normalizeAiopsTransportState(state));
     const messages = orderedTurnMessages(normalizedState).concat(
       optimisticPendingUserMessages(connectionMetadata),
     );
@@ -34,6 +40,85 @@ export function createAiopsTransportConverter() {
   };
 }
 
+export function canonicalizeTransportTranscript(state: AiopsTransportState): AiopsTransportState {
+  return {
+    ...state,
+    turns: Object.fromEntries(
+      Object.entries(state.turns || {}).map(([turnId, turn]) => [turnId, canonicalizeTransportTurn(turn)]),
+    ),
+  };
+}
+
+function canonicalizeTransportTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
+  const existingOrder = Array.isArray(turn.blockOrder) ? turn.blockOrder : [];
+  const existingBlocks = turn.blocksById && typeof turn.blocksById === "object" ? turn.blocksById : {};
+  const canonicalOrder = existingOrder.filter((id) => Boolean(id && existingBlocks[id]));
+  let blockOrder = canonicalOrder;
+  let blocksById = Object.fromEntries(canonicalOrder.map((id) => [id, existingBlocks[id]]));
+
+  // One-time compatibility projection for persisted pre-blockOrder states.
+  // Production aiops.transport.v2 responses are emitted with native blocks.
+  if (blockOrder.length === 0) {
+    const legacyBlocks: AiopsTransportBlock[] = [];
+    for (const block of turn.process || []) {
+      legacyBlocks.push({
+        ...block,
+        type: block.kind === "assistant" && block.phase === "commentary" ? "commentary" : block.kind,
+      });
+    }
+    if (turn.final?.id) {
+      legacyBlocks.push({
+        id: uniqueBlockId(turn.final.id, legacyBlocks),
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: turn.final.status === "running" ? "streaming" : "complete",
+        status: finalProcessStatus(turn.final),
+        text: turn.final.text,
+        durationMs: turn.final.durationMs,
+        finalContract: turn.final,
+      });
+    }
+    for (const artifact of mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || [])) {
+      legacyBlocks.push({
+        id: uniqueBlockId(artifact.id, legacyBlocks),
+        type: "artifact",
+        kind: "tool",
+        status: artifact.status === "failed" ? "failed" : "completed",
+        text: artifact.summaryZh || artifact.summary || artifact.titleZh || artifact.title || "",
+        artifact,
+      });
+    }
+    blockOrder = legacyBlocks.map((block) => block.id);
+    blocksById = Object.fromEntries(legacyBlocks.map((block) => [block.id, block]));
+  }
+
+  const { process: _legacyProcess, final: _legacyFinal, ...canonicalTurn } = turn;
+  return { ...canonicalTurn, blockOrder, blocksById };
+}
+
+function uniqueBlockId(id: string, blocks: AiopsTransportBlock[]) {
+  return blocks.some((block) => block.id === id) ? `artifact:${id}` : id;
+}
+
+function finalProcessStatus(final: AiopsTransportFinal): AiopsProcessBlock["status"] {
+  switch (final.status) {
+    case "failed":
+    case "cancelled":
+      return "failed";
+    case "blocked":
+    case "needs_evidence":
+    case "approval_denied":
+    case "tool_unavailable":
+      return "blocked";
+    case "running":
+      return "running";
+    default:
+      return "completed";
+  }
+}
+
 export function isAiopsTransportRunning(state: AiopsTransportState) {
   if (state.status === "working") {
     return true;
@@ -42,7 +127,7 @@ export function isAiopsTransportRunning(state: AiopsTransportState) {
 }
 
 function orderedTurnMessages(state: AiopsTransportState) {
-  return state.turnOrder.flatMap((turnId) => {
+  return orderedTransportTurnIds(state).flatMap((turnId) => {
     const turn = state.turns[turnId];
     if (!turn) {
       return [];
@@ -58,6 +143,37 @@ function orderedTurnMessages(state: AiopsTransportState) {
     }
     return messages;
   });
+}
+
+export function orderedTransportTurnIds(state: AiopsTransportState) {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const turnId of state.turnOrder || []) {
+    if (state.turns[turnId] && !seen.has(turnId)) {
+      seen.add(turnId);
+      ids.push(turnId);
+    }
+  }
+  for (const turnId of Object.keys(state.turns || {})) {
+    if (!seen.has(turnId)) {
+      seen.add(turnId);
+      ids.push(turnId);
+    }
+  }
+  return ids.sort((left, right) => compareTransportTurns(state.turns[left], state.turns[right], left, right));
+}
+
+function compareTransportTurns(left: AiopsTransportTurn | undefined, right: AiopsTransportTurn | undefined, leftId: string, rightId: string) {
+  const leftTime = transportTurnSortTime(left);
+  const rightTime = transportTurnSortTime(right);
+  if (leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+  return leftId.localeCompare(rightId);
+}
+
+function transportTurnSortTime(turn?: AiopsTransportTurn) {
+  return parseDate(turn?.startedAt || turn?.user?.createdAt || turn?.updatedAt || turn?.completedAt).getTime();
 }
 
 function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
@@ -79,7 +195,15 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
     return null;
   }
   const displayText = assistantDisplayText(state, turn);
-  const content: ThreadMessage["content"] = displayText ? [{ type: "text", text: displayText }] : [];
+  const content: ThreadMessage["content"] = [
+    { type: "data", name: AIOPS_TURN_DATA_PART, data: assistantTurnEnvelope(turn) },
+    ...orderedTurnBlocks(turn).map((block) => ({
+      type: "data" as const,
+      name: AIOPS_BLOCK_DATA_PART,
+      data: block,
+    })),
+    ...(displayText ? [{ type: "text" as const, text: displayText }] : []),
+  ];
   return {
     id: `${turn.id}:assistant`,
     role: "assistant",
@@ -87,45 +211,39 @@ function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTranspo
     content,
     status: assistantMessageStatus(turn),
     metadata: {
-      unstable_state: {
-        turnId: turn.id,
-        turnStatus: turn.status,
-        turnStartedAt: turn.startedAt,
-        turnCompletedAt: turn.completedAt,
-        turnUpdatedAt: turn.updatedAt || turn.completedAt || turn.startedAt,
-        finalDurationMs: turn.final?.durationMs,
-        finalText: displayText,
-        process: turn.process || [],
-        agentRun: agentRunForTurn(state, turn),
-        contextGovernance: turn.contextGovernance || [],
-        intent: turn.intent || null,
-        userText: turn.user?.text || "",
-        agentUiArtifacts: visibleAgentUiArtifacts(turn),
-        deferredAgentUiArtifacts: deferredAgentUiArtifacts(turn),
-        activeHostMissionId: state.activeHostMissionId,
-        hostMissions: state.hostMissions || {},
-        childAgents: state.childAgents || {},
-      },
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
       custom: {
         source: "aiops.transport.assistant",
+        turnId: turn.id,
       },
     },
   };
 }
 
+function assistantTurnEnvelope(turn: AiopsTransportTurn) {
+  return {
+    id: turn.id,
+    status: turn.status,
+    startedAt: turn.startedAt,
+    completedAt: turn.completedAt,
+    updatedAt: turn.updatedAt,
+    contextGovernance: turn.contextGovernance || [],
+  };
+}
+
 function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTurn) {
-  const finalText = turn.final?.text?.trim() || "";
+  const final = finalAnswerBlock(turn);
+  const finalText = final?.text?.trim() || "";
   const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
-  if (finalText && !finalIsRawRuntimeFailure) {
+  if (finalText && !finalIsRawRuntimeFailure && !isDuplicateRunningFinalDraft(turn, finalText)) {
     return finalText;
   }
   if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
     const preservedProgress = turn.status === "canceled"
-      ? latestAssistantProcessText(turn.process || [])
-      : latestSubstantialAssistantProcessText(turn.process || []);
+      ? latestAssistantProcessText(processBlocks(turn))
+      : latestSubstantialAssistantProcessText(processBlocks(turn));
     if (preservedProgress) {
       return preservedProgress;
     }
@@ -139,7 +257,27 @@ function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTu
   return "";
 }
 
-function latestAssistantProcessText(process: AiopsTransportTurn["process"]) {
+function isDuplicateRunningFinalDraft(turn: AiopsTransportTurn, finalText: string) {
+  if (finalAnswerBlock(turn)?.finalContract?.status !== "running") {
+    return false;
+  }
+  const normalizedFinal = normalizeAssistantDraftText(finalText);
+  if (!normalizedFinal) {
+    return false;
+  }
+  return processBlocks(turn).some((block) => {
+    if (block?.kind !== "assistant") {
+      return false;
+    }
+    return normalizeAssistantDraftText(block.text || "") === normalizedFinal;
+  });
+}
+
+function normalizeAssistantDraftText(text: string) {
+  return text.trim().replace(/\s+/g, " ");
+}
+
+function latestAssistantProcessText(process: AiopsProcessBlock[]) {
   for (let i = process.length - 1; i >= 0; i -= 1) {
     const block = process[i];
     if (block?.kind !== "assistant") {
@@ -153,7 +291,7 @@ function latestAssistantProcessText(process: AiopsTransportTurn["process"]) {
   return "";
 }
 
-function latestSubstantialAssistantProcessText(process: AiopsTransportTurn["process"]) {
+function latestSubstantialAssistantProcessText(process: AiopsProcessBlock[]) {
   const text = latestAssistantProcessText(process);
   return isSubstantialAssistantProcessText(text) ? text : "";
 }
@@ -180,22 +318,8 @@ function isRawRuntimeFailureText(text: string) {
   );
 }
 
-function agentRunForTurn(state: AiopsTransportState, turn: AiopsTransportTurn) {
-  const run = state.opsRun?.agentRun;
-  if (!run?.id) {
-    return undefined;
-  }
-  if (run.activeTurnId && run.activeTurnId !== turn.id) {
-    return undefined;
-  }
-  if (state.opsRun?.turnId && state.opsRun.turnId !== turn.id) {
-    return undefined;
-  }
-  return run;
-}
-
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
-  if (turn.final?.text || (turn.process || []).length > 0) {
+  if ((turn.blockOrder || []).length > 0) {
     return true;
   }
   // Always show the message for failed/canceled turns so the error is visible
@@ -205,30 +329,28 @@ function shouldShowAssistantMessage(turn: AiopsTransportTurn) {
   return turn.status === "submitted" || turn.status === "working" || turn.status === "blocked";
 }
 
-function visibleAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
-  const artifacts = mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []);
-  if (isTerminalTurn(turn.status)) {
-    return artifacts;
+function orderedTurnBlocks(turn: AiopsTransportTurn) {
+  return (turn.blockOrder || []).flatMap((id) => {
+    const block = turn.blocksById?.[id];
+    return block ? [block] : [];
+  });
+}
+
+function processBlocks(turn: AiopsTransportTurn): AiopsProcessBlock[] {
+  return orderedTurnBlocks(turn).filter((block) => block.type !== "final_answer" && block.type !== "artifact");
+}
+
+function finalAnswerBlock(turn: AiopsTransportTurn) {
+  const blocks = orderedTurnBlocks(turn);
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    if (blocks[index]?.type === "final_answer") {
+      return blocks[index];
+    }
   }
-  return artifacts.filter((artifact) => !isDelayedWhileRunningArtifact(artifact));
+  return undefined;
 }
 
-function deferredAgentUiArtifacts(turn: AiopsTransportTurn): AiopsTransportAgentUiArtifact[] {
-  if (isTerminalTurn(turn.status)) {
-    return [];
-  }
-  return mergeOpsManualSearchAndPreflightArtifacts(turn.agentUiArtifacts || []).filter((artifact) => artifact.type === "coroot_chart");
-}
-
-function isDelayedWhileRunningArtifact(artifact: AiopsTransportAgentUiArtifact) {
-  return artifact.type === "ops_manual_search_result" || artifact.type === "coroot_chart";
-}
-
-function isTerminalTurn(status: AiopsTransportTurn["status"]) {
-  return status === "completed" || status === "failed" || status === "canceled";
-}
-
-function mergeOpsManualSearchAndPreflightArtifacts(artifacts: AiopsTransportAgentUiArtifact[]): AiopsTransportAgentUiArtifact[] {
+export function mergeOpsManualSearchAndPreflightArtifacts(artifacts: AiopsTransportAgentUiArtifact[]): AiopsTransportAgentUiArtifact[] {
   const consumed = new Set<string>();
   const mergedByPreflightId = new Map<string, Record<string, unknown>>();
   return artifacts.map((artifact, index) => {
@@ -309,14 +431,8 @@ function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAg
   const searchFlowID = opsManualFlowID(searchData);
   const resolutionManualID = text(pick(resolutionData, "manualId", "manual_id"));
   const resolutionWorkflowID = text(pick(resolutionData, "workflowId", "workflow_id"));
-  const resolutionWorkflowIDForMatching = resolutionWorkflowID === searchFlowID ? "" : resolutionWorkflowID;
   if (resolutionFlowID && searchFlowID) {
-    if (resolutionFlowID === searchFlowID) {
-      return true;
-    }
-    if (resolutionWorkflowID !== searchFlowID) {
-      return false;
-    }
+    return resolutionFlowID === searchFlowID;
   }
   const manuals = arrayRecords(pick(searchData, "manuals", "hits", "matches", "items"));
   if (!manuals.length) {
@@ -331,7 +447,7 @@ function opsManualParamResolutionMatchesSearch(paramResolution: AiopsTransportAg
       text(pick(workflowRef, "workflowId", "workflow_id")),
     );
     const manualMatches = !resolutionManualID || !hitManualID || resolutionManualID === hitManualID;
-    const workflowMatches = !resolutionWorkflowIDForMatching || !hitWorkflowID || resolutionWorkflowIDForMatching === hitWorkflowID;
+    const workflowMatches = !resolutionWorkflowID || !hitWorkflowID || resolutionWorkflowID === hitWorkflowID;
     return manualMatches && workflowMatches;
   });
 }
@@ -433,7 +549,7 @@ function assistantMessageStatus(turn: AiopsTransportTurn): ThreadMessage["status
     case "blocked":
       return { type: "requires-action", reason: "interrupt" };
     case "failed":
-      return { type: "incomplete", reason: "error", error: turn.final?.text || "turn failed" };
+      return { type: "incomplete", reason: "error", error: finalAnswerBlock(turn)?.text || "turn failed" };
     case "canceled":
       return { type: "incomplete", reason: "cancelled" };
     default:

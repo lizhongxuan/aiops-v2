@@ -82,6 +82,10 @@ func (c *PromptCompilerImpl) Compile(ctx CompileContext) (CompiledPrompt, error)
 		Policy:    policy,
 	}
 	compiled.Envelope = BuildPromptEnvelope(compiled, ctx)
+	compiled.EnvelopeV2 = BuildPromptEnvelopeV2(compiled, ctx)
+	if err := compiled.EnvelopeV2.Validate(); err != nil {
+		return CompiledPrompt{}, fmt.Errorf("compile prompt envelope v2: %w", err)
+	}
 	compiled.Fingerprint = buildPromptFingerprint(compiled)
 	compiled.PromptSections = BuildPromptSectionTrace(compiled)
 	return compiled, nil
@@ -109,8 +113,12 @@ func clonePromptSections(sections []PromptSection) []PromptSection {
 			continue
 		}
 		out = append(out, PromptSection{
-			Title:   section.Title,
-			Content: section.Content,
+			Title:       section.Title,
+			Content:     section.Content,
+			SourceType:  section.SourceType,
+			SourceRef:   section.SourceRef,
+			RetrievedAt: section.RetrievedAt,
+			TrustLevel:  section.TrustLevel,
 		})
 	}
 	return out

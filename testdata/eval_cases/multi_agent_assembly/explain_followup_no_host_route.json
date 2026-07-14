@@ -1,0 +1,32 @@
+{
+  "id": "explain-followup-no-host-route",
+  "category": "multi_agent_assembly",
+  "priority": "P0",
+  "input": "Turn 1: @hostA @hostB 检查复制状态。Turn 2: 解释一下刚才为什么要检查复制状态，不要执行操作。",
+  "expected": {
+    "mustNotInclude": ["host_worker", "host.execute", "delegate_host_task"],
+    "expectedAssembly": {
+      "agentKind": "advisor",
+      "profile": "advisor.default",
+      "runtimeRole": "profile_only",
+      "routeReasonContains": "explain-only"
+    },
+    "expectedResources": {
+      "verifiedIds": ["hostA", "hostB"]
+    },
+    "expectedToolSurface": {
+      "visibleTools": ["search_ops_manuals"],
+      "dispatchableTools": ["search_ops_manuals"],
+      "hiddenTools": ["exec_command", "delegate_host_task"],
+      "requireSingleSource": true
+    },
+    "expectedTraceExplainability": {
+      "requireAssemblySource": true,
+      "requirePromptCompilerSource": true,
+      "requireToolSurfaceSource": true,
+      "requireAdapterName": true,
+      "requirePromptSectionHashes": true,
+      "requireToolSurfaceFingerprint": true
+    }
+  }
+}

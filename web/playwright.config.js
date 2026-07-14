@@ -9,6 +9,7 @@ export default defineConfig({
   testMatch: [
     "e2e/**/*.spec.js",
     "assistant-message-single-path.spec.js",
+    "agentHarnessPromptTrace.snapshot.spec.js",
     "protocol-chat-ui.spec.js",
     "chat-ui-visual.spec.js",
     "chat-ui-snapshot.spec.js",

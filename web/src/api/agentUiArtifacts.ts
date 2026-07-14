@@ -6,6 +6,15 @@ export type AgentUIArtifactType =
   | "topology_slice"
   | "rca_report"
   | "workflow_result"
+  | "workflow_context"
+  | "workflow_edit_plan"
+  | "workflow_patch_preview"
+  | "workflow_patch_apply"
+  | "workflow_patch_result"
+  | "workflow_patch_validation"
+  | "workflow_conflict"
+  | "workflow_manual_candidate"
+  | "workflow_tool_timeline"
   | "verification_result"
   | "experience_match"
   | "ops_manual_match"
@@ -58,6 +67,15 @@ const SUPPORTED_TYPES = new Set<AgentUIArtifactType>([
   "topology_slice",
   "rca_report",
   "workflow_result",
+  "workflow_context",
+  "workflow_edit_plan",
+  "workflow_patch_preview",
+  "workflow_patch_apply",
+  "workflow_patch_result",
+  "workflow_patch_validation",
+  "workflow_conflict",
+  "workflow_manual_candidate",
+  "workflow_tool_timeline",
   "verification_result",
   "experience_match",
   "ops_manual_match",

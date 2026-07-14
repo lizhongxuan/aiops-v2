@@ -1219,22 +1219,6 @@ func searchTerms(query string) []string {
 	return terms
 }
 
-func scoreTool(meta tooling.ToolMetadata, terms []string) int {
-	haystack := tooling.ToolDiscoverySearchText(meta)
-
-	score := 0
-	for _, term := range terms {
-		if strings.Contains(haystack, term) {
-			score += 2
-		}
-		if strings.Contains(strings.ToLower(meta.Name), term) {
-			score++
-		}
-	}
-	score += scoreDiscoveryAlignment(meta, terms)
-	return score
-}
-
 func scoreDiscoveryAlignment(meta tooling.ToolMetadata, terms []string) int {
 	if len(terms) == 0 {
 		return 0

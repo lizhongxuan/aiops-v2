@@ -13,7 +13,6 @@ import (
 	"aiops-v2/internal/modelrouter"
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
-	"aiops-v2/internal/promptinput"
 	"aiops-v2/internal/tooling"
 )
 
@@ -37,7 +36,13 @@ type AgentConfig struct {
 	// Model is the resolved ChatModel for this agent.
 	Model modelrouter.ChatModel
 
-	// Instructions are the compiled prompt messages (Eino format).
+	// PromptEnvelopeV2 is the validated typed prompt contract consumed by the
+	// shared child-agent runtime.
+	PromptEnvelopeV2 promptcompiler.PromptEnvelopeV2
+
+	// Instructions are retained only for compatibility with manually assembled
+	// legacy configs. Factory-created configs leave this empty.
+	// Deprecated: use PromptEnvelopeV2.
 	Instructions []*schema.Message
 
 	// Tools are the Eino-adapted tools available to this agent.
@@ -169,20 +174,21 @@ func compileContextWithAssembledTools(base promptcompiler.CompileContext, tools 
 	return base
 }
 
-func (f *AgentFactory) compileInstructions(ctx promptcompiler.CompileContext) ([]*schema.Message, error) {
+func (f *AgentFactory) compilePromptEnvelopeV2(ctx promptcompiler.CompileContext) (promptcompiler.PromptEnvelopeV2, error) {
 	compiled, err := f.compiler.Compile(ctx)
 	if err != nil {
-		return nil, err
+		return promptcompiler.PromptEnvelopeV2{}, err
 	}
-	result, err := promptinput.Builder{}.Build(promptinput.BuildRequest{Compiled: compiled})
-	if err != nil {
-		return nil, err
+	if err := compiled.EnvelopeV2.Validate(); err != nil {
+		return promptcompiler.PromptEnvelopeV2{}, fmt.Errorf("validate prompt envelope v2: %w", err)
 	}
-	messages, _, err := modelrouter.ModelInputItemsToEinoMessages(result.Items)
-	if err != nil {
-		return nil, err
-	}
-	return messages, nil
+	return clonePromptEnvelopeV2(compiled.EnvelopeV2), nil
+}
+
+func clonePromptEnvelopeV2(envelope promptcompiler.PromptEnvelopeV2) promptcompiler.PromptEnvelopeV2 {
+	envelope.Sections = append([]promptcompiler.PromptCompiledSection(nil), envelope.Sections...)
+	envelope.DynamicContext = append([]promptcompiler.DynamicContextBundle(nil), envelope.DynamicContext...)
+	return envelope
 }
 
 func buildEinoToolPool(tools []tooling.Tool) []tool.BaseTool {
@@ -279,6 +285,12 @@ func (f *AgentFactory) CreateHostChildAgent(ctx context.Context, req hostops.Spa
 	cfg.Metadata["hostTaskPromptAssetSource"] = "agent-message:" + source
 	cfg.Metadata["runtimeBase"] = "host_agent"
 	cfg.Metadata["agentRole"] = "host_child_task"
+	if boundRole := strings.TrimSpace(req.BoundRole); boundRole != "" {
+		cfg.Metadata["boundRole"] = boundRole
+	}
+	if roleBindingHash := strings.TrimSpace(req.RoleBindingHash); roleBindingHash != "" {
+		cfg.Metadata["roleBindingHash"] = roleBindingHash
+	}
 	return cfg, nil
 }
 
@@ -313,7 +325,7 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 		HostTaskPromptAssets: append([]string(nil), hostTaskAssets...),
 		AgentKind:            promptcompiler.AgentKindWorker,
 	}, toolSet.assembled)
-	instructions, err := f.compileInstructions(compileCtx)
+	promptEnvelopeV2, err := f.compilePromptEnvelopeV2(compileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create host agent: compile prompt: %w", err)
 	}
@@ -325,15 +337,15 @@ func (f *AgentFactory) createHostAgent(ctx context.Context, hostID string, mode 
 	}
 
 	return &AgentConfig{
-		Kind:           AgentKindWorker,
-		Model:          model,
-		Instructions:   instructions,
-		Tools:          toolSet.runtime,
-		AssembledTools: toolSet.assembled,
-		MaxIterations:  maxIter,
-		HostID:         hostID,
-		MissionID:      missionID,
-		Metadata:       map[string]string{"runtimeProfile": "host_agent_full_runtime"},
+		Kind:             AgentKindWorker,
+		Model:            model,
+		PromptEnvelopeV2: promptEnvelopeV2,
+		Tools:            toolSet.runtime,
+		AssembledTools:   toolSet.assembled,
+		MaxIterations:    maxIter,
+		HostID:           hostID,
+		MissionID:        missionID,
+		Metadata:         map[string]string{"runtimeProfile": "host_agent_full_runtime"},
 	}, nil
 }
 
@@ -343,6 +355,8 @@ type HostChildPromptContext struct {
 	HostID               string
 	HostDisplayName      string
 	Role                 string
+	BoundRole            string
+	RoleBindingHash      string
 	Goal                 string
 	PlanStepID           string
 	Risk                 string
@@ -361,6 +375,8 @@ func normalizeHostChildPromptContext(req hostops.SpawnHostChildRequest) HostChil
 		HostID:               hostPromptClean(req.HostID),
 		HostDisplayName:      hostPromptClean(agentFirstNonEmpty(req.HostDisplayName, req.HostAddress, req.HostID)),
 		Role:                 hostPromptClean(req.Role),
+		BoundRole:            hostPromptClean(req.BoundRole),
+		RoleBindingHash:      hostPromptClean(req.RoleBindingHash),
 		Goal:                 hostPromptClean(req.Task),
 		PlanStepID:           hostPromptClean(req.PlanStepID),
 		Risk:                 hostPromptClean(string(req.RiskLevel)),
@@ -396,6 +412,8 @@ func renderHostChildPrompt(ctx HostChildPromptContext) string {
 			"bound_host_id: " + ctx.HostID,
 			"host_display_name: " + ctx.HostDisplayName,
 			"role: " + ctx.Role,
+			"bound_role: " + agentFirstNonEmpty(ctx.BoundRole, "none"),
+			"role_binding_hash: " + agentFirstNonEmpty(ctx.RoleBindingHash, "none"),
 		}),
 		renderHostChildPromptSection("Assigned Subtask", "host_agent.assigned_subtask.v1", []string{
 			"plan_step_id: " + ctx.PlanStepID,
@@ -412,6 +430,7 @@ func renderHostChildPrompt(ctx HostChildPromptContext) string {
 		}),
 		renderHostChildPromptSection("Report Contract", "host_agent.report_contract.v1", []string{
 			"Return HostTaskReport with status, command summaries, evidence refs, errors, blockers, and next steps.",
+			"HostTaskReport must include host id, bound role, role binding hash, and evidence refs.",
 			"Allowed status values: completed, failed, blocked, needs_manager_coordination, needs_user_approval.",
 		}),
 		renderHostChildPromptSection("Stop And Block Conditions", "host_agent.stop_block_conditions.v1", []string{
@@ -494,7 +513,7 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, plannerToolSet.assembled)
-	plannerInstructions, err := f.compileInstructions(plannerCompileCtx)
+	plannerPromptEnvelopeV2, err := f.compilePromptEnvelopeV2(plannerCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile planner prompt: %w", err)
 	}
@@ -505,13 +524,13 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 	}
 
 	plannerCfg := AgentConfig{
-		Kind:           AgentKindPlanner,
-		Model:          plannerModel,
-		Instructions:   plannerInstructions,
-		Tools:          plannerToolSet.runtime,
-		AssembledTools: plannerToolSet.assembled,
-		MaxIterations:  plannerMaxIter,
-		MissionID:      missionID,
+		Kind:             AgentKindPlanner,
+		Model:            plannerModel,
+		PromptEnvelopeV2: plannerPromptEnvelopeV2,
+		Tools:            plannerToolSet.runtime,
+		AssembledTools:   plannerToolSet.assembled,
+		MaxIterations:    plannerMaxIter,
+		MissionID:        missionID,
 	}
 
 	// --- Executor Agent (uses execute mode tools) ---
@@ -530,19 +549,19 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, executorToolSet.assembled)
-	executorInstructions, err := f.compileInstructions(executorCompileCtx)
+	executorPromptEnvelopeV2, err := f.compilePromptEnvelopeV2(executorCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile executor prompt: %w", err)
 	}
 
 	executorCfg := AgentConfig{
-		Kind:           AgentKindPlanner,
-		Model:          executorModel,
-		Instructions:   executorInstructions,
-		Tools:          executorToolSet.runtime,
-		AssembledTools: executorToolSet.assembled,
-		MaxIterations:  plannerMaxIter,
-		MissionID:      missionID,
+		Kind:             AgentKindPlanner,
+		Model:            executorModel,
+		PromptEnvelopeV2: executorPromptEnvelopeV2,
+		Tools:            executorToolSet.runtime,
+		AssembledTools:   executorToolSet.assembled,
+		MaxIterations:    plannerMaxIter,
+		MissionID:        missionID,
 	}
 
 	// --- Replanner Agent ---
@@ -561,19 +580,19 @@ func (f *AgentFactory) CreateWorkspaceAgent(ctx context.Context, missionID strin
 		WorkspaceContext: missionID,
 		AgentKind:        promptcompiler.AgentKindPlanner,
 	}, replannerToolSet.assembled)
-	replannerInstructions, err := f.compileInstructions(replannerCompileCtx)
+	replannerPromptEnvelopeV2, err := f.compilePromptEnvelopeV2(replannerCompileCtx)
 	if err != nil {
 		return nil, fmt.Errorf("create workspace agent: compile replanner prompt: %w", err)
 	}
 
 	replannerCfg := AgentConfig{
-		Kind:           AgentKindPlanner,
-		Model:          replannerModel,
-		Instructions:   replannerInstructions,
-		Tools:          replannerToolSet.runtime,
-		AssembledTools: replannerToolSet.assembled,
-		MaxIterations:  plannerMaxIter,
-		MissionID:      missionID,
+		Kind:             AgentKindPlanner,
+		Model:            replannerModel,
+		PromptEnvelopeV2: replannerPromptEnvelopeV2,
+		Tools:            replannerToolSet.runtime,
+		AssembledTools:   replannerToolSet.assembled,
+		MaxIterations:    plannerMaxIter,
+		MissionID:        missionID,
 	}
 
 	return &WorkspaceAgentConfig{

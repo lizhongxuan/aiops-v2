@@ -3,6 +3,8 @@ package runtimekernel
 import (
 	"strconv"
 	"strings"
+
+	"aiops-v2/internal/agentstate"
 )
 
 type incompleteFinalInput struct {
@@ -44,12 +46,65 @@ func containsAnyAssistantFinalMarker(lower string) bool {
 	return false
 }
 
+const leakedToolProcessTextUserMessage = "已读取工具证据，但模型返回的是工具读取过程，未形成可直接展示的中文结论。"
+
+func containsLeakedToolProcessText(text string) bool {
+	lower := strings.ToLower(strings.TrimSpace(text))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "service_name=") || strings.Contains(lower, "ervice_name=") {
+		if strings.Contains(lower, "rca上下文") || strings.Contains(lower, "让我获取") || strings.Contains(lower, "let me get") {
+			return true
+		}
+	}
+	if strings.Count(lower, "让我获取rca上下文") >= 2 || strings.Count(lower, "rca上下文") >= 5 {
+		return true
+	}
+	if strings.Contains(lower, "read_context_artifact") {
+		for _, marker := range []string{
+			"evidence ids",
+			"evidence id",
+			"evidence refs",
+			"evidence ref",
+			"证据引用",
+			"let me",
+			"try reading",
+			"reading the evidence",
+			"spill chain",
+			"store://tool-spills",
+		} {
+			if strings.Contains(lower, marker) {
+				return true
+			}
+		}
+	}
+	matches := 0
+	for _, marker := range []string{
+		"let me try reading",
+		"try reading the evidence",
+		"reading the evidence refs",
+		"evidence ids",
+		"evidence refs",
+		"one more level of the spill chain",
+		"store://tool-spills",
+	} {
+		if strings.Contains(lower, marker) {
+			matches++
+		}
+	}
+	return matches >= 2
+}
+
 func finalMessageHasProcessIntent(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return false
 	}
 	lower := strings.ToLower(trimmed)
+	if containsLeakedToolProcessText(lower) {
+		return true
+	}
 	if len([]rune(trimmed)) > 260 || containsAnyAssistantFinalMarker(lower) {
 		return false
 	}
@@ -83,7 +138,7 @@ func buildDeterministicIncompleteFinal(input incompleteFinalInput) string {
 	builder.WriteString(direction)
 	builder.WriteString("\n")
 
-	checks := compactStringList(input.ReadOnlyChecks)
+	checks := compactUserVisibleStringList(input.ReadOnlyChecks)
 	if len(checks) == 0 {
 		checks = []string{
 			"补充完整错误输出和最近日志，确认失败发生在哪一步。",
@@ -129,6 +184,26 @@ func sanitizeFinalAssistantContentForCommit(text string, decision FinalEvidenceV
 	return incompleteFinalFromEvidenceDecision(decision), true
 }
 
+func recordRawToolCallMarkupFinalSanitized(snapshot *TurnSnapshot, turnID string, iteration int, _ string) {
+	if snapshot == nil {
+		return
+	}
+	if snapshot.Metadata == nil {
+		snapshot.Metadata = map[string]string{}
+	}
+	snapshot.Metadata["rawToolCallMarkupSanitized"] = "true"
+	snapshot.Metadata["finalRawToolCallMarkupConstrained"] = "true"
+	appendAgentItem(snapshot, newAgentItem(
+		errorItemID(turnID, iteration),
+		agentstate.TurnItemTypeError,
+		agentstate.ItemStatusFailed,
+		"raw_tool_call_markup_final: final answer contained tool-call markup and was replaced with a safe evidence-limited response.",
+		map[string]any{
+			"reason": "raw_tool_call_markup_final",
+		},
+	))
+}
+
 func constrainedFinalShouldBecomeIncomplete(text string, decision FinalEvidenceVerification) bool {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" || finalMessageHasProcessIntent(trimmed) || containsInternalFinalFallbackText(trimmed) {
@@ -164,12 +239,12 @@ func containsConcreteFinalContent(text string) bool {
 func incompleteFinalFromEvidenceDecision(decision FinalEvidenceVerification) string {
 	var confirmed []string
 	for _, item := range decision.State.Checked {
-		if summary := strings.TrimSpace(item.Summary); summary != "" {
+		if summary := sanitizeIncompleteFinalUserLine(item.Summary); summary != "" {
 			confirmed = append(confirmed, summary)
 			continue
 		}
 		if name := strings.TrimSpace(item.ToolName); name != "" {
-			confirmed = append(confirmed, name+" 已有可用证据")
+			confirmed = append(confirmed, userVisibleToolName(name)+" 已有可用证据")
 		}
 	}
 	var missing []string
@@ -179,24 +254,26 @@ func incompleteFinalFromEvidenceDecision(decision FinalEvidenceVerification) str
 		if name == "" {
 			name = "某个必需工具"
 		}
-		missing = append(missing, name+" 未成功返回证据；不能当作已检查结果。")
-		checks = append(checks, "重新读取或替代核对 "+name+" 对应的只读证据。")
+		displayName := userVisibleToolName(name)
+		missing = append(missing, displayName+" 未成功返回证据；不能当作已检查结果。")
+		checks = append(checks, "重新读取或替代核对 "+displayName+" 对应的只读证据。")
 	}
 	for _, item := range decision.State.NotChecked {
 		name := strings.TrimSpace(item.ToolName)
 		if name == "" {
 			name = "未加载工具"
 		}
+		displayName := userVisibleToolName(name)
 		reason := strings.TrimSpace(item.Reason)
 		if reason != "" {
-			missing = append(missing, name+" 未检查："+reason+"。")
+			missing = append(missing, displayName+" 未检查："+humanizeUserVisibleDiagnostic(reason)+"。")
 		} else {
-			missing = append(missing, name+" 仍未完成检查。")
+			missing = append(missing, displayName+" 仍未完成检查。")
 		}
 		if query := strings.TrimSpace(item.SuggestedSearchQuery); query != "" {
 			checks = append(checks, "补充检索："+query)
 		} else {
-			checks = append(checks, "补齐 "+name+" 对应的只读证据。")
+			checks = append(checks, "补齐 "+displayName+" 对应的只读证据。")
 		}
 	}
 	for _, reason := range decision.Reasons {
@@ -255,19 +332,24 @@ func containsInternalFinalFallbackText(text string) bool {
 		strings.Contains(lower, "official-domain fallback results") ||
 		strings.Contains(lower, `{"content"`) ||
 		containsRawToolCallMarkup(lower) ||
+		containsLeakedToolProcessText(lower) ||
 		strings.Contains(lower, "kinds=") ||
 		strings.Contains(lower, "signals=")
 }
 
 func containsRawToolCallMarkup(lower string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(lower))
+	normalized := strings.ToLower(strings.TrimSpace(normalizeRawToolCallMarkup(lower)))
 	if normalized == "" {
 		return false
 	}
+	compact := strings.NewReplacer(" ", "", "\n", "", "\t", "", "\r", "").Replace(normalized)
 	for _, marker := range []string{
 		"tool_calls>",
 		"<tool_calls",
 		"<|tool_call",
+		"||dsml||tool_calls",
+		"||dsml||invoke",
+		"||dsml||parameter",
 		"<｜｜dsml｜｜tool_calls",
 		"<｜｜dsml｜｜invoke",
 		"<｜｜dsml｜｜parameter",
@@ -275,7 +357,7 @@ func containsRawToolCallMarkup(lower string) bool {
 		"invoke name=\"web_search\"",
 		"invoke name=\"exec_command\"",
 	} {
-		if strings.Contains(normalized, marker) {
+		if strings.Contains(normalized, marker) || strings.Contains(compact, strings.ReplaceAll(marker, " ", "")) {
 			return true
 		}
 	}
@@ -298,17 +380,23 @@ func sanitizeIncompleteFinalUserLine(line string) string {
 	if line == "" {
 		return ""
 	}
+	if summary := structuredEvidenceSummaryForUser("", line); summary != "" {
+		return summary
+	}
+	if containsLeakedToolProcessText(line) {
+		return leakedToolProcessTextUserMessage
+	}
 	if containsInternalFinalFallbackText(line) {
 		return "已存在内部证据或检索结果，但本轮没有形成可直接展示的结构化最终结论。"
 	}
 	line = strings.ReplaceAll(line, "kinds=", "证据类型：")
 	line = strings.ReplaceAll(line, "signals=", "识别信号：")
 	line = strings.ReplaceAll(line, "excerpt=", "摘录：")
-	return strings.TrimSpace(line)
+	return strings.TrimSpace(humanizeUserVisibleDiagnostic(line))
 }
 
 func writeBullets(builder *strings.Builder, values []string, fallback string) {
-	values = compactStringList(values)
+	values = compactUserVisibleStringList(values)
 	if len(values) == 0 {
 		values = []string{fallback}
 	}
@@ -317,6 +405,96 @@ func writeBullets(builder *strings.Builder, values []string, fallback string) {
 		builder.WriteString(value)
 		builder.WriteString("\n")
 	}
+}
+
+func compactUserVisibleStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		if cleaned := sanitizeIncompleteFinalUserLine(value); cleaned != "" {
+			out = append(out, cleaned)
+		}
+	}
+	return compactStringList(out)
+}
+
+func userVisibleToolName(name string) string {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_context_artifact":
+		return "读取上下文证据"
+	case "read_mcp_resource":
+		return "读取 MCP 资源"
+	case "list_mcp_resources":
+		return "列出 MCP 资源"
+	case "coroot.list_services", "coroot_list_services":
+		return "Coroot 服务列表"
+	case "coroot.incidents", "coroot_incidents":
+		return "Coroot 异常事件"
+	case "coroot.collect_rca_context", "coroot_collect_rca_context":
+		return "Coroot 根因分析上下文"
+	default:
+		return strings.TrimSpace(name)
+	}
+}
+
+func humanizeUserVisibleDiagnostic(text string) string {
+	out := strings.TrimSpace(text)
+	if out == "" {
+		return ""
+	}
+	replacements := []struct {
+		old string
+		new string
+	}{
+		{"required evidence may be missing; do not use this failed tool as checked evidence", "证据读取失败，不能作为已检查结果"},
+		{"read_context_artifact", "读取上下文证据"},
+		{"read_mcp_resource", "读取 MCP 资源"},
+		{"list_mcp_resources", "列出 MCP 资源"},
+		{"coroot.collect_rca_context", "Coroot 根因分析上下文"},
+		{"coroot_collect_rca_context", "Coroot 根因分析上下文"},
+		{"coroot.list_services", "Coroot 服务列表"},
+		{"coroot_list_services", "Coroot 服务列表"},
+		{"coroot.incidents", "Coroot 异常事件"},
+		{"coroot_incidents", "Coroot 异常事件"},
+		{"tool_business_error", "工具执行失败"},
+	}
+	for _, replacement := range replacements {
+		out = strings.ReplaceAll(out, replacement.old, replacement.new)
+	}
+	return strings.TrimSpace(out)
+}
+
+func structuredEvidenceSummaryForUser(toolName string, text string) string {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" || (!strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[")) {
+		return ""
+	}
+	lower := strings.ToLower(trimmed)
+	label := ""
+	switch strings.ToLower(strings.TrimSpace(toolName)) {
+	case "coroot.list_services", "coroot_list_services":
+		label = "Coroot 服务列表"
+	case "coroot.incidents", "coroot_incidents":
+		label = "Coroot 异常事件"
+	case "coroot.collect_rca_context", "coroot_collect_rca_context":
+		label = "Coroot 根因分析上下文"
+	}
+	switch {
+	case strings.Contains(lower, `"categorycounts"`):
+		label = "Coroot 服务概览"
+	case strings.Contains(lower, `"incidents"`):
+		label = "Coroot 异常事件"
+	case strings.Contains(lower, `"abnormalservices"`) || strings.Contains(lower, `"service"`):
+		if label == "" {
+			label = "Coroot 服务证据"
+		}
+	case strings.Contains(lower, `"evidencerefs"`):
+		if label == "" {
+			label = "结构化证据"
+		}
+	default:
+		return ""
+	}
+	return label + "已返回结构化证据。"
 }
 
 func incompleteFinalMessagesForEvidenceReason(reason string) []string {

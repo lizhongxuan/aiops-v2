@@ -151,7 +151,9 @@ export function AiopsComposer({
       : workspace.composerDisabledReason;
   const sendCommand = useAssistantTransportSendCommand();
   const target = useSessionTargetContext();
-  const isRunning = isAiopsTransportRunning(state) || threadIsRunning;
+  const transportTerminal =
+    state.status === "failed" || state.status === "canceled";
+  const isRunning = isAiopsTransportRunning(state) || (threadIsRunning && !transportTerminal);
   const [generationConfirmation, setGenerationConfirmation] =
     useState<GenerationConfirmation | null>(null);
   const [contextRequest, setContextRequest] =
@@ -956,6 +958,7 @@ function ComposerBody({
     null,
   );
   const [inputText, setInputText] = useState("");
+  const [composerCaretIndex, setComposerCaretIndex] = useState<number | null>(null);
   const [highlightedIndex, setHighlightedIndex] = useState(0);
   const suppressedSubmittedTextRef = useRef("");
   const selectedMentionBindingsRef = useRef<AiopsMentionBinding[]>([]);
@@ -1081,10 +1084,12 @@ function ComposerBody({
     suppressedSubmittedTextRef.current = "";
     setInputText(input.value);
     const cursor = input.selectionStart ?? input.value.length;
+    const selectionEnd = input.selectionEnd ?? cursor;
+    setComposerCaretIndex(cursor === selectionEnd ? cursor : null);
     const nextToken = findActiveHostMentionToken(input.value, cursor);
     setActiveToken(nextToken);
     setHighlightedIndex(0);
-  }, []);
+  }, [inlineMentions]);
 
   const applySuggestion = useCallback(
     (suggestion: ComposerMentionSuggestion) => {
@@ -1179,6 +1184,7 @@ function ComposerBody({
                 address: suggestion.payload.address,
                 displayName: suggestion.payload.displayName,
                 status: suggestion.payload.status,
+                hostMentionSource: suggestion.payload.source,
               }),
             ];
       composer.setText(next.text);
@@ -1188,6 +1194,7 @@ function ComposerBody({
       input.dispatchEvent(new Event("input", { bubbles: true }));
       input.dispatchEvent(new Event("change", { bubbles: true }));
       setActiveToken(null);
+      setComposerCaretIndex(next.cursor);
       setHighlightedIndex(0);
     },
     [activeToken, composer],
@@ -1212,6 +1219,7 @@ function ComposerBody({
       composer.setText("");
       setInputText("");
       setActiveToken(null);
+      setComposerCaretIndex(null);
       setHighlightedIndex(0);
       selectedMentionBindingsRef.current = [];
       if (inputRef.current) {
@@ -1260,6 +1268,7 @@ function ComposerBody({
         <HostMentionInlineOverlay
           text={currentComposerText}
           mentions={inlineMentions}
+          caretIndex={hasInlineMentions ? composerCaretIndex : null}
           variant={variant}
         />
         <ComposerPrimitive.Input asChild submitOnEnter>
@@ -1272,8 +1281,11 @@ function ComposerBody({
             disabled={Boolean(workspace.composerDisabledReason) || isRunning}
             aria-controls={suggestionOpen ? suggestionPopoverId : undefined}
             aria-expanded={suggestionOpen}
+            onFocus={refreshActiveToken}
+            onBlur={() => setComposerCaretIndex(null)}
             onInput={refreshActiveToken}
             onClick={refreshActiveToken}
+            onSelect={refreshActiveToken}
             onKeyUp={(event) => {
               if (
                 ["ArrowDown", "ArrowUp", "Enter", "Tab", "Escape"].includes(
@@ -1320,7 +1332,7 @@ function ComposerBody({
                 ? "relative z-10 max-h-40 min-h-12 resize-none border-0 bg-transparent px-3 py-2 text-[16px] leading-7 shadow-none focus-visible:ring-0 md:text-[16px]"
                 : "relative z-10 max-h-44 min-h-11 resize-none rounded-lg border-zinc-300 bg-zinc-50 text-sm",
               hasInlineMentions &&
-                "text-transparent caret-slate-950 selection:bg-sky-200/70",
+                "text-transparent caret-transparent selection:bg-sky-200/70",
             )}
           />
         </ComposerPrimitive.Input>
@@ -1361,6 +1373,7 @@ function displayHostMentions(
         ...mention,
         value: "server-local",
         hostId: "server-local",
+        address: "server-local",
         displayName: "local",
         resolved: true,
       });
@@ -1373,6 +1386,11 @@ function displayHostMentions(
     const displayMention: DisplayHostMention = {
       ...mention,
       hostId: cleanHostText(host.id) || cleanHostText(host.hostId),
+      address:
+        cleanHostText(host.ip) ||
+        cleanHostText(
+          (host as HostInventoryItem & { address?: string }).address,
+        ),
       displayName:
         cleanHostText(host.name) ||
         cleanHostText(host.ip) ||

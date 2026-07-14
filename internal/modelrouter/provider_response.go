@@ -22,6 +22,7 @@ type ProviderStreamMetrics struct {
 type ProviderResponse struct {
 	RequestID             string                           `json:"requestId,omitempty"`
 	Output                string                           `json:"output,omitempty"`
+	ReasoningContent      string                           `json:"reasoningContent,omitempty"`
 	ToolCalls             []promptinput.ModelInputToolCall `json:"toolCalls,omitempty"`
 	FinishReason          string                           `json:"finishReason,omitempty"`
 	Usage                 ProviderUsage                    `json:"usage,omitempty"`

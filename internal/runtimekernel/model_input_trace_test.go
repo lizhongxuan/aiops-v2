@@ -11,11 +11,15 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/featureflag"
 	"aiops-v2/internal/modelrouter"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
@@ -789,6 +793,213 @@ func TestModelInputTraceCarriesPromptSectionsAndContextUsage(t *testing.T) {
 	if len(payload.PromptInputTrace.ContextUsage.TopContributors) != 1 ||
 		payload.PromptInputTrace.ContextUsage.TopContributors[0].ID != "user" {
 		t.Fatalf("top contributors mismatch: %#v", payload.PromptInputTrace.ContextUsage.TopContributors)
+	}
+}
+
+func TestBuildModelInputTraceRequestAddsAssemblyBoundarySources(t *testing.T) {
+	req := buildModelInputTraceRequest(RuntimeTraceDebugRequest{
+		Compiled: promptcompiler.CompiledPrompt{
+			Envelope: promptcompiler.PromptEnvelope{Sections: []promptcompiler.PromptCompiledSection{{
+				ID:        "base.contract",
+				Layer:     promptcompiler.PromptSectionKindStable,
+				Role:      "system",
+				Content:   "stable base contract",
+				Stability: promptcompiler.PromptSectionKindStable,
+				Source:    "promptcompiler",
+			}}},
+		},
+		ToolSurfaceFingerprint:        "surface-runtime-boundary",
+		ToolSurfacePolicySnapshotHash: "policy-runtime-boundary",
+	})
+
+	if req.PromptInputTrace.AssemblySource != "runtimekernel.buildModelInputTraceRequest" {
+		t.Fatalf("AssemblySource = %q", req.PromptInputTrace.AssemblySource)
+	}
+	if req.PromptInputTrace.PromptCompilerSource != "promptcompiler.Compiler" {
+		t.Fatalf("PromptCompilerSource = %q", req.PromptInputTrace.PromptCompilerSource)
+	}
+	if req.PromptInputTrace.ToolSurfaceSource != "runtimekernel.applyToolSurfacePolicyToCompileContext" {
+		t.Fatalf("ToolSurfaceSource = %q", req.PromptInputTrace.ToolSurfaceSource)
+	}
+	if req.PromptInputTrace.AdapterName != "eino" {
+		t.Fatalf("AdapterName = %q", req.PromptInputTrace.AdapterName)
+	}
+	if req.PromptInputTrace.ToolSurfaceFingerprint != "surface-runtime-boundary" {
+		t.Fatalf("ToolSurfaceFingerprint = %q", req.PromptInputTrace.ToolSurfaceFingerprint)
+	}
+}
+
+func TestBuildModelInputTraceRequestCarriesResourceProjection(t *testing.T) {
+	binding := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		VerifiedBy: resourcebinding.HostVerifierHostopsResolver,
+		TrustLevel: resourcebinding.TrustLevelVerified,
+	})
+	capability := resourcebinding.NewResourceCapability(binding, resourcebinding.CapabilityExec, []string{"host.exec"}, resourcebinding.CapabilityOptions{})
+	evidence := resourcebinding.BuildEvidenceRef(resourcebinding.EvidenceInput{
+		ID:          "ev-1",
+		ResourceRef: resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"},
+		Source:      resourcebinding.EvidenceSourceTool,
+		Kind:        resourcebinding.EvidenceKindCommandOutput,
+	})
+
+	req := buildModelInputTraceRequest(RuntimeTraceDebugRequest{
+		ResourceBindings:     []resourcebinding.ResourceBindingSnapshot{binding},
+		ResourceCapabilities: []resourcebinding.ResourceCapability{capability},
+		ResourceEvidenceRefs: []resourcebinding.EvidenceRef{evidence},
+	})
+
+	if len(req.ResourceBindings) != 1 || req.ResourceBindings[0].Ref.ID != "host-a" {
+		t.Fatalf("ResourceBindings = %#v, want host-a", req.ResourceBindings)
+	}
+	if len(req.ResourceCapabilities) != 1 || req.ResourceCapabilities[0].ToolNames[0] != "host.exec" {
+		t.Fatalf("ResourceCapabilities = %#v, want host.exec", req.ResourceCapabilities)
+	}
+	if len(req.ResourceEvidenceRefs) != 1 || req.ResourceEvidenceRefs[0].ID != "ev-1" {
+		t.Fatalf("ResourceEvidenceRefs = %#v, want ev-1", req.ResourceEvidenceRefs)
+	}
+	if len(req.PromptInputTrace.ResourceBindings) != 1 || len(req.PromptInputTrace.ResourceCapabilities) != 1 || len(req.PromptInputTrace.ResourceEvidenceRefs) != 1 {
+		t.Fatalf("PromptInputTrace resource projection = %#v", req.PromptInputTrace)
+	}
+}
+
+func TestBuildModelInputTraceRequestCarriesSpecialInputWorldState(t *testing.T) {
+	worldState := &specialinputmemory.SpecialInputWorldStateSection{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		ActiveExecutionScope: &specialinputmemory.ExecutionScopeGrantTrace{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+		},
+	}
+
+	req := buildModelInputTraceRequest(RuntimeTraceDebugRequest{
+		SpecialInputWorldState: worldState,
+	})
+
+	if req.PromptInputTrace.SpecialInputWorldState == nil ||
+		req.PromptInputTrace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("PromptInputTrace.SpecialInputWorldState = %#v, want host-a", req.PromptInputTrace.SpecialInputWorldState)
+	}
+	worldState.ActiveExecutionScope.ResourceID = "host-b"
+	if req.PromptInputTrace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("trace request did not clone special input world state: %#v", req.PromptInputTrace.SpecialInputWorldState)
+	}
+}
+
+func TestWriteRuntimeStepTraceV2CarriesSpecialInputWorldState(t *testing.T) {
+	dir := t.TempDir()
+	worldState := &specialinputmemory.SpecialInputWorldStateSection{
+		SchemaVersion: specialinputmemory.SchemaVersion,
+		ActiveExecutionScope: &specialinputmemory.ExecutionScopeGrantTrace{
+			ID:           "grant-host-a",
+			ResourceKind: specialinputmemory.ResourceKindHost,
+			ResourceID:   "host-a",
+			CanonicalKey: "host:host-a",
+			Display:      "host-a",
+		},
+		ReadPlan: &specialinputmemory.MemoryReadPlanTrace{
+			ActiveGrantID:      "grant-host-a",
+			ActiveResourceKind: specialinputmemory.ResourceKindHost,
+			ActiveResourceID:   "host-a",
+		},
+	}
+	step := RuntimeStepContext{
+		Turn: RuntimeTurnContext{
+			SessionID:   "sess-special-v2",
+			TurnID:      "turn-special-v2",
+			SessionType: SessionTypeHost,
+			Mode:        ModeInspect,
+			Profile:     RuntimePromptProfileHostWorker,
+		},
+		Iteration: 0,
+		ModelInput: []promptinput.ModelInputItem{{
+			ID:           "user-input",
+			ProviderRole: promptinput.ProviderRoleUser,
+			SemanticRole: "user_request",
+			Content:      "@host-a 看 CPU",
+		}},
+		ToolSurface: RuntimeToolRouterSnapshot{
+			ModelVisibleTools: []string{"exec_command"},
+			DispatchableTools: []string{"exec_command"},
+			Fingerprint:       "surface-special",
+			PolicyHash:        "policy-special",
+		},
+	}
+
+	path, err := writeRuntimeStepTrace(modeltrace.Config{Enabled: true, RootDir: dir}, step, RuntimeTraceDebugRequest{
+		SpecialInputWorldState: worldState,
+	})
+	if err != nil {
+		t.Fatalf("writeRuntimeStepTrace() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	var payload struct {
+		SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState"`
+		PromptInputTrace       struct {
+			SpecialInputWorldState *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState"`
+		} `json:"promptInputTrace"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.SpecialInputWorldState == nil || payload.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("top-level specialInputWorldState = %#v, want host-a", payload.SpecialInputWorldState)
+	}
+	if payload.PromptInputTrace.SpecialInputWorldState == nil ||
+		payload.PromptInputTrace.SpecialInputWorldState.ActiveExecutionScope.ResourceID != "host-a" {
+		t.Fatalf("promptInputTrace.specialInputWorldState = %#v, want host-a", payload.PromptInputTrace.SpecialInputWorldState)
+	}
+}
+
+func TestBuildModelInputTraceRequestCarriesAgentAssemblySnapshot(t *testing.T) {
+	snapshot := agentassembly.Build(agentassembly.BuildInput{
+		AgentKind:         "worker",
+		Profile:           "host_worker",
+		RuntimeRole:       "host.execute",
+		ModelVisibleTools: []tooling.ToolMetadata{{Name: "host.exec"}},
+		DispatchableTools: []tooling.ToolMetadata{{Name: "host.exec"}},
+	})
+
+	req := buildModelInputTraceRequest(RuntimeTraceDebugRequest{
+		AgentAssemblySnapshot: &snapshot,
+	})
+
+	if req.AgentAssemblySnapshot == nil || req.AgentAssemblySnapshot.AgentKind != "worker" {
+		t.Fatalf("AgentAssemblySnapshot = %#v, want worker", req.AgentAssemblySnapshot)
+	}
+	if req.PromptInputTrace.AgentAssemblySnapshot == nil || req.PromptInputTrace.AgentAssemblySnapshot.Profile != "host_worker" {
+		t.Fatalf("PromptInputTrace.AgentAssemblySnapshot = %#v", req.PromptInputTrace.AgentAssemblySnapshot)
+	}
+}
+
+func TestResourceCapabilitiesFromAssembledToolsRequiresVerifiedBinding(t *testing.T) {
+	verified := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-a"}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		VerifiedBy: resourcebinding.HostVerifierHostopsResolver,
+		TrustLevel: resourcebinding.TrustLevelVerified,
+	})
+	rejected := resourcebinding.NewBindingSnapshot(resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: "host-b"}, resourcebinding.BindingOptions{
+		Source:     resourcebinding.BindingSourceMention,
+		TrustLevel: resourcebinding.TrustLevelRejected,
+	})
+	tools := []tooling.Tool{&tooling.StaticTool{Meta: tooling.ToolMetadata{
+		Name: "host.exec",
+		Discovery: tooling.ToolDiscoveryMetadata{
+			CapabilityKind: resourcebinding.CapabilityExec,
+			ResourceTypes:  []string{resourcebinding.ResourceTypeHost},
+		},
+	}}}
+
+	capabilities := resourceCapabilitiesFromAssembledTools([]resourcebinding.ResourceBindingSnapshot{verified, rejected}, tools, "sha256:policy")
+	if len(capabilities) != 1 {
+		t.Fatalf("capabilities = %#v, want one verified host capability", capabilities)
+	}
+	if capabilities[0].ResourceRef.ID != "host-a" || capabilities[0].ToolNames[0] != "host.exec" {
+		t.Fatalf("capability = %#v, want host-a host.exec", capabilities[0])
 	}
 }
 

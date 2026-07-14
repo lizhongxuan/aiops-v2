@@ -1,0 +1,15 @@
+{
+  "name": "context_compaction_resume",
+  "userInput": "继续刚才的排查，保留关键证据",
+  "modelFinalOutput": "已基于保留上下文继续分析；当前没有新工具证据，结论保持低置信度。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "unknown",
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

@@ -1,15 +1,22 @@
 package runtimekernel
 
-import "testing"
+import (
+	"testing"
+
+	"aiops-v2/internal/resourcebinding"
+)
 
 func TestHostAgentSkillScopeDoesNotAutoInheritManagerSkillBody(t *testing.T) {
 	eval := EvaluateHostAgentSkillScopes(HostAgentSkillScopeRequest{
+		HostRef:    hostAgentTestHostRef("host-a"),
 		HostID:     "host-a",
 		ActionType: "inspect",
+		TargetRef:  hostAgentTestHostRef("host-a"),
 		TargetHost: "host-a",
 	}, []HostAgentSkillScope{{
 		SkillID:            "skill.generic.inspect",
 		ActivationMode:     SkillActivationModeManagerInherited,
+		AllowedHostRefs:    []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
 		AllowedHostScope:   []string{"host-a"},
 		AllowedActionTypes: []string{"inspect"},
 		MaxRisk:            RiskLevelLow,
@@ -28,16 +35,42 @@ func TestHostAgentSkillScopeDoesNotAutoInheritManagerSkillBody(t *testing.T) {
 	}
 }
 
-func TestHostAgentSkillScopeBlocksCrossHostToolUse(t *testing.T) {
+func TestHostAgentSkillScopeAllowsSameTypedHost(t *testing.T) {
 	eval := EvaluateHostAgentSkillScopes(HostAgentSkillScopeRequest{
-		HostID:     "host-a",
+		HostRef:    hostAgentTestHostRef("host-a"),
+		ActionType: "inspect",
+		TargetRef:  hostAgentTestHostRef("host-a"),
+		Risk:       RiskLevelReadOnly,
+	}, []HostAgentSkillScope{{
+		SkillID:            "skill.generic.inspect",
+		ActivationMode:     SkillActivationModeDelegated,
+		AllowedHostRefs:    []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
+		AllowedActionTypes: []string{"inspect"},
+		MaxRisk:            RiskLevelLow,
+	}})
+
+	if !eval.ToolUseDecision.Allowed {
+		t.Fatalf("tool decision = %#v, want same typed host allowed", eval.ToolUseDecision)
+	}
+	if len(eval.VisibleSkills) != 1 || eval.VisibleSkills[0].SkillID != "skill.generic.inspect" {
+		t.Fatalf("visible skills = %#v, want typed same-host scope visible", eval.VisibleSkills)
+	}
+}
+
+func TestHostAgentSkillScopeBlocksCrossHostToolUse(t *testing.T) {
+	boundHost := hostAgentTestHostRef("shared-host")
+	boundHost.Namespace = "cluster-a"
+	crossHost := hostAgentTestHostRef("shared-host")
+	crossHost.Namespace = "cluster-b"
+	eval := EvaluateHostAgentSkillScopes(HostAgentSkillScopeRequest{
+		HostRef:    boundHost,
 		ActionType: "write_file",
-		TargetHost: "host-b",
+		TargetRef:  crossHost,
 		Risk:       RiskLevelMedium,
 	}, []HostAgentSkillScope{{
 		SkillID:            "skill.generic.change",
 		ActivationMode:     SkillActivationModeDelegated,
-		AllowedHostScope:   []string{"host-a"},
+		AllowedHostRefs:    []resourcebinding.ResourceRef{boundHost},
 		AllowedActionTypes: []string{"inspect", "write_file"},
 		MaxRisk:            RiskLevelHigh,
 		Reason:             "host-bound change task",
@@ -58,8 +91,35 @@ func TestHostAgentSkillScopeBlocksCrossHostToolUse(t *testing.T) {
 	}
 }
 
+func TestHostAgentSkillScopeRejectsTypedLegacyHostConflict(t *testing.T) {
+	eval := EvaluateHostAgentSkillScopes(HostAgentSkillScopeRequest{
+		HostRef:    hostAgentTestHostRef("host-a"),
+		HostID:     "host-b",
+		ActionType: "inspect",
+		TargetRef:  hostAgentTestHostRef("host-a"),
+	}, []HostAgentSkillScope{{
+		SkillID:            "skill.generic.inspect",
+		ActivationMode:     SkillActivationModeDelegated,
+		AllowedHostRefs:    []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
+		AllowedActionTypes: []string{"inspect"},
+		MaxRisk:            RiskLevelLow,
+	}})
+
+	if eval.ToolUseDecision.Allowed {
+		t.Fatalf("tool decision = %#v, want typed-vs-legacy conflict denied", eval.ToolUseDecision)
+	}
+	if eval.ToolUseDecision.HiddenReason != "typed_legacy_host_conflict" {
+		t.Fatalf("hidden reason = %q, want typed_legacy_host_conflict", eval.ToolUseDecision.HiddenReason)
+	}
+	trace := findHostScopeTrace(t, eval.Trace, "skill", "skill.generic.inspect")
+	if trace.Visible || trace.HiddenReason != "typed_legacy_host_conflict" {
+		t.Fatalf("trace = %#v, want fail-closed typed-vs-legacy conflict", trace)
+	}
+}
+
 func TestHostAgentMCPScopeHidesUnselectedServerInstructions(t *testing.T) {
 	eval := EvaluateHostAgentMCPScope(HostAgentMCPScopeRequest{
+		HostRef:   hostAgentTestHostRef("host-a"),
 		HostID:    "host-a",
 		ServerID:  "mcp.selected",
 		Resource:  "resource://selected/config",
@@ -69,6 +129,7 @@ func TestHostAgentMCPScopeHidesUnselectedServerInstructions(t *testing.T) {
 			ServerID:         "mcp.selected",
 			Permission:       MCPPermissionRead,
 			AllowedResources: []string{"resource://selected/config"},
+			AllowedHostRefs:  []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
 			AllowedHostScope: []string{"host-a"},
 			InstructionMode:  MCPInstructionModeSparse,
 			Reason:           "selected for this host task",
@@ -77,6 +138,7 @@ func TestHostAgentMCPScopeHidesUnselectedServerInstructions(t *testing.T) {
 			ServerID:         "mcp.unselected",
 			Permission:       MCPPermissionRead,
 			AllowedResources: []string{"resource://unselected/config"},
+			AllowedHostRefs:  []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
 			AllowedHostScope: []string{"host-a"},
 			InstructionMode:  MCPInstructionModeHidden,
 			Reason:           "not selected for this host task",
@@ -97,7 +159,7 @@ func TestHostAgentMCPScopeHidesUnselectedServerInstructions(t *testing.T) {
 
 func TestHostAgentMCPScopeRequiresApprovalForReadWriteResource(t *testing.T) {
 	eval := EvaluateHostAgentMCPScope(HostAgentMCPScopeRequest{
-		HostID:    "host-a",
+		HostRef:   hostAgentTestHostRef("host-a"),
 		ServerID:  "mcp.generic",
 		Resource:  "resource://host-a/config",
 		Operation: MCPResourceOperationWrite,
@@ -105,7 +167,7 @@ func TestHostAgentMCPScopeRequiresApprovalForReadWriteResource(t *testing.T) {
 		ServerID:         "mcp.generic",
 		Permission:       MCPPermissionReadWrite,
 		AllowedResources: []string{"resource://host-a/config"},
-		AllowedHostScope: []string{"host-a"},
+		AllowedHostRefs:  []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
 		RequiresApproval: true,
 		InstructionMode:  MCPInstructionModeSparse,
 		Reason:           "resource can change host state",
@@ -124,6 +186,56 @@ func TestHostAgentMCPScopeRequiresApprovalForReadWriteResource(t *testing.T) {
 	if !trace.Visible {
 		t.Fatalf("trace = %#v, want MCP server visible", trace)
 	}
+}
+
+func TestHostAgentMCPScopeEnforcesTypedHostAndResourceScope(t *testing.T) {
+	scopes := []HostAgentMCPScope{{
+		ServerID:         "mcp.generic",
+		Permission:       MCPPermissionRead,
+		AllowedResources: []string{"resource://host-a/config"},
+		AllowedHostRefs:  []resourcebinding.ResourceRef{hostAgentTestHostRef("host-a")},
+		InstructionMode:  MCPInstructionModeSparse,
+	}}
+
+	allowed := EvaluateHostAgentMCPScope(HostAgentMCPScopeRequest{
+		HostRef:   hostAgentTestHostRef("host-a"),
+		ServerID:  "mcp.generic",
+		Resource:  "resource://host-a/config",
+		Operation: MCPResourceOperationRead,
+	}, scopes)
+	if !allowed.ResourceDecision.Allowed {
+		t.Fatalf("same-host resource decision = %#v, want allowed", allowed.ResourceDecision)
+	}
+
+	crossHost := EvaluateHostAgentMCPScope(HostAgentMCPScopeRequest{
+		HostRef:   hostAgentTestHostRef("host-b"),
+		ServerID:  "mcp.generic",
+		Resource:  "resource://host-a/config",
+		Operation: MCPResourceOperationRead,
+	}, scopes)
+	if crossHost.ResourceDecision.Allowed {
+		t.Fatalf("cross-host resource decision = %#v, want denied", crossHost.ResourceDecision)
+	}
+	if crossHost.ResourceDecision.HiddenReason != "host_out_of_scope" {
+		t.Fatalf("cross-host hidden reason = %q, want host_out_of_scope", crossHost.ResourceDecision.HiddenReason)
+	}
+
+	wrongResource := EvaluateHostAgentMCPScope(HostAgentMCPScopeRequest{
+		HostRef:   hostAgentTestHostRef("host-a"),
+		ServerID:  "mcp.generic",
+		Resource:  "resource://host-a/secret",
+		Operation: MCPResourceOperationRead,
+	}, scopes)
+	if wrongResource.ResourceDecision.Allowed {
+		t.Fatalf("out-of-scope resource decision = %#v, want denied", wrongResource.ResourceDecision)
+	}
+	if wrongResource.ResourceDecision.HiddenReason != "resource_out_of_scope" {
+		t.Fatalf("out-of-scope resource hidden reason = %q, want resource_out_of_scope", wrongResource.ResourceDecision.HiddenReason)
+	}
+}
+
+func hostAgentTestHostRef(id string) resourcebinding.ResourceRef {
+	return resourcebinding.ResourceRef{Type: resourcebinding.ResourceTypeHost, ID: id}
 }
 
 func findHostScopeTrace(t *testing.T, traces []HostAgentScopeTrace, kind, id string) HostAgentScopeTrace {

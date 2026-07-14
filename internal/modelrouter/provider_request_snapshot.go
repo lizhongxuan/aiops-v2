@@ -5,8 +5,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
 )
+
+const promptCacheKeySchemaVersion = "aiops.prompt-cache-key.v2"
 
 type ProviderToolSpec struct {
 	Name string `json:"name"`
@@ -14,21 +17,22 @@ type ProviderToolSpec struct {
 }
 
 type ProviderRequestSnapshot struct {
-	Provider              string                       `json:"provider"`
-	Model                 string                       `json:"model"`
-	Input                 []promptinput.ModelInputItem `json:"input"`
-	Tools                 []ProviderToolSpec           `json:"tools,omitempty"`
-	ReasoningEffort       string                       `json:"reasoningEffort,omitempty"`
-	Temperature           float64                      `json:"temperature,omitempty"`
-	TopP                  float64                      `json:"topP,omitempty"`
-	MaxTokens             int                          `json:"maxTokens,omitempty"`
-	ParallelToolCalls     bool                         `json:"parallelToolCalls,omitempty"`
-	ClientMetadata        map[string]string            `json:"clientMetadata,omitempty"`
-	ModelInputHash        string                       `json:"modelInputHash,omitempty"`
-	ProviderMessagesHash  string                       `json:"providerMessagesHash,omitempty"`
-	RequestPropertiesHash string                       `json:"requestPropertiesHash,omitempty"`
-	PromptCacheKey        string                       `json:"promptCacheKey,omitempty"`
-	MessageAudit          *ProviderMessageAudit        `json:"messageAudit,omitempty"`
+	Provider              string                           `json:"provider"`
+	Model                 string                           `json:"model"`
+	Input                 []promptinput.ModelInputItem     `json:"input"`
+	Tools                 []ProviderToolSpec               `json:"tools,omitempty"`
+	ReasoningEffort       string                           `json:"reasoningEffort,omitempty"`
+	Temperature           float64                          `json:"temperature,omitempty"`
+	TopP                  float64                          `json:"topP,omitempty"`
+	MaxTokens             int                              `json:"maxTokens,omitempty"`
+	ParallelToolCalls     bool                             `json:"parallelToolCalls,omitempty"`
+	ClientMetadata        map[string]string                `json:"clientMetadata,omitempty"`
+	ModelInputHash        string                           `json:"modelInputHash,omitempty"`
+	ProviderMessagesHash  string                           `json:"providerMessagesHash,omitempty"`
+	RequestPropertiesHash string                           `json:"requestPropertiesHash,omitempty"`
+	PromptCacheKey        string                           `json:"promptCacheKey,omitempty"`
+	PromptFingerprint     promptcompiler.PromptFingerprint `json:"promptFingerprint,omitempty"`
+	MessageAudit          *ProviderMessageAudit            `json:"messageAudit,omitempty"`
 }
 
 func (r *ProviderRequestSnapshot) ComputeHashes() {
@@ -43,24 +47,68 @@ func (r *ProviderRequestSnapshot) ComputeHashes() {
 		"maxTokens":         r.MaxTokens,
 		"parallelToolCalls": r.ParallelToolCalls,
 	})
+	r.PromptFingerprint = clearCanonicalPromptFingerprint(r.PromptFingerprint)
+	canonical, fingerprintErr := promptinput.BuildModelInputPromptFingerprint(r.Input)
+	if fingerprintErr == nil && canonical.ModelInputHash == r.ModelInputHash {
+		r.PromptFingerprint = mergeCanonicalPromptFingerprint(r.PromptFingerprint, canonical)
+	}
+	if promptinput.HasTypedModelInputLayers(r.Input) && (fingerprintErr != nil || r.PromptFingerprint.TurnPrefixHash == "" || r.PromptFingerprint.ModelInputHash != r.ModelInputHash) {
+		r.PromptCacheKey = ""
+		return
+	}
+	stableInputHash := r.PromptFingerprint.TurnPrefixHash
+	if stableInputHash == "" {
+		stableInputHash = promptCacheInputHash(stableProviderInput(r.Input))
+	}
 	r.PromptCacheKey = stableHash(map[string]any{
-		"provider":        r.Provider,
-		"model":           r.Model,
-		"tools":           r.Tools,
-		"reasoningEffort": r.ReasoningEffort,
-		"cacheGroups":     cacheGroupsForProviderInput(r.Input),
-		"inputContent":    promptCacheInputHash(r.Input),
+		"schemaVersion":         promptCacheKeySchemaVersion,
+		"requestPropertiesHash": r.RequestPropertiesHash,
+		"turnPrefixHash":        stableInputHash,
 	})
 }
 
-func cacheGroupsForProviderInput(items []promptinput.ModelInputItem) []string {
-	out := make([]string, 0, len(items))
+func clearCanonicalPromptFingerprint(fingerprint promptcompiler.PromptFingerprint) promptcompiler.PromptFingerprint {
+	fingerprint.AbsoluteSystemHash = ""
+	fingerprint.RoleProfileHash = ""
+	fingerprint.StableRuntimeContractHash = ""
+	fingerprint.StablePrefixHash = ""
+	fingerprint.TurnStableHash = ""
+	fingerprint.TurnPrefixHash = ""
+	fingerprint.ConversationHistoryHash = ""
+	fingerprint.DynamicContextHash = ""
+	fingerprint.CurrentUserInputHash = ""
+	fingerprint.ModelInputHash = ""
+	return fingerprint
+}
+
+func stableProviderInput(items []promptinput.ModelInputItem) []promptinput.ModelInputItem {
+	stable := make([]promptinput.ModelInputItem, 0, len(items))
 	for _, item := range items {
-		if item.CacheGroup != "" {
-			out = append(out, item.CacheGroup)
+		if item.CacheGroup == promptcompiler.PromptSectionKindStable {
+			stable = append(stable, item)
 		}
 	}
-	return out
+	return stable
+}
+
+func mergeCanonicalPromptFingerprint(base, canonical promptcompiler.PromptFingerprint) promptcompiler.PromptFingerprint {
+	if base.Version == "" {
+		base.Version = canonical.Version
+	}
+	if base.CompilerVersion == "" {
+		base.CompilerVersion = canonical.CompilerVersion
+	}
+	base.AbsoluteSystemHash = canonical.AbsoluteSystemHash
+	base.RoleProfileHash = canonical.RoleProfileHash
+	base.StableRuntimeContractHash = canonical.StableRuntimeContractHash
+	base.StablePrefixHash = canonical.StablePrefixHash
+	base.TurnStableHash = canonical.TurnStableHash
+	base.TurnPrefixHash = canonical.TurnPrefixHash
+	base.ConversationHistoryHash = canonical.ConversationHistoryHash
+	base.DynamicContextHash = canonical.DynamicContextHash
+	base.CurrentUserInputHash = canonical.CurrentUserInputHash
+	base.ModelInputHash = canonical.ModelInputHash
+	return base
 }
 
 func promptCacheInputHash(items []promptinput.ModelInputItem) string {

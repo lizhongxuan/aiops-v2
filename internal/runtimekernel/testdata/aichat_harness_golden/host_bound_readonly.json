@@ -1,0 +1,40 @@
+{
+  "name": "host_bound_readonly",
+  "hostId": "host-a",
+  "userInput": "继续检查 agent 端口",
+  "availableTools": [
+    {
+      "name": "read_agent_status",
+      "description": "Read host agent status.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "port": { "type": "integer" }
+        }
+      },
+      "result": "host agent port 7072 is listening"
+    }
+  ],
+  "modelToolCalls": [
+    {
+      "id": "call_agent_status",
+      "name": "read_agent_status",
+      "arguments": {
+        "port": 7072
+      }
+    }
+  ],
+  "modelFinalOutput": "已检查 agent 端口，7072 正在监听。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "host",
+    "modelVisibleTools": ["read_agent_status"],
+    "toolCalls": ["read_agent_status"],
+    "finalStatus": "verified",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
+}

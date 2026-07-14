@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createInitialAiopsTransportState } from "./aiopsTransportRuntime";
 import {
   clearCachedAiopsTransportState,
+  getActiveAiopsTransportSessionId,
   getCachedAiopsTransportState,
+  getCachedAiopsTransportStateForSession,
   resetAiopsTransportStateCacheForTest,
   setCachedAiopsTransportState,
 } from "./aiopsTransportStateCache";
@@ -45,6 +47,27 @@ describe("aiopsTransportStateCache", () => {
     setCachedAiopsTransportState("workspace", second);
 
     expect(getCachedAiopsTransportState("workspace")?.sessionId).toBe("sess-second");
+  });
+
+  it("reads cached transport state by explicit scope and session id", () => {
+    const first = createInitialAiopsTransportState("session-first");
+    first.sessionId = "session-first";
+    first.threadId = "session-first";
+    const second = createInitialAiopsTransportState("session-second");
+    second.sessionId = "session-second";
+    second.threadId = "session-second";
+
+    setCachedAiopsTransportState("single_host", first);
+    setCachedAiopsTransportState("single_host", second);
+
+    expect(getActiveAiopsTransportSessionId("single_host")).toBe("session-second");
+    expect(
+      getCachedAiopsTransportStateForSession("single_host", "session-first")
+        ?.sessionId,
+    ).toBe("session-first");
+    expect(getCachedAiopsTransportState("single_host")?.sessionId).toBe(
+      "session-second",
+    );
   });
 
   it("does not cache an empty state without a session id", () => {

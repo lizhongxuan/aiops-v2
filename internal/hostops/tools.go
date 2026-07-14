@@ -14,6 +14,8 @@ const (
 	ToolSendHostAgentMessage = "send_host_agent_message"
 	ToolWaitHostAgents       = "wait_host_agents"
 	ToolStopHostAgent        = "stop_host_agent"
+
+	capabilityKindOrchestrationControl = "orchestration_control"
 )
 
 func NewManagerTools(orchestrator *Orchestrator) []tooling.Tool {
@@ -49,16 +51,20 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			Name:             ToolSpawnHostAgent,
 			Description:      "Spawn one host-bound child agent per assignment for a host operation mission. This manager tool does not execute host commands or mutate hosts directly.",
 			Origin:           tooling.ToolOriginBuiltin,
-			Layer:            tooling.ToolLayerMutation,
+			Layer:            tooling.ToolLayerCore,
 			Pack:             ToolPackHostOps,
 			Profiles:         []string{"host_manager"},
 			Domain:           "hostops",
-			Mutating:         true,
-			RiskLevel:        tooling.ToolRiskMedium,
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
 			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
 			RecordEvidence:   true,
 			DedupeEligible:   true,
 			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"spawn_child_agents"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_mission",
 				ResourceID:    "missionId",
@@ -70,7 +76,7 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			},
 		},
 		Visibility:      managerToolVisibility(),
-		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId","assignments"],"properties":{"missionId":{"type":"string"},"assignments":{"type":"array","items":{"type":"object","required":["hostId","task"],"properties":{"hostId":{"type":"string"},"hostAddress":{"type":"string"},"hostDisplayName":{"type":"string"},"role":{"type":"string"},"task":{"type":"string"},"sessionId":{"type":"string"},"parentAgentId":{"type":"string"}}}}}}`),
+		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId","assignments"],"properties":{"missionId":{"type":"string"},"assignments":{"type":"array","items":{"type":"object","required":["hostId","task"],"properties":{"hostId":{"type":"string"},"hostAddress":{"type":"string"},"hostDisplayName":{"type":"string"},"role":{"type":"string"},"boundRole":{"type":"string"},"roleBindingHash":{"type":"string"},"task":{"type":"string"},"sessionId":{"type":"string"},"parentAgentId":{"type":"string"}}}}}}`),
 		ReadOnlyFunc:    func(json.RawMessage) bool { return false },
 		ExecuteFunc: func(ctx context.Context, input json.RawMessage) (tooling.ToolResult, error) {
 			var req spawnHostAgentInput
@@ -81,7 +87,11 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolSpawnHostAgent, spawnHostAgentContract(children))
+			mission, err := orchestrator.MissionSnapshot(ctx, req.MissionID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			return jsonToolResult(ToolSpawnHostAgent, spawnHostAgentContract(children, mission))
 		},
 	}
 }
@@ -89,17 +99,22 @@ func spawnHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:           ToolSendHostAgentMessage,
-			Description:    "Send a manager follow-up message to one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
-			Origin:         tooling.ToolOriginBuiltin,
-			Layer:          tooling.ToolLayerMutation,
-			Pack:           ToolPackHostOps,
-			Profiles:       []string{"host_manager"},
-			Domain:         "hostops",
-			Mutating:       true,
-			RiskLevel:      tooling.ToolRiskMedium,
-			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
-			RecordEvidence: true,
+			Name:             ToolSendHostAgentMessage,
+			Description:      "Send a manager follow-up message to one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
+			Origin:           tooling.ToolOriginBuiltin,
+			Layer:            tooling.ToolLayerCore,
+			Pack:             ToolPackHostOps,
+			Profiles:         []string{"host_manager"},
+			Domain:           "hostops",
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
+			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence:   true,
+			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"send_message"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",
@@ -122,7 +137,7 @@ func sendHostAgentMessageTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolSendHostAgentMessage, map[string]any{"child": child})
+			return jsonToolResult(ToolSendHostAgentMessage, map[string]any{"child": childAgentResultContract(child, true)})
 		},
 	}
 }
@@ -140,6 +155,11 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			RiskLevel:      tooling.ToolRiskLow,
 			FailurePolicy:  tooling.ToolFailurePolicyFeedBackToModel,
 			RecordEvidence: true,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind:  "read",
+				OperationKinds:  []string{"read"},
+				PermissionScope: "read",
+			},
 		},
 		Visibility:      managerToolVisibility(),
 		InputSchemaData: json.RawMessage(`{"type":"object","required":["missionId"],"properties":{"missionId":{"type":"string"}}}`),
@@ -153,7 +173,16 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children))
+			mission, err := orchestrator.MissionSnapshot(ctx, req.MissionID)
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			result, err := jsonToolResult(ToolWaitHostAgents, waitHostAgentsContract(children, mission))
+			if err != nil {
+				return tooling.ToolResult{}, err
+			}
+			result.Outcome = waitHostAgentsOutcome(children)
+			return result, nil
 		},
 	}
 }
@@ -161,17 +190,22 @@ func waitHostAgentsTool(orchestrator *Orchestrator) tooling.Tool {
 func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 	return &tooling.StaticTool{
 		Meta: tooling.ToolMetadata{
-			Name:           ToolStopHostAgent,
-			Description:    "Stop one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
-			Origin:         tooling.ToolOriginBuiltin,
-			Layer:          tooling.ToolLayerMutation,
-			Pack:           ToolPackHostOps,
-			Profiles:       []string{"host_manager"},
-			Domain:         "hostops",
-			Mutating:       true,
-			RiskLevel:      tooling.ToolRiskMedium,
-			FailurePolicy:  tooling.ToolFailurePolicyFailTurn,
-			RecordEvidence: true,
+			Name:             ToolStopHostAgent,
+			Description:      "Stop one host-bound child agent. This manager tool does not execute host commands or mutate hosts directly.",
+			Origin:           tooling.ToolOriginBuiltin,
+			Layer:            tooling.ToolLayerCore,
+			Pack:             ToolPackHostOps,
+			Profiles:         []string{"host_manager"},
+			Domain:           "hostops",
+			Mutating:         false,
+			RiskLevel:        tooling.ToolRiskLow,
+			FailurePolicy:    tooling.ToolFailurePolicyFailTurn,
+			RecordEvidence:   true,
+			RequiresApproval: false,
+			Discovery: tooling.ToolDiscoveryMetadata{
+				CapabilityKind: capabilityKindOrchestrationControl,
+				OperationKinds: []string{"stop_child_agent"},
+			},
 			ResourceLocks: []tooling.ToolResourceLockKey{{
 				ResourceType:  "hostops_child_agent",
 				ResourceID:    "childAgentId",
@@ -194,7 +228,7 @@ func stopHostAgentTool(orchestrator *Orchestrator) tooling.Tool {
 			if err != nil {
 				return tooling.ToolResult{}, err
 			}
-			return jsonToolResult(ToolStopHostAgent, map[string]any{"child": child})
+			return jsonToolResult(ToolStopHostAgent, map[string]any{"child": childAgentResultContract(child, true)})
 		},
 	}
 }
@@ -203,38 +237,84 @@ func managerToolVisibility() tooling.Visibility {
 	return tooling.Visibility{SessionTypes: []string{"workspace"}, Modes: []string{"plan", "execute"}}
 }
 
-func spawnHostAgentContract(children []HostChildAgent) map[string]any {
+type missionResultContract struct {
+	ID           string            `json:"id"`
+	PlanRequired bool              `json:"planRequired"`
+	PlanAccepted bool              `json:"planAccepted"`
+	Status       HostMissionStatus `json:"status"`
+}
+
+func newMissionResultContract(mission HostOperationMission) missionResultContract {
+	return missionResultContract{
+		ID:           mission.ID,
+		PlanRequired: mission.PlanRequired,
+		PlanAccepted: mission.PlanAccepted,
+		Status:       mission.Status,
+	}
+}
+
+func spawnHostAgentContract(children []HostChildAgent, mission HostOperationMission) map[string]any {
 	return map[string]any{
 		"schemaVersion":  "aiops.hostops.child/v1",
 		"noHostMutation": true,
+		"mission":        newMissionResultContract(mission),
 		"children":       childAgentResultContracts(children, true),
 	}
 }
 
-func waitHostAgentsContract(children []HostChildAgent) map[string]any {
+func waitHostAgentsContract(children []HostChildAgent, mission HostOperationMission) map[string]any {
 	return map[string]any{
 		"schemaVersion": "aiops.hostops.wait/v1",
+		"mission":       newMissionResultContract(mission),
 		"children":      childAgentResultContracts(children, false),
 	}
+}
+
+func waitHostAgentsOutcome(children []HostChildAgent) tooling.ToolResultOutcome {
+	for _, child := range children {
+		if child.Status != HostChildAgentStatusCompleted {
+			return tooling.ToolResultOutcomePartial
+		}
+	}
+	return tooling.ToolResultOutcomeComplete
 }
 
 func childAgentResultContracts(children []HostChildAgent, includeNoHostMutation bool) []map[string]any {
 	out := make([]map[string]any, 0, len(children))
 	for _, child := range children {
-		item := map[string]any{
-			"childAgentId": child.ID,
-			"targetRef":    childTargetRef(child),
-			"hostId":       child.HostID,
-			"status":       child.Status,
-			"evidenceRefs": []string{},
-			"blockerRefs":  childBlockerRefs(child),
-		}
-		if includeNoHostMutation {
-			item["noHostMutation"] = true
-		}
-		out = append(out, item)
+		out = append(out, childAgentResultContract(child, includeNoHostMutation))
 	}
 	return out
+}
+
+func childAgentResultContract(child HostChildAgent, includeNoHostMutation bool) map[string]any {
+	item := map[string]any{
+		"id":                child.ID,
+		"childAgentId":      child.ID,
+		"missionId":         child.MissionID,
+		"parentAgentId":     child.ParentAgentID,
+		"sessionId":         child.SessionID,
+		"targetRef":         childTargetRef(child),
+		"hostId":            child.HostID,
+		"hostAddress":       child.HostAddress,
+		"hostDisplayName":   child.HostDisplayName,
+		"role":              child.Role,
+		"task":              child.Task,
+		"status":            child.Status,
+		"planStepIds":       child.PlanStepIDs,
+		"lastInputPreview":  child.LastInputPreview,
+		"lastOutputPreview": child.LastOutputPreview,
+		"error":             child.Error,
+		"startedAt":         child.StartedAt,
+		"updatedAt":         child.UpdatedAt,
+		"completedAt":       child.CompletedAt,
+		"evidenceRefs":      []string{},
+		"blockerRefs":       childBlockerRefs(child),
+	}
+	if includeNoHostMutation {
+		item["noHostMutation"] = true
+	}
+	return item
 }
 
 func childTargetRef(child HostChildAgent) string {

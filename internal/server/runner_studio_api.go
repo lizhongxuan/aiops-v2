@@ -49,6 +49,8 @@ func runnerStudioTargetPath(method, path string) (string, error) {
 		return "/api/v1/actions/catalog", nil
 	case method == http.MethodGet && trimmed == "workflows":
 		return "/api/v1/workflows", nil
+	case len(parts) == 2 && parts[0] == "workflows" && method == http.MethodDelete:
+		return "/api/v1/workflows/" + parts[1], nil
 	case method == http.MethodPost && trimmed == "workflows/bundles/import":
 		return "/api/v1/workflows/bundles/import", nil
 	case method == http.MethodPost && trimmed == "workflows/graph":

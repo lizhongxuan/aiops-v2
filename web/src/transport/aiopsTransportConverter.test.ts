@@ -5,6 +5,7 @@ import type { AssistantTransportConnectionMetadata } from "@assistant-ui/react";
 import {
   createAiopsTransportConverter,
   isAiopsTransportRunning,
+  orderedTransportTurnIds,
 } from "./aiopsTransportConverter";
 import type { AiopsTransportState } from "./aiopsTransportTypes";
 
@@ -56,6 +57,8 @@ function createState(): AiopsTransportState {
     pendingApprovals: {},
     mcpSurfaces: {},
     artifacts: {},
+    hostMissions: {},
+    childAgents: {},
     runtimeLiveness: {
       activeTurns: {},
       activeAgents: {},
@@ -68,7 +71,109 @@ function createState(): AiopsTransportState {
   };
 }
 
+function resultTurn(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return result.state.turns[turnId];
+}
+
+function resultBlocks(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  const turn = resultTurn(result, turnId);
+  return (turn?.blockOrder || []).flatMap((id) => {
+    const block = turn?.blocksById?.[id];
+    return block ? [block] : [];
+  });
+}
+
+function resultArtifacts(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return resultBlocks(result, turnId).flatMap((block) => block.artifact ? [block.artifact] : []);
+}
+
+function resultFinalBlock(result: { state: AiopsTransportState }, turnId = "turn-1") {
+  return resultBlocks(result, turnId).find((block) => block.type === "final_answer");
+}
+
+function textContent(content: readonly { type: string; text?: string }[] | undefined) {
+  return (content || []).filter((part) => part.type === "text");
+}
+
 describe("aiopsTransportConverter", () => {
+  it("renders the canonical ordered-block transcript without unstable metadata", () => {
+    const state = createState() as AiopsTransportState & {
+      turns: Record<string, AiopsTransportState["turns"][string] & Record<string, unknown>>;
+    };
+    const turn = state.turns["turn-1"];
+    delete turn.process;
+    delete turn.final;
+    turn.blockOrder = ["block-1", "final-1"];
+    turn.blocksById = {
+      "block-1": {
+        id: "block-1",
+        type: "command",
+        kind: "command",
+        status: "completed",
+        text: "systemctl status payment-api",
+        command: "systemctl status payment-api",
+      },
+      "final-1": {
+        id: "final-1",
+        type: "final_answer",
+        kind: "assistant",
+        phase: "final_answer",
+        status: "completed",
+        text: "payment-api is healthy after restart.",
+        finalContract: {
+          id: "final-1",
+          text: "payment-api is healthy after restart.",
+          status: "completed",
+        },
+      },
+    };
+
+    const result = createAiopsTransportConverter()(state, metadata());
+
+    expect(result.messages[1]).toMatchObject({
+      role: "assistant",
+      metadata: {
+        custom: { source: "aiops.transport.assistant", turnId: "turn-1" },
+      },
+    });
+    expect(textContent(result.messages[1]?.content)).toEqual([
+      { type: "text", text: "payment-api is healthy after restart." },
+    ]);
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
+  });
+
+  it("renders turns chronologically even when transport order arrives out of order", () => {
+    const state = createState();
+    state.currentTurnId = "turn-new";
+    state.turns = {
+      "turn-new": {
+        id: "turn-new",
+        status: "completed",
+        startedAt: "2026-05-06T00:02:00Z",
+        user: { id: "user-new", text: "newest question", createdAt: "2026-05-06T00:02:00Z" },
+        final: { id: "final-new", text: "newest answer", status: "completed" },
+      },
+      "turn-old": {
+        id: "turn-old",
+        status: "completed",
+        startedAt: "2026-05-06T00:01:00Z",
+        user: { id: "user-old", text: "older question", createdAt: "2026-05-06T00:01:00Z" },
+        final: { id: "final-old", text: "older answer", status: "completed" },
+      },
+    };
+    state.turnOrder = ["turn-new", "turn-old"];
+
+    expect(orderedTransportTurnIds(state)).toEqual(["turn-old", "turn-new"]);
+
+    const result = createAiopsTransportConverter()(state, metadata());
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "user-old",
+      "turn-old:assistant",
+      "user-new",
+      "turn-new:assistant",
+    ]);
+  });
+
   it("maps ordered turns into assistant-ui thread messages without parsing markdown", () => {
     const state = createState();
     const converter = createAiopsTransportConverter();
@@ -84,29 +189,190 @@ describe("aiopsTransportConverter", () => {
     expect(result.messages[1]).toMatchObject({
       role: "assistant",
       id: "turn-1:assistant",
-      content: [
-        { type: "text", text: "payment-api is healthy after restart." },
-      ],
       status: { type: "complete", reason: "stop" },
     });
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      turnId: "turn-1",
-      turnStatus: "completed",
-      turnStartedAt: "2026-05-06T00:00:00Z",
-      turnCompletedAt: "2026-05-06T00:00:05Z",
-      process: [
-        expect.objectContaining({
-          id: "block-1",
-          kind: "command",
-          command: "systemctl status payment-api",
-        }),
-      ],
+    expect(textContent(result.messages[1]?.content)).toEqual([
+      { type: "text", text: "payment-api is healthy after restart." },
+    ]);
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
+    expect(result.messages[1]?.metadata?.custom).toMatchObject({ turnId: "turn-1" });
+    expect(resultTurn(result)).toMatchObject({
+      id: "turn-1",
+      status: "completed",
+      startedAt: "2026-05-06T00:00:00Z",
+      completedAt: "2026-05-06T00:00:05Z",
     });
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: "block-1",
+        kind: "command",
+        command: "systemctl status payment-api",
+      }),
+    ]));
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "systemctl status payment-api" }),
       ]),
     );
+  });
+
+  it("passes final contract status and evidence through assistant metadata", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      final: {
+        id: "final-contract-1",
+        text: "无法在目标主机执行命令：host agent 不可用。",
+        status: "tool_unavailable",
+        schemaVersion: "aiops.harness.final.v1",
+        confidence: "low",
+        checkedEvidenceRefs: ["call-dns"],
+        uncheckedRequirements: ["exec_command:needs_host_agent"],
+        failedToolImpacts: [
+          {
+            toolName: "exec_command",
+            toolCallId: "call-exec",
+            failureClass: "needs_host_agent",
+            impact: "host agent 7072 refused",
+          },
+        ],
+        limitations: ["host_agent_unavailable"],
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(resultFinalBlock(result)).toMatchObject({
+      text: "无法在目标主机执行命令：host agent 不可用。",
+      finalContract: {
+        schemaVersion: "aiops.harness.final.v1",
+        status: "tool_unavailable",
+        confidence: "low",
+        checkedEvidenceRefs: ["call-dns"],
+        uncheckedRequirements: ["exec_command:needs_host_agent"],
+        failedToolImpacts: [
+          expect.objectContaining({
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+          }),
+        ],
+        limitations: ["host_agent_unavailable"],
+      },
+    });
+  });
+
+  it("localizes raw final transport errors before rendering assistant text", () => {
+    const state = createState();
+    state.status = "failed";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "failed",
+      process: [
+        {
+          id: "wait-model",
+          kind: "reasoning",
+          status: "failed",
+          text: "模型调用失败",
+        },
+      ],
+      final: {
+        id: "final-network-error",
+        text: "network error",
+        status: "failed",
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(textContent(result.messages[1]?.content)).toEqual([
+      { type: "text", text: "网络异常,请检查后重试" },
+    ]);
+    expect(resultFinalBlock(result)?.text).toBe("网络异常,请检查后重试");
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "wait-model", text: "模型调用失败" }),
+    ]));
+  });
+
+  it("passes timeline order and structured final status without parsing markdown", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      timeline: [
+        { id: "item-assistant-1", type: "assistant_message", text: "先说明限制" },
+        { id: "item-approval-requested", type: "approval_requested", text: "请求执行只读检查" },
+        { id: "item-approval-decided", type: "approval_decided", status: "rejected", text: "用户拒绝" },
+        { id: "item-tool-unavailable", type: "tool_result", status: "failed", text: "exec_command unavailable" },
+        { id: "item-final", type: "final_response", status: "tool_unavailable", text: "最终结论" },
+      ],
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: "先说明限制",
+        },
+        {
+          id: "approval-rejected",
+          kind: "approval",
+          status: "rejected",
+          text: "用户拒绝执行只读检查",
+        },
+        {
+          id: "exec-unavailable",
+          kind: "tool",
+          displayKind: "exec_command",
+          status: "failed",
+          text: "exec_command unavailable",
+          outputPreview: "needs_host_agent",
+        },
+      ],
+      final: {
+        id: "final-tool-unavailable",
+        text: "## 已验证\n\n看起来已经成功。",
+        status: "tool_unavailable",
+        schemaVersion: "aiops.harness.final.v1",
+        confidence: "low",
+        uncheckedRequirements: ["exec_command"],
+        failedToolImpacts: [
+          {
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+            impact: "host agent 不可用",
+          },
+        ],
+        limitations: ["无法执行主机命令"],
+      },
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+    const finalBlock = resultFinalBlock(result);
+
+    expect(finalBlock?.finalContract?.status).toBe("tool_unavailable");
+    expect(finalBlock?.finalContract?.confidence).toBe("low");
+    expect(resultTurn(result)?.timeline?.map((item) => item.type)).toEqual([
+      "assistant_message",
+      "approval_requested",
+      "approval_decided",
+      "tool_result",
+      "final_response",
+    ]);
+    expect(finalBlock?.finalContract).toMatchObject({
+      status: "tool_unavailable",
+      confidence: "low",
+      failedToolImpacts: [
+        expect.objectContaining({
+          toolName: "exec_command",
+          failureClass: "needs_host_agent",
+        }),
+      ],
+      limitations: ["无法执行主机命令"],
+    });
   });
 
   it("uses the backend error when a failed turn only has a short assistant prelude", () => {
@@ -134,7 +400,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([
+    expect(textContent(result.messages[1]?.content)).toEqual([
       {
         type: "text",
         text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
@@ -147,7 +413,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("marks commentary-only running turns with empty final text metadata", () => {
+  it("keeps commentary-only running turns in ordered blocks with no final content", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -178,15 +444,61 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([]);
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      finalText: "",
-    });
-    expect(result.messages[1]?.metadata?.unstable_state?.process).toEqual(
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(result)).toBeUndefined();
+    expect(resultBlocks(result)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           phase: "commentary",
           text: "让我查看一下这台主机的基本信息。",
+        }),
+      ]),
+    );
+  });
+
+  it("does not duplicate a running final draft when it is already shown as assistant commentary", () => {
+    const state = createState();
+    const duplicateText = "前两个命令因 agent 端口 7072 拒绝连接且 SSH 回退失败，但 DNS 查询成功了。";
+    state.status = "working";
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      status: "working",
+      completedAt: undefined,
+      final: {
+        id: "final-running-duplicate",
+        text: duplicateText,
+        status: "running",
+      },
+      process: [
+        {
+          id: "assistant-commentary",
+          kind: "assistant",
+          status: "completed",
+          displayKind: "assistant.message",
+          phase: "commentary",
+          streamState: "complete",
+          text: duplicateText,
+        },
+        {
+          id: "command-next",
+          kind: "command",
+          status: "completed",
+          text: "cat /proc/net/dev",
+          command: "cat /proc/net/dev",
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(result)?.text).toBe(duplicateText);
+    expect(resultBlocks(result)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          phase: "commentary",
+          text: duplicateText,
         }),
       ]),
     );
@@ -228,7 +540,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([{ type: "text", text: preservedAnswer }]);
+    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: preservedAnswer }]);
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
@@ -261,12 +573,12 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.content).toEqual([
+    expect(textContent(result.messages[1]?.content)).toEqual([
       { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
     ]);
   });
 
-  it("normalizes legacy stream states before reading liveness and extension maps", () => {
+  it("drops incomplete stream states instead of migrating old transport data", () => {
     const state = createState() as Partial<AiopsTransportState>;
     delete state.runtimeLiveness;
     delete state.hostMissions;
@@ -279,7 +591,12 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state as AiopsTransportState, metadata());
 
     expect(result.isRunning).toBe(false);
+    expect(result.messages).toEqual([]);
     expect(result.state).toMatchObject({
+      sessionId: "",
+      threadId: "default",
+      turns: {},
+      turnOrder: [],
       runtimeLiveness: {
         activeTurns: {},
         activeAgents: {},
@@ -349,7 +666,7 @@ describe("aiopsTransportConverter", () => {
 
     expect(before.messages[1]?.id).toBe("turn-1:assistant");
     expect(after.messages[1]?.id).toBe("turn-1:assistant");
-    expect(after.messages[1]?.content).toEqual([
+    expect(textContent(after.messages[1]?.content)).toEqual([
       { type: "text", text: "partial" },
     ]);
   });
@@ -408,11 +725,7 @@ describe("aiopsTransportConverter", () => {
       role: "assistant",
       status: { type: "running" },
       metadata: {
-        unstable_state: {
-          turnId: "turn-1",
-          turnStatus: "submitted",
-          process: [],
-        },
+        custom: { turnId: "turn-1", source: "aiops.transport.assistant" },
       },
     });
   });
@@ -442,7 +755,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("attaches turn Agent-to-UI artifacts to assistant message metadata", () => {
+  it("projects turn Agent-to-UI artifacts into ordered transcript blocks", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -463,19 +776,56 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "artifact-coroot-latency",
           type: "coroot_chart",
           titleZh: "Coroot 延迟趋势",
           caseId: "case-debug-1",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
-  it("attaches context governance events to assistant message metadata", () => {
+  it("passes workflow editor Agent-to-UI artifacts through ordered blocks", () => {
+    const state = createState();
+    state.turns["turn-1"] = {
+      ...state.turns["turn-1"],
+      agentUiArtifacts: [
+        {
+          id: "workflow-result",
+          type: "workflow_patch_result",
+          titleZh: "Workflow Patch 结果",
+          status: "changed",
+          source: "workflow_editor",
+          inlineData: {
+            patchId: "patch-1",
+            effectStatus: "changed",
+          },
+        },
+      ],
+    };
+    const converter = createAiopsTransportConverter();
+
+    const result = converter(state, metadata());
+
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: "workflow-result",
+          type: "workflow_patch_result",
+          source: "workflow_editor",
+          inlineData: expect.objectContaining({
+            patchId: "patch-1",
+            effectStatus: "changed",
+          }),
+        }),
+      ]),
+    );
+  });
+
+  it("keeps context governance events in canonical transport state", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -494,18 +844,18 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      contextGovernance: [
+    expect(resultTurn(result)?.contextGovernance).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "ctxgov-1",
           layer: "L4",
           kind: "context.compaction.started",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
-  it("passes host operation state through assistant message metadata", () => {
+  it("keeps host operation state in AssistantTransport state without message duplication", () => {
     const state = createState();
     state.activeHostMissionId = "mission-1";
     state.hostMissions = {
@@ -548,7 +898,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+    expect(result.state).toMatchObject({
       activeHostMissionId: "mission-1",
       hostMissions: {
         "mission-1": expect.objectContaining({
@@ -572,7 +922,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("preserves optional host child full runtime trace fields in assistant metadata", () => {
+  it("preserves optional host child full runtime trace fields in AssistantTransport state", () => {
     const state = createState();
     state.activeHostMissionId = "mission-generic";
     state.hostMissions = {
@@ -715,7 +1065,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
+    expect(result.state).toMatchObject({
       childAgents: {
         "child-generic-a": expect.objectContaining({
           runtimeProfile: expect.objectContaining({
@@ -767,7 +1117,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("delays disruptive artifacts until the assistant turn is terminal", () => {
+  it("keeps disruptive artifacts typed in blocks for React visibility policy", () => {
     const state = createState();
     state.status = "working";
     state.turns["turn-1"] = {
@@ -791,29 +1141,11 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [],
-      deferredAgentUiArtifacts: [
-        expect.objectContaining({
-          id: "artifact-coroot-latency",
-          type: "coroot_chart",
-        }),
-      ],
-    });
-    expect(
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
-    ).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "ops_manual_search_result" }),
-      ]),
-    );
-    expect(
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts,
-    ).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ type: "coroot_chart" }),
-      ]),
-    );
+    expect(resultArtifacts(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "ops_manual_search_result" }),
+      expect.objectContaining({ id: "artifact-coroot-latency", type: "coroot_chart" }),
+    ]));
+    expect(result.messages[1]?.metadata).not.toHaveProperty("unstable_state");
   });
 
   it("shows delayed ops manual search artifacts after the assistant turn completes", () => {
@@ -832,14 +1164,14 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(result.messages[1]?.metadata?.unstable_state).toMatchObject({
-      agentUiArtifacts: [
+    expect(resultArtifacts(result)).toEqual(
+      expect.arrayContaining([
         expect.objectContaining({
           id: "artifact-ops-manual",
           type: "ops_manual_search_result",
         }),
-      ],
-    });
+      ]),
+    );
   });
 
   it("merges matching ops manual preflight into the search artifact", () => {
@@ -881,8 +1213,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -943,8 +1274,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(1);
     expect(artifacts?.[0]).toMatchObject({
@@ -971,7 +1301,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("merges legacy parameter resolution when workflow_id carries the search flow id", () => {
+  it("does not merge parameter resolution when flow ids differ", () => {
     const state = createState();
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
@@ -1009,21 +1339,17 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
-    expect(artifacts).toHaveLength(1);
+    expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({
-      id: "artifact-ops-manual-params",
+      id: "artifact-ops-manual-search",
       type: "ops_manual_search_result",
-      inlineData: {
-        original_search_artifact_id: "artifact-ops-manual-search",
-        merged_param_resolution: expect.objectContaining({
-          artifact_id: "artifact-ops-manual-params",
-          manual_id: "manual-mysql-backup-ssh",
-          workflow_id: "flow-search-mysql",
-        }),
-      },
+    });
+    expect(artifacts?.[0]?.inlineData).not.toHaveProperty("merged_param_resolution");
+    expect(artifacts?.[1]).toMatchObject({
+      id: "artifact-ops-manual-params",
+      type: "ops_manual_param_resolution",
     });
   });
 
@@ -1082,8 +1408,7 @@ describe("aiopsTransportConverter", () => {
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
-    const artifacts =
-      result.messages[1]?.metadata?.unstable_state?.agentUiArtifacts;
+    const artifacts = resultArtifacts(result);
 
     expect(artifacts).toHaveLength(2);
     expect(artifacts?.[0]).toMatchObject({

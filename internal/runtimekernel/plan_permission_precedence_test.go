@@ -40,6 +40,7 @@ func TestToolDispatcherPlanActiveBlocksApprovedMutation(t *testing.T) {
 		},
 	}}
 	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithSessionApprovalGrants([]SessionApprovalGrant{{ToolName: "synthetic.write", InputHash: hash}}).
 		WithPlanApprovalContext(PlanModeState{State: PlanModeStateActive, PlanID: "plan-synthetic"}, nil)
 
@@ -95,6 +96,7 @@ func TestToolDispatcherApprovedCallMustMatchPlanScope(t *testing.T) {
 		InputHash:      "different-hash",
 	}
 	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithSessionApprovalGrants([]SessionApprovalGrant{{ToolName: "synthetic.write", InputHash: hash}}).
 		WithPlanApprovalContext(planMode, []PlanApprovalScope{scope})
 
@@ -150,6 +152,7 @@ func TestToolDispatcherApprovedPlanScopeAllowsMatchingMutation(t *testing.T) {
 		InputHash:      hash,
 	}
 	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithSessionApprovalGrants([]SessionApprovalGrant{{ToolName: "synthetic.write", InputHash: hash}}).
 		WithPlanApprovalContext(planMode, []PlanApprovalScope{scope})
 

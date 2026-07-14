@@ -18,6 +18,7 @@ type CorootErrorPayload struct {
 	StatusCode int    `json:"statusCode,omitempty"`
 	URI        string `json:"uri,omitempty"`
 	Message    string `json:"message,omitempty"`
+	UserHint   string `json:"userHint,omitempty"`
 }
 
 type corootErrorResult struct {
@@ -44,6 +45,21 @@ type ListServicesResult struct {
 	Project       string           `json:"project"`
 	Services      []ServiceSummary `json:"services"`
 	RawRef        *CorootRawRef    `json:"rawRef,omitempty"`
+}
+
+type ListServicesModelResult struct {
+	SchemaVersion   string           `json:"schemaVersion"`
+	Tool            string           `json:"tool"`
+	Status          string           `json:"status"`
+	Project         string           `json:"project"`
+	TotalServices   int              `json:"totalServices"`
+	StatusCounts    map[string]int   `json:"statusCounts,omitempty"`
+	CategoryCounts  map[string]int   `json:"categoryCounts,omitempty"`
+	ProblemServices []ServiceSummary `json:"problemServices,omitempty"`
+	SampleServices  []ServiceSummary `json:"sampleServices,omitempty"`
+	Truncated       bool             `json:"truncated,omitempty"`
+	ModelGuidance   string           `json:"modelGuidance,omitempty"`
+	RawRef          *CorootRawRef    `json:"rawRef,omitempty"`
 }
 
 type MetricSummary struct {

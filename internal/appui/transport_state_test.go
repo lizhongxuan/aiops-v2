@@ -60,22 +60,37 @@ func TestTransportStateJSONRoundTripPreservesFields(t *testing.T) {
 					Text:   "validate rollback target",
 					Status: string(AiopsTransportProcessStatusRunning),
 				},
-				Process: []AiopsProcessBlock{
-					{
-						ID:            "block-1",
-						Kind:          AiopsTransportProcessKindApproval,
-						DisplayKind:   "approval",
-						Status:        AiopsTransportProcessStatusBlocked,
-						Text:          "Rollback payment-api deployment",
-						ApprovalID:    "approval-1",
-						OutputPreview: "kubectl rollout undo deployment/payment-api -n prod",
-						UpdatedAt:     "2026-05-06T10:00:01Z",
+				BlockOrder: []string{"block-1", "final-1"},
+				BlocksByID: map[string]AiopsTransportBlock{
+					"block-1": {
+						Type: AiopsTransportBlockType(AiopsTransportProcessKindApproval),
+						AiopsProcessBlock: AiopsProcessBlock{
+							ID:            "block-1",
+							Kind:          AiopsTransportProcessKindApproval,
+							DisplayKind:   "approval",
+							Status:        AiopsTransportProcessStatusBlocked,
+							Text:          "Rollback payment-api deployment",
+							ApprovalID:    "approval-1",
+							OutputPreview: "kubectl rollout undo deployment/payment-api -n prod",
+							UpdatedAt:     "2026-05-06T10:00:01Z",
+						},
 					},
-				},
-				Final: &AiopsTransportFinal{
-					ID:     "final-1",
-					Text:   "waiting for approval",
-					Status: AiopsTransportFinalStatusRunning,
+					"final-1": {
+						Type: AiopsTransportBlockTypeFinalAnswer,
+						AiopsProcessBlock: AiopsProcessBlock{
+							ID:          "final-1",
+							Kind:        AiopsTransportProcessKindAssistant,
+							Phase:       "final_answer",
+							StreamState: "streaming",
+							Status:      AiopsTransportProcessStatusRunning,
+							Text:        "waiting for approval",
+						},
+						FinalContract: &AiopsTransportFinal{
+							ID:     "final-1",
+							Text:   "waiting for approval",
+							Status: AiopsTransportFinalStatusRunning,
+						},
+					},
 				},
 			},
 		},

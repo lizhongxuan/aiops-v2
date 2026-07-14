@@ -39,6 +39,41 @@ func TestHostTaskReportValidatorRejectsCrossHostEvidence(t *testing.T) {
 	}
 }
 
+func TestHostTaskReportValidatorRequiresBoundRoleAndHashWhenContextHasRoleBinding(t *testing.T) {
+	validator := NewHostTaskReportValidator(HostTaskReportValidationContext{
+		MissionID:       "mission-report",
+		PlanStepID:      "step-a",
+		HostAgentID:     "child-a",
+		HostID:          "host-a",
+		BoundRole:       "pg_primary",
+		RoleBindingHash: "role-hash-a",
+	})
+	err := validator.Validate(HostTaskReport{
+		MissionID:   "mission-report",
+		PlanStepID:  "step-a",
+		HostAgentID: "child-a",
+		HostID:      "host-a",
+		Status:      string(HostTaskReportStatusCompleted),
+		Evidence:    []HostTaskEvidence{{ID: "ev-a", HostID: "host-a", Source: EvidenceSourceHostCommandTool, RedactionStatus: RedactionStatusNotRequired}},
+	})
+	if !errors.Is(err, ErrInvalidHostTaskReport) {
+		t.Fatalf("err = %v, want missing role binding to be invalid", err)
+	}
+	err = validator.Validate(HostTaskReport{
+		MissionID:       "mission-report",
+		PlanStepID:      "step-a",
+		HostAgentID:     "child-a",
+		HostID:          "host-a",
+		BoundRole:       "pg_primary",
+		RoleBindingHash: "role-hash-a",
+		Status:          string(HostTaskReportStatusCompleted),
+		Evidence:        []HostTaskEvidence{{ID: "ev-a", HostID: "host-a", Source: EvidenceSourceHostCommandTool, RedactionStatus: RedactionStatusNotRequired}},
+	})
+	if err != nil {
+		t.Fatalf("Validate with bound role/hash error = %v", err)
+	}
+}
+
 func TestHostTaskReportValidatorRejectsHumanTerminalEvidenceByDefault(t *testing.T) {
 	validator := NewHostTaskReportValidator(HostTaskReportValidationContext{
 		MissionID:   "mission-report",

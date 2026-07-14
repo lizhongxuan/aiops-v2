@@ -43,6 +43,9 @@ export function ChatPage({
   const [activeInitialState, setActiveInitialState] = useState(
     resolvedInitial.state,
   );
+  const [runtimeReady, setRuntimeReady] = useState(
+    resolvedInitial.source !== "empty",
+  );
   const [activeAutoResume, setActiveAutoResume] = useState(
     resolvedInitial.source === "cache" &&
       shouldAutoResumeCachedState(resolvedInitial.state),
@@ -62,25 +65,41 @@ export function ChatPage({
           setActiveThreadId(nextThreadId);
           setActiveInitialState(nextInitialState);
           setActiveAutoResume(Boolean(autoResume));
+          setRuntimeReady(true);
         }}
       >
-        <ChatTransportProvider
-          key={activeThreadId}
-          autoResume={activeAutoResume}
-          cacheScope="single_host"
-          initialState={activeInitialState}
-          threadId={activeThreadId}
-        >
-          <div className="grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white">
-            <AiopsThread />
-            <div className="mx-auto w-full max-w-thread px-4">
-              <HostOpsWorkspace />
-              <AiopsComposer variant="chat" />
+        {runtimeReady ? (
+          <ChatTransportProvider
+            key={activeThreadId}
+            autoResume={activeAutoResume}
+            cacheScope="single_host"
+            initialState={activeInitialState}
+            threadId={activeThreadId}
+          >
+            <div className="grid h-full min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden bg-white">
+              <AiopsThread />
+              <div className="mx-auto w-full max-w-thread px-4">
+                <HostOpsWorkspace />
+                <AiopsComposer variant="chat" />
+              </div>
             </div>
-          </div>
-        </ChatTransportProvider>
+          </ChatTransportProvider>
+        ) : (
+          <ChatSessionRestorePlaceholder />
+        )}
       </SessionContextBar>
     </section>
+  );
+}
+
+function ChatSessionRestorePlaceholder() {
+  return (
+    <div
+      className="flex h-full min-h-[320px] items-center justify-center bg-white px-4 text-sm text-zinc-500"
+      data-testid="chat-session-restore-placeholder"
+    >
+      正在恢复会话...
+    </div>
   );
 }
 

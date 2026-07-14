@@ -9,11 +9,12 @@ import (
 )
 
 type ResourceIdentity struct {
-	Scheme  string        `json:"scheme,omitempty"`
-	URI     string        `json:"uri,omitempty"`
-	Version string        `json:"version,omitempty"`
-	Digest  string        `json:"digest,omitempty"`
-	Range   ResourceRange `json:"range,omitempty"`
+	Scheme             string        `json:"scheme,omitempty"`
+	URI                string        `json:"uri,omitempty"`
+	Version            string        `json:"version,omitempty"`
+	Digest             string        `json:"digest,omitempty"`
+	TargetIdentityHash string        `json:"targetIdentityHash,omitempty"`
+	Range              ResourceRange `json:"range,omitempty"`
 }
 
 type ResourceRange = resourceio.Range
@@ -135,6 +136,7 @@ func (id ResourceIdentity) normalize() ResourceIdentity {
 	id.URI = strings.TrimSpace(id.URI)
 	id.Version = strings.TrimSpace(id.Version)
 	id.Digest = strings.TrimSpace(id.Digest)
+	id.TargetIdentityHash = strings.TrimSpace(id.TargetIdentityHash)
 	id.Range = resourceio.NormalizeRangeValue(id.Range, resourceio.DefaultMaxReadBytes)
 	if id.Scheme == "" && strings.Contains(id.URI, "://") {
 		id.Scheme = strings.SplitN(id.URI, "://", 2)[0]
@@ -149,6 +151,7 @@ func (id ResourceIdentity) hasDigest() bool {
 func (id ResourceIdentity) rangeKey() string {
 	id = id.normalize()
 	return strings.Join([]string{
+		"target=" + id.TargetIdentityHash,
 		id.Scheme,
 		id.URI,
 		fmt.Sprintf("offset=%d", id.Range.Offset),

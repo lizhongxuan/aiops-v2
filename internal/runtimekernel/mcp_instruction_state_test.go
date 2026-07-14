@@ -31,4 +31,7 @@ func TestMCPInstructionContextRendersDeltaAndSparseReminder(t *testing.T) {
 	if strings.Contains(ctx.ExtraSections[0].Content, "Use bounded resource reads only.") {
 		t.Fatalf("sparse reminder leaked full instruction: %s", ctx.ExtraSections[0].Content)
 	}
+	if len(session.MCPInstructions.LastDelta) != 0 {
+		t.Fatalf("stale MCP instruction delta replayed: %#v", session.MCPInstructions.LastDelta)
+	}
 }

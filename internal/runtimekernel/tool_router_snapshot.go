@@ -3,30 +3,60 @@ package runtimekernel
 import (
 	"strings"
 
+	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/tooling"
 )
 
-type RuntimeToolRouterSnapshot struct {
-	RegisteredTools   []string            `json:"registeredTools,omitempty"`
-	ModelVisibleTools []string            `json:"modelVisibleTools,omitempty"`
-	DispatchableTools []string            `json:"dispatchableTools,omitempty"`
-	HiddenReasons     map[string][]string `json:"hiddenReasons,omitempty"`
-	PolicyHash        string              `json:"policyHash,omitempty"`
-	Fingerprint       string              `json:"fingerprint,omitempty"`
-}
+type RuntimeToolRouterSnapshot = StepToolRouter
 
 func RuntimeToolRouterSnapshotFromPolicy(registered []string, policy tooling.ToolSurfacePolicySnapshot, visible []string, dispatchable []string, fingerprint string) RuntimeToolRouterSnapshot {
-	if len(dispatchable) == 0 {
-		dispatchable = dispatchableToolNamesFromPolicy(policy, visible)
+	if dispatchable == nil {
+		dispatchable = append([]string(nil), visible...)
 	}
-	return RuntimeToolRouterSnapshot{
-		RegisteredTools:   uniqueSortedTraceStrings(registered),
-		ModelVisibleTools: uniqueSortedTraceStrings(visible),
-		DispatchableTools: uniqueSortedTraceStrings(dispatchable),
+	router, err := BuildStepToolRouter(StepToolRouterInput{
+		Registered:        registered,
+		ModelVisible:      visible,
+		Dispatchable:      dispatchable,
 		HiddenReasons:     hiddenReasonsFromToolSurfacePolicy(policy),
-		PolicyHash:        strings.TrimSpace(policy.Hash),
-		Fingerprint:       strings.TrimSpace(fingerprint),
+		PolicyHash:        policy.Hash,
+		SourceFingerprint: fingerprint,
+	})
+	if err != nil {
+		return RuntimeToolRouterSnapshot{
+			RegisteredTools:   uniqueSortedTraceStrings(registered),
+			ModelVisibleTools: uniqueSortedTraceStrings(visible),
+			DispatchableTools: uniqueSortedTraceStrings(dispatchable),
+			HiddenReasons:     hiddenReasonsFromToolSurfacePolicy(policy),
+			PolicyHash:        strings.TrimSpace(policy.Hash),
+		}
 	}
+	return router
+}
+
+func hydrateStepToolRouterForDispatch(tools []promptcompiler.Tool, router StepToolRouter) StepToolRouter {
+	if strings.TrimSpace(router.Fingerprint) != "" {
+		return router
+	}
+	registered := router.RegisteredTools
+	visible := router.ModelVisibleTools
+	dispatchable := router.DispatchableTools
+	if len(registered) == 0 && len(visible) == 0 && len(dispatchable) == 0 && len(router.HiddenReasons) == 0 {
+		registered = toolNames(tools)
+		visible = append([]string(nil), registered...)
+		dispatchable = append([]string(nil), registered...)
+	}
+	built, err := BuildStepToolRouter(StepToolRouterInput{
+		Registered:                  registered,
+		ModelVisible:                visible,
+		Dispatchable:                dispatchable,
+		HiddenReasons:               router.HiddenReasons,
+		HostInternalDispatchReasons: router.HostInternalDispatchReasons,
+		PolicyHash:                  router.PolicyHash,
+	})
+	if err != nil {
+		return router
+	}
+	return built
 }
 
 func runtimeToolRouterSnapshotFromTurnSnapshot(snapshot *TurnSnapshot) RuntimeToolRouterSnapshot {
@@ -34,6 +64,9 @@ func runtimeToolRouterSnapshotFromTurnSnapshot(snapshot *TurnSnapshot) RuntimeTo
 		return RuntimeToolRouterSnapshot{}
 	}
 	ref := snapshot.ToolSurfaceSnapshot
+	if ref.StepRouter != nil {
+		return cloneStepToolRouter(*ref.StepRouter)
+	}
 	policy := tooling.ToolSurfacePolicySnapshot{}
 	if ref.PolicySnapshot != nil {
 		policy = *ref.PolicySnapshot
@@ -41,36 +74,5 @@ func runtimeToolRouterSnapshotFromTurnSnapshot(snapshot *TurnSnapshot) RuntimeTo
 	if strings.TrimSpace(policy.Hash) == "" {
 		policy.Hash = strings.TrimSpace(ref.PolicySnapshotHash)
 	}
-	return RuntimeToolRouterSnapshotFromPolicy(ref.ToolNames, policy, ref.ToolNames, nil, ref.Fingerprint)
-}
-
-func dispatchableToolNamesFromPolicy(policy tooling.ToolSurfacePolicySnapshot, visible []string) []string {
-	allowed := make([]string, 0, len(visible))
-	visibleSet := map[string]struct{}{}
-	for _, name := range visible {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			visibleSet[strings.ToLower(name)] = struct{}{}
-		}
-	}
-	seenDecisions := false
-	for _, decision := range policy.SurfaceDecisions {
-		name := strings.TrimSpace(decision.Name)
-		if name == "" {
-			continue
-		}
-		seenDecisions = true
-		if len(visibleSet) > 0 {
-			if _, ok := visibleSet[strings.ToLower(name)]; !ok {
-				continue
-			}
-		}
-		if decision.Visible && decision.DispatchAction == tooling.SurfaceDispatchAllow {
-			allowed = append(allowed, name)
-		}
-	}
-	if seenDecisions {
-		return allowed
-	}
-	return append([]string(nil), visible...)
+	return RuntimeToolRouterSnapshotFromPolicy(ref.ToolNames, policy, ref.ToolNames, append([]string{}, ref.ToolNames...), ref.Fingerprint)
 }

@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
@@ -5,6 +6,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { AppShellChromeProvider } from "@/app/AppShellChromeContext";
 import { AppRouter } from "@/router";
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
 
 const incidentPayload = {
   id: "incident-1",
@@ -422,11 +432,13 @@ describe("React complex migration pages", () => {
   async function render(path: string) {
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={[path]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
+        <QueryClientProvider client={createTestQueryClient()}>
+          <AppShellChromeProvider>
+            <MemoryRouter initialEntries={[path]}>
+              <AppRouter />
+            </MemoryRouter>
+          </AppShellChromeProvider>
+        </QueryClientProvider>,
       );
     });
     await flush();

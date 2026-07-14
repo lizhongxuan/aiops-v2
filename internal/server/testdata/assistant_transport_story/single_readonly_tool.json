@@ -1,0 +1,168 @@
+{
+  "name": "single_readonly_tool",
+  "sessionType": "host",
+  "mode": "inspect",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-read-metrics",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "@host-a 读取 api 服务指标"
+        }
+      ],
+      "metadata": {
+        "enableTool": "read_metrics",
+        "aiops.input.mentions.v1": "{\"version\":1,\"mentions\":[{\"version\":1,\"tokenId\":\"mention-host-a\",\"sigil\":\"@\",\"display\":\"@host-a\",\"rawText\":\"@host-a\",\"kind\":\"host\",\"path\":\"host://host-a\",\"source\":\"selection\",\"range\":{\"start\":0,\"end\":7},\"payload\":{\"hostId\":\"host-a\"}}]}"
+      }
+    }
+  },
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "toolCalls": [
+        {
+          "id": "call_metrics",
+          "name": "read_metrics",
+          "arguments": {
+            "namespace": "prod",
+            "service": "api"
+          }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": "api 服务指标正常。"
+    }
+  ],
+  "toolOutcomes": [
+    {
+      "name": "read_metrics",
+      "description": "Read service metrics.",
+      "inputSchema": {
+        "type": "object",
+        "required": [
+          "namespace"
+        ],
+        "properties": {
+          "namespace": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          }
+        }
+      },
+      "content": "api metrics are healthy"
+    }
+  ],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "commentary",
+        "text": "我会先用 read_metrics 核对关键信息，再整理回答。"
+      },
+      {
+        "phase": "final_answer",
+        "text": "api 服务指标正常。"
+      }
+    ],
+    "modelVisibleTools": [
+      "read_metrics"
+    ],
+    "actualTools": [
+      {
+        "id": "call_metrics",
+        "name": "read_metrics",
+        "status": "completed"
+      }
+    ],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "host",
+      "hostId": "host-a",
+      "resourceRefs": [
+        "host:host-a"
+      ]
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "needs_evidence",
+      "confidence": "high",
+      "checkedEvidenceRefs": [
+        "tool_result:call_metrics"
+      ],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "requiredPostChecks": [],
+      "limitations": [
+        "execution_required",
+        "missing_verification_report"
+      ]
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [
+        "assistant",
+        "tool"
+      ],
+      "processStatuses": [
+        "completed",
+        "completed"
+      ],
+      "timelineTypes": [
+        "user_message",
+        "model_call",
+        "assistant_message",
+        "tool_call",
+        "tool_result",
+        "model_call",
+        "assistant_message",
+        "evidence",
+        "final_response"
+      ],
+      "finalStatus": "needs_evidence",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [],
+    "traceHashes": {
+      "promptFingerprint": {
+        "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
+        "compilerVersion": "prompt-fingerprint-v2",
+        "currentUserInputHash": "0713feca342869bd1eff3fdcfcef09d6867693773a7b59fe5c8f72f451f1c91c",
+        "developerHash": "992ae138f54fdf94cd738fd7e1ba1b5265fb06d2c9ce8ed15e4039dc2f3f5662",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "roleProfileHash": "5797df8c780b0659e5945388492e2e1dcee6658c455039e5046113cc715e4cea",
+        "runtimePolicyHash": "822ea44272d62c74c86045b88b64b06160bc2c42dfde38c0ea651dbcb21b97d8",
+        "stableHash": "bc07e60f6d5ee1641f067a8497f884e135625b106fa9c53742b7fe91307e5e40",
+        "stablePrefixHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
+        "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "be703bd63e3334f60187455e7075906f824df88df163cccc59f301675771dd8a",
+        "turnPrefixHash": "68cfdc5669e6f06786461462da7276a5e8ed3f557dd0437a0693802298a09da7",
+        "turnStableHash": "0210d654fbd3a219f665b5a9d386ada2152b1490d3dd029bd73e0b50cdadea33",
+        "version": "prompt-fingerprint-v2"
+      },
+      "stablePromptHash": "f10f4d02b804a745a0b67d81ec9284cd7a72cbf50366afd70e618a255171b213",
+      "stableToolFingerprint": "sha256:bd3f5cc29783328c8032ec33daf95a8abce66234ae6190d06ee8b00a8228d63a",
+      "toolSurfaceFingerprints": [
+        "sha256:bd3f5cc29783328c8032ec33daf95a8abce66234ae6190d06ee8b00a8228d63a"
+      ],
+      "toolPolicyHashes": [
+        "014e8808f81f172c3ae610af30ea1582002713f2464a5f11093b973d21b034ae"
+      ],
+      "governanceSnapshot": ""
+    }
+  }
+}

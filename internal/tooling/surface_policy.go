@@ -14,6 +14,40 @@ type ToolHiddenReason struct {
 	Reason string `json:"reason"`
 }
 
+var knownToolHiddenReasons = map[string]struct{}{
+	"host_exec_disallowed":                  {},
+	"target_host_out_of_scope":              {},
+	"approval_required":                     {},
+	"permission_denied":                     {},
+	"mcp_unavailable":                       {},
+	"pack_not_enabled":                      {},
+	"tool_search_required":                  {},
+	"opsmanual_not_requested":               {},
+	"public_web_policy_disabled":            {},
+	"mutation_not_allowed":                  {},
+	"resource_lock_conflict":                {},
+	"profile_denied":                        {},
+	"fallback_denied":                       {},
+	"needs_host_agent":                      {},
+	"internal_tool":                         {},
+	"hidden_from_prompt":                    {},
+	"mode_denied":                           {},
+	"runtime_denied":                        {},
+	"agent_role_read_only":                  {},
+	"agent_role_mutation_requires_approval": {},
+	"skill_denied_tool":                     {},
+	"approval_required_schema_hidden":       {},
+	"profile_disallowed":                    {},
+	"tool_not_dispatchable":                 {},
+	"public_web_not_allowed":                {},
+	"opsmanual_not_allowed":                 {},
+}
+
+func IsKnownToolHiddenReason(reason string) bool {
+	_, ok := knownToolHiddenReasons[strings.TrimSpace(strings.ToLower(reason))]
+	return ok
+}
+
 type ToolVisibleReason struct {
 	Name        string `json:"name"`
 	Reason      string `json:"reason,omitempty"`

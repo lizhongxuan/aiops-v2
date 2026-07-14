@@ -19,6 +19,7 @@ const (
 	ToolInvocationQueued    ToolInvocationStatus = "queued"
 	ToolInvocationRunning   ToolInvocationStatus = "running"
 	ToolInvocationCompleted ToolInvocationStatus = "completed"
+	ToolInvocationPartial   ToolInvocationStatus = "partial"
 	ToolInvocationFailed    ToolInvocationStatus = "failed"
 	ToolInvocationBlocked   ToolInvocationStatus = "blocked"
 )
@@ -47,6 +48,7 @@ type ToolInvocationState struct {
 	Status                 ToolInvocationStatus `json:"status"`
 	FailureKind            string               `json:"failureKind,omitempty"`
 	Mutating               bool                 `json:"mutating,omitempty"`
+	RequiredPostCheckRefs  []string             `json:"requiredPostCheckRefs,omitempty"`
 	StartedAt              time.Time            `json:"startedAt,omitempty"`
 	UpdatedAt              time.Time            `json:"updatedAt,omitempty"`
 	CompletedAt            *time.Time           `json:"completedAt,omitempty"`
@@ -88,6 +90,7 @@ func queueToolInvocation(snapshot *TurnSnapshot, iteration int, tc ToolCall, met
 		ToolSurfaceFingerprint: firstNonEmpty(iter.ToolSurfaceFingerprint, snapshot.StableToolFingerprint),
 		Status:                 ToolInvocationQueued,
 		Mutating:               meta.EffectiveGovernance(0).Mutating,
+		RequiredPostCheckRefs:  uniqueSortedHarnessStrings(meta.Idempotency.PostCheckRefs),
 		StartedAt:              now,
 		UpdatedAt:              now,
 	})
@@ -103,6 +106,10 @@ func markToolInvocationBlocked(snapshot *TurnSnapshot, toolCallID string) {
 
 func markToolInvocationCompleted(snapshot *TurnSnapshot, toolCallID string) {
 	updateToolInvocation(snapshot, toolCallID, ToolInvocationCompleted, "", nil)
+}
+
+func markToolInvocationPartial(snapshot *TurnSnapshot, toolCallID string) {
+	updateToolInvocation(snapshot, toolCallID, ToolInvocationPartial, "partial_result", nil)
 }
 
 func markToolInvocationFailed(snapshot *TurnSnapshot, toolCallID string, failureKind string) {
@@ -132,7 +139,7 @@ func updateToolInvocation(snapshot *TurnSnapshot, toolCallID string, status Tool
 		inv.FailureKind = failureKind
 	}
 	switch status {
-	case ToolInvocationCompleted, ToolInvocationFailed:
+	case ToolInvocationCompleted, ToolInvocationPartial, ToolInvocationFailed:
 		inv.CompletedAt = &now
 	}
 }

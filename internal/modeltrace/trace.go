@@ -10,9 +10,12 @@ import (
 	"strings"
 	"time"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/diagnostics"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
+	"aiops-v2/internal/specialinputmemory"
 )
 
 type Config struct {
@@ -71,6 +74,11 @@ type Request struct {
 	TaskTodoState                 *promptinput.TaskTodoTraceState
 	ToolSurfaceFingerprint        string
 	ToolSurfacePolicySnapshotHash string
+	HarnessTurn                   any
+	AssemblySource                string
+	PromptCompilerSource          string
+	ToolSurfaceSource             string
+	AdapterName                   string
 	LoadedToolsDelta              []string
 	LoadedPacksDelta              []string
 	SkillIndexHash                string
@@ -92,6 +100,14 @@ type Request struct {
 	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace
 	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace
 	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding
+	ResourceCapabilities          []resourcebinding.ResourceCapability
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef
+	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot
+	RoleBindingConflicts          []resourcebinding.RoleBindingConflict
+	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot
+	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection
 	ResourceLocks                 []promptinput.ResourceLockTrace
 	OwnerWriteTraces              []promptinput.OwnerWriteTrace
 	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace
@@ -107,79 +123,107 @@ type Request struct {
 	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace
 	ApprovalScope                 *promptinput.ApprovalScopeTrace
 	FinalEvidenceState            any
+	WorkflowTrace                 *WorkflowTrace
+}
+
+type WorkflowTrace struct {
+	WorkflowID             string `json:"workflow_id,omitempty"`
+	DrawerSessionID        string `json:"drawer_session_id,omitempty"`
+	BaseRevision           string `json:"base_revision,omitempty"`
+	NextRevision           string `json:"next_revision,omitempty"`
+	PatchID                string `json:"patch_id,omitempty"`
+	UserConfirmationID     string `json:"user_confirmation_id,omitempty"`
+	ValidationStatus       string `json:"validation_status,omitempty"`
+	EffectStatus           string `json:"effect_status,omitempty"`
+	UndoCheckpointID       string `json:"undo_checkpoint_id,omitempty"`
+	ManualCandidateID      string `json:"manual_candidate_id,omitempty"`
+	ToolSurfaceFingerprint string `json:"tool_surface_fingerprint,omitempty"`
 }
 
 type payload struct {
-	SchemaVersion                 int                                             `json:"schemaVersion"`
-	Kind                          string                                          `json:"kind,omitempty"`
-	CreatedAt                     string                                          `json:"createdAt"`
-	TraceID                       string                                          `json:"traceId,omitempty"`
-	SessionID                     string                                          `json:"sessionId,omitempty"`
-	TurnID                        string                                          `json:"turnId,omitempty"`
-	Iteration                     int                                             `json:"iteration,omitempty"`
-	CaseID                        string                                          `json:"caseId,omitempty"`
-	Metadata                      map[string]string                               `json:"metadata,omitempty"`
-	VisibleTools                  []string                                        `json:"visibleTools,omitempty"`
-	VisibleToolCount              int                                             `json:"visibleToolCount,omitempty"`
-	PromptCharCount               int                                             `json:"promptCharCount,omitempty"`
-	ModelInputStats               modelInputStats                                 `json:"modelInputStats,omitempty"`
-	ToolRegistryCharCount         int                                             `json:"toolRegistryCharCount,omitempty"`
-	PromptFingerprint             map[string]string                               `json:"promptFingerprint,omitempty"`
-	PlanModeState                 *promptinput.PlanModeTraceState                 `json:"planModeState,omitempty"`
-	PlanArtifactRef               string                                          `json:"planArtifactRef,omitempty"`
-	PlanTransitions               []promptinput.PlanTransitionTrace               `json:"planTransitions,omitempty"`
-	PlanRequirementDecision       *promptinput.PlanRequirementDecisionTrace       `json:"planRequirementDecision,omitempty"`
-	PlanCompletionGate            *promptinput.PlanCompletionGateTrace            `json:"planCompletionGate,omitempty"`
-	TaskClaims                    []promptinput.TaskClaimTrace                    `json:"taskClaims,omitempty"`
-	PlanApprovalScope             *promptinput.PlanApprovalScopeTrace             `json:"planApprovalScope,omitempty"`
-	PlanRejectionEvents           []promptinput.PlanRejectionEventTrace           `json:"planRejectionEvents,omitempty"`
-	TaskTodoState                 *promptinput.TaskTodoTraceState                 `json:"taskTodoState,omitempty"`
-	ToolSurfaceFingerprint        string                                          `json:"toolSurfaceFingerprint,omitempty"`
-	ToolSurfacePolicySnapshotHash string                                          `json:"toolSurfacePolicySnapshotHash,omitempty"`
-	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot                `json:"toolSurfaceSnapshot,omitempty"`
-	ToolSurfaceTrace              *ToolSurfaceTrace                               `json:"toolSurfaceTrace,omitempty"`
-	LoadedToolsDelta              []string                                        `json:"loadedToolsDelta,omitempty"`
-	LoadedPacksDelta              []string                                        `json:"loadedPacksDelta,omitempty"`
-	SkillIndexHash                string                                          `json:"skillIndexHash,omitempty"`
-	LoadedSkillsDelta             []string                                        `json:"loadedSkillsDelta,omitempty"`
-	ToolSearchEvents              []promptinput.ToolSearchTraceEvent              `json:"toolSearchEvents,omitempty"`
-	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent           `json:"toolSelectionEvents,omitempty"`
-	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent        `json:"rejectedToolCalls,omitempty"`
-	DispatchDecisions             []promptinput.DispatchDecisionTrace             `json:"dispatchDecisions,omitempty"`
-	SkillSearchEvents             []promptinput.SkillSearchTraceEvent             `json:"skillSearchEvents,omitempty"`
-	SkillReadEvents               []promptinput.SkillReadTraceEvent               `json:"skillReadEvents,omitempty"`
-	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent `json:"rejectedSkillActivations,omitempty"`
-	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace          `json:"mcpInstructionDeltas,omitempty"`
-	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup        `json:"parallelDispatchGroups,omitempty"`
-	FailedToolSummaries           []promptinput.FailedToolSummary                 `json:"failedToolSummaries,omitempty"`
-	AgentIndexHash                string                                          `json:"agentIndexHash,omitempty"`
-	AgentIndexEntries             []promptinput.AgentIndexEntryTrace              `json:"agentIndexEntries,omitempty"`
-	AgentIndexDropped             []promptinput.DroppedAgentIndexEntryTrace       `json:"agentIndexDropped,omitempty"`
-	AgentIndexDelta               []string                                        `json:"agentIndexDelta,omitempty"`
-	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace       `json:"agentDelegationDecision,omitempty"`
-	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace          `json:"agentAssignmentLint,omitempty"`
-	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup           `json:"agentParallelTraceGroups,omitempty"`
-	ResourceLocks                 []promptinput.ResourceLockTrace                 `json:"resourceLocks,omitempty"`
-	OwnerWriteTraces              []promptinput.OwnerWriteTrace                   `json:"ownerWriteTraces,omitempty"`
-	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace        `json:"agentFinalGate,omitempty"`
-	AgentNotifications            []promptinput.AgentNotificationTrace            `json:"agentNotifications,omitempty"`
-	VerificationAgentReport       *promptinput.VerificationAgentReportTrace       `json:"verificationAgentReport,omitempty"`
-	VerificationReportRef         string                                          `json:"verificationReportRef,omitempty"`
-	VerificationStatus            string                                          `json:"verificationStatus,omitempty"`
-	TaskDepth                     *promptinput.TaskDepthTrace                     `json:"taskDepth,omitempty"`
-	EvidenceCoverage              *promptinput.EvidenceCoverageTrace              `json:"evidenceCoverage,omitempty"`
-	GenericityTrace               *promptinput.GenericityTrace                    `json:"genericityTrace,omitempty"`
-	CompletionGate                *promptinput.CompletionGateTrace                `json:"completionGate,omitempty"`
-	SafetySignals                 []promptinput.SafetySignalTrace                 `json:"safetySignals,omitempty"`
-	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace           `json:"unexpectedStateGate,omitempty"`
-	ApprovalScope                 *promptinput.ApprovalScopeTrace                 `json:"approvalScope,omitempty"`
-	FinalEvidenceState            any                                             `json:"finalEvidenceState,omitempty"`
-	Prompt                        Prompt                                          `json:"prompt"`
-	ModelInput                    []traceMessage                                  `json:"modelInput"`
-	ContextDedupe                 *promptinput.ContextDedupeTrace                 `json:"contextDedupe,omitempty"`
-	ContextGovernance             []promptinput.ContextGovernanceTraceItem        `json:"contextGovernance,omitempty"`
-	PromptInputTrace              promptinput.PromptInputTrace                    `json:"promptInputTrace,omitempty"`
-	DiagnosticTrace               *diagnostics.DiagnosticTrace                    `json:"diagnosticTrace,omitempty"`
+	SchemaVersion                 int                                               `json:"schemaVersion"`
+	Kind                          string                                            `json:"kind,omitempty"`
+	CreatedAt                     string                                            `json:"createdAt"`
+	TraceID                       string                                            `json:"traceId,omitempty"`
+	SessionID                     string                                            `json:"sessionId,omitempty"`
+	TurnID                        string                                            `json:"turnId,omitempty"`
+	Iteration                     int                                               `json:"iteration,omitempty"`
+	CaseID                        string                                            `json:"caseId,omitempty"`
+	Metadata                      map[string]string                                 `json:"metadata,omitempty"`
+	VisibleTools                  []string                                          `json:"visibleTools,omitempty"`
+	VisibleToolCount              int                                               `json:"visibleToolCount,omitempty"`
+	PromptCharCount               int                                               `json:"promptCharCount,omitempty"`
+	ModelInputStats               modelInputStats                                   `json:"modelInputStats,omitempty"`
+	ToolRegistryCharCount         int                                               `json:"toolRegistryCharCount,omitempty"`
+	PromptFingerprint             map[string]string                                 `json:"promptFingerprint,omitempty"`
+	PlanModeState                 *promptinput.PlanModeTraceState                   `json:"planModeState,omitempty"`
+	PlanArtifactRef               string                                            `json:"planArtifactRef,omitempty"`
+	PlanTransitions               []promptinput.PlanTransitionTrace                 `json:"planTransitions,omitempty"`
+	PlanRequirementDecision       *promptinput.PlanRequirementDecisionTrace         `json:"planRequirementDecision,omitempty"`
+	PlanCompletionGate            *promptinput.PlanCompletionGateTrace              `json:"planCompletionGate,omitempty"`
+	TaskClaims                    []promptinput.TaskClaimTrace                      `json:"taskClaims,omitempty"`
+	PlanApprovalScope             *promptinput.PlanApprovalScopeTrace               `json:"planApprovalScope,omitempty"`
+	PlanRejectionEvents           []promptinput.PlanRejectionEventTrace             `json:"planRejectionEvents,omitempty"`
+	TaskTodoState                 *promptinput.TaskTodoTraceState                   `json:"taskTodoState,omitempty"`
+	ToolSurfaceFingerprint        string                                            `json:"toolSurfaceFingerprint,omitempty"`
+	ToolSurfacePolicySnapshotHash string                                            `json:"toolSurfacePolicySnapshotHash,omitempty"`
+	AssemblySource                string                                            `json:"assembly_source,omitempty"`
+	PromptCompilerSource          string                                            `json:"prompt_compiler_source,omitempty"`
+	ToolSurfaceSource             string                                            `json:"tool_surface_source,omitempty"`
+	AdapterName                   string                                            `json:"adapter_name,omitempty"`
+	ToolSurfaceSnapshot           *promptinput.ToolSurfaceSnapshot                  `json:"toolSurfaceSnapshot,omitempty"`
+	ToolSurfaceTrace              *ToolSurfaceTrace                                 `json:"toolSurfaceTrace,omitempty"`
+	LoadedToolsDelta              []string                                          `json:"loadedToolsDelta,omitempty"`
+	LoadedPacksDelta              []string                                          `json:"loadedPacksDelta,omitempty"`
+	SkillIndexHash                string                                            `json:"skillIndexHash,omitempty"`
+	LoadedSkillsDelta             []string                                          `json:"loadedSkillsDelta,omitempty"`
+	ToolSearchEvents              []promptinput.ToolSearchTraceEvent                `json:"toolSearchEvents,omitempty"`
+	ToolSelectionEvents           []promptinput.ToolSelectionTraceEvent             `json:"toolSelectionEvents,omitempty"`
+	RejectedToolCalls             []promptinput.RejectedToolCallTraceEvent          `json:"rejectedToolCalls,omitempty"`
+	DispatchDecisions             []promptinput.DispatchDecisionTrace               `json:"dispatchDecisions,omitempty"`
+	SkillSearchEvents             []promptinput.SkillSearchTraceEvent               `json:"skillSearchEvents,omitempty"`
+	SkillReadEvents               []promptinput.SkillReadTraceEvent                 `json:"skillReadEvents,omitempty"`
+	RejectedSkillActivations      []promptinput.RejectedSkillActivationTraceEvent   `json:"rejectedSkillActivations,omitempty"`
+	MCPInstructionDeltas          []promptinput.MCPInstructionDeltaTrace            `json:"mcpInstructionDeltas,omitempty"`
+	ParallelDispatchGroups        []promptinput.ParallelDispatchTraceGroup          `json:"parallelDispatchGroups,omitempty"`
+	FailedToolSummaries           []promptinput.FailedToolSummary                   `json:"failedToolSummaries,omitempty"`
+	AgentIndexHash                string                                            `json:"agentIndexHash,omitempty"`
+	AgentIndexEntries             []promptinput.AgentIndexEntryTrace                `json:"agentIndexEntries,omitempty"`
+	AgentIndexDropped             []promptinput.DroppedAgentIndexEntryTrace         `json:"agentIndexDropped,omitempty"`
+	AgentIndexDelta               []string                                          `json:"agentIndexDelta,omitempty"`
+	AgentDelegationDecision       *promptinput.AgentDelegationDecisionTrace         `json:"agentDelegationDecision,omitempty"`
+	AgentAssignmentLint           []promptinput.AgentAssignmentLintTrace            `json:"agentAssignmentLint,omitempty"`
+	AgentParallelTraceGroups      []promptinput.AgentParallelTraceGroup             `json:"agentParallelTraceGroups,omitempty"`
+	ResourceBindings              []resourcebinding.ResourceBindingSnapshot         `json:"resourceBindings,omitempty"`
+	ResourceRoleBindings          []resourcebinding.ResourceRoleBinding             `json:"resourceRoleBindings,omitempty"`
+	ResourceCapabilities          []resourcebinding.ResourceCapability              `json:"resourceCapabilities,omitempty"`
+	ResourceEvidenceRefs          []resourcebinding.EvidenceRef                     `json:"resourceEvidenceRefs,omitempty"`
+	SessionTargetSnapshot         *resourcebinding.SessionTargetSnapshot            `json:"sessionTargetSnapshot,omitempty"`
+	RoleBindingConflicts          []resourcebinding.RoleBindingConflict             `json:"roleBindingConflicts,omitempty"`
+	AgentAssemblySnapshot         *agentassembly.AgentAssemblySnapshot              `json:"agentAssemblySnapshot,omitempty"`
+	SpecialInputWorldState        *specialinputmemory.SpecialInputWorldStateSection `json:"specialInputWorldState,omitempty"`
+	ResourceLocks                 []promptinput.ResourceLockTrace                   `json:"resourceLocks,omitempty"`
+	OwnerWriteTraces              []promptinput.OwnerWriteTrace                     `json:"ownerWriteTraces,omitempty"`
+	AgentFinalGate                *promptinput.AgentFinalGateDecisionTrace          `json:"agentFinalGate,omitempty"`
+	AgentNotifications            []promptinput.AgentNotificationTrace              `json:"agentNotifications,omitempty"`
+	VerificationAgentReport       *promptinput.VerificationAgentReportTrace         `json:"verificationAgentReport,omitempty"`
+	VerificationReportRef         string                                            `json:"verificationReportRef,omitempty"`
+	VerificationStatus            string                                            `json:"verificationStatus,omitempty"`
+	TaskDepth                     *promptinput.TaskDepthTrace                       `json:"taskDepth,omitempty"`
+	EvidenceCoverage              *promptinput.EvidenceCoverageTrace                `json:"evidenceCoverage,omitempty"`
+	GenericityTrace               *promptinput.GenericityTrace                      `json:"genericityTrace,omitempty"`
+	CompletionGate                *promptinput.CompletionGateTrace                  `json:"completionGate,omitempty"`
+	SafetySignals                 []promptinput.SafetySignalTrace                   `json:"safetySignals,omitempty"`
+	UnexpectedStateGate           *promptinput.UnexpectedStateGateTrace             `json:"unexpectedStateGate,omitempty"`
+	ApprovalScope                 *promptinput.ApprovalScopeTrace                   `json:"approvalScope,omitempty"`
+	FinalEvidenceState            any                                               `json:"finalEvidenceState,omitempty"`
+	WorkflowTrace                 *WorkflowTrace                                    `json:"workflowTrace,omitempty"`
+	Prompt                        Prompt                                            `json:"prompt"`
+	ModelInput                    []traceMessage                                    `json:"modelInput"`
+	ContextDedupe                 *promptinput.ContextDedupeTrace                   `json:"contextDedupe,omitempty"`
+	ContextGovernance             []promptinput.ContextGovernanceTraceItem          `json:"contextGovernance,omitempty"`
+	PromptInputTrace              promptinput.PromptInputTrace                      `json:"promptInputTrace,omitempty"`
+	DiagnosticTrace               *diagnostics.DiagnosticTrace                      `json:"diagnosticTrace,omitempty"`
 }
 
 type ToolSurfaceTrace struct {
@@ -334,6 +378,10 @@ func buildPayload(req Request) payload {
 		TaskTodoState:                 redactedPromptTrace.TaskTodoState,
 		ToolSurfaceFingerprint:        redactedPromptTrace.ToolSurfaceFingerprint,
 		ToolSurfacePolicySnapshotHash: redactedPromptTrace.ToolSurfacePolicySnapshotHash,
+		AssemblySource:                firstNonEmpty(req.AssemblySource, redactedPromptTrace.AssemblySource),
+		PromptCompilerSource:          firstNonEmpty(req.PromptCompilerSource, redactedPromptTrace.PromptCompilerSource),
+		ToolSurfaceSource:             firstNonEmpty(req.ToolSurfaceSource, redactedPromptTrace.ToolSurfaceSource),
+		AdapterName:                   firstNonEmpty(req.AdapterName, redactedPromptTrace.AdapterName),
 		ToolSurfaceSnapshot:           redactedPromptTrace.ToolSurfaceSnapshot,
 		ToolSurfaceTrace:              buildToolSurfaceTrace(visibleTools, redactedPromptTrace),
 		LoadedToolsDelta:              append([]string(nil), redactedPromptTrace.LoadedToolsDelta...),
@@ -357,6 +405,14 @@ func buildPayload(req Request) payload {
 		AgentDelegationDecision:       redactedPromptTrace.AgentDelegationDecision,
 		AgentAssignmentLint:           append([]promptinput.AgentAssignmentLintTrace(nil), redactedPromptTrace.AgentAssignmentLint...),
 		AgentParallelTraceGroups:      append([]promptinput.AgentParallelTraceGroup(nil), redactedPromptTrace.AgentParallelTraceGroups...),
+		ResourceBindings:              append([]resourcebinding.ResourceBindingSnapshot(nil), redactedPromptTrace.ResourceBindings...),
+		ResourceRoleBindings:          append([]resourcebinding.ResourceRoleBinding(nil), redactedPromptTrace.ResourceRoleBindings...),
+		ResourceCapabilities:          append([]resourcebinding.ResourceCapability(nil), redactedPromptTrace.ResourceCapabilities...),
+		ResourceEvidenceRefs:          append([]resourcebinding.EvidenceRef(nil), redactedPromptTrace.ResourceEvidenceRefs...),
+		SessionTargetSnapshot:         redactedPromptTrace.SessionTargetSnapshot,
+		RoleBindingConflicts:          append([]resourcebinding.RoleBindingConflict(nil), redactedPromptTrace.RoleBindingConflicts...),
+		AgentAssemblySnapshot:         redactedPromptTrace.AgentAssemblySnapshot,
+		SpecialInputWorldState:        specialinputmemory.CloneWorldStateSection(redactedPromptTrace.SpecialInputWorldState),
 		ResourceLocks:                 append([]promptinput.ResourceLockTrace(nil), redactedPromptTrace.ResourceLocks...),
 		OwnerWriteTraces:              append([]promptinput.OwnerWriteTrace(nil), redactedPromptTrace.OwnerWriteTraces...),
 		AgentFinalGate:                redactedPromptTrace.AgentFinalGate,
@@ -372,6 +428,7 @@ func buildPayload(req Request) payload {
 		UnexpectedStateGate:           redactedPromptTrace.UnexpectedStateGate,
 		ApprovalScope:                 redactedPromptTrace.ApprovalScope,
 		FinalEvidenceState:            req.FinalEvidenceState,
+		WorkflowTrace:                 workflowTracePayload(req.WorkflowTrace, redactedPromptTrace.ToolSurfaceFingerprint),
 		Prompt:                        prompt,
 		ModelInput:                    modelInput,
 		ContextDedupe:                 redactedPromptTrace.ContextDedupe,
@@ -400,6 +457,28 @@ func buildToolSurfaceTrace(visibleTools []string, trace promptinput.PromptInputT
 		return nil
 	}
 	return surface
+}
+
+func workflowTracePayload(trace *WorkflowTrace, fallbackToolSurfaceFingerprint string) *WorkflowTrace {
+	if trace == nil {
+		return nil
+	}
+	out := *trace
+	out.WorkflowID = strings.TrimSpace(out.WorkflowID)
+	out.DrawerSessionID = strings.TrimSpace(out.DrawerSessionID)
+	out.BaseRevision = strings.TrimSpace(out.BaseRevision)
+	out.NextRevision = strings.TrimSpace(out.NextRevision)
+	out.PatchID = strings.TrimSpace(out.PatchID)
+	out.UserConfirmationID = strings.TrimSpace(out.UserConfirmationID)
+	out.ValidationStatus = strings.TrimSpace(out.ValidationStatus)
+	out.EffectStatus = strings.TrimSpace(out.EffectStatus)
+	out.UndoCheckpointID = strings.TrimSpace(out.UndoCheckpointID)
+	out.ManualCandidateID = strings.TrimSpace(out.ManualCandidateID)
+	out.ToolSurfaceFingerprint = firstNonEmpty(strings.TrimSpace(out.ToolSurfaceFingerprint), strings.TrimSpace(fallbackToolSurfaceFingerprint))
+	if out == (WorkflowTrace{}) {
+		return nil
+	}
+	return &out
 }
 
 func selectedToolsFromTrace(trace promptinput.PromptInputTrace) []string {
@@ -565,6 +644,18 @@ func mergeRequestToolTraceFields(req Request) promptinput.PromptInputTrace {
 	if strings.TrimSpace(trace.ToolSurfacePolicySnapshotHash) == "" {
 		trace.ToolSurfacePolicySnapshotHash = strings.TrimSpace(req.ToolSurfacePolicySnapshotHash)
 	}
+	if strings.TrimSpace(trace.AssemblySource) == "" {
+		trace.AssemblySource = strings.TrimSpace(req.AssemblySource)
+	}
+	if strings.TrimSpace(trace.PromptCompilerSource) == "" {
+		trace.PromptCompilerSource = strings.TrimSpace(req.PromptCompilerSource)
+	}
+	if strings.TrimSpace(trace.ToolSurfaceSource) == "" {
+		trace.ToolSurfaceSource = strings.TrimSpace(req.ToolSurfaceSource)
+	}
+	if strings.TrimSpace(trace.AdapterName) == "" {
+		trace.AdapterName = strings.TrimSpace(req.AdapterName)
+	}
 	if len(trace.LoadedToolsDelta) == 0 {
 		trace.LoadedToolsDelta = append([]string(nil), req.LoadedToolsDelta...)
 	}
@@ -665,6 +756,30 @@ func mergeRequestToolTraceFields(req Request) promptinput.PromptInputTrace {
 	}
 	if len(trace.AgentParallelTraceGroups) == 0 {
 		trace.AgentParallelTraceGroups = append([]promptinput.AgentParallelTraceGroup(nil), req.AgentParallelTraceGroups...)
+	}
+	if len(trace.ResourceBindings) == 0 {
+		trace.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...)
+	}
+	if len(trace.ResourceRoleBindings) == 0 {
+		trace.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+	}
+	if len(trace.ResourceCapabilities) == 0 {
+		trace.ResourceCapabilities = append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...)
+	}
+	if len(trace.ResourceEvidenceRefs) == 0 {
+		trace.ResourceEvidenceRefs = append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...)
+	}
+	if trace.SessionTargetSnapshot == nil && req.SessionTargetSnapshot != nil {
+		trace.SessionTargetSnapshot = req.SessionTargetSnapshot
+	}
+	if len(trace.RoleBindingConflicts) == 0 {
+		trace.RoleBindingConflicts = append([]resourcebinding.RoleBindingConflict(nil), req.RoleBindingConflicts...)
+	}
+	if trace.AgentAssemblySnapshot == nil && req.AgentAssemblySnapshot != nil {
+		trace.AgentAssemblySnapshot = req.AgentAssemblySnapshot
+	}
+	if trace.SpecialInputWorldState == nil && req.SpecialInputWorldState != nil {
+		trace.SpecialInputWorldState = specialinputmemory.CloneWorldStateSection(req.SpecialInputWorldState)
 	}
 	if len(trace.ResourceLocks) == 0 {
 		trace.ResourceLocks = append([]promptinput.ResourceLockTrace(nil), req.ResourceLocks...)
@@ -897,6 +1012,10 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		ContextDedupe:                 cloneContextDedupeTrace(trace.ContextDedupe),
 		ContextGovernance:             redactContextGovernanceTraceItems(trace.ContextGovernance),
 		ContextUsage:                  redactContextUsage(trace.ContextUsage),
+		AssemblySource:                diagnostics.RedactSensitiveText(strings.TrimSpace(trace.AssemblySource)),
+		PromptCompilerSource:          diagnostics.RedactSensitiveText(strings.TrimSpace(trace.PromptCompilerSource)),
+		ToolSurfaceSource:             diagnostics.RedactSensitiveText(strings.TrimSpace(trace.ToolSurfaceSource)),
+		AdapterName:                   diagnostics.RedactSensitiveText(strings.TrimSpace(trace.AdapterName)),
 		ToolSurfaceFingerprint:        diagnostics.RedactSensitiveText(trace.ToolSurfaceFingerprint),
 		ToolSurfacePolicySnapshotHash: diagnostics.RedactSensitiveText(trace.ToolSurfacePolicySnapshotHash),
 		ToolSurfaceSnapshot:           redactToolSurfaceSnapshot(trace.ToolSurfaceSnapshot),
@@ -935,6 +1054,14 @@ func redactPromptInputTrace(trace promptinput.PromptInputTrace) promptinput.Prom
 		AgentDelegationDecision:       redactAgentDelegationDecisionTrace(trace.AgentDelegationDecision),
 		AgentAssignmentLint:           redactAgentAssignmentLintTraces(trace.AgentAssignmentLint),
 		AgentParallelTraceGroups:      redactAgentParallelTraceGroups(trace.AgentParallelTraceGroups),
+		ResourceBindings:              redactResourceBindingSnapshots(trace.ResourceBindings),
+		ResourceRoleBindings:          redactResourceRoleBindings(trace.ResourceRoleBindings),
+		ResourceCapabilities:          redactResourceCapabilities(trace.ResourceCapabilities),
+		ResourceEvidenceRefs:          redactResourceEvidenceRefs(trace.ResourceEvidenceRefs),
+		SessionTargetSnapshot:         redactSessionTargetSnapshot(trace.SessionTargetSnapshot),
+		RoleBindingConflicts:          redactRoleBindingConflicts(trace.RoleBindingConflicts),
+		AgentAssemblySnapshot:         redactAgentAssemblySnapshot(trace.AgentAssemblySnapshot),
+		SpecialInputWorldState:        specialinputmemory.CloneWorldStateSection(trace.SpecialInputWorldState),
 		ResourceLocks:                 redactResourceLockTraces(trace.ResourceLocks),
 		OwnerWriteTraces:              redactOwnerWriteTraces(trace.OwnerWriteTraces),
 		AgentFinalGate:                redactAgentFinalGateDecisionTrace(trace.AgentFinalGate),
@@ -1461,6 +1588,190 @@ func redactAgentParallelTraceGroups(groups []promptinput.AgentParallelTraceGroup
 	return out
 }
 
+func redactResourceBindingSnapshots(bindings []resourcebinding.ResourceBindingSnapshot) []resourcebinding.ResourceBindingSnapshot {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.ResourceBindingSnapshot, 0, len(bindings))
+	for _, binding := range bindings {
+		binding.Ref = redactResourceRef(binding.Ref)
+		binding.Source = diagnostics.RedactSensitiveText(binding.Source)
+		binding.VerifiedBy = diagnostics.RedactSensitiveText(binding.VerifiedBy)
+		binding.TrustLevel = diagnostics.RedactSensitiveText(binding.TrustLevel)
+		binding.TraceHash = diagnostics.RedactSensitiveText(binding.TraceHash)
+		out = append(out, binding)
+	}
+	return out
+}
+
+func redactAgentAssemblySnapshot(snapshot *agentassembly.AgentAssemblySnapshot) *agentassembly.AgentAssemblySnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	out := *snapshot
+	out.AgentKind = diagnostics.RedactSensitiveText(out.AgentKind)
+	out.Profile = diagnostics.RedactSensitiveText(out.Profile)
+	out.RuntimeRole = diagnostics.RedactSensitiveText(out.RuntimeRole)
+	out.RouteReason = redactStringSlice(out.RouteReason)
+	out.ResourceBindings = redactResourceBindingSnapshots(out.ResourceBindings)
+	out.SessionTargets = redactResourceRefs(out.SessionTargets)
+	out.RoleBindings = redactResourceRoleBindings(out.RoleBindings)
+	out.ToolSurface = redactAgentAssemblyToolSurface(out.ToolSurface)
+	out.ContextSelector.Policy = diagnostics.RedactSensitiveText(out.ContextSelector.Policy)
+	out.ContextSelector.Budget = diagnostics.RedactSensitiveText(out.ContextSelector.Budget)
+	out.ContextSelector.Hash = diagnostics.RedactSensitiveText(out.ContextSelector.Hash)
+	out.PromptSections = redactAgentAssemblyPromptSections(out.PromptSections)
+	out.LoopPolicy.ToolCallPolicy = diagnostics.RedactSensitiveText(out.LoopPolicy.ToolCallPolicy)
+	out.LoopPolicy.Hash = diagnostics.RedactSensitiveText(out.LoopPolicy.Hash)
+	out.FinalContract.Shape = diagnostics.RedactSensitiveText(out.FinalContract.Shape)
+	out.FinalContract.Hash = diagnostics.RedactSensitiveText(out.FinalContract.Hash)
+	out.ProfilePromptHash = diagnostics.RedactSensitiveText(out.ProfilePromptHash)
+	out.SpecHash = diagnostics.RedactSensitiveText(out.SpecHash)
+	out.TraceTags = redactStringMap(copyStringMap(out.TraceTags))
+	return &out
+}
+
+func redactAgentAssemblyToolSurface(surface agentassembly.ToolSurfaceSnapshot) agentassembly.ToolSurfaceSnapshot {
+	surface.RegisteredTools = redactAgentAssemblyToolItems(surface.RegisteredTools)
+	surface.ModelVisibleTools = redactAgentAssemblyToolItems(surface.ModelVisibleTools)
+	surface.DispatchableTools = redactAgentAssemblyToolItems(surface.DispatchableTools)
+	surface.HiddenTools = redactAgentAssemblyToolItems(surface.HiddenTools)
+	surface.PolicyHash = diagnostics.RedactSensitiveText(surface.PolicyHash)
+	surface.Fingerprint = diagnostics.RedactSensitiveText(surface.Fingerprint)
+	surface.Hash = diagnostics.RedactSensitiveText(surface.Hash)
+	return surface
+}
+
+func redactAgentAssemblyToolItems(items []agentassembly.ToolSurfaceItem) []agentassembly.ToolSurfaceItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]agentassembly.ToolSurfaceItem, 0, len(items))
+	for _, item := range items {
+		item.Name = diagnostics.RedactSensitiveText(item.Name)
+		item.Namespace = diagnostics.RedactSensitiveText(item.Namespace)
+		item.DescriptionHash = diagnostics.RedactSensitiveText(item.DescriptionHash)
+		item.ResourceBindingHash = diagnostics.RedactSensitiveText(item.ResourceBindingHash)
+		item.Capability = diagnostics.RedactSensitiveText(item.Capability)
+		item.PolicyHash = diagnostics.RedactSensitiveText(item.PolicyHash)
+		item.HiddenReason = diagnostics.RedactSensitiveText(item.HiddenReason)
+		out = append(out, item)
+	}
+	return out
+}
+
+func redactAgentAssemblyPromptSections(snapshot agentassembly.PromptSectionSnapshot) agentassembly.PromptSectionSnapshot {
+	for i := range snapshot.Sections {
+		snapshot.Sections[i].ID = diagnostics.RedactSensitiveText(snapshot.Sections[i].ID)
+		snapshot.Sections[i].Kind = diagnostics.RedactSensitiveText(snapshot.Sections[i].Kind)
+		snapshot.Sections[i].Source = diagnostics.RedactSensitiveText(snapshot.Sections[i].Source)
+		snapshot.Sections[i].Hash = diagnostics.RedactSensitiveText(snapshot.Sections[i].Hash)
+	}
+	snapshot.Hash = diagnostics.RedactSensitiveText(snapshot.Hash)
+	return snapshot
+}
+
+func redactResourceRefs(refs []resourcebinding.ResourceRef) []resourcebinding.ResourceRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.ResourceRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, redactResourceRef(ref))
+	}
+	return out
+}
+
+func redactResourceRoleBindings(bindings []resourcebinding.ResourceRoleBinding) []resourcebinding.ResourceRoleBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.ResourceRoleBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		binding.BindingID = diagnostics.RedactSensitiveText(binding.BindingID)
+		binding.ResourceRef = redactResourceRef(binding.ResourceRef)
+		binding.Role = diagnostics.RedactSensitiveText(binding.Role)
+		binding.RoleAlias = redactStringSlice(binding.RoleAlias)
+		binding.SourceTurnID = diagnostics.RedactSensitiveText(binding.SourceTurnID)
+		binding.SourceSpan = diagnostics.RedactSensitiveText(binding.SourceSpan)
+		binding.ConflictPolicy = diagnostics.RedactSensitiveText(binding.ConflictPolicy)
+		binding.TraceHash = diagnostics.RedactSensitiveText(binding.TraceHash)
+		out = append(out, binding)
+	}
+	return out
+}
+
+func redactResourceCapabilities(capabilities []resourcebinding.ResourceCapability) []resourcebinding.ResourceCapability {
+	if len(capabilities) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.ResourceCapability, 0, len(capabilities))
+	for _, capability := range capabilities {
+		capability.ResourceRef = redactResourceRef(capability.ResourceRef)
+		capability.Capability = diagnostics.RedactSensitiveText(capability.Capability)
+		capability.ToolNames = redactStringSlice(capability.ToolNames)
+		capability.PolicyHash = diagnostics.RedactSensitiveText(capability.PolicyHash)
+		capability.BindingTraceHash = diagnostics.RedactSensitiveText(capability.BindingTraceHash)
+		capability.TraceHash = diagnostics.RedactSensitiveText(capability.TraceHash)
+		out = append(out, capability)
+	}
+	return out
+}
+
+func redactResourceEvidenceRefs(refs []resourcebinding.EvidenceRef) []resourcebinding.EvidenceRef {
+	if len(refs) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.EvidenceRef, 0, len(refs))
+	for _, ref := range refs {
+		ref.ID = diagnostics.RedactSensitiveText(ref.ID)
+		ref.ResourceRef = redactResourceRef(ref.ResourceRef)
+		ref.Source = diagnostics.RedactSensitiveText(ref.Source)
+		ref.Kind = diagnostics.RedactSensitiveText(ref.Kind)
+		ref.TraceHash = diagnostics.RedactSensitiveText(ref.TraceHash)
+		out = append(out, ref)
+	}
+	return out
+}
+
+func redactSessionTargetSnapshot(snapshot *resourcebinding.SessionTargetSnapshot) *resourcebinding.SessionTargetSnapshot {
+	if snapshot == nil {
+		return nil
+	}
+	out := *snapshot
+	out.ActiveTargetSetID = diagnostics.RedactSensitiveText(out.ActiveTargetSetID)
+	out.HostIDs = redactStringSlice(out.HostIDs)
+	out.SourceTurnID = diagnostics.RedactSensitiveText(out.SourceTurnID)
+	out.SourceMentionIDs = redactStringSlice(out.SourceMentionIDs)
+	out.BindingMode = diagnostics.RedactSensitiveText(out.BindingMode)
+	out.TraceHash = diagnostics.RedactSensitiveText(out.TraceHash)
+	return &out
+}
+
+func redactRoleBindingConflicts(conflicts []resourcebinding.RoleBindingConflict) []resourcebinding.RoleBindingConflict {
+	if len(conflicts) == 0 {
+		return nil
+	}
+	out := make([]resourcebinding.RoleBindingConflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		conflict.ResourceID = diagnostics.RedactSensitiveText(conflict.ResourceID)
+		conflict.Role = diagnostics.RedactSensitiveText(conflict.Role)
+		conflict.Reasons = redactStringSlice(conflict.Reasons)
+		conflict.TraceHash = diagnostics.RedactSensitiveText(conflict.TraceHash)
+		out = append(out, conflict)
+	}
+	return out
+}
+
+func redactResourceRef(ref resourcebinding.ResourceRef) resourcebinding.ResourceRef {
+	ref.Type = diagnostics.RedactSensitiveText(ref.Type)
+	ref.ID = diagnostics.RedactSensitiveText(ref.ID)
+	ref.DisplayName = diagnostics.RedactSensitiveText(ref.DisplayName)
+	ref.Namespace = diagnostics.RedactSensitiveText(ref.Namespace)
+	ref.Provider = diagnostics.RedactSensitiveText(ref.Provider)
+	return ref
+}
+
 func redactResourceLockTraces(locks []promptinput.ResourceLockTrace) []promptinput.ResourceLockTrace {
 	if len(locks) == 0 {
 		return nil
@@ -1908,6 +2219,10 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		trace.ContextDedupe == nil &&
 		len(trace.ContextGovernance) == 0 &&
 		contextUsageEmpty(trace.ContextUsage) &&
+		strings.TrimSpace(trace.AssemblySource) == "" &&
+		strings.TrimSpace(trace.PromptCompilerSource) == "" &&
+		strings.TrimSpace(trace.ToolSurfaceSource) == "" &&
+		strings.TrimSpace(trace.AdapterName) == "" &&
 		strings.TrimSpace(trace.ToolSurfaceFingerprint) == "" &&
 		strings.TrimSpace(trace.ToolSurfacePolicySnapshotHash) == "" &&
 		toolSurfaceSnapshotTraceEmpty(trace.ToolSurfaceSnapshot) &&
@@ -1937,6 +2252,14 @@ func promptInputTraceEmpty(trace promptinput.PromptInputTrace) bool {
 		trace.AgentDelegationDecision == nil &&
 		len(trace.AgentAssignmentLint) == 0 &&
 		len(trace.AgentParallelTraceGroups) == 0 &&
+		len(trace.ResourceBindings) == 0 &&
+		len(trace.ResourceRoleBindings) == 0 &&
+		len(trace.ResourceCapabilities) == 0 &&
+		len(trace.ResourceEvidenceRefs) == 0 &&
+		trace.SessionTargetSnapshot == nil &&
+		len(trace.RoleBindingConflicts) == 0 &&
+		trace.AgentAssemblySnapshot == nil &&
+		specialinputmemory.WorldStateSectionEmpty(trace.SpecialInputWorldState) &&
 		len(trace.ResourceLocks) == 0 &&
 		len(trace.OwnerWriteTraces) == 0 &&
 		trace.AgentFinalGate == nil &&

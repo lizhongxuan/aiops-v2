@@ -88,17 +88,18 @@ describe("MessageMarkdown", () => {
     expect(container.textContent).toContain(":8000");
   });
 
-  it("renders tool trigger mentions as blue icon badges without changing ordinary email text", async () => {
+  it("renders supported tool trigger mentions as blue icon badges without changing ordinary email text", async () => {
     await act(async () => {
-      root.render(<MessageMarkdown text="@add_workflow @coroot @ops_graph @ops_manus 每天下午6点自动抓取数据库和中间件故障案例新闻，联系 ops@example.com" />);
+      root.render(<MessageMarkdown text="@add_workflow @coroot @ops_graph @ops_manual 每天下午6点自动抓取数据库和中间件故障案例新闻，联系 ops@example.com" />);
     });
 
-    const trigger = container.querySelector('[data-tool-trigger="add_workflow"]');
+    expect(container.querySelector('[data-tool-trigger="add_workflow"]')).toBeNull();
+    expect(container.textContent).toContain("@add_workflow");
+    const trigger = container.querySelector('[data-tool-trigger="coroot"]');
     expect(trigger).toBeTruthy();
-    expect(trigger?.textContent).toBe("@add_workflow");
     expect(container.querySelector('[data-tool-trigger="coroot"]')?.textContent).toBe("@coroot");
     expect(container.querySelector('[data-tool-trigger="ops_graph"]')?.textContent).toBe("@ops_graph");
-    expect(container.querySelector('[data-tool-trigger="ops_manus"]')?.textContent).toBe("@ops_manus");
+    expect(container.querySelector('[data-tool-trigger="ops_manual"]')?.textContent).toBe("@ops_manual");
     expect(trigger?.className).toContain("text-blue-700");
     expect(trigger?.querySelector("[data-tool-trigger-icon]")?.textContent).toBe("@");
     expect(container.textContent).toContain("ops@example.com");

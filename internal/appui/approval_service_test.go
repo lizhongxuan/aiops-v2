@@ -456,6 +456,73 @@ func TestApprovalResumeErrorDoesNotStartFallbackRunTurn(t *testing.T) {
 	}
 }
 
+func TestApprovalServiceDecisionCarriesNoAuthorityMaterial(t *testing.T) {
+	now := time.Now().UTC()
+	sessions := runtimekernel.NewSessionManager()
+	session := sessions.GetOrCreate("sess-approval-fingerprint", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
+	approval := runtimekernel.PendingApproval{
+		ID:                     "approval-fingerprint",
+		SessionID:              session.ID,
+		TurnID:                 "turn-fingerprint",
+		Iteration:              1,
+		ToolName:               "restart_service",
+		InputHash:              "sha256:input",
+		ArgumentsHash:          "sha256:args",
+		ToolSurfaceFingerprint: "surface-1",
+		PermissionSnapshotHash: "permission-1",
+		Source:                 "runtime_reapproval",
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}
+	session.CurrentTurn = &runtimekernel.TurnSnapshot{
+		ID:          "turn-fingerprint",
+		SessionID:   session.ID,
+		SessionType: session.Type,
+		Mode:        session.Mode,
+		Lifecycle:   runtimekernel.TurnLifecycleSuspended,
+		ResumeState: runtimekernel.TurnResumeStatePendingApproval,
+		Iteration:   1,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		LatestCheckpoint: &runtimekernel.CheckpointMetadata{
+			ID:        "checkpoint-fingerprint",
+			SessionID: session.ID,
+			TurnID:    "turn-fingerprint",
+			Iteration: 1,
+			Sequence:  1,
+			Kind:      "approval_needed",
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		PendingApprovals: []runtimekernel.PendingApproval{approval},
+	}
+	session.PendingApprovals = []runtimekernel.PendingApproval{approval}
+	sessions.Update(session)
+
+	runtime := &approvalRuntimeStub{}
+	service := NewApprovalServiceWithContext(context.Background(), runtime, sessions, NewSnapshotBuilder())
+	_, err := service.Decide(context.Background(), ApprovalDecision{
+		ID:       "approval-fingerprint",
+		Decision: "accept",
+	})
+	if err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	if runtime.runReq.TurnID != "" {
+		t.Fatalf("RunTurn was called: %+v", runtime.runReq)
+	}
+	req := runtime.resumeReq
+	if req.SessionID != session.ID || req.TurnID != "turn-fingerprint" || req.ApprovalID != "approval-fingerprint" {
+		t.Fatalf("ResumeTurn target = %+v, want server-side approval locator", req)
+	}
+	if req.CheckpointID != "checkpoint-fingerprint" || req.ResumeState != runtimekernel.TurnResumeStatePendingApproval || req.Decision != "approved" {
+		t.Fatalf("ResumeTurn control fields = %+v, want checkpoint/pending_approval/approved", req)
+	}
+	if len(req.Metadata) != 0 {
+		t.Fatalf("ResumeTurn metadata = %#v, want no client-carried authority material", req.Metadata)
+	}
+}
+
 func TestApprovalFallbackDoesNotRunForApprovedDecision(t *testing.T) {
 	now := time.Now().UTC()
 	sessions := runtimekernel.NewSessionManager()

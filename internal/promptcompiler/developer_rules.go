@@ -102,6 +102,7 @@ func developerThinProfileLines(ctx CompileContext) []string {
 }
 
 func developerThinToolBoundaryLines(ctx CompileContext) []string {
+	profile := normalizePromptProfile(ctx.Profile)
 	lines := []string{
 		"Only call tools visible in the current runtime tool surface; hidden tools are unavailable.",
 		"Tool failure, empty output, denial, timeout, or unavailable evidence is not proof of healthy target state.",
@@ -109,7 +110,7 @@ func developerThinToolBoundaryLines(ctx CompileContext) []string {
 		"For resource inspection, report concrete requested values, not only health or normality.",
 		"For current host, current environment, local runtime, or selected resource facts, use environment-bound tools and do not use web_search or browse_url unless explicitly asked.",
 	}
-	if normalizePromptProfile(ctx.Profile) != PromptProfileHostManager {
+	if profile != PromptProfileHostManager && profile != PromptProfileWorkflowAgent {
 		lines = append(lines, "When exec_command is visible for read-only inspection, pass executable and args directly; do not wrap commands in sh/bash/zsh -c, pipes, redirection, or command chaining.")
 	}
 	if strings.TrimSpace(ctx.SessionType) == "workspace" || strings.TrimSpace(ctx.HostContext) == "" {
@@ -125,6 +126,7 @@ func developerThinFinalAnswerLines(ctx CompileContext) []string {
 	lines := []string{
 		"For simple answers, lead with the answer or outcome.",
 		"For ordinary evidence/advisory answers, keep the final answer to the conclusion, key mechanism, evidence boundary, and next read-only checks.",
+		"Match the user's language for user-visible replies; translate fixed tool/status labels and do not expose internal English identifiers or tool process chatter.",
 		"Never emit empty citation placeholders, failed search queries, or unverifiable fields.",
 		"Report verification honestly: passed, failed, skipped, partial, blocked, or unavailable.",
 		"If verification status is PARTIAL or FAIL, state the blocker, checked contract, expected vs actual, and available evidence reference; call the outcome partially verified or blocked.",

@@ -3,10 +3,160 @@ package hostops
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/tooling"
 )
+
+func TestManagerLifecycleToolsUseCoreNonMutationGovernance(t *testing.T) {
+	tools := managerToolsByName(NewManagerTools(nil))
+	expectedOperation := map[string]string{
+		ToolSpawnHostAgent:       "spawn_child_agents",
+		ToolSendHostAgentMessage: "send_message",
+		ToolStopHostAgent:        "stop_child_agent",
+	}
+	for _, name := range []string{ToolSpawnHostAgent, ToolSendHostAgentMessage, ToolStopHostAgent} {
+		tool := tools[name]
+		if tool == nil {
+			t.Fatalf("manager tool %q is missing", name)
+		}
+		meta := tool.Metadata()
+		if meta.Layer != tooling.ToolLayerCore {
+			t.Errorf("%s Layer = %q, want %q", name, meta.Layer, tooling.ToolLayerCore)
+		}
+		if meta.Mutating {
+			t.Errorf("%s Mutating = true, want false for manager-only lifecycle control", name)
+		}
+		if meta.RiskLevel != tooling.ToolRiskLow {
+			t.Errorf("%s RiskLevel = %q, want %q", name, meta.RiskLevel, tooling.ToolRiskLow)
+		}
+		if meta.RequiresApproval {
+			t.Errorf("%s RequiresApproval = true, want false", name)
+		}
+		discovery := meta.EffectiveDiscovery()
+		if discovery.CapabilityKind != "orchestration_control" {
+			t.Errorf("%s CapabilityKind = %q, want orchestration_control", name, discovery.CapabilityKind)
+		}
+		if len(discovery.OperationKinds) != 1 || discovery.OperationKinds[0] != expectedOperation[name] {
+			t.Errorf("%s OperationKinds = %v, want [%s]", name, discovery.OperationKinds, expectedOperation[name])
+		}
+		if tool.IsReadOnly(nil) {
+			t.Errorf("%s IsReadOnly = true, want false because it changes child lifecycle state", name)
+		}
+	}
+}
+
+func TestWaitManagerToolRemainsTypedReadCapability(t *testing.T) {
+	tool := managerToolsByName(NewManagerTools(nil))[ToolWaitHostAgents]
+	if tool == nil {
+		t.Fatal("wait manager tool is missing")
+	}
+	meta := tool.Metadata()
+	discovery := meta.EffectiveDiscovery()
+	if meta.Mutating || meta.RequiresApproval || meta.RiskLevel != tooling.ToolRiskLow {
+		t.Fatalf("wait governance = mutating:%t approval:%t risk:%q, want non-mutating low-risk without approval", meta.Mutating, meta.RequiresApproval, meta.RiskLevel)
+	}
+	if discovery.CapabilityKind != "read" || discovery.PermissionScope != "read" {
+		t.Fatalf("wait discovery = capability:%q permission:%q, want read/read", discovery.CapabilityKind, discovery.PermissionScope)
+	}
+	if len(discovery.OperationKinds) != 1 || discovery.OperationKinds[0] != "read" {
+		t.Fatalf("wait OperationKinds = %v, want [read]", discovery.OperationKinds)
+	}
+	if !tool.IsReadOnly(nil) {
+		t.Fatal("wait IsReadOnly = false, want true")
+	}
+}
+
+func TestSpawnManagerToolStillRequiresAcceptedPlanBeforeOrchestration(t *testing.T) {
+	ctx := context.Background()
+	store := NewInMemoryMissionStore()
+	if err := store.SaveMission(ctx, HostOperationMission{
+		ID:           "mission-unaccepted",
+		PlanRequired: true,
+		PlanAccepted: false,
+		Mentions:     []HostMention{{HostID: "host-a", Resolved: true}},
+	}); err != nil {
+		t.Fatalf("SaveMission() error = %v", err)
+	}
+	orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})
+	tool := managerToolsByName(NewManagerTools(orchestrator))[ToolSpawnHostAgent]
+
+	_, err := tool.Execute(ctx, json.RawMessage(`{
+		"missionId":"mission-unaccepted",
+		"assignments":[{"hostId":"host-a","task":"inspect host a"}]
+	}`))
+	if !errors.Is(err, ErrPlanNotAccepted) {
+		t.Fatalf("spawn Execute() error = %v, want ErrPlanNotAccepted", err)
+	}
+}
+
+func TestChildAgentResultContractTransportCompatibleJSONRoundTrip(t *testing.T) {
+	startedAt := time.Date(2026, 7, 12, 1, 2, 3, 0, time.UTC)
+	updatedAt := startedAt.Add(time.Minute)
+	completedAt := updatedAt.Add(time.Minute)
+	child := HostChildAgent{
+		ID:              "child-a",
+		MissionID:       "mission-a",
+		ParentAgentID:   "manager-a",
+		SessionID:       "host-child:a",
+		HostID:          "host-a",
+		HostAddress:     "10.0.0.1",
+		HostDisplayName: "Franklin",
+		Role:            "host_child",
+		Task:            "inspect host a",
+		Status:          HostChildAgentStatusCompleted,
+		PlanStepIDs:     []string{"step-a"},
+		StartedAt:       startedAt,
+		UpdatedAt:       updatedAt,
+		CompletedAt:     &completedAt,
+	}
+
+	data, err := json.Marshal(childAgentResultContracts([]HostChildAgent{child}, true))
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var roundTrip []struct {
+		ID              string     `json:"id"`
+		ChildAgentID    string     `json:"childAgentId"`
+		MissionID       string     `json:"missionId"`
+		ParentAgentID   string     `json:"parentAgentId"`
+		SessionID       string     `json:"sessionId"`
+		HostID          string     `json:"hostId"`
+		HostAddress     string     `json:"hostAddress"`
+		HostDisplayName string     `json:"hostDisplayName"`
+		Role            string     `json:"role"`
+		Task            string     `json:"task"`
+		Status          string     `json:"status"`
+		PlanStepIDs     []string   `json:"planStepIds"`
+		StartedAt       time.Time  `json:"startedAt"`
+		UpdatedAt       time.Time  `json:"updatedAt"`
+		CompletedAt     *time.Time `json:"completedAt"`
+		NoHostMutation  bool       `json:"noHostMutation"`
+	}
+	if err := json.Unmarshal(data, &roundTrip); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, data)
+	}
+	if len(roundTrip) != 1 {
+		t.Fatalf("roundTrip len = %d, want 1", len(roundTrip))
+	}
+	got := roundTrip[0]
+	if got.ID != child.ID || got.ChildAgentID != child.ID || got.MissionID != child.MissionID || got.ParentAgentID != child.ParentAgentID || got.SessionID != child.SessionID {
+		t.Fatalf("identity fields = %#v, want transport identity plus childAgentId alias", got)
+	}
+	if got.HostID != child.HostID || got.HostAddress != child.HostAddress || got.HostDisplayName != child.HostDisplayName {
+		t.Fatalf("host fields = %#v, want %#v", got, child)
+	}
+	if got.Role != child.Role || got.Task != child.Task || got.Status != string(child.Status) || len(got.PlanStepIDs) != 1 || got.PlanStepIDs[0] != "step-a" {
+		t.Fatalf("execution fields = %#v, want role/task/status/planStepIds", got)
+	}
+	if !got.StartedAt.Equal(startedAt) || !got.UpdatedAt.Equal(updatedAt) || got.CompletedAt == nil || !got.CompletedAt.Equal(completedAt) || !got.NoHostMutation {
+		t.Fatalf("timestamps/guarantee = %#v, want complete JSON round trip", got)
+	}
+}
 
 func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	ctx := context.Background()
@@ -16,6 +166,7 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	mission := HostOperationMission{
 		ID:             "mission-tools",
 		ManagerAgentID: "manager-tools",
+		Status:         HostMissionStatusSpawningChildren,
 		PlanRequired:   true,
 		PlanAccepted:   true,
 		Mentions: []HostMention{{
@@ -39,7 +190,13 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	var spawnPayload struct {
 		SchemaVersion string `json:"schemaVersion"`
-		Children      []struct {
+		Mission       struct {
+			ID           string `json:"id"`
+			PlanRequired bool   `json:"planRequired"`
+			PlanAccepted bool   `json:"planAccepted"`
+			Status       string `json:"status"`
+		} `json:"mission"`
+		Children []struct {
 			ChildAgentID   string `json:"childAgentId"`
 			TargetRef      string `json:"targetRef"`
 			Status         string `json:"status"`
@@ -52,6 +209,9 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	if spawnPayload.SchemaVersion != "aiops.hostops.child/v1" || len(spawnPayload.Children) != 1 {
 		t.Fatalf("spawn payload = %#v, want child schema with one child", spawnPayload)
 	}
+	if spawnPayload.Mission.ID != mission.ID || !spawnPayload.Mission.PlanRequired || !spawnPayload.Mission.PlanAccepted || spawnPayload.Mission.Status != string(HostMissionStatusSpawningChildren) {
+		t.Fatalf("spawn mission = %#v, want canonical accepted mission summary", spawnPayload.Mission)
+	}
 	child := spawnPayload.Children[0]
 	if child.ChildAgentID == "" || child.TargetRef != "host-a" || !child.NoHostMutation {
 		t.Fatalf("spawn child = %#v, want targetRef and noHostMutation guarantee", child)
@@ -63,7 +223,13 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	}
 	var waitPayload struct {
 		SchemaVersion string `json:"schemaVersion"`
-		Children      []struct {
+		Mission       struct {
+			ID           string `json:"id"`
+			PlanRequired bool   `json:"planRequired"`
+			PlanAccepted bool   `json:"planAccepted"`
+			Status       string `json:"status"`
+		} `json:"mission"`
+		Children []struct {
 			ChildAgentID string   `json:"childAgentId"`
 			TargetRef    string   `json:"targetRef"`
 			Status       string   `json:"status"`
@@ -77,11 +243,91 @@ func TestHostAgentFullRuntimeManagerToolsReturnChildContracts(t *testing.T) {
 	if waitPayload.SchemaVersion != "aiops.hostops.wait/v1" || len(waitPayload.Children) != 1 {
 		t.Fatalf("wait payload = %#v, want wait schema with one child", waitPayload)
 	}
+	if waitPayload.Mission.ID != mission.ID || !waitPayload.Mission.PlanRequired || !waitPayload.Mission.PlanAccepted || waitPayload.Mission.Status != string(HostMissionStatusSpawningChildren) {
+		t.Fatalf("wait mission = %#v, want canonical accepted mission summary", waitPayload.Mission)
+	}
 	if waitPayload.Children[0].ChildAgentID == "" || waitPayload.Children[0].TargetRef != "host-a" {
 		t.Fatalf("wait child = %#v, want child result contract", waitPayload.Children[0])
 	}
 	if waitPayload.Children[0].EvidenceRefs == nil || waitPayload.Children[0].BlockerRefs == nil {
 		t.Fatalf("wait child = %#v, want explicit evidenceRefs/blockerRefs arrays", waitPayload.Children[0])
+	}
+}
+
+func TestWaitHostAgentsReturnsTypedAggregateOutcome(t *testing.T) {
+	tests := []struct {
+		name        string
+		statuses    []HostChildAgentStatus
+		wantOutcome tooling.ToolResultOutcome
+	}{
+		{
+			name:        "all children completed",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusCompleted},
+			wantOutcome: tooling.ToolResultOutcomeComplete,
+		},
+		{
+			name:        "one child failed",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusFailed},
+			wantOutcome: tooling.ToolResultOutcomePartial,
+		},
+		{
+			name:        "one child still running",
+			statuses:    []HostChildAgentStatus{HostChildAgentStatusCompleted, HostChildAgentStatusRunning},
+			wantOutcome: tooling.ToolResultOutcomePartial,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := NewInMemoryMissionStore()
+			missionID := "mission-aggregate-" + strings.ReplaceAll(tt.name, " ", "-")
+			if err := store.SaveMission(ctx, HostOperationMission{ID: missionID}); err != nil {
+				t.Fatalf("SaveMission() error = %v", err)
+			}
+			for i, status := range tt.statuses {
+				child := HostChildAgent{
+					ID:        fmt.Sprintf("child-%d", i),
+					MissionID: missionID,
+					HostID:    fmt.Sprintf("host-%d", i),
+					Status:    status,
+				}
+				if status == HostChildAgentStatusFailed {
+					child.Error = "host unavailable"
+				}
+				if err := store.SaveChildAgent(ctx, child); err != nil {
+					t.Fatalf("SaveChildAgent() error = %v", err)
+				}
+			}
+
+			orchestrator := NewOrchestrator(store, NewInMemoryTranscriptStore(), &fakeChildSpawner{})
+			tool := managerToolsByName(NewManagerTools(orchestrator))[ToolWaitHostAgents]
+			result, err := tool.Execute(ctx, json.RawMessage(fmt.Sprintf(`{"missionId":%q}`, missionID)))
+			if err != nil {
+				t.Fatalf("wait Execute() error = %v, want aggregate result without Go error", err)
+			}
+			if result.Error != "" {
+				t.Fatalf("wait result Error = %q, want empty", result.Error)
+			}
+			if result.Outcome != tt.wantOutcome {
+				t.Fatalf("wait result Outcome = %q, want %q", result.Outcome, tt.wantOutcome)
+			}
+			var payload struct {
+				Children []struct {
+					Status string `json:"status"`
+					Error  string `json:"error"`
+				} `json:"children"`
+			}
+			if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+				t.Fatalf("wait result content is not complete JSON: %v\n%s", err, result.Content)
+			}
+			if len(payload.Children) != len(tt.statuses) {
+				t.Fatalf("wait result children = %#v, want %d complete child records", payload.Children, len(tt.statuses))
+			}
+			if tt.wantOutcome == tooling.ToolResultOutcomePartial && payload.Children[1].Status == "" {
+				t.Fatalf("partial result dropped child status: %#v", payload.Children)
+			}
+		})
 	}
 }
 

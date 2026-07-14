@@ -1,0 +1,76 @@
+{
+  "name": "mutation_missing_target",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "msg-missing-target",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "帮我部署服务"
+        }
+      ]
+    }
+  },
+  "providerResponses": [],
+  "toolOutcomes": [],
+  "want": {
+    "providerCallCount": 0,
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "final_answer",
+        "text": "缺少明确且已验证的执行目标，因此未执行任何操作。请先选择或绑定目标后重试。"
+      }
+    ],
+    "modelVisibleTools": [],
+    "actualTools": [],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "none",
+      "resourceRefs": []
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "blocked",
+      "confidence": "low",
+      "checkedEvidenceRefs": [],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "limitations": [
+        "exec_command_not_allowed",
+        "mutation_intent_requires_explicit_target_binding",
+        "no_explicit_target_binding"
+      ]
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [],
+      "processStatuses": [],
+      "timelineTypes": [
+        "user_message",
+        "assistant_message",
+        "final_response"
+      ],
+      "finalStatus": "blocked",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [],
+    "traceHashes": {
+      "promptFingerprint": {},
+      "stablePromptHash": "",
+      "stableToolFingerprint": "",
+      "toolSurfaceFingerprints": [],
+      "toolPolicyHashes": [],
+      "governanceSnapshot": ""
+    }
+  }
+}

@@ -179,6 +179,14 @@ func extraSectionsByDynamicSource(sections []PromptSection, sourceID string) str
 }
 
 func dynamicSourceIDForExtraSection(section PromptSection) string {
+	switch sourceType := strings.TrimSpace(section.SourceType); sourceType {
+	case DynamicContextSourceEvidence, DynamicContextSourceSkill, DynamicContextSourceHostTask,
+		DynamicContextSourceProtocol, DynamicContextSourceMemory, DynamicContextSourceHistoryCompacted:
+		return sourceType
+	}
+	// Deprecated: compatibility-only classification for the read-only legacy
+	// parity/trace view. The canonical EnvelopeV2 provider path consumes typed
+	// PromptSection source facts and never uses this title adapter as control input.
 	title := strings.ToLower(strings.TrimSpace(section.Title))
 	switch {
 	case strings.Contains(title, "memory") || strings.Contains(title, "letta") || strings.Contains(title, "session fact"):

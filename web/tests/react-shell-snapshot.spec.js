@@ -1,5 +1,46 @@
 import { expect, test } from "@playwright/test";
 
+function canonicalTranscript(process, final, artifacts = []) {
+  const blocks = process.map((block) => ({
+    ...block,
+    type: block.kind === "assistant" ? "commentary" : block.kind,
+  }));
+  if (final) {
+    const processStatus = final.status === "running"
+      ? "running"
+      : ["blocked", "needs_evidence", "approval_denied", "tool_unavailable"].includes(final.status)
+        ? "blocked"
+        : ["failed", "cancelled"].includes(final.status)
+          ? "failed"
+          : "completed";
+    blocks.push({
+      id: final.id,
+      type: "final_answer",
+      kind: "assistant",
+      displayKind: "assistant.message",
+      phase: "final_answer",
+      streamState: final.status === "running" ? "streaming" : processStatus === "completed" ? "complete" : "incomplete",
+      status: processStatus,
+      text: final.text,
+      finalContract: final,
+    });
+  }
+  for (const artifact of artifacts) {
+    blocks.push({
+      id: artifact.id,
+      type: "artifact",
+      kind: "tool",
+      status: artifact.status === "failed" ? "failed" : "completed",
+      text: artifact.summaryZh || artifact.summary || artifact.titleZh || artifact.title || "",
+      artifact,
+    });
+  }
+  return {
+    blockOrder: blocks.map((block) => block.id),
+    blocksById: Object.fromEntries(blocks.map((block) => [block.id, block])),
+  };
+}
+
 const transportState = {
   schemaVersion: "aiops.transport.v2",
   sessionId: "browser-flow-session",
@@ -17,7 +58,7 @@ const transportState = {
         text: "测试一下 aiops-v2 对话时，工具跟对话的顺序是否正确。",
         createdAt: "2026-05-08T02:00:00.000Z",
       },
-      process: [
+      ...canonicalTranscript([
         {
           id: "assistant-next",
           kind: "assistant",
@@ -76,12 +117,11 @@ const transportState = {
           text: "页面也确认过了，最终回答会基于上面的命令和搜索结果。",
           updatedAt: "2026-05-08T02:00:10.000Z",
         },
-      ],
-      final: {
+      ], {
         id: "final-browser-flow",
         text: "流程验证完成：对话、命令组、对话、搜索组和后续对话按预期顺序显示。",
         status: "completed",
-      },
+      }),
     },
   },
   turnOrder: ["turn-browser-flow"],
@@ -191,6 +231,101 @@ function finalMarkdownState(status) {
   };
 }
 
+function finalContractSummaryState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "final-contract-summary-session",
+    threadId: "final-contract-summary-session",
+    status: "idle",
+    currentTurnId: "turn-final-contract-summary",
+    turns: {
+      "turn-final-contract-summary": {
+        id: "turn-final-contract-summary",
+        status: "completed",
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: "2026-05-08T02:00:12.000Z",
+        updatedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: "user-final-contract-summary",
+          text: "只读看一下主机进程和负载，不要修改任何东西",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [],
+        final: {
+          id: "final-contract-summary",
+          text: "以下是只读巡检结果：系统负载稳定，未执行任何修改。",
+          status: "verified",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "high",
+          checkedEvidenceRefs: ["call_secret_1", "call_secret_2"],
+        },
+      },
+    },
+    turnOrder: ["turn-final-contract-summary"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 2,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
+function finalContractInternalCalibrationState() {
+  return {
+    schemaVersion: "aiops.transport.v2",
+    sessionId: "final-contract-internal-calibration-session",
+    threadId: "final-contract-internal-calibration-session",
+    status: "idle",
+    currentTurnId: "turn-final-contract-internal-calibration",
+    turns: {
+      "turn-final-contract-internal-calibration": {
+        id: "turn-final-contract-internal-calibration",
+        status: "completed",
+        startedAt: "2026-05-08T02:00:00.000Z",
+        completedAt: "2026-05-08T02:00:12.000Z",
+        updatedAt: "2026-05-08T02:00:12.000Z",
+        user: {
+          id: "user-final-contract-internal-calibration",
+          text: "你好",
+          createdAt: "2026-05-08T02:00:00.000Z",
+        },
+        process: [],
+        final: {
+          id: "final-contract-internal-calibration",
+          text: "你好！有什么可以帮你的吗？",
+          status: "unknown",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+        },
+      },
+    },
+    turnOrder: ["turn-final-contract-internal-calibration"],
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    seq: 2,
+    updatedAt: "2026-05-08T02:00:12.000Z",
+  };
+}
+
 function runningPreludeBeforeToolsState() {
   return {
     schemaVersion: "aiops.transport.v2",
@@ -209,12 +344,11 @@ function runningPreludeBeforeToolsState() {
           text: "再看下主机资源",
           createdAt: runningPreludeStartedAt,
         },
-        process: [],
-        final: {
+        ...canonicalTranscript([], {
           id: "final-running-prelude-before-tools",
           text: runningPreludeText,
           status: "running",
-        },
+        }),
       },
     },
     turnOrder: ["turn-running-prelude-before-tools"],
@@ -349,7 +483,7 @@ function longTerminalOutputState() {
           text: "看下进程内存",
           createdAt: "2026-05-08T02:00:00.000Z",
         },
-        process: [
+        ...canonicalTranscript([
           {
             id: "cmd-long-terminal-output",
             kind: "command",
@@ -359,12 +493,11 @@ function longTerminalOutputState() {
             outputPreview,
             updatedAt: "2026-05-08T02:00:05.000Z",
           },
-        ],
-        final: {
+        ], {
           id: "final-long-terminal-output",
           text: "进程列表已获取。",
           status: "completed",
-        },
+        }),
       },
     },
     turnOrder: ["turn-long-terminal-output"],
@@ -418,7 +551,7 @@ function contextCompactionTransportState() {
             createdAt: "2026-05-22T08:00:02.000Z",
           },
         ],
-        process: [
+        ...canonicalTranscript([
           {
             id: "tool-context-spill",
             kind: "tool",
@@ -442,12 +575,11 @@ function contextCompactionTransportState() {
             ],
             updatedAt: "2026-05-22T08:00:03.000Z",
           },
-        ],
-        final: {
+        ], {
           id: "final-context-compaction",
           text: "我正在整理旧上下文，关键摘要会保留在当前对话里。",
           status: "running",
-        },
+        }),
       },
     },
     turnOrder: ["turn-context-compaction"],
@@ -610,13 +742,12 @@ function artifactTransportState(sessionId, userText, artifact) {
           text: userText,
           createdAt: "2026-05-19T10:00:00.000Z",
         },
-        process: [],
         agentUiArtifacts: artifacts,
-        final: {
+        ...canonicalTranscript([], {
           id: `final-${sessionId}`,
           text: "已完成运维手册判定。",
           status: "completed",
-        },
+        }, artifacts),
       },
     },
     turnOrder: [turnId],
@@ -683,7 +814,7 @@ function opsManualMergedParamConfirmationState() {
         redactionStatus: "redacted",
         inlineData: {
           status: "need_user_input",
-          ops_manual_flow_id: "flow-regenerated-param",
+          ops_manual_flow_id: "flow-mysql-search",
           manual_id: "manual-mysql-backup-ssh",
           workflow_id: "flow-mysql-search",
           resolved_params: [
@@ -793,7 +924,25 @@ function opsManualDynamicCandidatesState() {
 }
 
 function dataStreamForState(state) {
-  return `aui-state:${JSON.stringify([{ type: "set", path: [], value: state }])}\n`;
+  return `aui-state:${JSON.stringify([{ type: "set", path: [], value: completeTransportFixtureState(state) }])}\n`;
+}
+
+function completeTransportFixtureState(state) {
+  return {
+    pendingApprovals: {},
+    mcpSurfaces: {},
+    artifacts: {},
+    hostMissions: {},
+    childAgents: {},
+    runtimeLiveness: {
+      activeTurns: {},
+      activeAgents: {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    ...state,
+  };
 }
 
 async function routeShellApis(page, stateOrGetState) {
@@ -845,7 +994,7 @@ test("process transcript keeps narration and expanded search details aligned", a
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页检索 2 次 · 找到 1 个来源");
+  await expect(transcript).toContainText("网页搜索 2 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
@@ -877,6 +1026,31 @@ test("assistant final markdown keeps the same layout while running and after com
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });
 
+test("final contract summary hides raw evidence refs", async ({ page }) => {
+  await routeShellApis(page, finalContractSummaryState());
+  await page.goto("/");
+
+  const summary = page.getByTestId("aiops-final-contract-summary");
+  await expect(summary).toBeVisible();
+  await expect(summary).toContainText("已验证");
+  await expect(summary).toContainText("置信度高");
+  await expect(summary).toContainText("已采集 2 条证据");
+  await expect(summary).not.toContainText("call_secret_1");
+  await expect(summary).not.toContainText("call_secret_2");
+  await expect(summary).toHaveScreenshot("final-contract-summary-redacted-evidence.png");
+});
+
+test("final contract summary hides internal low confidence calibration", async ({ page }) => {
+  await routeShellApis(page, finalContractInternalCalibrationState());
+  await page.goto("/");
+
+  await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+  const answer = page.getByTestId("aiops-answer-document");
+  await expect(answer).toContainText("你好！有什么可以帮你的吗？");
+  await expect(answer).not.toContainText("置信度低");
+  await expect(answer).toHaveScreenshot("final-contract-internal-calibration-hidden.png");
+});
+
 test("running assistant text keeps the process header before tool blocks arrive", async ({ page }) => {
   await page.clock.setFixedTime(runningPreludeRenderedAt);
   await routeShellApis(page, runningPreludeBeforeToolsState());
@@ -900,7 +1074,7 @@ test("long terminal output stays inside a scrollable output box", async ({ page 
   const terminalOutput = page.getByTestId("aiops-command-output-cmd-long-terminal-output");
   await expect(terminalCard).toHaveClass(/max-h-72/);
   await expect(terminalCard).toHaveClass(/overflow-hidden/);
-  await expect(terminalOutput).toHaveClass(/max-h-48/);
+  await expect(terminalOutput).toHaveClass(/max-h-\[12rem\]/);
   await expect(terminalOutput).toHaveClass(/overflow-y-auto/);
 
   const sizes = await terminalOutput.evaluate((element) => ({

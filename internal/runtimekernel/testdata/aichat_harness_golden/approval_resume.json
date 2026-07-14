@@ -12,6 +12,11 @@
         }
       },
       "riskLevel": "high",
+      "approval": {
+        "reason": "protected secret access requires approval",
+        "risk": "high",
+        "source": "golden"
+      },
       "result": "secret"
     }
   ],
@@ -26,5 +31,14 @@
   ],
   "expectedStatus": "blocked",
   "expectedVisibleStates": ["running", "blocked"],
-  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"]
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "toolCalls": ["read_secret"],
+    "approvalRequested": true,
+    "rollbackContractRequired": false,
+    "timelineOrder": ["assistant_message", "tool_call"]
+  }
 }

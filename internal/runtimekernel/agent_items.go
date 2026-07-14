@@ -62,18 +62,89 @@ func updateAgentItemData(snapshot *TurnSnapshot, itemID string, data any) {
 	snapshot.UpdatedAt = time.Now()
 }
 
-func removeAgentItem(snapshot *TurnSnapshot, itemID string) {
-	if snapshot == nil || strings.TrimSpace(itemID) == "" {
+type approvalAgentItemData struct {
+	ApprovalID    string   `json:"approvalId"`
+	ToolCallID    string   `json:"toolCallId,omitempty"`
+	ToolName      string   `json:"toolName,omitempty"`
+	ArgumentsHash string   `json:"argumentsHash,omitempty"`
+	TargetRefs    []string `json:"targetRefs,omitempty"`
+	Decision      string   `json:"decision,omitempty"`
+	Status        string   `json:"status"`
+}
+
+func syncPendingApprovalAgentItems(snapshot *TurnSnapshot) {
+	if snapshot == nil {
 		return
 	}
-	next := snapshot.AgentItems[:0]
-	for _, item := range snapshot.AgentItems {
-		if item.ID != itemID {
-			next = append(next, item)
-		}
+	for _, approval := range snapshot.PendingApprovals {
+		appendApprovalRequestedAgentItem(snapshot, approval)
 	}
-	snapshot.AgentItems = next
-	snapshot.UpdatedAt = time.Now()
+}
+
+func appendApprovalRequestedAgentItem(snapshot *TurnSnapshot, approval PendingApproval) {
+	approval.ID = strings.TrimSpace(approval.ID)
+	if snapshot == nil || approval.ID == "" {
+		return
+	}
+	itemID := approvalRequestedAgentItemID(snapshot.ID, approval.ID)
+	if hasAgentItemID(snapshot.AgentItems, itemID) {
+		return
+	}
+	appendAgentItem(snapshot, newAgentItem(
+		itemID,
+		agentstate.TurnItemTypeApprovalRequested,
+		agentstate.ItemStatusPending,
+		firstNonEmptyString(approval.ToolName, "approval requested"),
+		approvalAgentItemDataFromApproval(approval, "", "pending"),
+	))
+}
+
+func appendApprovalDecidedAgentItem(snapshot *TurnSnapshot, approval PendingApproval, decision, status string) {
+	if snapshot == nil {
+		return
+	}
+	approval.ID = strings.TrimSpace(approval.ID)
+	if approval.ID == "" {
+		return
+	}
+	requestedID := approvalRequestedAgentItemID(snapshot.ID, approval.ID)
+	if hasAgentItemID(snapshot.AgentItems, requestedID) {
+		updateAgentItem(snapshot, requestedID, agentstate.ItemStatusCompleted, firstNonEmptyString(approval.ToolName, "approval decided"))
+	}
+	itemID := approvalDecidedAgentItemID(snapshot.ID, approval.ID)
+	data := approvalAgentItemDataFromApproval(approval, decision, status)
+	if hasAgentItemID(snapshot.AgentItems, itemID) {
+		updateAgentItem(snapshot, itemID, agentstate.ItemStatusCompleted, data.Status)
+		updateAgentItemData(snapshot, itemID, data)
+		return
+	}
+	appendAgentItem(snapshot, newAgentItem(
+		itemID,
+		agentstate.TurnItemTypeApprovalDecided,
+		agentstate.ItemStatusCompleted,
+		data.Status,
+		data,
+	))
+}
+
+func approvalAgentItemDataFromApproval(approval PendingApproval, decision, status string) approvalAgentItemData {
+	return approvalAgentItemData{
+		ApprovalID:    strings.TrimSpace(approval.ID),
+		ToolCallID:    strings.TrimSpace(approval.ToolCallID),
+		ToolName:      strings.TrimSpace(approval.ToolName),
+		ArgumentsHash: strings.TrimSpace(firstNonEmptyString(approval.ArgumentsHash, approval.InputHash)),
+		TargetRefs:    uniqueSortedHarnessStrings(approval.TargetRefs),
+		Decision:      strings.TrimSpace(decision),
+		Status:        strings.TrimSpace(status),
+	}
+}
+
+func approvalRequestedAgentItemID(turnID, approvalID string) string {
+	return fmt.Sprintf("%s-approval-requested-%s", strings.TrimSpace(turnID), strings.TrimSpace(approvalID))
+}
+
+func approvalDecidedAgentItemID(turnID, approvalID string) string {
+	return fmt.Sprintf("%s-approval-decided-%s", strings.TrimSpace(turnID), strings.TrimSpace(approvalID))
 }
 
 func upsertAssistantMessageItem(snapshot *TurnSnapshot, itemID string, status agentstate.ItemStatus, text string, data assistantMessageData) {
@@ -264,6 +335,13 @@ func errorItemID(turnID string, iteration int) string {
 	return fmt.Sprintf("%s-error", strings.TrimSpace(turnID))
 }
 
+func finalResponseItemID(turnID string, iteration int) string {
+	if iteration >= 0 {
+		return fmt.Sprintf("%s-final-response-%d", strings.TrimSpace(turnID), iteration)
+	}
+	return fmt.Sprintf("%s-final-response", strings.TrimSpace(turnID))
+}
+
 func planItemFromToolCall(turnID string, tc ToolCall) (agentstate.TurnItem, bool) {
 	if !isUpdatePlanToolName(tc.Name) {
 		return agentstate.TurnItem{}, false
@@ -325,29 +403,6 @@ func userEvidenceAgentItemFromMetadata(turnID string, metadata map[string]string
 	)
 	item.Payload.Kind = "user_provided"
 	return item, true
-}
-
-func completedEvidenceItemIDs(snapshot *TurnSnapshot) []string {
-	if snapshot == nil {
-		return nil
-	}
-	out := make([]string, 0)
-	seen := map[string]struct{}{}
-	for _, item := range snapshot.AgentItems {
-		if item.Type != agentstate.TurnItemTypeEvidence || item.Status != agentstate.ItemStatusCompleted {
-			continue
-		}
-		id := strings.TrimSpace(item.ID)
-		if id == "" {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		out = append(out, id)
-	}
-	return out
 }
 
 func isUpdatePlanToolName(name string) bool {

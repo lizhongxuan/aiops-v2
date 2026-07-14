@@ -10,6 +10,7 @@ func TestDefaultPromptSectionContractsCoverKnownSections(t *testing.T) {
 		"profile.evidence_rca",
 		"profile.host_worker",
 		"profile.host_manager",
+		"profile.workflow_agent",
 		"tool.surface",
 		"dynamic.context",
 		"host_agent.runtime_overlay.v1",

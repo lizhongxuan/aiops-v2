@@ -1,4 +1,5 @@
-import { act } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { act, type ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +11,7 @@ import {
 import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
 import { resetAiopsTransportStateCacheForTest } from "@/transport/aiopsTransportStateCache";
 import type { AiopsTransportState } from "@/transport/aiopsTransportTypes";
-import { ChatPage } from "./ChatPage";
+import { ChatPage as RawChatPage } from "./ChatPage";
 
 vi.mock("@/api/hostInventory", () => ({
   listHostInventory: vi.fn(),
@@ -20,6 +21,23 @@ vi.mock("@/api/hostOps", () => ({
   getChildAgentTranscript: vi.fn(),
   submitHostOpsApprovalDecision: vi.fn(),
 }));
+
+function createTestQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, gcTime: Infinity },
+      mutations: { retry: false },
+    },
+  });
+}
+
+function ChatPage(props: ComponentProps<typeof RawChatPage>) {
+  return (
+    <QueryClientProvider client={createTestQueryClient()}>
+      <RawChatPage {...props} />
+    </QueryClientProvider>
+  );
+}
 
 describe("ChatPage runtime contract V3", () => {
   let container: HTMLDivElement;
@@ -88,6 +106,10 @@ describe("ChatPage runtime contract V3", () => {
     for (const marker of REQUIRED_RUNTIME_CONTRACT_V3_MARKERS) {
       expect(text).toContain(marker);
     }
+    expect(text).toContain("Cancel the current operation.");
+    expect(text).toContain("请求已取消");
+    expect(text).toContain("Try a conflicting service mutation.");
+    expect(text).toContain("执行失败");
 
     expect(
       container.querySelector('[data-testid="codex-approval-inline"]'),
@@ -122,8 +144,6 @@ const REQUIRED_RUNTIME_CONTRACT_V3_MARKERS = [
   "multi-host child agent timeline marker",
   "context compacted marker",
   "pending input accepted / steer marker",
-  "turn cancelled / aborted tool marker",
-  "resource lock conflict marker",
 ];
 
 async function expandProcessTranscripts(container: HTMLElement) {

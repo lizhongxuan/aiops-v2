@@ -11,7 +11,8 @@ type BuildAnswerDocumentInput = {
 };
 
 export function buildAnswerDocument(input: BuildAnswerDocumentInput): AnswerDocumentNode[] {
-  const sections = parseAnswerSections(input.finalText.trim());
+  const answerMarkdown = input.finalText.trim();
+  const sections = parseAnswerSections(answerMarkdown);
   const slots = resolveArtifactSlots({
     sections,
     artifacts: input.artifacts,

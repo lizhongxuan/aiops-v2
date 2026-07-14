@@ -24,6 +24,7 @@ type RunnerCanvasNodeData = {
     label?: string;
     message?: string;
   };
+  aiHighlighted?: boolean;
   onOpenConfig?: (nodeId: string) => void;
   onNodeAction?: (action: string, nodeId: string) => void;
 };
@@ -36,10 +37,12 @@ export function RunnerCanvasNode({ id, data, selected }: NodeProps) {
   const label = nodeData.label || nodeData.node?.label || nodeData.node?.step?.name || id;
   const runStatus = nodeData.runState?.status || "";
   const runLabel = nodeData.runState?.label || "";
+  const runMessage = compactRunMessage(nodeData.runState?.message || "");
+  const failureMessage = ["failed", "error"].includes(String(runStatus).toLowerCase()) ? runMessage : "";
 
   return (
     <div
-      className={["runner-canvas-node", selected ? "selected" : "", runStatus ? `run-${runStatus}` : "", `tone-${meta.tone || "slate"}`].filter(Boolean).join(" ")}
+      className={["runner-canvas-node", selected ? "selected" : "", nodeData.aiHighlighted ? "ai-highlighted" : "", runStatus ? `run-${runStatus}` : "", `tone-${meta.tone || "slate"}`].filter(Boolean).join(" ")}
       data-testid={`canvas-node-${id}`}
       onDoubleClick={(event) => {
         event.stopPropagation();
@@ -65,6 +68,11 @@ export function RunnerCanvasNode({ id, data, selected }: NodeProps) {
           <strong>{label}</strong>
         </div>
       </div>
+      {failureMessage ? (
+        <div className="runner-canvas-node-run-message" data-testid={`canvas-node-${id}-failure-message`} title={failureMessage}>
+          {failureMessage}
+        </div>
+      ) : null}
       {inputs.map((port, index) => (
         <Handle
           key={`in-${port.id}`}
@@ -89,4 +97,8 @@ export function RunnerCanvasNode({ id, data, selected }: NodeProps) {
       ))}
     </div>
   );
+}
+
+function compactRunMessage(message: string) {
+  return String(message || "").replace(/\s+/g, " ").trim();
 }

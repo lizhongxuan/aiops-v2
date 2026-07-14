@@ -1275,19 +1275,6 @@ func summarizeCapabilities(raw any) []string {
 	return out
 }
 
-func enabledBindings(raw any) []map[string]any {
-	items := asAnySlice(raw)
-	out := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		entry := asAnyMap(item)
-		if !profileBool(entry["enabled"]) {
-			continue
-		}
-		out = append(out, cloneAnyMap(entry))
-	}
-	return out
-}
-
 func countLines(text string) int {
 	normalized := strings.ReplaceAll(text, "\r\n", "\n")
 	if normalized == "" {

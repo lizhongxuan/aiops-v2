@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"time"
 
@@ -160,9 +159,4 @@ func isTerminalTurnAgentEvent(event appui.AgentEvent) bool {
 	default:
 		return false
 	}
-}
-
-func encodeWebSocketMessage(payload any) json.RawMessage {
-	data, _ := json.Marshal(payload)
-	return data
 }

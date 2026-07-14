@@ -1,0 +1,15 @@
+{
+  "name": "evidence_rca_no_exec",
+  "userInput": "只基于我贴的日志分析，不要连接主机",
+  "modelFinalOutput": "基于用户提供的日志，疑似 host-agent 未运行；当前未执行主机命令，证据仍不足。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "unknown",
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

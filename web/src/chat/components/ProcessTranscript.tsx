@@ -1,7 +1,6 @@
 import { Bot, ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { AgentStepView, AiopsProcessBlock, AiopsTransportProcessKind, AiopsTransportProcessStatus } from "@/transport/aiopsTransportTypes";
 
@@ -120,9 +119,9 @@ export function ProcessTranscript({
   const renderedFinalText = explicitFinalText.trim();
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const finalGenerationLabel = formatFinalGenerationDuration(finalDurationMs);
-  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const live = running || waiting;
+  const finalGenerationLabel = live ? "" : formatFinalGenerationDuration(finalDurationMs);
+  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [open, setOpen] = useState(live);
@@ -331,10 +330,13 @@ function processHeaderLabel({ running, waiting }: { running: boolean; waiting: b
 }
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
-  if (block.kind === "approval") {
-    return block.status === "rejected";
-  }
   const text = (block.text || block.command || block.outputPreview || "").trim().toLowerCase();
+  if (block.kind === "approval") {
+    return Boolean(text || block.approvalId || block.targetSummary || block.riskSummary || block.expectedEffect);
+  }
+  if (isCorootInternalReuseBlock(block)) {
+    return false;
+  }
   if (isRuntimeInternalGateText(text)) {
     return false;
   }
@@ -348,6 +350,15 @@ function shouldShowInTranscript(block: AiopsProcessBlock) {
     return false;
   }
   return true;
+}
+
+function isCorootInternalReuseBlock(block: AiopsProcessBlock) {
+  const source = (block.source || block.displayKind || "").toLowerCase();
+  if (!source.includes("coroot")) {
+    return false;
+  }
+  return [block.text, block.outputPreview, block.inputSummary, block.displayKind]
+    .some((value) => (value || "").toLowerCase().includes("covered_by_prior_broad_query"));
 }
 
 function isRuntimeInternalGateText(text: string) {
@@ -976,21 +987,6 @@ function statusLabel(status?: string) {
   }
 }
 
-function statusBadgeClass(status?: string) {
-  switch (status) {
-    case "blocked":
-      return "bg-amber-50 text-amber-700";
-    case "failed":
-    case "rejected":
-      return "bg-red-50 text-red-700";
-    case "running":
-    case "queued":
-      return "bg-blue-50 text-blue-700";
-    default:
-      return "bg-slate-100 text-slate-500";
-  }
-}
-
 function terminalStatusLabel(status?: string) {
   switch (status) {
     case "blocked":
@@ -1182,56 +1178,6 @@ function AssistantProgressText({ text }: { text: string }) {
 
 function isToolSummaryBlock(block: AiopsProcessBlock): boolean {
   return block.kind === "search" || block.kind === "command" || block.kind === "tool" || block.kind === "file" || block.kind === "mcp";
-}
-
-function getToolIcon(block: AiopsProcessBlock): string {
-  if (block.kind === "search") return "🔍";
-  if (block.kind === "command") return "⚙️";
-  if (block.kind === "file") {
-    const text = `${block.displayKind || ""} ${block.text || ""} ${block.inputSummary || ""}`.toLowerCase();
-    if (/edit|write|create|modify|update/.test(text)) return "✏️";
-    return "📂";
-  }
-  return "⚙️";
-}
-
-function toolSummaryText(block: AiopsProcessBlock): string {
-  const isRunning = block.status === "running" || block.status === "queued";
-
-  if (block.kind === "command") {
-    const cmd = block.command || stripHtml(block.text || "") || "命令";
-    return isRunning ? `正在执行 ${cmd}` : cmd;
-  }
-  if (block.kind === "file") {
-    const text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
-    const cleaned = cleanToolText(text) || "文件操作";
-    return isRunning ? `正在处理 ${cleaned}` : cleaned;
-  }
-  if (block.kind === "tool" || block.kind === "mcp") {
-    const text = toolInvocationLabel(block) || stripHtml(block.text || "") || block.displayKind || "";
-    const cleaned = cleanToolText(text) || "工具调用";
-    return isRunning ? `正在调用 ${cleaned}` : cleaned;
-  }
-  const text = cleanToolText(stripHtml(block.text || "") || block.displayKind || block.kind);
-  return isRunning ? `正在${text}` : text;
-}
-
-function ToolSummaryLine({ block }: { block: AiopsProcessBlock }) {
-  const icon = getToolIcon(block);
-  const summary = toolSummaryText(block);
-  if (!summary) return null;
-
-  const full = `${icon} ${summary}`;
-  const display = full.length > 80 ? `${full.slice(0, 79)}…` : full;
-
-  return (
-    <div
-      className={cn("truncate text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}
-      title={full.length > 80 ? full : undefined}
-    >
-      {display}
-    </div>
-  );
 }
 
 function ThinkingText({ block }: { block: AiopsProcessBlock }) {
@@ -1508,9 +1454,15 @@ function readableBlockSummary(block?: AiopsProcessBlock) {
     const text = cleanToolText(stripHtml(block.text || "") || block.displayKind || "");
     return text || "正在调用工具";
   }
-  if (block.kind === "approval" && block.status === "rejected") {
+  if (block.kind === "approval") {
     const target = stripHtml(block.command || block.targetSummary || block.text || "").trim();
-    return target ? `已拒绝，将基于已有证据继续分析：${target}` : "已拒绝，将基于已有证据继续分析";
+    if (block.status === "rejected") {
+      return target ? `已拒绝，将基于已有证据继续分析：${target}` : "已拒绝，将基于已有证据继续分析";
+    }
+    if (block.status === "blocked") {
+      return target ? `等待审批：${target}` : "等待审批";
+    }
+    return target || "已处理审批";
   }
   return cleanToolText(stripHtml(block.text || "") || block.displayKind || block.kind);
 }

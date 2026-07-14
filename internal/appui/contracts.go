@@ -13,6 +13,7 @@ import (
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/plugins"
 	"aiops-v2/internal/promptcompiler"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
@@ -126,14 +127,17 @@ type HostOperationView struct {
 }
 
 type HostMissionCreateCommand struct {
-	ID             string                `json:"id,omitempty"`
-	ThreadID       string                `json:"threadId,omitempty"`
-	SessionID      string                `json:"sessionId,omitempty"`
-	UserTurnID     string                `json:"userTurnId,omitempty"`
-	ManagerAgentID string                `json:"managerAgentId,omitempty"`
-	Goal           string                `json:"goal"`
-	Mentions       []hostops.HostMention `json:"mentions,omitempty"`
-	HostIDs        []string              `json:"hostIds,omitempty"`
+	ID                           string                                `json:"id,omitempty"`
+	ThreadID                     string                                `json:"threadId,omitempty"`
+	SessionID                    string                                `json:"sessionId,omitempty"`
+	UserTurnID                   string                                `json:"userTurnId,omitempty"`
+	ManagerAgentID               string                                `json:"managerAgentId,omitempty"`
+	Goal                         string                                `json:"goal"`
+	Mentions                     []hostops.HostMention                 `json:"mentions,omitempty"`
+	HostIDs                      []string                              `json:"hostIds,omitempty"`
+	RoleBindings                 []resourcebinding.ResourceRoleBinding `json:"roleBindings,omitempty"`
+	RoleConflicts                []resourcebinding.RoleBindingConflict `json:"roleConflicts,omitempty"`
+	RoleBindingAssignmentEnabled bool                                  `json:"roleBindingAssignmentEnabled,omitempty"`
 }
 
 type HostMentionView struct {
@@ -462,6 +466,7 @@ type Services struct {
 	uiCards         UICardService
 	coroot          CorootConfigRepository
 	agentEvents     AgentEventService
+	promptTraces    PromptTraceService
 	incidents       IncidentService
 	chatArchive     ChatArchiveService
 	postmortems     PostmortemService
@@ -538,6 +543,10 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 	}
 	hostOpsService := cfg.hostOps
 	chatService := NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(cfg.lifecycleContext, runtime, sessions, cfg.hosts, hostOpsService, runtimeSettingsProvider, agentEvents)
+	promptTraceService := NewPromptTraceService("")
+	if reader, ok := runtime.(CanonicalRolloutReader); ok {
+		promptTraceService = NewPromptTraceServiceWithRolloutReader("", reader)
+	}
 	return &Services{
 		chat:            chatService,
 		state:           NewStateService(sessions, builder),
@@ -556,6 +565,7 @@ func NewServices(runtime RuntimeGateway, sessions SessionSource, opts ...Service
 		uiCards:         uiCards,
 		coroot:          cfg.coroot,
 		agentEvents:     agentEvents,
+		promptTraces:    promptTraceService,
 		incidents:       incidentService,
 		chatArchive:     chatArchiveService,
 		postmortems:     NewPostmortemService(incidentService),
@@ -605,6 +615,7 @@ func (s *Services) CorootConfigRepository() CorootConfigRepository {
 func (s *Services) AgentEventService() AgentEventService {
 	return s.agentEvents
 }
+func (s *Services) PromptTraceService() PromptTraceService     { return s.promptTraces }
 func (s *Services) IncidentService() IncidentService           { return s.incidents }
 func (s *Services) ChatArchiveService() ChatArchiveService     { return s.chatArchive }
 func (s *Services) PostmortemService() PostmortemService       { return s.postmortems }
@@ -795,27 +806,34 @@ type CardView struct {
 }
 
 type ApprovalView struct {
-	ID             string `json:"id"`
-	SessionID      string `json:"sessionId,omitempty"`
-	TurnID         string `json:"turnId,omitempty"`
-	MissionID      string `json:"missionId,omitempty"`
-	ChildAgentID   string `json:"childAgentId,omitempty"`
-	PlanStepID     string `json:"planStepId,omitempty"`
-	GroupID        string `json:"groupId,omitempty"`
-	GroupSize      int    `json:"groupSize,omitempty"`
-	ToolName       string `json:"toolName,omitempty"`
-	Command        string `json:"command,omitempty"`
-	Reason         string `json:"reason,omitempty"`
-	Risk           string `json:"risk,omitempty"`
-	Source         string `json:"source,omitempty"`
-	RunbookID      string `json:"runbookId,omitempty"`
-	RunbookStep    string `json:"runbookStep,omitempty"`
-	ExpectedEffect string `json:"expectedEffect,omitempty"`
-	Rollback       string `json:"rollback,omitempty"`
-	Validation     string `json:"validation,omitempty"`
-	HostID         string `json:"hostId,omitempty"`
-	Status         string `json:"status"`
-	CreatedAt      string `json:"createdAt,omitempty"`
+	ID                     string `json:"id"`
+	SessionID              string `json:"sessionId,omitempty"`
+	TurnID                 string `json:"turnId,omitempty"`
+	MissionID              string `json:"missionId,omitempty"`
+	ChildAgentID           string `json:"childAgentId,omitempty"`
+	PlanStepID             string `json:"planStepId,omitempty"`
+	GroupID                string `json:"groupId,omitempty"`
+	GroupSize              int    `json:"groupSize,omitempty"`
+	ToolName               string `json:"toolName,omitempty"`
+	Command                string `json:"command,omitempty"`
+	Reason                 string `json:"reason,omitempty"`
+	Risk                   string `json:"risk,omitempty"`
+	Source                 string `json:"source,omitempty"`
+	RunbookID              string `json:"runbookId,omitempty"`
+	RunbookStep            string `json:"runbookStep,omitempty"`
+	ExpectedEffect         string `json:"expectedEffect,omitempty"`
+	Rollback               string `json:"rollback,omitempty"`
+	Validation             string `json:"validation,omitempty"`
+	InputHash              string `json:"inputHash,omitempty"`
+	ArgumentsHash          string `json:"argumentsHash,omitempty"`
+	ToolSurfaceFingerprint string `json:"toolSurfaceFingerprint,omitempty"`
+	PermissionSnapshotHash string `json:"permissionSnapshotHash,omitempty"`
+	PostCheck              string `json:"postCheck,omitempty"`
+	StopCondition          string `json:"stopCondition,omitempty"`
+	ManualTakeover         string `json:"manualTakeover,omitempty"`
+	HostID                 string `json:"hostId,omitempty"`
+	Status                 string `json:"status"`
+	CreatedAt              string `json:"createdAt,omitempty"`
 }
 
 type ToolInvocationView struct {

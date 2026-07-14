@@ -12,12 +12,25 @@ import (
 )
 
 func ModelInputItemsToEinoMessages(items []promptinput.ModelInputItem) ([]*schema.Message, ProviderMessageAudit, error) {
-	messages := make([]*schema.Message, 0, len(items))
-	auditItems := make([]ProviderMessageAuditItem, 0, len(items))
 	for idx, item := range items {
 		if err := item.Validate(); err != nil {
 			return nil, ProviderMessageAudit{}, fmt.Errorf("item[%d]: %w", idx, err)
 		}
+		if len(item.ContentParts) > 0 {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("item[%d]: content parts are unsupported by the Eino message adapter", idx)
+		}
+	}
+	if promptinput.HasTypedModelInputLayers(items) {
+		if err := promptinput.ValidateModelInputCausalOrder(items); err != nil {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("canonical model input causal order: %w", err)
+		}
+		if err := promptinput.ValidateModelInputLogicalOrder(items, true); err != nil {
+			return nil, ProviderMessageAudit{}, fmt.Errorf("canonical model input logical order: %w", err)
+		}
+	}
+	messages := make([]*schema.Message, 0, len(items))
+	auditItems := make([]ProviderMessageAuditItem, 0, len(items))
+	for _, item := range items {
 		msg := einoMessageFromModelInputItem(item)
 		messages = append(messages, msg)
 		auditItems = append(auditItems, ProviderMessageAuditItem{
@@ -66,16 +79,17 @@ func ModelInputItemsFromEinoMessages(messages []*schema.Message) []promptinput.M
 			continue
 		}
 		item := promptinput.ModelInputItem{
-			ID:           fmt.Sprintf("provider-message-%d", idx),
-			ProviderRole: providerRoleFromEino(msg.Role),
-			SemanticRole: semanticRoleFromEinoMessage(msg),
-			Content:      msg.Content,
-			Name:         firstNonEmptyString(msg.Name, msg.ToolName),
-			ToolCallID:   msg.ToolCallID,
-			Source:       promptinput.ModelInputSource{Layer: sourceLayerFromEinoMessage(msg), Origin: "provider_message"},
-			Phase:        "trace",
-			CacheGroup:   "dynamic",
-			Metadata:     map[string]string{},
+			ID:               fmt.Sprintf("provider-message-%d", idx),
+			ProviderRole:     providerRoleFromEino(msg.Role),
+			SemanticRole:     semanticRoleFromEinoMessage(msg),
+			Content:          msg.Content,
+			ReasoningContent: msg.ReasoningContent,
+			Name:             firstNonEmptyString(msg.Name, msg.ToolName),
+			ToolCallID:       msg.ToolCallID,
+			Source:           promptinput.ModelInputSource{Layer: sourceLayerFromEinoMessage(msg), Origin: "provider_message"},
+			Phase:            "trace",
+			CacheGroup:       "dynamic",
+			Metadata:         map[string]string{},
 		}
 		for _, call := range msg.ToolCalls {
 			item.ToolCalls = append(item.ToolCalls, promptinput.ModelInputToolCall{
@@ -160,6 +174,7 @@ func einoMessageFromModelInputItem(item promptinput.ModelInputItem) *schema.Mess
 		msg = schema.UserMessage(content)
 	case promptinput.ProviderRoleAssistant:
 		msg = schema.AssistantMessage(content, schemaToolCallsFromModelInput(item.ToolCalls))
+		msg.ReasoningContent = item.ReasoningContent
 	case promptinput.ProviderRoleTool:
 		msg = schema.ToolMessage(content, firstNonEmptyString(item.ToolCallID, item.ToolResultToolCallID()))
 	default:

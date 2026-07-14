@@ -222,7 +222,7 @@ func TestRunTurn_EnablesDeferredPacksFromTurnIntent(t *testing.T) {
 	}
 }
 
-func TestRunTurn_KeepsExecCommandVisibleForSelectedHostResourceInspection(t *testing.T) {
+func TestRunTurn_EnablesExecForSelectedHostResourceInspection(t *testing.T) {
 	model := &sequentialLoopModel{responses: []*schema.Message{schema.AssistantMessage("ok", nil)}}
 	registry := tooling.NewRegistry()
 	for _, toolDef := range []tooling.Tool{
@@ -262,8 +262,15 @@ func TestRunTurn_KeepsExecCommandVisibleForSelectedHostResourceInspection(t *tes
 		SessionType: SessionTypeHost,
 		Mode:        ModeChat,
 		TurnID:      "turn-selected-host-resource-inspection",
-		Input:       "帮我看下主机的CPU情况",
-		Metadata:    map[string]string{"taskDepth": "simple_read"},
+		Input:       "查看 CPU 情况",
+		Metadata: map[string]string{
+			"taskDepth":                       "simple_read",
+			"aiops.target.binding":            "host",
+			"aiops.target.hostId":             "server-local",
+			"aiops.tool.execCommandAllowed":   "true",
+			"aiops.route.mode":                "host_bound_ops",
+			"aiops.route.requiresHostBinding": "true",
+		},
 	})
 	if err != nil {
 		t.Fatalf("RunTurn failed: %v", err)

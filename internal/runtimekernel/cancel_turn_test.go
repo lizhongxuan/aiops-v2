@@ -389,13 +389,25 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 			UpdatedAt:   now,
 		},
 		PendingApprovals: []PendingApproval{{
-			ID:        "approval-1",
-			SessionID: session.ID,
-			TurnID:    "turn-denied",
-			Iteration: 1,
-			ToolName:  "exec_command",
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:         "approval-1",
+			SessionID:  session.ID,
+			TurnID:     "turn-denied",
+			Iteration:  1,
+			ToolName:   "exec_command",
+			ToolCallID: "call-denied",
+			CreatedAt:  now,
+			UpdatedAt:  now,
+		}},
+		Iterations: []IterationState{{
+			ID:          "turn-denied-iteration-1",
+			SessionID:   session.ID,
+			TurnID:      "turn-denied",
+			Iteration:   1,
+			Lifecycle:   TurnLifecycleSuspended,
+			ResumeState: TurnResumeStatePendingApproval,
+			ToolCalls:   []ToolCall{{ID: "call-denied", Name: "exec_command"}},
+			StartedAt:   now,
+			UpdatedAt:   now,
 		}},
 	}
 	session.PendingApprovals = append([]PendingApproval(nil), session.CurrentTurn.PendingApprovals...)
@@ -453,14 +465,153 @@ func TestResumeTurn_DeniedDecisionEmitsApprovalDecidedProjection(t *testing.T) {
 	if got := len(session.PendingApprovals); got != 0 {
 		t.Fatalf("pending approvals after denied decision = %d, want 0", got)
 	}
-	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" {
+	if len(session.RejectedApprovals) != 1 || session.RejectedApprovals[0].Reason != "synthetic rejection reason" || session.RejectedApprovals[0].TurnID != "turn-denied" {
 		t.Fatalf("rejected approvals = %#v, want rejection reason recorded", session.RejectedApprovals)
+	}
+	nextFacts := BuildFinalRuntimeFacts(&TurnSnapshot{ID: "turn-after-denial", SessionID: session.ID}, session)
+	if containsFinalRuntimeCode(nextFacts.FailureCodes, "approval_denied") {
+		t.Fatalf("denied approval leaked into a later turn: %#v", nextFacts.FailureCodes)
 	}
 	if session.CurrentTurn.Lifecycle != TurnLifecycleCompleted || !strings.Contains(session.CurrentTurn.FinalOutput, `"status":"approval_denied"`) {
 		t.Fatalf("turn lifecycle=%q final=%q, want completed structured denial final", session.CurrentTurn.Lifecycle, session.CurrentTurn.FinalOutput)
 	}
+	decided := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeApprovalDecided)
+	if decided.ID == "" || decided.Status != agentstate.ItemStatusCompleted {
+		t.Fatalf("approval decided item = %#v, want canonical completed denial", decided)
+	}
+	var decidedFacts struct {
+		ApprovalID string `json:"approvalId"`
+		ToolCallID string `json:"toolCallId"`
+		Decision   string `json:"decision"`
+		Status     string `json:"status"`
+	}
+	if err := json.Unmarshal(decided.Payload.Data, &decidedFacts); err != nil {
+		t.Fatalf("decode approval decided item: %v; raw=%s", err, string(decided.Payload.Data))
+	}
+	if decidedFacts.ApprovalID != "approval-1" || decidedFacts.ToolCallID != "call-denied" || decidedFacts.Decision != "denied" || decidedFacts.Status != "denied" {
+		t.Fatalf("approval decided facts = %#v, want linked denial", decidedFacts)
+	}
+	for _, iteration := range session.CurrentTurn.Iterations {
+		for _, invocation := range iteration.ToolInvocations {
+			if invocation.Mutating && invocation.Status == ToolInvocationCompleted {
+				t.Fatalf("denied approval recorded performed mutation: %#v", invocation)
+			}
+		}
+	}
+	var deniedFinalContract FinalContract
+	for i := len(session.CurrentTurn.AgentItems) - 1; i >= 0; i-- {
+		item := session.CurrentTurn.AgentItems[i]
+		if item.Type != agentstate.TurnItemTypeAssistantMessage || item.Status != agentstate.ItemStatusCompleted {
+			continue
+		}
+		var finalPayload struct {
+			FinalContract FinalContract `json:"finalContract"`
+		}
+		if json.Unmarshal(item.Payload.Data, &finalPayload) == nil && finalPayload.FinalContract.SchemaVersion != "" {
+			deniedFinalContract = finalPayload.FinalContract
+			break
+		}
+	}
+	if deniedFinalContract.SchemaVersion == "" || len(deniedFinalContract.PerformedActions) != 0 {
+		t.Fatalf("denied final contract = %#v, want typed contract without performed actions", deniedFinalContract)
+	}
 	protocolState := buildProtocolPromptState(session.CurrentTurn, promptcompiler.ToolPromptDelta{}, nil, nil, session.RejectedApprovals)
 	if len(protocolState.Items) != 1 || protocolState.Items[0].Status != "denied" || !strings.Contains(protocolState.Items[0].Text, "synthetic rejection reason") {
 		t.Fatalf("protocol state = %#v, want denied approval reason", protocolState)
+	}
+}
+
+func TestResumeTurn_PlanApprovalsRecordRequestedBeforeDecided(t *testing.T) {
+	tests := []struct {
+		name    string
+		prepare func(*SessionState, string, time.Time) (string, error)
+	}{
+		{
+			name: "enter",
+			prepare: func(session *SessionState, turnID string, now time.Time) (string, error) {
+				result, err := RequestEnterPlanMode(session, turnID, EnterPlanModeRequest{Reason: "prepare implementation plan"}, now)
+				return result.ApprovalID, err
+			},
+		},
+		{
+			name: "exit",
+			prepare: func(session *SessionState, turnID string, now time.Time) (string, error) {
+				session.Mode = ModePlan
+				session.PlanMode = PlanModeState{State: PlanModeStateActive, AllowDraftPlan: true}
+				result, _, err := RequestExitPlanMode(session, turnID, RuntimePlanArtifact{
+					ID:        "plan-exit-canonical",
+					Objective: "deploy safely",
+					Steps:     []RuntimePlanStep{{ID: "step-1", Text: "verify then deploy"}},
+				}, now)
+				return result.ApprovalID, err
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			kernel := newTestKernel(nil)
+			now := time.Now().UTC()
+			session := kernel.sessions.GetOrCreate("sess-plan-canonical-"+tt.name, SessionTypeHost, ModeChat)
+			turnID := "turn-plan-canonical-" + tt.name
+			session.CurrentTurn = &TurnSnapshot{
+				ID:          turnID,
+				SessionID:   session.ID,
+				SessionType: session.Type,
+				Mode:        session.Mode,
+				Lifecycle:   TurnLifecycleSuspended,
+				ResumeState: TurnResumeStatePendingApproval,
+				StartedAt:   now,
+				UpdatedAt:   now,
+				LatestCheckpoint: &CheckpointMetadata{
+					ID:          "checkpoint-plan-" + tt.name,
+					SessionID:   session.ID,
+					TurnID:      turnID,
+					Kind:        "approval_needed",
+					Lifecycle:   TurnLifecycleSuspended,
+					ResumeState: TurnResumeStatePendingApproval,
+					CreatedAt:   now,
+					UpdatedAt:   now,
+				},
+			}
+			approvalID, err := tt.prepare(session, turnID, now)
+			if err != nil || approvalID == "" || len(session.PendingApprovals) != 1 {
+				t.Fatalf("prepare plan approval id=%q approvals=%#v err=%v", approvalID, session.PendingApprovals, err)
+			}
+			kernel.sessions.Update(session)
+
+			result, err := kernel.ResumeTurn(context.Background(), ResumeRequest{
+				SessionID:  session.ID,
+				TurnID:     turnID,
+				ApprovalID: approvalID,
+				Decision:   "approved",
+			})
+			if err != nil || result.Status != "completed" {
+				t.Fatalf("ResumeTurn = %#v, %v, want completed plan decision", result, err)
+			}
+			session = kernel.sessions.Get(session.ID)
+			requestedIndex, decidedIndex := -1, -1
+			var requestedFacts, decidedFacts approvalAgentItemData
+			for index, item := range session.CurrentTurn.AgentItems {
+				switch item.Type {
+				case agentstate.TurnItemTypeApprovalRequested:
+					requestedIndex = index
+					if err := json.Unmarshal(item.Payload.Data, &requestedFacts); err != nil {
+						t.Fatalf("decode requested item: %v", err)
+					}
+				case agentstate.TurnItemTypeApprovalDecided:
+					decidedIndex = index
+					if err := json.Unmarshal(item.Payload.Data, &decidedFacts); err != nil {
+						t.Fatalf("decode decided item: %v", err)
+					}
+				}
+			}
+			if requestedIndex < 0 || decidedIndex <= requestedIndex {
+				t.Fatalf("agent items = %#v, want approval_requested before approval_decided", session.CurrentTurn.AgentItems)
+			}
+			if requestedFacts.ApprovalID != approvalID || decidedFacts.ApprovalID != approvalID || requestedFacts.ToolName != decidedFacts.ToolName || decidedFacts.Status != "approved" {
+				t.Fatalf("requested=%#v decided=%#v, want same plan approval identity", requestedFacts, decidedFacts)
+			}
+		})
 	}
 }

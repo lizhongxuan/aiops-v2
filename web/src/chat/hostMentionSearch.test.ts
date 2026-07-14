@@ -169,6 +169,7 @@ describe("hostMentionSearch", () => {
         hostId: "host-a",
         address: "120.77.239.90",
         displayName: "pg-primary",
+        source: "inventory",
         status: "online",
       },
     });
@@ -181,7 +182,8 @@ describe("hostMentionSearch", () => {
       payload: {
         hostId: "server-local",
         address: "server-local",
-        displayName: "local",
+        displayName: "server-local",
+        source: "local_alias",
         status: "online",
       },
     });

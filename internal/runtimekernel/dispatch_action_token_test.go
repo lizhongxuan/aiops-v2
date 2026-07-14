@@ -81,3 +81,24 @@ func TestToolDispatcherKeepsActionTokenWhenSchemaDeclaresIt(t *testing.T) {
 		t.Fatalf("context action token = %q, want tok-1", executor.ctx.ActionToken)
 	}
 }
+
+func TestToolDispatcherDoesNotLetModelArgumentOverrideTrustedContextToken(t *testing.T) {
+	executor := &captureExecutor{}
+	lookup := &mockToolLookup{tools: map[string]mockToolEntry{
+		"write_file": {
+			desc: ToolDescriptor{
+				Metadata:    tooling.ToolMetadata{Name: "write_file"},
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`),
+			},
+			executor: executor,
+		},
+	}}
+	dispatcher := NewToolDispatcher(lookup, nil, &testMockEventEmitter{})
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{ActionToken: "trusted-server-token"})
+	result := dispatcher.Dispatch(ctx, "sess-1", "turn-1", ToolCall{
+		ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"/tmp/a","actionToken":"model-forged-token"}`),
+	}, SessionTypeHost, ModeExecute)
+	if result.Error != "" || executor.ctx.ActionToken != "trusted-server-token" {
+		t.Fatalf("Dispatch() = %#v, context token = %q", result, executor.ctx.ActionToken)
+	}
+}

@@ -152,6 +152,17 @@ async function mockHostsPageApis(page, fixture) {
   await page.route("**/api/v1/host-leases**", (route) =>
     route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) }),
   );
+  await page.route("**/api/v1/llm-config", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        provider: "zai",
+        model: "glm-5.1",
+        configured: true,
+      }),
+    }),
+  );
 }
 
 test.describe("Hosts management redesign snapshot", () => {
@@ -171,15 +182,65 @@ test.describe("Hosts management redesign snapshot", () => {
     await expect(page.locator(".hosts-table-shell")).toContainText("Ubuntu 24.04 LTS");
     await expect(page.locator(".hosts-table-shell")).toContainText("6.8.0-31-generic");
     await expect(page.locator(".hosts-table-shell")).toContainText("8 核 / 32 GiB");
-    await expect(page.locator(".hosts-table-shell")).toContainText("verify_heartbeat");
-    await expect(page.locator(".hosts-table-shell")).toContainText("heartbeat timeout");
     await expect(page.locator(".hosts-table-shell")).toContainText("不支持的平台");
     await expect(page.locator(".hosts-table-shell")).not.toContainText("server-local");
 
     await expectStablePageScreenshot(page, "hosts-management-redesign.png");
 
+    await page.getByRole("button", { name: /查看 10\.0\.9\.10 .*错误详情/ }).click();
+    await expect(page.getByTestId("host-error-dialog")).toContainText("heartbeat timeout");
+    await page.getByRole("button", { name: "关闭" }).click();
+
     await page.setViewportSize({ width: 390, height: 820 });
     await openFixturePage(page, "/settings/hosts", fixture);
     await expectStableLocatorScreenshot(page.locator(".hosts-table-shell"), "hosts-management-redesign-mobile-table.png");
+  });
+
+  test("keeps cached hosts visible while refreshing after route navigation", async ({ page }) => {
+    test.setTimeout(45_000);
+    const fixture = createHostsFixture();
+    let hostsRequestCount = 0;
+    await page.route("**/api/v1/hosts", async (route) => {
+      if (route.request().method() !== "GET") {
+        return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) });
+      }
+      hostsRequestCount += 1;
+      if (hostsRequestCount >= 2) {
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ items: fixture.state.hosts }),
+      });
+    });
+    await page.route("**/api/v1/host-profiles**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) }),
+    );
+    await page.route("**/api/v1/host-leases**", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) }),
+    );
+    await page.route("**/api/v1/llm-config", (route) =>
+      route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ provider: "zai", model: "glm-5.1", configured: true }) }),
+    );
+    await mockTerminalSessions(page);
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await openFixturePage(page, "/settings/hosts", fixture);
+    await expect(page.locator(".hosts-table-shell")).toContainText("10.0.2.15 / root");
+
+    await page.getByRole("link", { name: /AI 对话/ }).click();
+    await expect(page.getByRole("textbox", { name: "输入你的问题或任务" })).toBeVisible();
+    await page.evaluate(() => {
+      const nextNow = Date.now() + 31_000;
+      Date.now = () => nextNow;
+    });
+
+    await page.getByRole("link", { name: /主机列表/ }).click();
+
+    await expect(page.locator(".hosts-table-shell")).toContainText("10.0.2.15 / root");
+    await expect(page.locator(".hosts-table-shell")).toContainText("Ubuntu 24.04 LTS");
+    await expect(page.getByTestId("hosts-background-refresh")).toBeVisible();
+    await expect(page.getByText("加载主机列表")).toHaveCount(0);
   });
 });

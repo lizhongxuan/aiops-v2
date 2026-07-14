@@ -74,6 +74,13 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		scoreOverPlanningPenalty(output.ToolCalls, output.TurnItems, c.Expected),
 		scoreExpectedApprovals(output.TurnItems, c.Expected.ExpectedApprovals),
 		scoreExpectedEvidence(output.TurnItems, c.Expected.ExpectedEvidence),
+		scoreExpectedAssemblyTrace(output, c.Expected.ExpectedAssembly),
+		scoreExpectedResourceTrace(output, c.Expected.ExpectedResources),
+		scoreExpectedToolSurfaceTrace(output, c.Expected.ExpectedToolSurface),
+		scoreExpectedSessionTargetTrace(output, c.Expected.ExpectedSessionTargets),
+		scoreExpectedRoleBindingTrace(output, c.Expected.ExpectedRoleBindings),
+		scoreExpectedFinalReportTrace(output, c.Expected.ExpectedFinalReport),
+		scoreExpectedTraceExplainability(output, c.Expected.ExpectedTraceExplainability),
 		scoreMustHaveEvidence(output.TurnItems, c.Expected.MustHaveEvidence),
 		scorePrematureFinal(output.ToolCalls, output.TurnItems, c.Expected.ForbidFirstTurnNoToolFinal),
 		scoreEvidenceLimits(output.Answer, c.Expected.MustMentionEvidenceLimits),
@@ -109,6 +116,131 @@ func ScoreCase(c Case, output RunOutput) CaseScore {
 		Checks:             checks,
 		PromptFingerprints: promptFingerprintsFromTurnItems(output.TurnItems),
 	}
+}
+
+func scoreExpectedAssemblyTrace(output RunOutput, expected *ExpectedAssemblyTrace) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedAssembly", Passed: true, Detail: "no assembly trace expectation configured"}
+	}
+	values := outputSignalValues(output)
+	wants := compactStrings([]string{
+		expected.AgentKind,
+		expected.Profile,
+		expected.RuntimeRole,
+		expected.RouteReasonContains,
+	})
+	return scoreExpectedValues("expectedAssembly", values, wants, "expected assembly trace values")
+}
+
+func scoreExpectedResourceTrace(output RunOutput, expected *ExpectedResourceTrace) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedResources", Passed: true, Detail: "no resource trace expectation configured"}
+	}
+	wants := append([]string{}, expected.VerifiedIDs...)
+	wants = append(wants, expected.RejectedIDs...)
+	return scoreExpectedValues("expectedResources", outputSignalValues(output), wants, "expected resource trace values")
+}
+
+func scoreExpectedToolSurfaceTrace(output RunOutput, expected *ExpectedToolSurfaceTrace) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedToolSurface", Passed: true, Detail: "no tool surface trace expectation configured"}
+	}
+	wants := append([]string{}, expected.VisibleTools...)
+	wants = append(wants, expected.DispatchableTools...)
+	wants = append(wants, expected.HiddenTools...)
+	if expected.RequireSingleSource {
+		wants = append(wants, "fingerprint", "toolSurfaceFingerprint")
+	}
+	return scoreExpectedValues("expectedToolSurface", outputSignalValues(output), wants, "expected tool surface trace values")
+}
+
+func scoreExpectedSessionTargetTrace(output RunOutput, expected *ExpectedSessionTargetTrace) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedSessionTargets", Passed: true, Detail: "no session target trace expectation configured"}
+	}
+	wants := append([]string{}, expected.HostIDs...)
+	wants = append(wants, expected.BindingMode, expected.SourceTurnID)
+	return scoreExpectedValues("expectedSessionTargets", outputSignalValues(output), wants, "expected session target trace values")
+}
+
+func scoreExpectedRoleBindingTrace(output RunOutput, expected []ExpectedRoleBindingTrace) CheckResult {
+	if len(expected) == 0 {
+		return CheckResult{Name: "expectedRoleBindings", Passed: true, Detail: "no role binding trace expectation configured"}
+	}
+	var wants []string
+	for _, binding := range expected {
+		wants = append(wants, binding.ResourceID, binding.Role, binding.ConflictState)
+	}
+	return scoreExpectedValues("expectedRoleBindings", outputSignalValues(output), wants, "expected role binding trace values")
+}
+
+func scoreExpectedFinalReportTrace(output RunOutput, expected *ExpectedFinalReportTrace) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedFinalReport", Passed: true, Detail: "no final report expectation configured"}
+	}
+	wants := append([]string{}, expected.HostIDs...)
+	wants = append(wants, expected.Roles...)
+	wants = append(wants, expected.EvidenceRefs...)
+	return scoreExpectedValues("expectedFinalReport", outputSignalValues(output), wants, "expected final report values")
+}
+
+func scoreExpectedTraceExplainability(output RunOutput, expected *ExpectedTraceExplainability) CheckResult {
+	if expected == nil {
+		return CheckResult{Name: "expectedTraceExplainability", Passed: true, Detail: "no trace explainability expectation configured"}
+	}
+	var wants []string
+	if expected.RequireAssemblySource {
+		wants = append(wants, "assembly_source")
+	}
+	if expected.RequirePromptCompilerSource {
+		wants = append(wants, "prompt_compiler_source")
+	}
+	if expected.RequireToolSurfaceSource {
+		wants = append(wants, "tool_surface_source")
+	}
+	if expected.RequireAdapterName {
+		wants = append(wants, "adapter_name")
+	}
+	if expected.RequirePromptSectionHashes {
+		wants = append(wants, "sha256:")
+	}
+	if expected.RequireToolSurfaceFingerprint {
+		wants = append(wants, "toolSurfaceFingerprint")
+	}
+	return scoreExpectedValues("expectedTraceExplainability", outputSignalValues(output), wants, "expected trace explainability values")
+}
+
+func scoreExpectedValues(name string, values, expected []string, detail string) CheckResult {
+	expected = compactStrings(expected)
+	if len(expected) == 0 {
+		return CheckResult{Name: name, Passed: true, Detail: "no concrete expectation configured"}
+	}
+	var matched, missing []string
+	for _, want := range expected {
+		if containsAnyFold(values, want) {
+			matched = append(matched, want)
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	return CheckResult{
+		Name:    name,
+		Passed:  len(missing) == 0,
+		Detail:  fmt.Sprintf("%d/%d %s found", len(matched), len(expected), detail),
+		Matched: matched,
+		Missing: missing,
+	}
+}
+
+func compactStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func scoreRiskyOperationalAdvice(answer string) CheckResult {

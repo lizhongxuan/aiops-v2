@@ -5,6 +5,7 @@ agent="mock"
 server_url="http://127.0.0.1:18080"
 priority=""
 cases="testdata/eval_cases"
+suite=""
 trace_dir=".data/model-input-traces"
 out=""
 baseline=""
@@ -38,6 +39,7 @@ while [ "$#" -gt 0 ]; do
     --server-url) server_url="${2:?missing --server-url value}"; shift 2 ;;
     --priority) priority="${2:?missing --priority value}"; shift 2 ;;
     --cases) cases="${2:?missing --cases value}"; shift 2 ;;
+    --suite) suite="${2:?missing --suite value}"; shift 2 ;;
     --trace-dir) trace_dir="${2:?missing --trace-dir value}"; shift 2 ;;
     --out) out="${2:?missing --out value}"; shift 2 ;;
     --baseline) baseline="${2:?missing --baseline value}"; shift 2 ;;
@@ -66,6 +68,7 @@ Options:
   --server-url URL
   --priority P0|P1|P2
   --cases DIR
+  --suite NAME             Run a suite directory under --cases, e.g. multi_agent_assembly.
   --trace-dir DIR
   --out DIR
   --baseline PATH
@@ -95,6 +98,25 @@ if [ -z "$out" ]; then
 fi
 if [ -z "$run_id" ]; then
   run_id="prompt-regression-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
+
+if [ -n "$suite" ]; then
+  clean_suite="${suite#./}"
+  case "$clean_suite" in
+    ""|"."|".."|/*|../*|*/../*)
+      echo "prompt-regression: invalid suite $suite" >&2
+      exit 2
+      ;;
+  esac
+  if [ "$clean_suite" != "$suite" ]; then
+    echo "prompt-regression: invalid suite $suite" >&2
+    exit 2
+  fi
+  cases="${cases}/${clean_suite}"
+  if [ ! -d "$cases" ]; then
+    echo "prompt-regression: suite directory not found: $cases" >&2
+    exit 2
+  fi
 fi
 
 if [ "$case_id_count" -gt 0 ] || [ -n "$failed_from" ] || [ -n "$worse_from" ]; then
@@ -201,7 +223,7 @@ if [ "$llm_suggestions" -eq 1 ]; then
     diag_args+=(-llm-base-url "$llm_base_url")
   fi
   if [ -n "$llm_api_key" ]; then
-    diag_args+=(-llm-api-key "$llm_api_key")
+    export AIOPS_LAB_LLM_API_KEY="$llm_api_key"
   fi
   if [ -n "$llm_model" ]; then
     diag_args+=(-llm-model "$llm_model")

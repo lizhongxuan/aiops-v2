@@ -1,12 +1,17 @@
 package appui
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"aiops-v2/internal/specialinputmemory"
 )
 
 const AiopsTransportSchemaVersion = "aiops.transport.v2"
+
+const AiopsTransportAgentItemSchemaVersion = "aiops.transport.agent-item.v1"
 
 type AiopsTransportStatus string
 
@@ -61,9 +66,25 @@ const (
 type AiopsTransportFinalStatus string
 
 const (
-	AiopsTransportFinalStatusRunning   AiopsTransportFinalStatus = "running"
-	AiopsTransportFinalStatusCompleted AiopsTransportFinalStatus = "completed"
-	AiopsTransportFinalStatusFailed    AiopsTransportFinalStatus = "failed"
+	AiopsTransportFinalStatusRunning         AiopsTransportFinalStatus = "running"
+	AiopsTransportFinalStatusCompleted       AiopsTransportFinalStatus = "completed"
+	AiopsTransportFinalStatusFailed          AiopsTransportFinalStatus = "failed"
+	AiopsTransportFinalStatusVerified        AiopsTransportFinalStatus = "verified"
+	AiopsTransportFinalStatusPartial         AiopsTransportFinalStatus = "partial"
+	AiopsTransportFinalStatusBlocked         AiopsTransportFinalStatus = "blocked"
+	AiopsTransportFinalStatusNeedsEvidence   AiopsTransportFinalStatus = "needs_evidence"
+	AiopsTransportFinalStatusApprovalDenied  AiopsTransportFinalStatus = "approval_denied"
+	AiopsTransportFinalStatusToolUnavailable AiopsTransportFinalStatus = "tool_unavailable"
+	AiopsTransportFinalStatusCancelled       AiopsTransportFinalStatus = "cancelled"
+	AiopsTransportFinalStatusUnknown         AiopsTransportFinalStatus = "unknown"
+)
+
+type AiopsTransportBlockType string
+
+const (
+	AiopsTransportBlockTypeCommentary  AiopsTransportBlockType = "commentary"
+	AiopsTransportBlockTypeFinalAnswer AiopsTransportBlockType = "final_answer"
+	AiopsTransportBlockTypeArtifact    AiopsTransportBlockType = "artifact"
 )
 
 type AiopsTransportState struct {
@@ -81,6 +102,7 @@ type AiopsTransportState struct {
 	RuntimeLiveness     AiopsRuntimeLiveness                 `json:"runtimeLiveness"`
 	HostMissions        map[string]AiopsTransportHostMission `json:"hostMissions,omitempty"`
 	ChildAgents         map[string]AiopsTransportChildAgent  `json:"childAgents,omitempty"`
+	SpecialInputContext *specialinputmemory.TransportContext `json:"specialInputContext,omitempty"`
 	ActiveHostMissionID string                               `json:"activeHostMissionId,omitempty"`
 	LastError           string                               `json:"lastError,omitempty"`
 	Seq                 int64                                `json:"seq"`
@@ -107,18 +129,63 @@ type AiopsTransportOpsRun struct {
 }
 
 type AiopsTransportTurn struct {
-	ID                string                          `json:"id"`
-	User              *AiopsTransportMessage          `json:"user,omitempty"`
-	Intent            *AiopsTransportIntent           `json:"intent,omitempty"`
-	Process           []AiopsProcessBlock             `json:"process,omitempty"`
+	ID                      string                    `json:"id"`
+	ClientTurnID            string                    `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                    `json:"clientMessageId,omitempty"`
+	AgentItems              []AiopsTransportAgentItem `json:"agentItems,omitempty"`
+	AgentItemsTruncated     bool                      `json:"agentItemsTruncated,omitempty"`
+	AgentItemsOriginalCount int                       `json:"agentItemsOriginalCount,omitempty"`
+	AgentItemsOriginalBytes int64                     `json:"agentItemsOriginalBytes,omitempty"`
+	AgentItemsHash          string                    `json:"agentItemsHash,omitempty"`
+	AgentItemsRef           string                    `json:"agentItemsRef,omitempty"`
+	User                    *AiopsTransportMessage    `json:"user,omitempty"`
+	Intent                  *AiopsTransportIntent     `json:"intent,omitempty"`
+	// Process and Final are internal projection work fields. The wire transcript
+	// is exclusively BlockOrder + BlocksByID.
+	Process           []AiopsProcessBlock             `json:"-"`
 	Timeline          []AiopsTransportTimelineItem    `json:"timeline,omitempty"`
 	ContextGovernance []AiopsContextGovernanceEvent   `json:"contextGovernance,omitempty"`
 	AgentUIArtifacts  []AiopsTransportAgentUIArtifact `json:"agentUiArtifacts,omitempty"`
-	Final             *AiopsTransportFinal            `json:"final,omitempty"`
+	Final             *AiopsTransportFinal            `json:"-"`
+	BlockOrder        []string                        `json:"blockOrder"`
+	BlocksByID        map[string]AiopsTransportBlock  `json:"blocksById"`
 	Status            AiopsTransportTurnStatus        `json:"status"`
 	StartedAt         string                          `json:"startedAt,omitempty"`
 	CompletedAt       string                          `json:"completedAt,omitempty"`
 	UpdatedAt         string                          `json:"updatedAt,omitempty"`
+}
+
+// AiopsTransportBlock is the canonical ordered transcript unit. Process
+// details are flattened for typed renderers; final/artifact payloads remain
+// typed and never need to be inferred from assistant text.
+type AiopsTransportBlock struct {
+	Type AiopsTransportBlockType `json:"type"`
+	AiopsProcessBlock
+	FinalContract *AiopsTransportFinal           `json:"finalContract,omitempty"`
+	Artifact      *AiopsTransportAgentUIArtifact `json:"artifact,omitempty"`
+}
+
+// AiopsTransportAgentItem is the versioned, privacy-bounded wire form of a
+// canonical runtime TurnItem. It deliberately does not expose agentstate's
+// open-ended JSON schema directly.
+type AiopsTransportAgentItem struct {
+	SchemaVersion string                         `json:"schemaVersion"`
+	ID            string                         `json:"id"`
+	Type          string                         `json:"type"`
+	Status        string                         `json:"status"`
+	Payload       AiopsTransportAgentItemPayload `json:"payload,omitempty"`
+	CreatedAt     string                         `json:"createdAt,omitempty"`
+	UpdatedAt     string                         `json:"updatedAt,omitempty"`
+	Truncated     bool                           `json:"truncated,omitempty"`
+	OriginalBytes int64                          `json:"originalBytes,omitempty"`
+	ContentHash   string                         `json:"contentHash,omitempty"`
+	Ref           string                         `json:"ref,omitempty"`
+}
+
+type AiopsTransportAgentItemPayload struct {
+	Kind    string          `json:"kind,omitempty"`
+	Summary string          `json:"summary,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 type AiopsTransportTimelineItem struct {
@@ -143,10 +210,28 @@ type AiopsTransportIntent struct {
 }
 
 type AiopsTransportFinal struct {
-	ID         string                    `json:"id"`
-	Text       string                    `json:"text"`
-	Status     AiopsTransportFinalStatus `json:"status"`
-	DurationMs int64                     `json:"durationMs,omitempty"`
+	ID                    string                           `json:"id"`
+	Text                  string                           `json:"text"`
+	Status                AiopsTransportFinalStatus        `json:"status"`
+	SchemaVersion         string                           `json:"schemaVersion,omitempty"`
+	Confidence            string                           `json:"confidence,omitempty"`
+	AnswerText            string                           `json:"answerText,omitempty"`
+	CheckedEvidenceRefs   []string                         `json:"checkedEvidenceRefs,omitempty"`
+	UncheckedRequirements []string                         `json:"uncheckedRequirements,omitempty"`
+	FailedToolImpacts     []AiopsTransportFailedToolImpact `json:"failedToolImpacts,omitempty"`
+	ApprovedActions       []string                         `json:"approvedActions,omitempty"`
+	PerformedActions      []string                         `json:"performedActions,omitempty"`
+	PostChecks            []string                         `json:"postChecks,omitempty"`
+	RequiredPostChecks    []string                         `json:"requiredPostChecks,omitempty"`
+	Limitations           []string                         `json:"limitations,omitempty"`
+	DurationMs            int64                            `json:"durationMs,omitempty"`
+}
+
+type AiopsTransportFailedToolImpact struct {
+	ToolName     string `json:"toolName,omitempty"`
+	ToolCallID   string `json:"toolCallId,omitempty"`
+	FailureClass string `json:"failureClass,omitempty"`
+	Impact       string `json:"impact,omitempty"`
 }
 
 type AiopsProcessBlock struct {

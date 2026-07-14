@@ -1,14 +1,14 @@
 {
   "version": "v0.1.0",
-  "builtAt": "2026-07-01T07:23:48Z",
-  "gitCommit": "c938b0e",
+  "builtAt": "2026-07-10T01:52:36Z",
+  "gitCommit": "8578ad0",
   "artifacts": [
     {
       "platform": "linux/ubuntu",
       "os": "linux",
       "arch": "amd64",
       "path": "artifacts/host-agent/v0.1.0/linux-amd64/host-agent",
-      "sha256": "7378fe12be3ae199ffe1f7f6051f91cbb710422d112c544743c7df62ca499c07"
+      "sha256": "da7911eaafc735959cce17334c3be50a657db9430e9753dbaced46bf502efb36"
     }
   ]
 }

@@ -22,6 +22,11 @@ type assistantTransportSessionSourceProvider interface {
 	SessionSource() appui.SessionSource
 }
 
+type assistantTransportSessionSnapshotSource interface {
+	GetSnapshot(sessionID string) (*runtimekernel.SessionState, error)
+	ListSnapshots() ([]*runtimekernel.SessionState, error)
+}
+
 func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -31,6 +36,10 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 	source := s.assistantTransportSessionSource()
 	if source == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "assistant transport session source is not configured"})
+		return
+	}
+	if err := assistantTransportRequireSessionSnapshotSource(source); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
 
@@ -97,6 +106,7 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 	}
 
 	if _, err := s.streamAssistantTransportState(r.Context(), encoder, source, projector, s.ui.ChatService(), state); err != nil {
+		_ = encoder.WriteError(err.Error())
 		return
 	}
 }
@@ -184,7 +194,10 @@ func (s *HTTPServer) reprojectAssistantTransportCommandState(
 	if sessionID == "" {
 		return state, nil
 	}
-	session := source.Get(sessionID)
+	session, err := assistantTransportGetSessionSnapshot(source, sessionID)
+	if err != nil {
+		return state, err
+	}
 	if session == nil {
 		return state, nil
 	}
@@ -670,16 +683,24 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 		if err != nil {
 			return appui.TransportCommand{}, err
 		}
+		sessionType, mode, err := assistantTransportRuntimeControls(req.Config)
+		if err != nil {
+			return appui.TransportCommand{}, err
+		}
 		return appui.TransportCommand{
 			Type: appui.TransportCommandTypeAddMessage,
 			AddMessage: &appui.TransportAddMessageCommand{
-				SessionID: state.SessionID,
-				ThreadID:  strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)),
-				ParentID:  strings.TrimSpace(req.ParentID),
-				SourceID:  sourceID,
-				HostID:    strings.TrimSpace(hostID),
-				Message:   appui.TransportUserMessage{Text: text},
-				Metadata:  metadata,
+				SessionID:       state.SessionID,
+				SessionType:     sessionType,
+				Mode:            mode,
+				ThreadID:        strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)),
+				ParentID:        strings.TrimSpace(req.ParentID),
+				SourceID:        sourceID,
+				HostID:          strings.TrimSpace(hostID),
+				ClientMessageID: sourceID,
+				ClientTurnID:    strings.TrimSpace(metadata["clientTurnId"]),
+				Message:         appui.TransportUserMessage{Text: text},
+				Metadata:        metadata,
 			},
 		}, nil
 	case *assistantTransportRetryCommand:
@@ -786,6 +807,36 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 	}
 }
 
+func assistantTransportRuntimeControls(config map[string]any) (string, string, error) {
+	sessionType, err := assistantTransportRuntimeControl(config, "sessionType")
+	if err != nil {
+		return "", "", err
+	}
+	mode, err := assistantTransportRuntimeControl(config, "mode")
+	if err != nil {
+		return "", "", err
+	}
+	if sessionType != "" && sessionType != string(runtimekernel.SessionTypeHost) && sessionType != string(runtimekernel.SessionTypeWorkspace) {
+		return "", "", fmt.Errorf("assistant transport config sessionType %q is invalid", sessionType)
+	}
+	if mode != "" && mode != string(runtimekernel.ModeChat) && mode != string(runtimekernel.ModeInspect) && mode != string(runtimekernel.ModePlan) && mode != string(runtimekernel.ModeExecute) {
+		return "", "", fmt.Errorf("assistant transport config mode %q is invalid", mode)
+	}
+	return sessionType, mode, nil
+}
+
+func assistantTransportRuntimeControl(config map[string]any, key string) (string, error) {
+	value, ok := config[key]
+	if !ok {
+		return "", nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("assistant transport config %s must be a string", key)
+	}
+	return strings.TrimSpace(text), nil
+}
+
 func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID string, hostID string, metadata map[string]string, err error) {
 	var payload struct {
 		ID       string            `json:"id"`
@@ -836,13 +887,19 @@ func (s *HTTPServer) streamAssistantTransportState(
 	current := state
 	lastFingerprint := ""
 	for {
-		session := source.Get(current.SessionID)
+		session, snapshotErr := assistantTransportGetSessionSnapshot(source, current.SessionID)
+		if snapshotErr != nil {
+			return current, snapshotErr
+		}
 		waitingForAcceptedApproval := false
 		if session != nil {
 			latestTurn := assistantTransportLatestSessionTurn(session)
 			waitingForAcceptedTurn := assistantTransportShouldWaitForAcceptedTurn(current, latestTurn)
 			waitingForAcceptedApproval = assistantTransportShouldWaitForAcceptedApproval(current, latestTurn)
-			fingerprint := assistantTransportStreamFingerprint(latestTurn, current, source)
+			fingerprint, fingerprintErr := assistantTransportStreamFingerprint(latestTurn, current, source)
+			if fingerprintErr != nil {
+				return current, fingerprintErr
+			}
 			if !waitingForAcceptedTurn && !waitingForAcceptedApproval && fingerprint != "" && fingerprint != lastFingerprint {
 				next, err := projectAssistantTransportSessionState(s, assistantTransportCloneState(current), session, projector, source)
 				if err != nil {
@@ -1039,7 +1096,11 @@ func projectAssistantTransportSessionState(
 			next = server.decorateAssistantTransportOpsManualFallback(projected, &turns[i])
 		}
 		if len(sources) > 0 {
-			next = hydrateAssistantTransportHostChildSessions(next, sources[0])
+			var hydrateErr error
+			next, hydrateErr = hydrateAssistantTransportHostChildSessions(next, sources[0])
+			if hydrateErr != nil {
+				return next, hydrateErr
+			}
 		}
 		return next, nil
 	}
@@ -1048,9 +1109,9 @@ func projectAssistantTransportSessionState(
 	return next, nil
 }
 
-func hydrateAssistantTransportHostChildSessions(state appui.AiopsTransportState, source appui.SessionSource) appui.AiopsTransportState {
+func hydrateAssistantTransportHostChildSessions(state appui.AiopsTransportState, source appui.SessionSource) (appui.AiopsTransportState, error) {
 	if source == nil || len(state.ChildAgents) == 0 {
-		return state
+		return state, nil
 	}
 	if state.RuntimeLiveness.ActiveAgents == nil {
 		state.RuntimeLiveness.ActiveAgents = map[string]bool{}
@@ -1060,7 +1121,11 @@ func hydrateAssistantTransportHostChildSessions(state appui.AiopsTransportState,
 		if sessionID == "" || !strings.HasPrefix(sessionID, "host-child:") {
 			continue
 		}
-		turn := assistantTransportLatestSessionTurn(source.Get(sessionID))
+		session, err := assistantTransportGetSessionSnapshot(source, sessionID)
+		if err != nil {
+			return state, err
+		}
+		turn := assistantTransportLatestSessionTurn(session)
 		if turn == nil {
 			continue
 		}
@@ -1090,7 +1155,7 @@ func hydrateAssistantTransportHostChildSessions(state appui.AiopsTransportState,
 		}
 	}
 	state = updateAssistantTransportHostMissionStatusesFromChildren(state)
-	return state
+	return state, nil
 }
 
 func assistantTransportChildStatusFromTurn(turn *runtimekernel.TurnSnapshot, fallback string) string {
@@ -1372,21 +1437,24 @@ func assistantTransportTurnFingerprint(turn *runtimekernel.TurnSnapshot) string 
 	}, "|")
 }
 
-func assistantTransportStreamFingerprint(turn *runtimekernel.TurnSnapshot, state appui.AiopsTransportState, source appui.SessionSource) string {
+func assistantTransportStreamFingerprint(turn *runtimekernel.TurnSnapshot, state appui.AiopsTransportState, source appui.SessionSource) (string, error) {
 	base := assistantTransportTurnFingerprint(turn)
-	children := assistantTransportHostChildSessionsFingerprint(state, source)
+	children, err := assistantTransportHostChildSessionsFingerprint(state, source)
+	if err != nil {
+		return "", err
+	}
 	if base == "" {
-		return children
+		return children, nil
 	}
 	if children == "" {
-		return base
+		return base, nil
 	}
-	return base + "||" + children
+	return base + "||" + children, nil
 }
 
-func assistantTransportHostChildSessionsFingerprint(state appui.AiopsTransportState, source appui.SessionSource) string {
+func assistantTransportHostChildSessionsFingerprint(state appui.AiopsTransportState, source appui.SessionSource) (string, error) {
 	if source == nil || len(state.ChildAgents) == 0 {
-		return ""
+		return "", nil
 	}
 	parts := make([]string, 0, len(state.ChildAgents))
 	for childID, child := range state.ChildAgents {
@@ -1394,14 +1462,18 @@ func assistantTransportHostChildSessionsFingerprint(state appui.AiopsTransportSt
 		if sessionID == "" || !strings.HasPrefix(sessionID, "host-child:") {
 			continue
 		}
+		session, err := assistantTransportGetSessionSnapshot(source, sessionID)
+		if err != nil {
+			return "", err
+		}
 		parts = append(parts, strings.Join([]string{
 			strings.TrimSpace(childID),
 			sessionID,
-			assistantTransportTurnFingerprint(assistantTransportLatestSessionTurn(source.Get(sessionID))),
+			assistantTransportTurnFingerprint(assistantTransportLatestSessionTurn(session)),
 		}, ":"))
 	}
 	sort.Strings(parts)
-	return strings.Join(parts, ";")
+	return strings.Join(parts, ";"), nil
 }
 
 func assistantTransportHasActiveHostChildAgents(state appui.AiopsTransportState) bool {
@@ -1434,6 +1506,36 @@ func assistantTransportTurnCompletedAtFingerprint(turn *runtimekernel.TurnSnapsh
 		return ""
 	}
 	return turn.CompletedAt.UTC().Format(time.RFC3339Nano)
+}
+
+func assistantTransportRequireSessionSnapshotSource(source appui.SessionSource) error {
+	if source == nil {
+		return errors.New("assistant transport session source is not configured")
+	}
+	if _, ok := source.(assistantTransportSessionSnapshotSource); !ok {
+		return errors.New("assistant transport session source does not support immutable snapshots")
+	}
+	return nil
+}
+
+func assistantTransportGetSessionSnapshot(source appui.SessionSource, sessionID string) (*runtimekernel.SessionState, error) {
+	if source == nil {
+		return nil, errors.New("assistant transport session source is not configured")
+	}
+	if snapshots, ok := source.(assistantTransportSessionSnapshotSource); ok {
+		return snapshots.GetSnapshot(sessionID)
+	}
+	return nil, errors.New("assistant transport session source does not support immutable snapshots")
+}
+
+func assistantTransportListSessionSnapshots(source appui.SessionSource) ([]*runtimekernel.SessionState, error) {
+	if source == nil {
+		return nil, errors.New("assistant transport session source is not configured")
+	}
+	if snapshots, ok := source.(assistantTransportSessionSnapshotSource); ok {
+		return snapshots.ListSnapshots()
+	}
+	return nil, errors.New("assistant transport session source does not support immutable snapshots")
 }
 
 func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assistantTransportStreamStateOp {
@@ -1511,31 +1613,27 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 		nextTurn := next.Turns[turnID]
 		prevTurn := prev.Turns[turnID]
 
-		nextTurnForSet := nextTurn
-		prevTurnForSet := prevTurn
-		nextFinalText := ""
-		prevFinalText := ""
-		if prevTurnForSet.Final != nil {
-			prevFinalText = prevTurnForSet.Final.Text
-			finalCopy := *prevTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			prevTurnForSet.Final = &finalCopy
-		}
-		if nextTurnForSet.Final != nil {
-			nextFinalText = nextTurnForSet.Final.Text
-			finalCopy := *nextTurnForSet.Final
-			finalCopy.Text = prevFinalText
-			nextTurnForSet.Final = &finalCopy
+		nextTurnForSet := stripAssistantTransportLegacyTranscript(nextTurn)
+		prevTurnForSet := stripAssistantTransportLegacyTranscript(prevTurn)
+		nextFinalID, nextFinalText := assistantTransportFinalBlockText(nextTurn)
+		prevFinalID, prevFinalText := assistantTransportFinalBlockText(prevTurn)
+		appendFinalText := nextFinalID != "" && (prevFinalID == "" || prevFinalID == nextFinalID)
+		if appendFinalText {
+			nextTurnForSet = assistantTransportTurnWithFinalBlockText(nextTurnForSet, nextFinalID, prevFinalText)
+			if prevFinalID != "" {
+				prevTurnForSet = assistantTransportTurnWithFinalBlockText(prevTurnForSet, prevFinalID, prevFinalText)
+			}
 		}
 		if !reflect.DeepEqual(prevTurnForSet, nextTurnForSet) {
 			appendSet([]any{"turns", turnID}, nextTurnForSet)
 		}
-		if nextFinalText != prevFinalText {
+		if appendFinalText && nextFinalText != prevFinalText {
+			path := []any{"turns", turnID, "blocksById", nextFinalID, "text"}
 			if strings.HasPrefix(nextFinalText, prevFinalText) {
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText[len(prevFinalText):])
+				appendText(path, nextFinalText[len(prevFinalText):])
 			} else {
-				appendSet([]any{"turns", turnID, "final", "text"}, "")
-				appendText([]any{"turns", turnID, "final", "text"}, nextFinalText)
+				appendSet(path, "")
+				appendText(path, nextFinalText)
 			}
 		}
 	}
@@ -1551,6 +1649,38 @@ func assistantTransportDiffStateOps(prev, next appui.AiopsTransportState) []assi
 	}
 
 	return ops
+}
+
+func stripAssistantTransportLegacyTranscript(turn appui.AiopsTransportTurn) appui.AiopsTransportTurn {
+	turn.Process = nil
+	turn.Final = nil
+	return turn
+}
+
+func assistantTransportFinalBlockText(turn appui.AiopsTransportTurn) (string, string) {
+	for index := len(turn.BlockOrder) - 1; index >= 0; index-- {
+		id := turn.BlockOrder[index]
+		block, ok := turn.BlocksByID[id]
+		if ok && block.Type == appui.AiopsTransportBlockTypeFinalAnswer {
+			return id, block.Text
+		}
+	}
+	return "", ""
+}
+
+func assistantTransportTurnWithFinalBlockText(turn appui.AiopsTransportTurn, blockID, text string) appui.AiopsTransportTurn {
+	block, ok := turn.BlocksByID[blockID]
+	if !ok || block.Type != appui.AiopsTransportBlockTypeFinalAnswer {
+		return turn
+	}
+	blocks := make(map[string]appui.AiopsTransportBlock, len(turn.BlocksByID))
+	for id, item := range turn.BlocksByID {
+		blocks[id] = item
+	}
+	block.Text = text
+	blocks[blockID] = block
+	turn.BlocksByID = blocks
+	return turn
 }
 
 func firstAssistantTransportValue(values ...string) string {

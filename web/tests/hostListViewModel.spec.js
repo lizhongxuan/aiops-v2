@@ -52,7 +52,6 @@ describe("hostListViewModel", () => {
       ip: "10.0.2.15",
       user: "root",
       title: "10.0.2.15 / root",
-      subtitle: "client v0.8.1 · key 10.0.2.15:root",
       heartbeat: "online",
       heartbeatLabel: "在线",
       heartbeatTone: "success",
@@ -65,6 +64,7 @@ describe("hostListViewModel", () => {
       canOpenSsh: true,
       primaryAction: "session",
     });
+    expect(model.rows[0]).not.toHaveProperty("subtitle");
     expect(model.stats).toEqual([
       { label: "心跳正常", value: 1 },
       { label: "超过 60s 未心跳", value: 0 },
@@ -202,12 +202,12 @@ describe("hostListViewModel", () => {
       installWorkflowId: "builtin.host-agent-install/v1",
       installStep: "verify_heartbeat",
       lastError: "heartbeat timeout",
-      installDetailLabel: "verify_heartbeat · run-install-123",
       canOpenInstallRun: true,
       canRetryInstall: true,
       canOpenSsh: false,
       primaryAction: "retry_install",
     });
+    expect(model.rows[0]).not.toHaveProperty("installDetailLabel");
   });
 
   it("does not expose a runner run link for direct Go SSH installs", () => {
@@ -231,9 +231,9 @@ describe("hostListViewModel", () => {
     expect(model.rows[0]).toMatchObject({
       installRunId: "direct-host-direct-abc123",
       installWorkflowId: "",
-      installDetailLabel: "detect-platform · direct-host-direct-abc123",
       canOpenInstallRun: false,
     });
+    expect(model.rows[0]).not.toHaveProperty("installDetailLabel");
   });
 
   it("marks unsupported platform with a dedicated label", () => {

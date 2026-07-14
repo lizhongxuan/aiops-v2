@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
 
 	"aiops-v2/internal/agentruntime"
 	evidencecore "aiops-v2/internal/evidence"
@@ -91,10 +92,14 @@ func (r *AgentConfigRunner) Run(ctx context.Context, config agentruntime.Config)
 		model:           firstNonEmpty(strings.TrimSpace(config.RuntimeKind()), "child-agent"),
 		reasoningEffort: firstMetadataValue(runtimeMetadata, "reasoningEffort", "reasoning_effort"),
 	})
+	instructionContext, err := fixedAgentInstructionContextForConfig(config)
+	if err != nil {
+		return "", err
+	}
 
 	kernel := NewRuntimeKernel(RuntimeKernelConfig{
 		ToolSource:       fixedAgentToolSource{sessionType: sessionType, mode: mode, assembledTools: assembledTools, runtimeTools: config.RuntimeTools(), metadata: runtimeMetadata, config: config},
-		Compiler:         fixedAgentCompiler{instructionsText: modelrouter.EinoInstructionMessagesText(config.RuntimeInstructions())},
+		Compiler:         fixedAgentCompiler{roleContent: instructionContext.Role, dynamicContent: instructionContext.Dynamic},
 		Policy:           r.cfg.Policy,
 		Permissions:      r.cfg.Permissions,
 		Hooks:            r.cfg.Hooks,
@@ -188,28 +193,34 @@ func (s fixedAgentToolSource) compileContext(session SessionType, mode Mode, met
 }
 
 type fixedAgentCompiler struct {
-	instructionsText string
+	roleContent    string
+	dynamicContent string
 }
 
 func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
-	systemContent := strings.TrimSpace(c.instructionsText)
-	if systemContent == "" {
-		systemContent = "你是一个子 Agent，按 manager 分派的任务执行并返回可核验结果。"
+	roleContent := "你是一个子 Agent，按 manager 分派的任务执行并返回可核验结果。"
+	if typedRole := strings.TrimSpace(c.roleContent); typedRole != "" {
+		roleContent += "\n" + typedRole
+	}
+	systemContent := roleContent
+	ctx.ExtraSections = append([]promptcompiler.PromptSection(nil), ctx.ExtraSections...)
+	if dynamicContent := strings.TrimSpace(c.dynamicContent); dynamicContent != "" {
+		ctx.ExtraSections = append(ctx.ExtraSections, promptcompiler.PromptSection{
+			Title: "Delegated Agent Context", Content: dynamicContent,
+		})
 	}
 	toolContent := toolPromptContent(ctx.AssembledTools)
-	if len(ctx.ExtraSections) > 0 {
-		systemContent = systemContent + "\n\n" + promptSectionsText(ctx.ExtraSections)
-	}
 	compiled := promptcompiler.CompiledPrompt{
 		Stable: promptcompiler.StablePromptEnvelope{
 			Content: systemContent + "\n\n" + toolContent,
-			System:  promptcompiler.SystemPrompt{Content: systemContent, Role: "child-agent"},
+			System:  promptcompiler.SystemPrompt{Content: systemContent, Role: roleContent},
 			Tools:   promptcompiler.ToolPromptSet{Content: toolContent},
 		},
 		Dynamic: promptcompiler.DynamicPromptDelta{
 			Content: ctx.RuntimePolicy,
+			Policy:  promptcompiler.RuntimePolicyPrompt{Content: ctx.RuntimePolicy, Mode: ctx.Mode},
 		},
-		System: promptcompiler.SystemPrompt{Content: systemContent, Role: "child-agent"},
+		System: promptcompiler.SystemPrompt{Content: systemContent, Role: roleContent},
 		Tools:  promptcompiler.ToolPromptSet{Content: toolContent},
 		Policy: promptcompiler.RuntimePolicyPrompt{Content: ctx.RuntimePolicy, Mode: ctx.Mode},
 	}
@@ -242,9 +253,112 @@ func (c fixedAgentCompiler) Compile(ctx promptcompiler.CompileContext) (promptco
 			Required:  true,
 		},
 	}}
-	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
 	compiled.PromptSections = promptcompiler.BuildPromptSectionTrace(compiled)
+	compiled.EnvelopeV2 = promptcompiler.BuildPromptEnvelopeV2(compiled, ctx)
+	if err := compiled.EnvelopeV2.Validate(); err != nil {
+		return promptcompiler.CompiledPrompt{}, fmt.Errorf("compile child prompt envelope v2: %w", err)
+	}
+	compiled.Fingerprint = promptcompiler.BuildPromptFingerprintForAdapter(compiled)
 	return compiled, nil
+}
+
+type fixedAgentInstructionContext struct {
+	Role    string
+	Dynamic string
+}
+
+func fixedAgentInstructionContextForConfig(config agentruntime.Config) (fixedAgentInstructionContext, error) {
+	if typed, ok := config.(agentruntime.PromptEnvelopeV2Config); ok {
+		envelope := typed.RuntimePromptEnvelopeV2()
+		if promptEnvelopeV2IsPresent(envelope) {
+			if err := envelope.Validate(); err != nil {
+				return fixedAgentInstructionContext{}, fmt.Errorf("validate child prompt envelope v2: %w", err)
+			}
+			return classifyFixedAgentPromptEnvelopeV2(envelope), nil
+		}
+	}
+	return classifyFixedAgentInstructions(config.RuntimeInstructions()), nil
+}
+
+func promptEnvelopeV2IsPresent(envelope promptcompiler.PromptEnvelopeV2) bool {
+	return strings.TrimSpace(envelope.SchemaVersion) != "" || len(envelope.Sections) > 0 || len(envelope.DynamicContext) > 0
+}
+
+func classifyFixedAgentPromptEnvelopeV2(envelope promptcompiler.PromptEnvelopeV2) fixedAgentInstructionContext {
+	role := make([]string, 0, 1)
+	dynamic := make([]string, 0, len(envelope.DynamicContext))
+	for _, section := range envelope.Sections {
+		content := strings.TrimSpace(section.Content)
+		if content == "" {
+			continue
+		}
+		switch section.LogicalLayer {
+		case promptcompiler.LayerRoleProfileCore:
+			role = append(role, content)
+		case promptcompiler.LayerStepDynamicContext:
+			if fixedAgentTypedSectionIsCurrentStepFact(section) {
+				continue
+			}
+			dynamic = append(dynamic, content)
+		}
+	}
+	return fixedAgentInstructionContext{
+		Role:    strings.Join(role, "\n\n"),
+		Dynamic: strings.Join(dynamic, "\n\n"),
+	}
+}
+
+func fixedAgentTypedSectionIsCurrentStepFact(section promptcompiler.PromptCompiledSection) bool {
+	switch strings.TrimSpace(section.Source) {
+	case promptcompiler.DynamicContextSourceRuntimeState, promptcompiler.DynamicContextSourceToolSurface:
+		return true
+	default:
+		return false
+	}
+}
+
+func classifyFixedAgentInstructions(messages []*schema.Message) fixedAgentInstructionContext {
+	roleMessages := make([]*schema.Message, 0, len(messages))
+	dynamicMessages := make([]*schema.Message, 0, len(messages))
+	for _, message := range messages {
+		if message == nil || strings.TrimSpace(message.Content) == "" {
+			continue
+		}
+		sectionID := fixedAgentInstructionExtra(message, "source_section_id")
+		layer := fixedAgentInstructionExtra(message, "source_layer")
+		if layer == string(promptcompiler.LayerRoleProfileCore) {
+			roleMessages = append(roleMessages, message)
+			continue
+		}
+		if fixedAgentInstructionIsRebuilt(sectionID, layer) {
+			continue
+		}
+		dynamicMessages = append(dynamicMessages, message)
+	}
+	return fixedAgentInstructionContext{
+		Role:    modelrouter.EinoInstructionMessagesText(roleMessages),
+		Dynamic: modelrouter.EinoInstructionMessagesText(dynamicMessages),
+	}
+}
+
+func fixedAgentInstructionExtra(message *schema.Message, key string) string {
+	if message == nil || message.Extra == nil {
+		return ""
+	}
+	value, _ := message.Extra[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func fixedAgentInstructionIsRebuilt(sectionID, layer string) bool {
+	if sectionID == "base.contract" || strings.HasPrefix(sectionID, "profile.") || sectionID == "tool.surface" || sectionID == "runtime.state" {
+		return true
+	}
+	switch promptcompiler.PromptLogicalLayer(layer) {
+	case promptcompiler.LayerAbsoluteSystemCore, promptcompiler.LayerStableRuntimeContract, promptcompiler.LayerTurnStableFacts:
+		return true
+	default:
+		return false
+	}
 }
 
 type agentConfigProviderResolver struct {
@@ -323,24 +437,6 @@ func toolPromptContent(tools []tooling.Tool) string {
 			builder.WriteString(": ")
 			builder.WriteString(desc)
 		}
-	}
-	return strings.TrimSpace(builder.String())
-}
-
-func promptSectionsText(sections []promptcompiler.PromptSection) string {
-	var builder strings.Builder
-	for _, section := range sections {
-		if strings.TrimSpace(section.Content) == "" {
-			continue
-		}
-		if builder.Len() > 0 {
-			builder.WriteString("\n\n")
-		}
-		if title := strings.TrimSpace(section.Title); title != "" {
-			builder.WriteString(title)
-			builder.WriteString("\n")
-		}
-		builder.WriteString(section.Content)
 	}
 	return strings.TrimSpace(builder.String())
 }

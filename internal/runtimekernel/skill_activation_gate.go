@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"aiops-v2/internal/skills"
+	"aiops-v2/internal/tooling"
 )
 
 type MandatorySkillDecision struct {
@@ -14,7 +15,7 @@ type MandatorySkillDecision struct {
 	Reasons        []string `json:"reasons,omitempty"`
 }
 
-func EvaluateMandatorySkillActivation(defs []skills.Definition, input, answer string, state SkillActivationSessionState) MandatorySkillDecision {
+func EvaluateMandatorySkillActivation(defs []skills.Definition, input, _ string, state SkillActivationSessionState) MandatorySkillDecision {
 	required := map[string][]string{}
 	for _, def := range defs {
 		defName := strings.TrimSpace(def.Name)
@@ -57,10 +58,7 @@ func EvaluateMandatorySkillActivation(defs []skills.Definition, input, answer st
 		reasons = append(reasons, reason)
 	}
 	sort.Strings(reasons)
-	if answerClaimsFinalCertainty(answer) {
-		return MandatorySkillDecision{Action: "require_skill_read", RequiredSkills: names, Reasons: reasons}
-	}
-	return MandatorySkillDecision{Action: "warn", RequiredSkills: names, Reasons: reasons}
+	return MandatorySkillDecision{Action: "require_skill_read", RequiredSkills: names, Reasons: reasons}
 }
 
 func mandatorySkillMatchReasons(def skills.Definition, input string) []string {
@@ -115,21 +113,6 @@ func mandatorySearchMatchReasons(match SkillSearchMatchSnapshot, input string) [
 	return uniqueSortedReasons(reasons)
 }
 
-func answerClaimsFinalCertainty(answer string) bool {
-	answer = strings.ToLower(strings.TrimSpace(answer))
-	if answer == "" {
-		return false
-	}
-	for _, marker := range []string{
-		"root cause", "definitely", "confirmed", "final answer", "结论", "根因", "确定", "确认",
-	} {
-		if strings.Contains(answer, marker) {
-			return true
-		}
-	}
-	return true
-}
-
 func mandatorySkillRetryPrompt(decision MandatorySkillDecision) string {
 	if decision.Action != "require_skill_read" || len(decision.RequiredSkills) == 0 {
 		return ""
@@ -139,6 +122,42 @@ func mandatorySkillRetryPrompt(decision MandatorySkillDecision) string {
 		strings.Join(decision.RequiredSkills, ", "),
 		strings.Join(decision.Reasons, ", "),
 	)
+}
+
+func mandatorySkillActivationSatisfiedByToolSurface(decision MandatorySkillDecision, tools []tooling.Tool) bool {
+	if decision.Action != "require_skill_read" || len(decision.RequiredSkills) == 0 {
+		return false
+	}
+	for _, skillName := range decision.RequiredSkills {
+		switch strings.ToLower(strings.TrimSpace(skillName)) {
+		case "coroot-evidence":
+			if !toolSurfaceHasCorootEvidenceTool(tools) {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func toolSurfaceHasCorootEvidenceTool(tools []tooling.Tool) bool {
+	for _, toolDef := range tools {
+		if toolDef == nil {
+			continue
+		}
+		meta := toolDef.Metadata()
+		if meta.Mutating || meta.RequiresApproval {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(meta.Name))
+		pack := strings.ToLower(strings.TrimSpace(meta.Pack))
+		domain := strings.ToLower(strings.TrimSpace(meta.Domain))
+		if domain == "coroot" || strings.HasPrefix(name, "coroot.") || strings.HasPrefix(pack, "coroot") || pack == "mcp_dynamic_coroot" {
+			return true
+		}
+	}
+	return false
 }
 
 func containsFoldToken(text, needle string) bool {

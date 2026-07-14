@@ -121,6 +121,58 @@ describe("ProcessTranscript", () => {
     expect(text).not.toContain(final);
   });
 
+  it("keeps assistant, command, and approval rows in their process order", async () => {
+    const process = [
+      makeBlock({
+        id: "assistant-before-command",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "先检查网络配置。",
+      }),
+      makeBlock({
+        id: "cmd-ip-addr",
+        kind: "command",
+        status: "failed",
+        command: "ip addr show",
+        outputPreview: "needs_host_agent",
+      }),
+      makeBlock({
+        id: "assistant-before-approval",
+        kind: "assistant",
+        status: "completed",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        text: "命令不可用，改为请求只读日志检查。",
+      }),
+      makeBlock({
+        id: "approval-read-log",
+        kind: "approval",
+        status: "blocked",
+        text: "需要审批：读取 /var/log",
+        approvalId: "approval-read-log",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="blocked" />);
+    });
+
+    const processText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    const assistantBeforeCommand = processText.indexOf("先检查网络配置");
+    const command = processText.indexOf("运行失败 ip addr show");
+    const assistantBeforeApproval = processText.indexOf("改为请求只读日志检查");
+    const approval = processText.indexOf("需要审批：读取 /var/log");
+
+    expect(assistantBeforeCommand).toBeGreaterThanOrEqual(0);
+    expect(command).toBeGreaterThan(assistantBeforeCommand);
+    expect(assistantBeforeApproval).toBeGreaterThan(command);
+    expect(approval).toBeGreaterThan(assistantBeforeApproval);
+  });
+
   it("keeps preserved final output out of the process transcript when a raw stream error is present", async () => {
     const rawError = "failed to receive stream chunk: context deadline exceeded";
     const preservedAnswer = [
@@ -1394,6 +1446,73 @@ describe("ProcessTranscript", () => {
     await expandProcessTranscript();
 
     expect(container.textContent).toContain("整理最终回答 456ms");
+  });
+
+  it("hides final generation duration while the turn is still running", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-coroot",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={process}
+          turnStatus="working"
+          finalText="正在流式生成最终回答。"
+          finalDurationMs={6200}
+          renderFinalText={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("处理中");
+    expect(container.textContent).not.toContain("整理最终回答");
+  });
+
+  it("hides internal Coroot reuse tool results from the transcript", async () => {
+    const process = [
+      makeBlock({
+        id: "tool-coroot-broad",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+      }),
+      makeBlock({
+        id: "tool-coroot-reused",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_list_services",
+        text: "coroot_list_services",
+        inputSummary: '{"status":"warning"}',
+        outputPreview: '{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"reused","skipReason":"covered_by_prior_broad_query"}',
+      }),
+      makeBlock({
+        id: "tool-coroot-incidents",
+        kind: "tool",
+        status: "completed",
+        source: "coroot_incidents",
+        text: "coroot_incidents",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="completed" />);
+    });
+
+    await expandProcessTranscript();
+
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-broad"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-reused"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-coroot-incidents"]')).toBeTruthy();
+    expect(container.textContent).not.toContain("covered_by_prior_broad_query");
+    expect(container.textContent).not.toContain('{"status":"warning"}');
   });
 
   it("formats long elapsed times with hours minutes and seconds", async () => {

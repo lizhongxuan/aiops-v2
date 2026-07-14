@@ -65,28 +65,32 @@ type ToolProgressSink func(update ToolProgressUpdate)
 // ToolDispatcher dispatches tool calls through the PolicyEngine and
 // Capability Registry, emitting lifecycle events to the Projector.
 type ToolDispatcher struct {
-	lookup             ToolLookup
-	policy             *policyengine.Engine
-	permissions        *permissions.Engine
-	hooks              *hooks.Registry
-	projector          EventEmitter
-	spanSource         SpanStreamSource // optional: span tracking for tool calls
-	observer           Observer
-	progressSink       ToolProgressSink
-	approvalGrants     []SessionApprovalGrant
-	planMode           PlanModeState
-	planScopes         []PlanApprovalScope
-	unexpectedStates   []UnexpectedStateSignal
-	resourceLockGate   ToolResourceLockGate
-	toolSurfaceFP      string
-	permissionHash     string
-	surfacePolicy      *tooling.ToolSurfacePolicySnapshot
-	runtimeToolSurface *RuntimeToolRouterSnapshot
-	deferredCatalog    DeferredToolCatalogLookup
-	visibleTools       []tooling.ToolMetadata
-	retryConfig        ReadOnlyRetryConfig
-	retryMu            sync.Mutex
-	retriesThisTurn    int
+	lookup                 ToolLookup
+	policy                 *policyengine.Engine
+	permissions            *permissions.Engine
+	hooks                  *hooks.Registry
+	projector              EventEmitter
+	spanSource             SpanStreamSource // optional: span tracking for tool calls
+	observer               Observer
+	progressSink           ToolProgressSink
+	approvalGrants         []SessionApprovalGrant
+	planMode               PlanModeState
+	planScopes             []PlanApprovalScope
+	unexpectedStates       []UnexpectedStateSignal
+	resourceLockGate       ToolResourceLockGate
+	toolSurfaceFP          string
+	permissionHash         string
+	expectedPermissionHash string
+	permissionBindingSet   bool
+	surfacePolicy          *tooling.ToolSurfacePolicySnapshot
+	stepToolRouter         *StepToolRouter
+	deferredCatalog        DeferredToolCatalogLookup
+	visibleTools           []tooling.ToolMetadata
+	retryConfig            ReadOnlyRetryConfig
+	roleBindingGuard       RoleBindingGuardConfig
+	executionScopeGuard    ExecutionScopeGuardConfig
+	retryMu                sync.Mutex
+	retriesThisTurn        int
 }
 
 // NewToolDispatcher creates a new ToolDispatcher.
@@ -161,6 +165,16 @@ func (d *ToolDispatcher) WithToolSurfaceFingerprint(fingerprint string) *ToolDis
 
 func (d *ToolDispatcher) WithPermissionSnapshotHash(hash string) *ToolDispatcher {
 	d.permissionHash = strings.TrimSpace(hash)
+	d.permissionBindingSet = true
+	return d
+}
+
+// WithPermissionBinding binds the dispatcher's current immutable step hash to
+// the permission hash independently derived from the frozen turn assembly.
+func (d *ToolDispatcher) WithPermissionBinding(expected, current string) *ToolDispatcher {
+	d.expectedPermissionHash = strings.TrimSpace(expected)
+	d.permissionHash = strings.TrimSpace(current)
+	d.permissionBindingSet = true
 	return d
 }
 
@@ -176,20 +190,17 @@ func (d *ToolDispatcher) WithToolSurfacePolicySnapshot(snapshot *tooling.ToolSur
 	return d
 }
 
-func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRouterSnapshot) *ToolDispatcher {
-	cp := RuntimeToolRouterSnapshot{
-		RegisteredTools:   append([]string(nil), snapshot.RegisteredTools...),
-		ModelVisibleTools: append([]string(nil), snapshot.ModelVisibleTools...),
-		DispatchableTools: append([]string(nil), snapshot.DispatchableTools...),
-		HiddenReasons:     copyRuntimeToolHiddenReasons(snapshot.HiddenReasons),
-		PolicyHash:        strings.TrimSpace(snapshot.PolicyHash),
-		Fingerprint:       strings.TrimSpace(snapshot.Fingerprint),
-	}
-	d.runtimeToolSurface = &cp
+func (d *ToolDispatcher) WithStepToolRouter(snapshot StepToolRouter) *ToolDispatcher {
+	cp := cloneStepToolRouter(snapshot)
+	d.stepToolRouter = &cp
 	if cp.Fingerprint != "" {
 		d.toolSurfaceFP = cp.Fingerprint
 	}
 	return d
+}
+
+func (d *ToolDispatcher) WithRuntimeToolRouterSnapshot(snapshot RuntimeToolRouterSnapshot) *ToolDispatcher {
+	return d.WithStepToolRouter(snapshot)
 }
 
 func (d *ToolDispatcher) WithDeferredCatalogLookup(lookup DeferredToolCatalogLookup) *ToolDispatcher {
@@ -244,21 +255,21 @@ type DispatchResult struct {
 //  4. Emit lifecycle events to Projector
 //  5. Return result
 func (d *ToolDispatcher) Dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", false)
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", false, nil)
 }
 
 // DispatchApproved executes a tool call after an explicit approval/resume decision.
-// The tool still flows through the dispatcher, but guard checks are skipped because
-// the approval gate has already been satisfied for this call.
-func (d *ToolDispatcher) DispatchApproved(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", true)
+// A verified binding satisfies repeated approval requests only; current deny and
+// evidence gates still run and win.
+func (d *ToolDispatcher) DispatchApproved(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, authorization VerifiedActionToken) DispatchResult {
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", true, &authorization)
 }
 
 // DispatchWithParentSpan executes a tool call with optional span tracking.
 // If parentSpanID is non-empty and spanSource is configured, a child span
 // is created for this tool call.
 func (d *ToolDispatcher) DispatchWithParentSpan(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string) DispatchResult {
-	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, parentSpanID, false)
+	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, parentSpanID, false, nil)
 }
 
 func (d *ToolDispatcher) dispatchDecisionTrace(tc ToolCall) promptinput.DispatchDecisionTrace {
@@ -279,453 +290,55 @@ func (d *ToolDispatcher) effectivePermissionSnapshotHash() string {
 	if d == nil {
 		return "sha256:dispatcher-nil"
 	}
-	if strings.TrimSpace(d.permissionHash) != "" {
+	if d.permissionBindingSet || strings.TrimSpace(d.permissionHash) != "" {
 		return strings.TrimSpace(d.permissionHash)
 	}
+	var permissionRules []permissions.Rule
+	if d.permissions != nil {
+		permissionRules = d.permissions.Rules()
+	}
 	payload, _ := json.Marshal(map[string]any{
-		"hasPermissionEngine": d.permissions != nil,
-		"approvalGrants":      d.approvalGrants,
-		"planMode":            d.planMode.State,
-		"planScopes":          d.planScopes,
+		"permissionRules": permissionRules, "approvalGrants": d.approvalGrants,
+		"planMode": d.planMode.State, "planScopes": d.planScopes,
 	})
 	return toolArgumentsHash(payload)
 }
 
-func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool) (result DispatchResult) {
-	var resourceLockTraces []promptinput.ResourceLockTrace
-	decisionTrace := d.dispatchDecisionTrace(tc)
-	defer func() {
-		if len(resourceLockTraces) > 0 {
-			result.ResourceLocks = append(result.ResourceLocks, resourceLockTraces...)
-		}
-		if strings.TrimSpace(result.DecisionTrace.ArgumentsHash) == "" {
-			result.DecisionTrace = decisionTrace
-		}
-	}()
-
-	// Create tool span if span source is available
-	var toolSpanID string
-	if d.spanSource != nil && parentSpanID != "" {
-		toolSpanID = d.spanSource.StartToolSpan(parentSpanID, tc.Name)
+func (d *ToolDispatcher) validateMutationPermissionBinding(tc ToolCall, desc ToolDescriptor, executor ToolExecutor) (string, bool) {
+	if !toolExecutionRequiresMutationSafety(desc, executor, tc.Arguments) {
+		return "", false
 	}
-
-	// Look up tool in registry
-	desc, executor, found := d.lookup.LookupTool(tc.Name)
-	if !found {
-		errMsg, meta := d.structuredMissingToolError(tc.Name)
-		if meta.Name != "" {
-			errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", meta)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, errMsg)
-			}
-			return errResult
-		}
-		errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed")
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return errResult
+	expected := strings.TrimSpace(d.expectedPermissionHash)
+	current := strings.TrimSpace(d.permissionHash)
+	status := ""
+	switch {
+	case expected == "":
+		status = "missing expected"
+	case current == "":
+		status = "missing current"
+	case expected != current:
+		status = "mismatch"
+	default:
+		return "", false
 	}
-	if hidden, ok := d.hiddenByRuntimeToolSurface(tc, desc.Metadata); ok {
-		result := d.hiddenToolUnavailableResult(tc, hidden, d.runtimeToolSurfacePolicySnapshot(), desc.Metadata)
-		result.Blocked = true
-		result.Reason = firstNonEmpty(hidden.Reason, "tool_not_dispatchable")
-		return result
-	}
-	if hidden, ok := d.hiddenByToolSurfacePolicy(tc, desc.Metadata, approved || d.hasSessionApprovalGrant(tc, desc)); ok {
-		return d.hiddenToolUnavailableResult(tc, hidden, d.surfacePolicy, desc.Metadata)
-	}
-	if errMsg, blocked := toolMCPUnavailableError(tc.Name, desc.Metadata); blocked {
-		errResult := d.emitToolFailed(sessionID, turnID, tc, errMsg, "mcp", "tool_failed", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return errResult
-	}
-	argsHash := toolArgumentsHash(tc.Arguments)
-	mcpServerID, mcpServerState := mcpObserverAttrs(desc.Metadata)
-	observedCtx, observedToolSpan := d.runtimeObserver().StartToolCall(ctx, ToolCallSpanAttrs{
-		SessionID:              sessionID,
-		TurnID:                 turnID,
-		ToolName:               firstNonEmpty(tc.Name, desc.Metadata.Name),
-		ToolCallID:             tc.ID,
-		Risk:                   string(desc.Metadata.RiskLevel.Normalize()),
-		ArgumentsHash:          argsHash,
-		ToolSurfaceFingerprint: d.toolSurfaceFP,
-		MCPServerID:            mcpServerID,
-		MCPServerState:         mcpServerState,
+	payload, _ := json.Marshal(map[string]string{
+		"errorType":      "permission_binding_invalid",
+		"toolName":       firstNonEmpty(tc.Name, desc.Metadata.Name, "tool"),
+		"reason":         "denied: permission binding invalid: " + status,
+		"requiredAction": "rebuild the immutable runtime step from the frozen turn assembly before dispatch",
 	})
-	if observedCtx != nil {
-		ctx = observedCtx
-	}
-	defer func() {
-		finishObservedToolSpan(observedToolSpan, turnID, tc, result, argsHash, d.toolSurfaceFP, mcpServerID, mcpServerState)
-	}()
+	return string(payload), true
+}
 
-	toolEvent := hooks.ToolEvent{
-		ToolCallID:  tc.ID,
-		SessionID:   sessionID,
-		TurnID:      turnID,
-		SessionType: string(sessionType),
-		Mode:        string(mode),
-		Tool:        desc.Metadata,
-		Arguments:   tc.Arguments,
+func approvalContextStaleDispatchResult(tc ToolCall, err error) DispatchResult {
+	reason := ApprovalContextStaleCode
+	if err != nil {
+		reason = err.Error()
 	}
-	if d.hooks != nil {
-		if err := d.hooks.RunToolStage(ctx, hooks.StagePreToolUse, &toolEvent); err != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, "pre_tool_use: "+err.Error(), "hook", "tool_failed", desc.Metadata)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "pre_tool_use: "+err.Error())
-			}
-			return result
-		}
-	}
-	if preference := d.evaluateDedicatedToolPreference(tc); preference.Action != policyengine.DedicatedToolPreferenceAllow {
-		errMsg := dedicatedToolPreferredError(tc.Name, preference)
-		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "policy", "tool_failed", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return result
-	}
-	if len(toolEvent.UpdatedInput) > 0 {
-		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
-		toolEvent.Arguments = tc.Arguments
-	}
-
-	if err := toolfailure.ValidateArguments(desc.InputSchema, tc.Arguments); err != nil {
-		errMsg := "invalid arguments: " + err.Error()
-		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return result
-	}
-
-	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc)
-	toolEvent.Arguments = tc.Arguments
-
-	if !approved && d.hasSessionApprovalGrant(tc, desc) {
-		approved = true
-	}
-
-	if decision, blocked := d.checkPlanApprovalPrecedence(tc, desc, mode, approved); blocked {
-		result := d.emitToolFailed(sessionID, turnID, tc, decision.Reason, "policy", "tool_denied", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, decision.Reason)
-		}
-		return result
-	} else if decision.Allowed {
-		approved = true
-	}
-
-	if decision := EvaluateUnexpectedStateGate(d.unexpectedStates, tc, desc.Metadata); decision.Action == UnexpectedStateActionBlockMutation {
-		reason := "denied: " + strings.Join(decision.Reasons, ", ")
-		result := d.emitToolFailed(sessionID, turnID, tc, reason, "policy", "tool_denied", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, reason)
-		}
-		return result
-	}
-
-	if !approved {
-		if checker, ok := executor.(ToolPermissionChecker); ok {
-			decision := checker.CheckPermissions(ctx, tc.Arguments)
-			switch decision.Action {
-			case tooling.PermissionActionDeny:
-				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "tool", "tool_denied", desc.Metadata)
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
-				}
-				return result
-			case tooling.PermissionActionNeedApproval:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     decision.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "approval_needed",
-					Source:     "tool",
-					Approval:   decision.Approval,
-				}
-			case tooling.PermissionActionNeedEvidence:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "evidence required: "+decision.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     "evidence required: " + decision.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "evidence_needed",
-					Source:     "tool",
-				}
-			}
-		}
-	}
-
-	// Check PolicyEngine
-	if !approved && d.policy != nil {
-		policyInput := policyengine.PolicyInput{
-			ToolName:    tc.Name,
-			Tool:        desc.Metadata,
-			SessionType: string(sessionType),
-			Mode:        string(mode),
-			Arguments:   tc.Arguments,
-		}
-		decision := d.policy.CheckToolCall(ctx, policyInput)
-
-		switch decision.Action {
-		case policyengine.PolicyActionDeny:
-			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "policy", "tool_denied", desc.Metadata)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
-			}
-			return result
-
-		case policyengine.PolicyActionNeedApproval:
-			// In production, this would trigger adk.Runner interrupt/resume
-			// via compose.CheckPointStore. For now, return blocked status.
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
-			}
-			return DispatchResult{
-				ToolCallID: tc.ID,
-				Blocked:    true,
-				Reason:     decision.Reason,
-				Metadata:   desc.Metadata,
-				Outcome:    "approval_needed",
-				Source:     "policy",
-			}
-
-		case policyengine.PolicyActionNeedEvidence:
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "evidence required: "+decision.Reason)
-			}
-			return DispatchResult{
-				ToolCallID: tc.ID,
-				Blocked:    true,
-				Reason:     "evidence required: " + decision.Reason,
-				Metadata:   desc.Metadata,
-				Outcome:    "evidence_needed",
-				Source:     "policy",
-			}
-		}
-	}
-
-	if !approved {
-		if override := toolEvent.UpdatedPermissions; override != nil {
-			switch override.Action {
-			case tooling.PermissionActionDeny:
-				result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+override.Reason, "hook", "tool_denied", desc.Metadata)
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "denied: "+override.Reason)
-				}
-				return result
-			case tooling.PermissionActionNeedApproval:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+override.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     override.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "approval_needed",
-					Source:     "hook",
-				}
-			case tooling.PermissionActionNeedEvidence:
-				if d.spanSource != nil && toolSpanID != "" {
-					d.spanSource.FailSpan(toolSpanID, "evidence required: "+override.Reason)
-				}
-				return DispatchResult{
-					ToolCallID: tc.ID,
-					Blocked:    true,
-					Reason:     "evidence required: " + override.Reason,
-					Metadata:   desc.Metadata,
-					Outcome:    "evidence_needed",
-					Source:     "hook",
-				}
-			}
-		}
-	}
-
-	if !approved && d.permissions != nil {
-		decision := d.permissions.Decide(ctx, permissions.Request{
-			Tool:        desc.Metadata,
-			SessionType: string(sessionType),
-			Mode:        string(mode),
-			Arguments:   tc.Arguments,
-		})
-		switch decision.Action {
-		case permissions.ActionDeny:
-			result := d.emitToolFailed(sessionID, turnID, tc, "denied: "+decision.Reason, "permissions", "tool_denied", desc.Metadata)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "denied: "+decision.Reason)
-			}
-			return result
-		case permissions.ActionAsk:
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "awaiting approval: "+decision.Reason)
-			}
-			return DispatchResult{
-				ToolCallID: tc.ID,
-				Blocked:    true,
-				Reason:     decision.Reason,
-				Metadata:   desc.Metadata,
-				Outcome:    "approval_needed",
-				Source:     "permissions",
-			}
-		}
-	}
-
-	if guardErr, blocked := d.evaluateMutationSafetyGuard(tc, desc, executor, sessionType, approved); blocked {
-		result := d.emitToolFailed(sessionID, turnID, tc, guardErr, "runtime", "tool_denied", desc.Metadata)
-		result.Content = guardErr
-		result.Result = tooling.ToolResult{ToolCallID: tc.ID, Content: guardErr, Error: guardErr}
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, guardErr)
-		}
-		return result
-	}
-
-	if releaseLocks, traces, lockErr := d.acquireToolResourceLocks(ctx, sessionID, turnID, tc, desc, executor); lockErr != "" {
-		resourceLockTraces = append(resourceLockTraces, traces...)
-		result := d.emitToolFailed(sessionID, turnID, tc, lockErr, "runtime", "tool_failed", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, lockErr)
-		}
-		return result
-	} else {
-		resourceLockTraces = append(resourceLockTraces, traces...)
-		if releaseLocks != nil {
-			defer releaseLocks()
-		}
-	}
-
-	// Emit tool.started only after permission and approval gates have passed.
-	startPayload, _ := json.Marshal(map[string]any{
-		"id":       tc.ID,
-		"toolName": tc.Name,
-		"args":     tc.Arguments,
-	})
-	d.projector.Emit(LifecycleEvent{
-		Type:      EventToolStarted,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Timestamp: time.Now(),
-		Payload:   startPayload,
-	})
-
-	// Execute tool
-	if executor == nil {
-		result := d.emitToolFailed(sessionID, turnID, tc, "tool has no runtime implementation", "runtime", "tool_failed", desc.Metadata)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, "tool has no runtime implementation")
-		}
-		return result
-	}
-
-	toolResult, retryAttempts, execErr := d.executeToolWithReadOnlyRetry(ctx, tc, desc, executor)
-	if execErr != nil {
-		errMsg := mutationFailureErrorMessage(tc, desc, executor, execErr.Error())
-		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "tool", "tool_failed", desc.Metadata)
-		result.Attempts = append(result.Attempts, retryAttempts...)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return result
-	}
-	if toolResult.ToolCallID == "" {
-		toolResult.ToolCallID = tc.ID
-	}
-	if toolResult.Error != "" {
-		errMsg := mutationFailureErrorMessage(tc, desc, executor, toolResult.Error)
-		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "tool", "tool_failed", desc.Metadata)
-		result.Attempts = append(result.Attempts, retryAttempts...)
-		if d.spanSource != nil && toolSpanID != "" {
-			d.spanSource.FailSpan(toolSpanID, errMsg)
-		}
-		return result
-	}
-	if toolResult.HasStream() {
-		streamedResult, streamErr := d.consumeStreamingToolResult(sessionID, turnID, tc, toolSpanID, toolResult)
-		if streamErr != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, streamErr.Error(), "tool", "tool_failed", desc.Metadata)
-			result.Attempts = append(result.Attempts, retryAttempts...)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, streamErr.Error())
-			}
-			return result
-		}
-		toolResult = streamedResult
-	}
-	toolEvent.Arguments = tc.Arguments
-	if d.hooks != nil {
-		toolEvent.Result = &toolResult
-		if err := d.hooks.RunToolStage(ctx, hooks.StagePostToolUse, &toolEvent); err != nil {
-			result := d.emitToolFailed(sessionID, turnID, tc, "post_tool_use: "+err.Error(), "hook", "tool_failed", desc.Metadata)
-			result.Attempts = append(result.Attempts, retryAttempts...)
-			if d.spanSource != nil && toolSpanID != "" {
-				d.spanSource.FailSpan(toolSpanID, "post_tool_use: "+err.Error())
-			}
-			return result
-		}
-		if toolEvent.UpdatedMCPToolOutput != nil {
-			toolResult = *toolEvent.UpdatedMCPToolOutput
-			if toolResult.ToolCallID == "" {
-				toolResult.ToolCallID = tc.ID
-			}
-			toolEvent.Result = &toolResult
-		}
-	}
-	content := toolResult.Content
-	outputSummary, resultForEvent, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, content)
-
-	// Emit tool.completed event
-	completedPayloadMap := map[string]any{
-		"id":                tc.ID,
-		"toolName":          tc.Name,
-		"args":              tc.Arguments,
-		"result":            resultForEvent,
-		"outputSummary":     outputSummary,
-		"rawRef":            rawRef,
-		"resultBytes":       resultBytes,
-		"resultTruncated":   resultTruncated,
-		"additionalContext": append([]string(nil), toolEvent.AdditionalContext...),
-		"watchPaths":        append([]string(nil), toolEvent.WatchPaths...),
-		"hiddenTools":       append([]string(nil), toolEvent.HideTools...),
-	}
-	if len(outputPreview) > 0 {
-		completedPayloadMap["outputPreview"] = outputPreview
-	}
-	completedPayload, _ := json.Marshal(completedPayloadMap)
-	d.projector.Emit(LifecycleEvent{
-		Type:      EventToolCompleted,
-		SessionID: sessionID,
-		TurnID:    turnID,
-		Timestamp: time.Now(),
-		Payload:   completedPayload,
-	})
-
-	// Complete the tool span
-	if d.spanSource != nil && toolSpanID != "" {
-		summary := fmt.Sprintf("%s completed", tc.Name)
-		d.spanSource.CompleteSpan(toolSpanID, summary, content)
-	}
-
 	return DispatchResult{
-		ToolCallID:  tc.ID,
-		Content:     content,
-		Metadata:    desc.Metadata,
-		Result:      toolResult,
-		Outcome:     "tool_result",
-		Source:      "tool",
-		HiddenTools: append([]string(nil), toolEvent.HideTools...),
-		Attempts:    append([]ToolAttemptState(nil), retryAttempts...),
+		ToolCallID: tc.ID, Blocked: true, Error: reason, Reason: reason,
+		Outcome: ApprovalContextStaleCode, Source: "runtime",
+		Result: tooling.ToolResult{ToolCallID: tc.ID, Error: reason},
 	}
 }
 
@@ -918,71 +531,55 @@ func (d *ToolDispatcher) hiddenByToolSurfacePolicy(tc ToolCall, meta tooling.Too
 	return tooling.ToolHiddenBySurfacePolicy(*d.surfacePolicy, meta, tc.Name)
 }
 
-func (d *ToolDispatcher) hiddenByRuntimeToolSurface(tc ToolCall, meta tooling.ToolMetadata) (tooling.ToolHiddenReason, bool) {
-	if d == nil || d.runtimeToolSurface == nil || !runtimeToolSurfaceDispatchGuardEnabled(*d.runtimeToolSurface) {
-		return tooling.ToolHiddenReason{}, false
+func (d *ToolDispatcher) rejectModelToolOutsideStep(sessionID, turnID string, tc ToolCall) (DispatchResult, bool) {
+	if d == nil || d.stepToolRouter == nil {
+		return DispatchResult{}, false
 	}
-	if runtimeToolSurfaceContains(d.runtimeToolSurface.DispatchableTools, meta, tc.Name) {
-		return tooling.ToolHiddenReason{}, false
+	if err := d.stepToolRouter.Validate(); err != nil {
+		return d.stepToolRouterUnavailableResult(tc, "step_tool_router_invalid", "step_tool_router_invalid", true), true
 	}
-	reason := "tool_not_dispatchable"
-	for _, candidate := range runtimeToolSurfaceNameCandidates(meta, tc.Name) {
-		if reasons := d.runtimeToolSurface.HiddenReasons[candidate]; len(reasons) > 0 && strings.TrimSpace(reasons[0]) != "" {
-			reason = strings.TrimSpace(reasons[0])
-			break
+	if d.stepToolRouter.AllowsModelDispatch(tc.Name) {
+		return DispatchResult{}, false
+	}
+	if !stepToolListContains(d.stepToolRouter.RegisteredTools, tc.Name) {
+		errMsg, meta := d.structuredMissingToolError(tc.Name)
+		if meta.Name != "" {
+			return d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", meta), true
 		}
+		return d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed"), true
 	}
-	return tooling.ToolHiddenReason{Name: firstNonEmpty(tc.Name, meta.Name), Reason: reason}, true
+	return d.stepToolRouterUnavailableResult(tc, "tool_not_visible_in_step", d.stepToolRouter.hiddenReason(tc.Name), false), true
 }
 
-func (d *ToolDispatcher) runtimeToolSurfacePolicySnapshot() *tooling.ToolSurfacePolicySnapshot {
-	if d == nil || d.runtimeToolSurface == nil || strings.TrimSpace(d.runtimeToolSurface.PolicyHash) == "" {
-		return nil
+func (d *ToolDispatcher) stepToolRouterUnavailableResult(tc ToolCall, errorType, policyReason string, blocked bool) DispatchResult {
+	if policyReason == "" {
+		policyReason = errorType
 	}
-	return &tooling.ToolSurfacePolicySnapshot{Hash: strings.TrimSpace(d.runtimeToolSurface.PolicyHash)}
-}
-
-func runtimeToolSurfaceDispatchGuardEnabled(surface RuntimeToolRouterSnapshot) bool {
-	return len(surface.ModelVisibleTools) > 0 || len(surface.DispatchableTools) > 0 || len(surface.HiddenReasons) > 0
-}
-
-func runtimeToolSurfaceContains(names []string, meta tooling.ToolMetadata, called string) bool {
-	candidates := runtimeToolSurfaceNameCandidates(meta, called)
-	for _, name := range names {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
-		}
-		for _, candidate := range candidates {
-			if strings.EqualFold(name, candidate) {
-				return true
-			}
-		}
+	payload := map[string]any{
+		"schemaVersion":  "aiops.tool_unavailable/v1",
+		"errorType":      errorType,
+		"toolName":       strings.TrimSpace(tc.Name),
+		"reason":         errorType,
+		"policyReason":   policyReason,
+		"retryable":      false,
+		"requiredAction": "continue_without_tool_or_start_a_new_step",
 	}
-	return false
-}
-
-func runtimeToolSurfaceNameCandidates(meta tooling.ToolMetadata, called string) []string {
-	values := []string{called, meta.Name, tooling.ProviderSafeToolName(called), tooling.ProviderSafeToolName(meta.Name)}
-	values = append(values, meta.Aliases...)
-	for _, alias := range meta.Aliases {
-		values = append(values, tooling.ProviderSafeToolName(alias))
+	if hash := strings.TrimSpace(d.stepToolRouter.PolicyHash); hash != "" {
+		payload["policySnapshotHash"] = hash
 	}
-	out := make([]string, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		key := strings.ToLower(value)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		out = append(out, value)
+	content, _ := json.Marshal(payload)
+	return DispatchResult{
+		ToolCallID: tc.ID,
+		Content:    string(content),
+		Blocked:    blocked,
+		Reason:     errorType,
+		Outcome:    map[bool]string{true: "blocked", false: "tool_unavailable"}[blocked],
+		Source:     "step_tool_router",
+		Result: tooling.ToolResult{
+			ToolCallID: tc.ID,
+			Content:    string(content),
+		},
 	}
-	return out
 }
 
 func copyRuntimeToolHiddenReasons(in map[string][]string) map[string][]string {
@@ -1012,31 +609,21 @@ func copyRuntimeToolHiddenReasons(in map[string][]string) map[string][]string {
 	return out
 }
 
-func toolHiddenByPolicyError(toolName string, hidden tooling.ToolHiddenReason, snapshot *tooling.ToolSurfacePolicySnapshot) string {
-	payload := map[string]string{
-		"errorType":      "tool_hidden_by_policy",
-		"toolName":       strings.TrimSpace(toolName),
-		"reason":         hidden.Reason,
-		"requiredAction": "request permission, switch mode, or choose a safer alternative",
-	}
-	if snapshot != nil {
-		payload["policySnapshotHash"] = strings.TrimSpace(snapshot.Hash)
-	}
-	data, _ := json.Marshal(payload)
-	return string(data)
-}
-
 func (d *ToolDispatcher) hiddenToolUnavailableResult(tc ToolCall, hidden tooling.ToolHiddenReason, snapshot *tooling.ToolSurfacePolicySnapshot, meta tooling.ToolMetadata) DispatchResult {
 	reason := strings.TrimSpace(hidden.Reason)
 	if reason == "" {
 		reason = "tool_hidden_by_policy"
 	}
 	toolName := firstNonEmpty(tc.Name, hidden.Name, meta.Name)
-	payload := map[string]string{
-		"schemaVersion": "aiops.tool_unavailable/v1",
-		"toolName":      strings.TrimSpace(toolName),
-		"reason":        reason,
-		"instruction":   "Continue without this tool or ask for explicit host target.",
+	failureClass := toolUnavailableFailureClass(reason)
+	payload := map[string]any{
+		"schemaVersion":  "aiops.tool_unavailable/v1",
+		"toolName":       strings.TrimSpace(toolName),
+		"failureClass":   failureClass,
+		"reason":         reason,
+		"retryable":      toolUnavailableRetryable(failureClass),
+		"requiredAction": toolUnavailableRequiredAction(failureClass),
+		"instruction":    "Continue without this tool or ask for explicit host target.",
 	}
 	if snapshot != nil && strings.TrimSpace(snapshot.Hash) != "" {
 		payload["policySnapshotHash"] = strings.TrimSpace(snapshot.Hash)
@@ -1050,6 +637,76 @@ func (d *ToolDispatcher) hiddenToolUnavailableResult(tc ToolCall, hidden tooling
 		Outcome:     "tool_unavailable",
 		Source:      "policy",
 		HiddenTools: []string{strings.TrimSpace(toolName)},
+	}
+}
+
+func toolUnavailableFailureClass(reason string) string {
+	normalized := strings.TrimSpace(strings.ToLower(reason))
+	switch normalized {
+	case "needs_host_agent", "fallback_denied", "host_exec_disallowed", "target_host_out_of_scope",
+		"approval_required", "permission_denied", "mcp_unavailable", "pack_not_enabled",
+		"tool_search_required", "opsmanual_not_requested", "public_web_policy_disabled",
+		"mutation_not_allowed", "resource_lock_conflict", "profile_denied":
+		return normalized
+	case "profile_disallowed":
+		return "profile_denied"
+	case "approval_required_schema_hidden":
+		return "approval_required"
+	case "mode_denied", "agent_role_read_only", "agent_role_mutation_requires_approval":
+		return "mutation_not_allowed"
+	case "tool_not_dispatchable":
+		return "tool_unavailable"
+	}
+	if strings.Contains(normalized, "7072") || strings.Contains(normalized, "connection refused") {
+		return "needs_host_agent"
+	}
+	if strings.Contains(normalized, "ssh fallback") || strings.Contains(normalized, "read-only command") {
+		return "fallback_denied"
+	}
+	return "tool_unavailable"
+}
+
+func toolUnavailableRetryable(failureClass string) bool {
+	switch strings.TrimSpace(strings.ToLower(failureClass)) {
+	case "needs_host_agent", "host_exec_disallowed", "target_host_out_of_scope", "approval_required",
+		"mcp_unavailable", "pack_not_enabled", "tool_search_required", "opsmanual_not_requested",
+		"public_web_policy_disabled", "resource_lock_conflict":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolUnavailableRequiredAction(failureClass string) string {
+	switch strings.TrimSpace(strings.ToLower(failureClass)) {
+	case "needs_host_agent":
+		return "start_or_repair_host_agent"
+	case "fallback_denied":
+		return "use_read_only_command_or_request_scoped_execution"
+	case "host_exec_disallowed", "target_host_out_of_scope":
+		return "confirm_explicit_host_target"
+	case "approval_required":
+		return "request_approval"
+	case "permission_denied":
+		return "request_permission_or_use_allowed_tool"
+	case "mcp_unavailable":
+		return "enable_or_reconnect_mcp"
+	case "pack_not_enabled":
+		return "enable_tool_pack"
+	case "tool_search_required":
+		return "run_tool_search"
+	case "opsmanual_not_requested":
+		return "request_opsmanual_lookup"
+	case "public_web_policy_disabled":
+		return "enable_public_web_policy_or_use_internal_sources"
+	case "mutation_not_allowed":
+		return "switch_mode_or_choose_read_only_action"
+	case "resource_lock_conflict":
+		return "wait_for_resource_lock_or_choose_different_target"
+	case "profile_denied":
+		return "switch_profile_or_choose_allowed_tool"
+	default:
+		return "continue_without_tool_or_ask_for_clarification"
 	}
 }
 

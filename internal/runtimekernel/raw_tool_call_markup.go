@@ -9,14 +9,16 @@ import (
 )
 
 var (
-	rawDSMLInvokePattern = regexp.MustCompile(`(?s)<｜｜DSML｜｜invoke\s+name="([^"]+)">(.*?)</｜｜DSML｜｜invoke>`)
-	rawDSMLParamPattern  = regexp.MustCompile(`(?s)<｜｜DSML｜｜parameter\s+name="([^"]+)"(?:\s+string="([^"]+)")?>(.*?)</｜｜DSML｜｜parameter>`)
+	rawDSMLPrefix        = `\|\s*\|\s*DSML\s*\|\s*\|`
+	rawDSMLInvokePattern = regexp.MustCompile(`(?is)<\s*` + rawDSMLPrefix + `\s*invoke\s+name="([^"]+)"\s*>(.*?)<\s*/\s*` + rawDSMLPrefix + `\s*invoke\s*>`)
+	rawDSMLParamPattern  = regexp.MustCompile(`(?is)<\s*` + rawDSMLPrefix + `\s*parameter\s+name="([^"]+)"(?:\s+string="([^"]+)")?\s*>(.*?)<\s*/\s*` + rawDSMLPrefix + `\s*parameter\s*>`)
 )
 
 func rawToolCallsFromAssistantText(text, turnID string, iteration int) []ToolCall {
 	if !containsRawToolCallMarkup(strings.ToLower(text)) {
 		return nil
 	}
+	text = normalizeRawToolCallMarkup(text)
 	matches := rawDSMLInvokePattern.FindAllStringSubmatch(text, -1)
 	if len(matches) == 0 {
 		return nil
@@ -66,6 +68,13 @@ func rawDSMLParamsToMap(body string) map[string]any {
 }
 
 func parseRawDSMLScalar(value string) any {
+	trimmed := strings.TrimSpace(value)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var decoded any
+		if err := json.Unmarshal([]byte(trimmed), &decoded); err == nil {
+			return decoded
+		}
+	}
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "true":
 		return true
@@ -79,4 +88,14 @@ func parseRawDSMLScalar(value string) any {
 		return f
 	}
 	return value
+}
+
+func normalizeRawToolCallMarkup(text string) string {
+	replacer := strings.NewReplacer(
+		"｜", "|",
+		"< /", "</",
+		"<\n/", "</",
+		"<\t/", "</",
+	)
+	return replacer.Replace(text)
 }

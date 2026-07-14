@@ -6,57 +6,62 @@ func BuildPromptEnvelope(compiled CompiledPrompt, ctx CompileContext) PromptEnve
 	sections := make([]PromptCompiledSection, 0, 5)
 	if base := strings.TrimSpace(buildBaseRuntimeContract("")); base != "" {
 		sections = append(sections, PromptCompiledSection{
-			ID:        "base.contract",
-			Layer:     PromptSectionKindStable,
-			Role:      "system",
-			Content:   base,
-			Stability: PromptSectionKindStable,
-			Source:    "base",
-			Required:  true,
+			ID:           "base.contract",
+			Layer:        PromptSectionKindStable,
+			LogicalLayer: LayerStableRuntimeContract,
+			Role:         "system",
+			Content:      base,
+			Stability:    PromptSectionKindStable,
+			Source:       "base",
+			Required:     true,
 		})
 	}
 	if runtimeState := strings.TrimSpace(compiled.Dynamic.Policy.Content); runtimeState != "" {
 		sections = append(sections, PromptCompiledSection{
-			ID:        "runtime.state",
-			Layer:     PromptSectionKindDynamic,
-			Role:      "system",
-			Content:   runtimeState,
-			Stability: PromptSectionKindDynamic,
-			Source:    "runtime",
-			Required:  true,
+			ID:           "runtime.state",
+			Layer:        PromptSectionKindDynamic,
+			LogicalLayer: LayerStepDynamicContext,
+			Role:         "system",
+			Content:      runtimeState,
+			Stability:    PromptSectionKindDynamic,
+			Source:       "runtime",
+			Required:     true,
 		})
 	}
 	profile := resolvePromptEnvelopeProfile(ctx)
 	if profileContent := buildProfileFragment(profile, ctx.HostContext); strings.TrimSpace(profileContent) != "" {
 		sections = append(sections, PromptCompiledSection{
-			ID:        "profile." + profile,
-			Layer:     PromptSectionKindStable,
-			Role:      "system",
-			Content:   profileContent,
-			Stability: PromptSectionKindStable,
-			Source:    "profile",
-			Required:  true,
+			ID:           "profile." + profile,
+			Layer:        PromptSectionKindStable,
+			LogicalLayer: LayerRoleProfileCore,
+			Role:         "system",
+			Content:      profileContent,
+			Stability:    PromptSectionKindStable,
+			Source:       "profile",
+			Required:     true,
 		})
 	}
 	if tools := strings.TrimSpace(compiled.Stable.Tools.Content); tools != "" {
 		sections = append(sections, PromptCompiledSection{
-			ID:        "tool.surface",
-			Layer:     PromptSectionKindStable,
-			Role:      "system",
-			Content:   tools,
-			Stability: PromptSectionKindStable,
-			Source:    "tools",
-			Required:  true,
+			ID:           "tool.surface",
+			Layer:        PromptSectionKindStable,
+			LogicalLayer: LayerStepDynamicContext,
+			Role:         "system",
+			Content:      tools,
+			Stability:    PromptSectionKindStable,
+			Source:       "tools",
+			Required:     true,
 		})
 	}
 	if dynamicContext := strings.TrimSpace(compiled.effectiveDynamicContextContent()); dynamicContext != "" {
 		sections = append(sections, PromptCompiledSection{
-			ID:        "dynamic.context",
-			Layer:     PromptSectionKindDynamic,
-			Role:      "system",
-			Content:   dynamicContext,
-			Stability: PromptSectionKindDynamic,
-			Source:    "dynamic",
+			ID:           "dynamic.context",
+			Layer:        PromptSectionKindDynamic,
+			LogicalLayer: LayerStepDynamicContext,
+			Role:         "system",
+			Content:      dynamicContext,
+			Stability:    PromptSectionKindDynamic,
+			Source:       "dynamic",
 		})
 	}
 	return PromptEnvelope{Sections: sections}
@@ -96,7 +101,7 @@ func CompiledPromptSectionContent(compiled CompiledPrompt, sectionID string) str
 			return content
 		}
 		return strings.TrimSpace(compiled.Stable.System.Content)
-	case "profile.advisor", "profile.evidence_rca", "profile.host_worker", "profile.host_manager":
+	case "profile.advisor", "profile.evidence_rca", "profile.host_worker", "profile.host_manager", "profile.workflow_agent":
 		if content := strings.TrimSpace(compiled.Developer.Content); content != "" {
 			return content
 		}

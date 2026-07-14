@@ -1,0 +1,95 @@
+{
+  "name": "basic_no_tool",
+  "command": {
+    "type": "add-message",
+    "message": {
+      "id": "client-message-basic-no-tool",
+      "role": "user",
+      "parts": [
+        {
+          "type": "text",
+          "text": "Give the deterministic story answer without using tools."
+        }
+      ],
+      "metadata": {
+        "clientTurnId": "client-turn-basic-no-tool"
+      }
+    }
+  },
+  "providerResponses": [
+    {
+      "role": "assistant",
+      "content": "Deterministic story answer."
+    }
+  ],
+  "toolOutcomes": [],
+  "want": {
+    "turnStatus": "completed",
+    "lifecycle": "completed",
+    "messages": [
+      {
+        "phase": "final_answer",
+        "text": "Deterministic story answer."
+      }
+    ],
+    "modelVisibleTools": [],
+    "actualTools": [],
+    "approvalLifecycle": [],
+    "target": {
+      "binding": "none",
+      "resourceRefs": []
+    },
+    "finalFacts": {
+      "schemaVersion": "aiops.harness.final.v1",
+      "status": "unknown",
+      "confidence": "low",
+      "checkedEvidenceRefs": [],
+      "uncheckedRequirements": [],
+      "failedToolImpacts": [],
+      "approvedActions": [],
+      "performedActions": [],
+      "postChecks": [],
+      "limitations": []
+    },
+    "transportProjection": {
+      "schemaVersion": "aiops.transport.v2",
+      "stateStatus": "idle",
+      "turnStatus": "completed",
+      "processKinds": [],
+      "processStatuses": [],
+      "timelineTypes": ["user_message", "model_call", "assistant_message", "final_response"],
+      "finalStatus": "unknown",
+      "pendingApprovalCount": 0,
+      "turnCount": 1
+    },
+    "evidence": [],
+    "traceHashes": {
+      "promptFingerprint": {
+        "absoluteSystemHash": "3a3aafa623b2e95bb289a368d4cee49fd26d73602d2328f21c6fb412941ebf7b",
+        "compilerVersion": "prompt-fingerprint-v2",
+        "currentUserInputHash": "62d7b839f5d18482c58131add0288be5f902c3e1833f64da65602ea4a59dfc47",
+        "developerHash": "3f6fa374f89ad85e9b368384cbf25c6d907e242f89ff1bd0c5ff765435a782d2",
+        "protocolStateHash": "f33b52bb818c1aceeb02db5e33d81bbe47adfadfae56b88390af6ae96a3539a3",
+        "roleProfileHash": "5424934bc83bdf2e34e03161da8ef8d99d636ddfc1c28264cf239384d1bf2a24",
+        "runtimePolicyHash": "a07b238abe41426fdee3abf24f07e4d71a4b28140be48ed0c77a5661fa0f91f5",
+        "stableHash": "63dbe06e0fcbb7d0ae8712cbb1de02f2e169427c6998aaea6452f5f2a9a52d0e",
+        "stablePrefixHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
+        "stableRuntimeContractHash": "85f96db88d04921eae5743901707bcf242aee000a5206478d7c834c0e034c7cb",
+        "systemHash": "bee3f1dbb059214fd3f4df24c07ea26778136b3167379eb03757fc44ab0c9cde",
+        "toolRegistryHash": "6c366e807e217f185e2c45e4ccce0e107892391f59d993a412618423b55f4983",
+        "turnPrefixHash": "b64323410ef75e44cd46047a0105623c839c8f65cdb18e75a3b21fb5816f36c8",
+        "turnStableHash": "ab65abcd63df78201f806e51721e299525c730d6ff234ea866bc0fb99f2dcb0b",
+        "version": "prompt-fingerprint-v2"
+      },
+      "stablePromptHash": "ed759e52defb0ecbf005082f5358694444a9da8674b14d4a42f0474b4f6f93ef",
+      "stableToolFingerprint": "sha256:728e97b8afafdb2b316dd3d1d6fe86d36847cb6b0612a9700a63929e6727d104",
+      "toolSurfaceFingerprints": [
+        "sha256:728e97b8afafdb2b316dd3d1d6fe86d36847cb6b0612a9700a63929e6727d104"
+      ],
+      "toolPolicyHashes": [
+        "b8638141b341356dc08dc7a9c38b3261a109e908440928e1be390f25a30ed122"
+      ],
+      "governanceSnapshot": ""
+    }
+  }
+}

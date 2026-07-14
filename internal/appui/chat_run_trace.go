@@ -8,21 +8,23 @@ import (
 )
 
 const (
-	metadataOpsRunID                = "aiops.opsRunId"
-	metadataChatSource              = "aiops.chat.source"
-	metadataSessionID               = "aiops.sessionId"
-	metadataTurnID                  = "aiops.turnId"
-	metadataClientTurn              = "aiops.clientTurnId"
-	metadataCorootExplicitRCA       = "aiops.coroot.explicitRCA"
-	metadataCorootRCADisplayAllowed = "aiops.coroot.rcaDisplayAllowed"
-	metadataCorootMCPHealthStatus   = "aiops.coroot.mcpHealthStatus"
-	metadataCorootSkipReason        = "aiops.coroot.skipReason"
-	metadataObservabilityProvider   = "aiops.mentions.observabilityProvider"
-	metadataTurnFollowup            = "aiops.turn.followup_of_previous_turn"
-	metadataTurnHasExistingEvidence = "aiops.turn.has_existing_evidence"
-	metadataTurnNoNewEvidence       = "aiops.turn.no_new_evidence"
-	opsRunSourceChat                = "chat"
-	defaultOpsRunStatus             = "working"
+	metadataOpsRunID                      = "aiops.opsRunId"
+	metadataChatSource                    = "aiops.chat.source"
+	metadataSessionID                     = "aiops.sessionId"
+	metadataTurnID                        = "aiops.turnId"
+	metadataClientTurn                    = "aiops.clientTurnId"
+	metadataCorootExplicitRCA             = "aiops.coroot.explicitRCA"
+	metadataCorootRCADisplayAllowed       = "aiops.coroot.rcaDisplayAllowed"
+	metadataCorootMCPHealthStatus         = "aiops.coroot.mcpHealthStatus"
+	metadataCorootSkipReason              = "aiops.coroot.skipReason"
+	metadataObservabilityProvider         = "aiops.mentions.observabilityProvider"
+	metadataTurnFollowup                  = "aiops.turn.followup_of_previous_turn"
+	metadataTurnHasExistingEvidence       = "aiops.turn.has_existing_evidence"
+	metadataTurnNoNewEvidence             = "aiops.turn.no_new_evidence"
+	metadataAnswerRequireCompleteFollowup = "aiops.answer.requireCompleteFollowup"
+	metadataAnswerSmalltalkOnly           = "aiops.answer.smalltalkOnly"
+	opsRunSourceChat                      = "chat"
+	defaultOpsRunStatus                   = "working"
 )
 
 var explicitCorootMentionPattern = regexp.MustCompile(`(?i)(^|[^\pL\pN_])@coroot([^\pL\pN_]|$)`)

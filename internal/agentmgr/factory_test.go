@@ -34,12 +34,7 @@ func (m *mockCompiler) Compile(ctx promptcompiler.CompileContext) (promptcompile
 	if m.compileFunc != nil {
 		return m.compileFunc(ctx)
 	}
-	return promptcompiler.CompiledPrompt{
-		System:    promptcompiler.SystemPrompt{Content: "system"},
-		Developer: promptcompiler.DeveloperInstructions{Content: "developer"},
-		Tools:     promptcompiler.ToolPromptSet{Content: "tools"},
-		Policy:    promptcompiler.RuntimePolicyPrompt{Content: "policy", Mode: ctx.Mode},
-	}, nil
+	return promptcompiler.NewCompiler().Compile(ctx)
 }
 
 // mockChatModel implements model.ChatModel for testing.
@@ -275,8 +270,8 @@ func TestCreateHostAgent(t *testing.T) {
 	if cfg.Model == nil {
 		t.Error("expected non-nil model")
 	}
-	if len(cfg.Instructions) == 0 {
-		t.Error("expected non-empty instructions")
+	if err := cfg.PromptEnvelopeV2.Validate(); err != nil {
+		t.Errorf("expected valid prompt envelope v2: %v", err)
 	}
 	if len(cfg.Tools) == 0 {
 		t.Error("expected non-empty tools")
@@ -286,6 +281,37 @@ func TestCreateHostAgent(t *testing.T) {
 	}
 	if got := compiledToolCount(compiler.lastCompileCtx); got == 0 {
 		t.Fatal("expected assembled tools in host compile context")
+	}
+}
+
+func TestCreateHostAgentCarriesValidatedPromptEnvelopeV2WithoutLegacyInstructions(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	factory.compiler.(*mockCompiler).compileFunc = promptcompiler.NewCompiler().Compile
+
+	cfg, err := factory.CreateHostAgent(context.Background(), "host-typed-envelope", "execute")
+	if err != nil {
+		t.Fatalf("CreateHostAgent() error = %v", err)
+	}
+	if err := cfg.PromptEnvelopeV2.Validate(); err != nil {
+		t.Fatalf("PromptEnvelopeV2.Validate() error = %v", err)
+	}
+	if len(cfg.Instructions) != 0 {
+		t.Fatalf("legacy Instructions = %#v, want factory to carry only typed PromptEnvelopeV2", cfg.Instructions)
+	}
+}
+
+func TestCreateHostAgentRejectsInvalidPromptEnvelopeV2(t *testing.T) {
+	factory, registry := newTestFactory(t)
+	registerTestTools(t, registry)
+	factory.compiler.(*mockCompiler).compileFunc = func(promptcompiler.CompileContext) (promptcompiler.CompiledPrompt, error) {
+		return promptcompiler.CompiledPrompt{
+			EnvelopeV2: promptcompiler.PromptEnvelopeV2{SchemaVersion: promptcompiler.PromptEnvelopeV2SchemaVersion},
+		}, nil
+	}
+
+	if _, err := factory.CreateHostAgent(context.Background(), "host-invalid-envelope", "execute"); err == nil || !strings.Contains(err.Error(), "prompt envelope v2") {
+		t.Fatalf("CreateHostAgent() error = %v, want invalid prompt envelope v2 rejection", err)
 	}
 }
 
@@ -399,6 +425,30 @@ func TestHostChildPromptAssetIncludesBindingSubtaskProtocolReportAndStopSections
 	}
 }
 
+func TestHostChildPromptAssetIncludesRoleBindingContract(t *testing.T) {
+	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
+		MissionID:            "mission-role",
+		ChildAgentID:         "child-primary",
+		HostID:               "host-a",
+		BoundRole:            "pg_primary",
+		RoleBindingHash:      "role-hash-a",
+		Task:                 "inspect assigned primary host",
+		PlanStepID:           "step-primary",
+		RiskLevel:            "read_only",
+		EvidenceRequirements: []string{"command_result"},
+	})
+	for _, want := range []string{
+		"bound_host_id: host-a",
+		"bound_role: pg_primary",
+		"role_binding_hash: role-hash-a",
+		"HostTaskReport must include host id, bound role, role binding hash, and evidence refs.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing role binding contract %q:\n%s", want, prompt)
+		}
+	}
+}
+
 func TestHostChildPromptAssetRedactsSecrets(t *testing.T) {
 	prompt := hostChildPromptAsset(hostops.SpawnHostChildRequest{
 		MissionID:    "mission-prompt",
@@ -499,8 +549,8 @@ func TestCreateWorkspaceAgent(t *testing.T) {
 	if wsCfg.Planner.Model == nil {
 		t.Error("expected non-nil planner model")
 	}
-	if len(wsCfg.Planner.Instructions) == 0 {
-		t.Error("expected non-empty planner instructions")
+	if err := wsCfg.Planner.PromptEnvelopeV2.Validate(); err != nil {
+		t.Errorf("expected valid planner prompt envelope v2: %v", err)
 	}
 	if wsCfg.Planner.MissionID != "mission-1" {
 		t.Errorf("expected planner missionID mission-1, got %s", wsCfg.Planner.MissionID)
@@ -611,8 +661,8 @@ func TestCreateWorkerAgent(t *testing.T) {
 	if cfg.Model == nil {
 		t.Error("expected non-nil model")
 	}
-	if len(cfg.Instructions) == 0 {
-		t.Error("expected non-empty instructions")
+	if err := cfg.PromptEnvelopeV2.Validate(); err != nil {
+		t.Errorf("expected valid prompt envelope v2: %v", err)
 	}
 	if cfg.MaxIterations <= 0 {
 		t.Error("expected positive max iterations")

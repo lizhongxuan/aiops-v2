@@ -49,6 +49,23 @@ describe("runnerStudioClient", () => {
     await client.getRunnerStudioRunEventHistory("run/id 1");
     await client.cancelRunnerStudioRun("run/id 1");
     await client.getRunnerStudioActionCatalog({ category: "command", experimental: false });
+    await client.createRunnerStudioWorkflowAiSession({ workflow_id: "workflow" });
+    await client.getRunnerStudioWorkflowAiSnapshot({ workflow_id: "workflow" });
+    await client.proposeRunnerStudioWorkflowAiPlan({ workflow_id: "workflow", message: "添加验证步骤" });
+    await client.proposeRunnerStudioWorkflowAiPatch({ plan_id: "plan", item_id: "item" });
+    await client.validateRunnerStudioWorkflowAiPatch({ patch_id: "patch" });
+    await client.previewRunnerStudioWorkflowAiPatch({ patch_id: "patch" });
+    await client.describeRunnerStudioWorkflowAiPatch({ patch_id: "patch" });
+    await client.detectRunnerStudioWorkflowAiPatchEffect({ patch_id: "patch" });
+    await client.applyRunnerStudioWorkflowAiPatch({
+      patch_id: "patch",
+      user_confirmation_id: "confirm",
+      drawer_session_id: "drawer",
+    });
+    await client.undoRunnerStudioWorkflowAiPatch({ undo_checkpoint_id: "undo", drawer_session_id: "drawer" });
+    await client.proposeRunnerStudioWorkflowManualCandidate({ workflow_id: "workflow" });
+    await client.proposeRunnerStudioWorkflowManualUpdate({ workflow_id: "workflow", manual_id: "manual" });
+    await client.createRunnerStudioWorkflowAiDraftFromPlan({ user_confirmation_id: "confirm", plan: { title: "workflow" } });
 
     expect(http.calls).toEqual([
       { method: "GET", path: "/api/runner-studio/workflows?labels=env%3Aprod", body: undefined },
@@ -100,12 +117,81 @@ describe("runnerStudioClient", () => {
         path: "/api/runner-studio/actions?category=command&experimental=false",
         body: undefined,
       },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/sessions",
+        body: { workflow_id: "workflow" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/snapshot",
+        body: { workflow_id: "workflow" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/plan",
+        body: { workflow_id: "workflow", message: "添加验证步骤" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/patch",
+        body: { plan_id: "plan", item_id: "item" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/validate",
+        body: { patch_id: "patch" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/preview",
+        body: { patch_id: "patch" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/describe",
+        body: { patch_id: "patch" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/effect",
+        body: { patch_id: "patch" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/apply",
+        body: { patch_id: "patch", user_confirmation_id: "confirm", drawer_session_id: "drawer" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/undo",
+        body: { undo_checkpoint_id: "undo", drawer_session_id: "drawer" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/manual-candidate",
+        body: { workflow_id: "workflow" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/manual-update",
+        body: { workflow_id: "workflow", manual_id: "manual" },
+      },
+      {
+        method: "POST",
+        path: "/api/runner-studio/workflow-ai/create-draft",
+        body: { user_confirmation_id: "confirm", plan: { title: "workflow" } },
+      },
     ]);
 
     expect(http.calls.map((call) => call.path)).toSatisfy((paths) =>
       paths.every((path) => path.startsWith("/api/runner-studio/")),
     );
     expect(http.calls.map((call) => call.path).join("\n")).not.toMatch(legacyExternalPattern);
+    const serializedCalls = JSON.stringify(http.calls);
+    expect(serializedCalls).not.toContain("api.z.ai");
+    expect(serializedCalls).not.toContain("glm-5.1");
+    expect(serializedCalls).not.toContain("apikey");
   });
 
   it("does not embed the legacy Runner UI address in the Runner Studio client source", () => {

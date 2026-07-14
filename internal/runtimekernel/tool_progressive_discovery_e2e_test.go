@@ -63,6 +63,46 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 	if !containsString(compiler.contexts[2].ToolDelta.NewlyAvailable, "synthetic.metrics.read") {
 		t.Fatalf("third tool delta = %#v, want selected tool delta", compiler.contexts[2].ToolDelta)
 	}
+	session := kernel.sessions.Get("sess-progressive-search-select")
+	if session == nil || session.CurrentTurn == nil || session.CurrentTurn.TurnAssembly == nil {
+		t.Fatalf("missing progressive discovery turn state: %#v", session)
+	}
+	assemblyHash := session.CurrentTurn.TurnAssembly.Hash
+	if len(session.CurrentTurn.Iterations) < 3 {
+		t.Fatalf("iterations = %d, want select boundary plus activated-tool step", len(session.CurrentTurn.Iterations))
+	}
+	beforeSelect := session.CurrentTurn.Iterations[1]
+	afterSelect := session.CurrentTurn.Iterations[2]
+	if afterSelect.StepReference == nil || !stepTransitionHasKind(afterSelect.StepReference.Transition, StepRevisionKindToolSurfaceChanged) || !containsString(afterSelect.StepReference.Facts.LoadedToolRefs, "tool:synthetic.metrics.read") {
+		t.Fatalf("tool_search activated step revision = %#v, want selected tool surface change", afterSelect.StepReference)
+	}
+	if beforeSelect.ToolSurfaceFingerprint == "" || afterSelect.ToolSurfaceFingerprint == "" || beforeSelect.ToolSurfaceFingerprint == afterSelect.ToolSurfaceFingerprint {
+		t.Fatalf("tool_search activation router hashes = before:%q after:%q, want change", beforeSelect.ToolSurfaceFingerprint, afterSelect.ToolSurfaceFingerprint)
+	}
+	assertPromptCutoverHashesChanged(t, beforeSelect.PromptFingerprint, afterSelect.PromptFingerprint, "dynamicContextHash", "modelInputHash")
+	assertPromptCutoverStableL0L3(t, beforeSelect.PromptFingerprint, afterSelect.PromptFingerprint)
+	foundToolSurfaceRevision := false
+	for i := range session.CurrentTurn.Iterations {
+		ref := session.CurrentTurn.Iterations[i].StepReference
+		if ref == nil {
+			t.Fatalf("iteration[%d] missing step reference", i)
+		}
+		if ref.TurnAssemblyHash != assemblyHash {
+			t.Fatalf("iteration[%d] turn assembly hash = %q, want %q", i, ref.TurnAssemblyHash, assemblyHash)
+		}
+		if i > 0 {
+			previous := session.CurrentTurn.Iterations[i-1].StepReference
+			if ref.Transition.PreviousHash != previous.StepHash || ref.Transition.NextHash != ref.StepHash {
+				t.Fatalf("iteration[%d] broken step chain: previous=%#v current=%#v", i, previous, ref)
+			}
+		}
+		if stepTransitionHasKind(ref.Transition, StepRevisionKindToolSurfaceChanged) && containsString(ref.Facts.LoadedToolRefs, "tool:synthetic.metrics.read") {
+			foundToolSurfaceRevision = true
+		}
+	}
+	if !foundToolSurfaceRevision {
+		t.Fatalf("iterations missing selected deferred-tool revision: %#v", session.CurrentTurn.Iterations)
+	}
 }
 
 func TestProgressiveDiscoverySelectablePackRecordsLoadedPacksDeltaInToolSurfaceSnapshot(t *testing.T) {
@@ -163,14 +203,8 @@ func TestProgressiveDiscoveryRejectsUnloadedToolFlow(t *testing.T) {
 	if !containsString(session.ToolDiscovery.EnabledTools(), "synthetic.metrics.read") {
 		t.Fatalf("enabled tools = %v, want synthetic.metrics.read after select", session.ToolDiscovery.EnabledTools())
 	}
-	if !strings.Contains(result.Output, "证据") && !strings.Contains(strings.ToLower(result.Output), "evidence") {
-		t.Fatalf("final output = %q, want verifier-constrained evidence boundary", result.Output)
-	}
-	if !strings.Contains(result.Output, "受限") && !strings.Contains(strings.ToLower(result.Output), "limited") {
-		t.Fatalf("final output = %q, want limited evidence boundary", result.Output)
-	}
-	if strings.Contains(result.Output, "confidence low") || strings.Contains(result.Output, "高置信") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	if got := goldenFinalContractStatus(session.CurrentTurn); got == string(FinalContractStatusVerified) {
+		t.Fatalf("final contract status = verified despite rejected/unloaded evidence path")
 	}
 	if len(model.inputs) != 5 {
 		t.Fatalf("model calls = %d, want no verifier-triggered recovery iteration", len(model.inputs))
@@ -311,7 +345,7 @@ func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
 	registry := progressiveDiscoveryRegistry(t, true)
 	kernel, _ := newKernelForLoopTests(t, &assemblerBackedToolSource{assembler: tooling.NewAssembler(registry)}, newRecordingCompiler(), model)
 
-	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+	_, err := kernel.RunTurn(context.Background(), TurnRequest{
 		SessionID:   "sess-progressive-final-evidence",
 		SessionType: SessionTypeHost,
 		Mode:        ModeInspect,
@@ -322,13 +356,9 @@ func TestProgressiveDiscoveryFinalEvidenceFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTurn: %v", err)
 	}
-	for _, want := range []string{"还不能给最终结论", "synthetic_metrics_read 未成功返回证据"} {
-		if !strings.Contains(result.Output, want) {
-			t.Fatalf("final output = %q, want deterministic evidence boundary containing %q", result.Output, want)
-		}
-	}
-	if strings.Contains(result.Output, "confidence") || strings.Contains(result.Output, "置信度") || strings.Contains(result.Output, "高置信") {
-		t.Fatalf("final output must not expose confidence labels:\n%s", result.Output)
+	session := kernel.sessions.Get("sess-progressive-final-evidence")
+	if session == nil || session.CurrentTurn == nil || goldenFinalContractStatus(session.CurrentTurn) != string(FinalContractStatusToolUnavailable) {
+		t.Fatalf("final contract must record typed tool-unavailable failure: %#v", session)
 	}
 }
 

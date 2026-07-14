@@ -53,6 +53,7 @@ func TestToolDispatcherUnexpectedStateBlocksMutation(t *testing.T) {
 		},
 	}}
 	dispatcher := NewToolDispatcher(lookup, nil, emitter).
+		WithPermissionBinding("sha256:test", "sha256:test").
 		WithUnexpectedStateSignals([]UnexpectedStateSignal{{Status: "drift", ResourceType: "synthetic_resource", ResourceID: "resource-a"}})
 
 	result := dispatcher.Dispatch(context.Background(), "sess-unexpected", "turn-unexpected", ToolCall{

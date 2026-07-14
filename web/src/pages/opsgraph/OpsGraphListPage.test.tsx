@@ -123,7 +123,6 @@ describe("OpsGraphListPage", () => {
   });
 
   it("deletes a graph from the list after confirmation", async () => {
-    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       if (init?.method === "DELETE") {
         expect(String(url)).toBe("/api/v1/opsgraph/graphs/graph.manual-1");
@@ -153,7 +152,19 @@ describe("OpsGraphListPage", () => {
       await new Promise((resolve) => setTimeout(resolve, 0));
     });
 
-    expect(confirm).toHaveBeenCalledWith("确认删除图谱 待删除图谱？");
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog?.textContent).toContain("确认删除");
+    expect(dialog?.textContent).toContain("确认删除图谱 待删除图谱？");
+    const confirmButton = Array.from(dialog?.querySelectorAll("button") || []).find(
+      (button) => button.textContent?.trim() === "删除",
+    );
+    expect(confirmButton).toBeTruthy();
+
+    await act(async () => {
+      confirmButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/opsgraph/graphs/graph.manual-1",
       expect.objectContaining({ method: "DELETE" }),

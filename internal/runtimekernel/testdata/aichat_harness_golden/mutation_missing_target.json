@@ -1,0 +1,23 @@
+{
+  "name": "mutation_missing_target",
+  "userInput": "帮我部署服务",
+  "intentFrame": {
+    "kind": "change",
+    "riskBudget": ["write"],
+    "confidence": "high",
+    "classifier": "golden.typed.v1"
+  },
+  "modelFinalOutput": "我将执行部署操作。",
+  "expectedProviderCalls": 0,
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "blocked",
+    "noRawDsmlFinal": true,
+    "timelineOrder": ["assistant_message", "final_response"]
+  }
+}

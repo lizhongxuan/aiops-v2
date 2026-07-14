@@ -1,0 +1,16 @@
+{
+  "name": "raw_dsml_markup_sanitized",
+  "userInput": "检查网络并总结",
+  "modelFinalOutput": "<|DSML|tool_calls><|DSML|invoke name=\"exec_command\"><|DSML|parameter name=\"command\" string=\"true\">ip addr</|DSML|parameter></|DSML|invoke></|DSML|tool_calls>",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "none",
+    "finalStatus": "unknown",
+    "noRawDsmlFinal": true,
+    "timelineOrder": ["assistant_message", "error", "final_response"]
+  }
+}

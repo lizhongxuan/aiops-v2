@@ -1,0 +1,27 @@
+{
+  "name": "host_agent_unavailable_fallback_denied",
+  "hostId": "host-kme",
+  "userInput": "查看网络情况",
+  "modelToolCalls": [
+    {
+      "id": "call_exec_missing",
+      "name": "exec_command",
+      "arguments": {
+        "command": "ip addr show"
+      }
+    }
+  ],
+  "modelFinalOutput": "exec_command 当前不可用，无法把主机网络检查当作已完成。",
+  "expectedStatus": "completed",
+  "expectedVisibleStates": ["running", "failed", "completed"],
+  "forbiddenVisibleStates": ["fallback_planned", "retry_scheduled", "manual_reconcile"],
+  "expectedFailureKind": "tool_not_found",
+  "expectedHarness": {
+    "schemaVersion": "aiops.harness.golden.v1",
+    "routeMode": "inspect",
+    "targetBinding": "host",
+    "toolCalls": ["exec_command"],
+    "finalStatus": "tool_unavailable",
+    "timelineOrder": ["assistant_message", "tool_call", "tool_result", "assistant_message", "final_response"]
+  }
+}

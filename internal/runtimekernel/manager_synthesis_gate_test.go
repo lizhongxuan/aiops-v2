@@ -2,18 +2,29 @@ package runtimekernel
 
 import "testing"
 
-func TestManagerSynthesisGateBlocksWorkerDumpFinal(t *testing.T) {
+func TestManagerSynthesisGateUsesTypedManagerRefNotAnswerText(t *testing.T) {
 	snapshot := syntheticRuntimeKernelSnapshot("synthetic-turn-manager")
 	snapshot.Metadata["managerSynthesis.workerOutputRefs"] = "synthetic-worker-output-1,synthetic-worker-output-2"
 	snapshot.Metadata["managerSynthesis.managerAnswerRef"] = "synthetic-manager-answer-1"
 
 	gate := EvaluateManagerSynthesisGate(snapshot, "synthetic-worker-output-1: raw finding\nsynthetic-worker-output-2: raw finding")
 
-	if gate.Action != "block_worker_dump" {
-		t.Fatalf("Action = %q, want block_worker_dump", gate.Action)
+	if gate.Action != "allow_final" {
+		t.Fatalf("Action = %q, want allow_final from typed manager ref", gate.Action)
 	}
 	if len(gate.WorkerOutputRefs) != 2 {
 		t.Fatalf("WorkerOutputRefs = %#v, want both synthetic worker refs", gate.WorkerOutputRefs)
+	}
+}
+
+func TestManagerSynthesisGateRequiresTypedManagerRefRegardlessOfAnswer(t *testing.T) {
+	snapshot := syntheticRuntimeKernelSnapshot("synthetic-turn-manager-missing")
+	snapshot.Metadata["managerSynthesis.workerOutputRefs"] = "synthetic-worker-output-1"
+
+	claim := EvaluateManagerSynthesisGate(snapshot, "manager synthesis completed")
+	blocker := EvaluateManagerSynthesisGate(snapshot, "manager synthesis missing")
+	if claim.Action != "require_manager_synthesis" || blocker.Action != claim.Action {
+		t.Fatalf("answer text changed manager gate: claim=%#v blocker=%#v", claim, blocker)
 	}
 }
 

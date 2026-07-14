@@ -101,7 +101,11 @@ func TestERPSREApprovalApprovedResumeContinuesAndDeniedCleansPending(t *testing.
 	if blocked.Status != "blocked" || executed != 0 {
 		t.Fatalf("blocked=%#v executed=%d, want blocked before execution", blocked, executed)
 	}
-	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{SessionID: "sess-erp-approval", TurnID: "turn-erp-approval", Decision: "approved"})
+	approvedSession := kernel.sessions.Get("sess-erp-approval")
+	if approvedSession == nil || len(approvedSession.PendingApprovals) != 1 {
+		t.Fatalf("approved session pending approvals = %#v, want one", approvedSession)
+	}
+	resumed, err := kernel.ResumeTurn(context.Background(), ResumeRequest{SessionID: "sess-erp-approval", TurnID: "turn-erp-approval", ApprovalID: approvedSession.PendingApprovals[0].ID, Decision: "approved"})
 	if err != nil {
 		t.Fatalf("ResumeTurn approved error = %v", err)
 	}

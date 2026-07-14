@@ -19,6 +19,7 @@ import (
 	"github.com/cloudwego/eino/components/tool"
 
 	"aiops-v2/internal/actionproposal"
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
 	evidencecore "aiops-v2/internal/evidence"
@@ -32,7 +33,9 @@ import (
 	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/promptcompiler"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/runtimecontract"
 	runtimestate "aiops-v2/internal/runtimekernel/state"
 	"aiops-v2/internal/runtimekernel/toolfailure"
 	"aiops-v2/internal/skills"
@@ -125,25 +128,27 @@ type AgentManagerSource interface {
 // RuntimeKernel implements the RuntimeKernel interface using Eino ADK.
 // It is the unique turn runtime kernel that manages Host and Workspace sessions.
 type RuntimeKernel struct {
-	tools            ToolAssemblySource
-	compiler         promptcompiler.Compiler
-	policy           *policyengine.Engine
-	permissions      *permissions.Engine
-	hooks            *hooks.Registry
-	projector        EventEmitter
-	modelRouter      *modelrouter.Router
-	sessions         *SessionManager
-	agentMgr         AgentManagerSource
-	spanSource       SpanStreamSource // optional: span tree integration for conversation tracking
-	observer         Observer
-	resourceLockGate ToolResourceLockGate
-	compressor       *spanstream.ContextCompressor
-	spillRepo        ToolResultSpillRepository
-	artifactRepo     ContextArtifactRepository
-	skillRegistry    *skills.Registry
-	evidenceService  *evidencecore.Service
-	featureFlags     func(context.Context) featureflag.Flags
-	debugConfig      func(context.Context) RuntimeDebugConfig
+	tools              ToolAssemblySource
+	compiler           promptcompiler.Compiler
+	policy             *policyengine.Engine
+	permissions        *permissions.Engine
+	hooks              *hooks.Registry
+	projector          EventEmitter
+	modelRouter        *modelrouter.Router
+	sessions           *SessionManager
+	agentMgr           AgentManagerSource
+	spanSource         SpanStreamSource // optional: span tree integration for conversation tracking
+	observer           Observer
+	resourceLockGate   ToolResourceLockGate
+	compressor         *spanstream.ContextCompressor
+	spillRepo          ToolResultSpillRepository
+	artifactRepo       ContextArtifactRepository
+	skillRegistry      *skills.Registry
+	evidenceService    *evidencecore.Service
+	rolloutRecorder    *RolloutRecorder
+	replayArtifactSink ReplayArtifactSink
+	featureFlags       func(context.Context) featureflag.Flags
+	debugConfig        func(context.Context) RuntimeDebugConfig
 
 	turnCancelMu       sync.Mutex
 	inFlightTurnCancel map[string]context.CancelFunc
@@ -152,26 +157,28 @@ type RuntimeKernel struct {
 
 // RuntimeKernelConfig holds the dependencies for creating an RuntimeKernel.
 type RuntimeKernelConfig struct {
-	ToolSource       ToolAssemblySource
-	Compiler         promptcompiler.Compiler
-	Policy           *policyengine.Engine
-	Permissions      *permissions.Engine
-	Hooks            *hooks.Registry
-	Projector        EventEmitter
-	ModelRouter      *modelrouter.Router
-	AgentMgr         AgentManagerSource
-	Sessions         *SessionManager
-	SessionRepo      SessionRepository
-	SpanSource       SpanStreamSource // optional: if nil, span tracking is disabled
-	Observer         Observer
-	ResourceLockGate ToolResourceLockGate
-	Compressor       *spanstream.ContextCompressor
-	SpillRepo        ToolResultSpillRepository
-	ArtifactRepo     ContextArtifactRepository
-	SkillRegistry    *skills.Registry
-	EvidenceService  *evidencecore.Service
-	FeatureFlags     func(context.Context) featureflag.Flags
-	DebugConfig      func(context.Context) RuntimeDebugConfig
+	ToolSource         ToolAssemblySource
+	Compiler           promptcompiler.Compiler
+	Policy             *policyengine.Engine
+	Permissions        *permissions.Engine
+	Hooks              *hooks.Registry
+	Projector          EventEmitter
+	ModelRouter        *modelrouter.Router
+	AgentMgr           AgentManagerSource
+	Sessions           *SessionManager
+	SessionRepo        SessionRepository
+	SpanSource         SpanStreamSource // optional: if nil, span tracking is disabled
+	Observer           Observer
+	ResourceLockGate   ToolResourceLockGate
+	Compressor         *spanstream.ContextCompressor
+	SpillRepo          ToolResultSpillRepository
+	ArtifactRepo       ContextArtifactRepository
+	SkillRegistry      *skills.Registry
+	EvidenceService    *evidencecore.Service
+	RolloutRecorder    *RolloutRecorder
+	ReplayArtifactSink ReplayArtifactSink
+	FeatureFlags       func(context.Context) featureflag.Flags
+	DebugConfig        func(context.Context) RuntimeDebugConfig
 }
 
 type RuntimeDebugConfig struct {
@@ -207,6 +214,17 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 	if debugConfig == nil {
 		debugConfig = func(context.Context) RuntimeDebugConfig { return DefaultRuntimeDebugConfig() }
 	}
+	rolloutRecorder := cfg.RolloutRecorder
+	if rolloutRecorder == nil {
+		var err error
+		rolloutRecorder, err = NewRolloutRecorder(RolloutRecorderConfig{
+			Store:         NewMemoryRolloutStore(),
+			FailurePolicy: RolloutFailurePolicyFailClosed,
+		})
+		if err != nil {
+			panic("create default canonical rollout recorder: " + err.Error())
+		}
+	}
 	return &RuntimeKernel{
 		tools:              cfg.ToolSource,
 		compiler:           cfg.Compiler,
@@ -225,11 +243,77 @@ func NewRuntimeKernel(cfg RuntimeKernelConfig) *RuntimeKernel {
 		artifactRepo:       cfg.ArtifactRepo,
 		skillRegistry:      cfg.SkillRegistry,
 		evidenceService:    cfg.EvidenceService,
+		rolloutRecorder:    rolloutRecorder,
+		replayArtifactSink: cfg.ReplayArtifactSink,
 		featureFlags:       featureFlags,
 		debugConfig:        debugConfig,
 		inFlightTurnCancel: make(map[string]context.CancelFunc),
 		pendingTurnCancel:  make(map[string]string),
 	}
+}
+
+// CanonicalRolloutEvents exposes immutable replay facts without routing them
+// through turn metadata, external references, or model input.
+func (k *RuntimeKernel) CanonicalRolloutEvents(ctx context.Context, sessionID, turnID string) ([]modeltrace.CanonicalRolloutEvent, error) {
+	if k == nil || k.rolloutRecorder == nil {
+		return nil, ErrRolloutStoreRequired
+	}
+	return k.rolloutRecorder.Events(ctx, sessionID, turnID)
+}
+
+func (k *RuntimeKernel) appendCanonicalRolloutEvent(
+	ctx context.Context,
+	snapshot *TurnSnapshot,
+	event modeltrace.CanonicalRolloutEvent,
+) error {
+	if k == nil || snapshot == nil {
+		return ErrRolloutStoreRequired
+	}
+	if k.rolloutRecorder == nil {
+		recorder, err := NewRolloutRecorder(RolloutRecorderConfig{
+			Store: NewMemoryRolloutStore(), FailurePolicy: RolloutFailurePolicyFailClosed,
+		})
+		if err != nil {
+			return err
+		}
+		k.rolloutRecorder = recorder
+	}
+	event.SessionID = snapshot.SessionID
+	event.TurnID = snapshot.ID
+	if head := snapshot.CanonicalRolloutHead; head != nil {
+		event.SourceRefs = append(event.SourceRefs, head.EventID)
+	}
+	// Audit persistence must outlive an execution cancellation so the terminal
+	// provider outcome remains observable instead of being misclassified as a
+	// recorder failure. Store failure policy still governs the append itself.
+	result, err := k.rolloutRecorder.Append(context.WithoutCancel(ctx), event)
+	if err != nil {
+		return err
+	}
+	if result.Duplicate {
+		return nil
+	}
+	if result.Status == RolloutRecordStatusDegraded && !result.MarkerPersisted {
+		return fmt.Errorf("canonical rollout degraded marker was not persisted")
+	}
+	if result.Status != RolloutRecordStatusRecorded && result.Status != RolloutRecordStatusDegraded {
+		return fmt.Errorf("canonical rollout append failed closed")
+	}
+	if err := result.Event.Validate(); err != nil {
+		return fmt.Errorf("canonical rollout result validation failed: %w", err)
+	}
+	head := CanonicalRolloutHeadRef{
+		SchemaVersion: result.Event.SchemaVersion,
+		EventID:       result.Event.EventID,
+		Hash:          result.Event.Hash,
+		Sequence:      result.Event.Sequence,
+		Status:        result.Status,
+	}
+	if err := head.Validate(); err != nil {
+		return err
+	}
+	snapshot.CanonicalRolloutHead = &head
+	return nil
 }
 
 func (k *RuntimeKernel) runtimeFeatureFlags(ctx context.Context) featureflag.Flags {
@@ -255,6 +339,18 @@ func (k *RuntimeKernel) runtimeObserver() Observer {
 		return NoopObserver{}
 	}
 	return k.observer
+}
+
+func (k *RuntimeKernel) observeRuntimeStage(ctx context.Context, sessionID, turnID string, iteration int, stage string) {
+	_, span := k.runtimeObserver().StartStage(ctx, StageSpanAttrs{
+		SessionID: sessionID,
+		TurnID:    turnID,
+		Stage:     stage,
+		Iteration: iteration,
+	})
+	if span != nil {
+		span.End()
+	}
 }
 
 func turnExecutionKey(sessionID, turnID string) string {
@@ -340,16 +436,36 @@ func turnLifecycleStateForValidator(lifecycle TurnLifecycleState) (runtimestate.
 }
 
 func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSnapshot, reason string) bool {
+	ok, _ := k.markTurnCanceledRecorded(context.Background(), session, snapshot, reason)
+	return ok
+}
+
+func (k *RuntimeKernel) markTurnCanceledRecorded(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, reason string) (bool, error) {
 	if session == nil || snapshot == nil {
-		return false
+		return false, nil
 	}
 	if snapshot.Lifecycle == TurnLifecycleCanceled {
-		return false
+		return false, nil
 	}
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCancelled, TurnLifecycleCanceled); err != nil {
-		return false
+		return false, nil
 	}
 	now := time.Now()
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "turn_cancelled", TurnLifecycleCanceled, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleCanceled
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	cancelActiveAgentItems(&candidate)
+	if err := k.recordCanonicalTerminalBoundary(context.WithoutCancel(ctx), &candidate, checkpoint, FinalContractStatusCancelled, "turn_cancelled"); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return false, err
+	}
+
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleCanceled
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = strings.TrimSpace(reason)
@@ -358,11 +474,8 @@ func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSn
 	snapshot.PendingApprovals = nil
 	snapshot.PendingEvidence = nil
 	cancelActiveAgentItems(snapshot)
-	if snapshot.LatestCheckpoint != nil {
-		snapshot.LatestCheckpoint.Lifecycle = TurnLifecycleCanceled
-		snapshot.LatestCheckpoint.ResumeState = TurnResumeStateNone
-		snapshot.LatestCheckpoint.UpdatedAt = now
-	}
+	snapshot.LatestCheckpoint = checkpoint
+	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
 		last.Lifecycle = TurnLifecycleCanceled
 		last.ResumeState = TurnResumeStateNone
@@ -382,7 +495,7 @@ func (k *RuntimeKernel) markTurnCanceled(session *SessionState, snapshot *TurnSn
 			Timestamp: now,
 		})
 	}
-	return true
+	return true, nil
 }
 
 func appendAbortedToolResultsForCancel(session *SessionState, snapshot *TurnSnapshot, reason string, now time.Time) {
@@ -441,53 +554,6 @@ func toolResultExists(results []ToolResult, toolCallID string) bool {
 		}
 	}
 	return false
-}
-
-// ---------------------------------------------------------------------------
-// PipelineStep tracks which steps of the turn pipeline have been executed.
-// Used for testing and observability.
-// ---------------------------------------------------------------------------
-
-// PipelineStep identifies a step in the turn pipeline.
-type PipelineStep string
-
-const (
-	StepAssembleContext PipelineStep = "assemble_context"
-	StepCompilePrompt   PipelineStep = "compile_prompt"
-	StepAssembleTools   PipelineStep = "assemble_tools"
-	StepCreateAgent     PipelineStep = "create_agent"
-	StepRunnerRun       PipelineStep = "runner_run"
-	StepCallbackEvents  PipelineStep = "callback_events"
-	StepProjection      PipelineStep = "projection"
-	StepFinalGate       PipelineStep = "final_gate"
-)
-
-// AllPipelineSteps returns the canonical pipeline step order.
-func AllPipelineSteps() []PipelineStep {
-	return []PipelineStep{
-		StepAssembleContext,
-		StepCompilePrompt,
-		StepAssembleTools,
-		StepCreateAgent,
-		StepRunnerRun,
-		StepCallbackEvents,
-		StepProjection,
-		StepFinalGate,
-	}
-}
-
-// ---------------------------------------------------------------------------
-// PipelineRecorder records pipeline step execution order (for testing).
-// ---------------------------------------------------------------------------
-
-// PipelineRecorder records the order of pipeline steps executed during a turn.
-type PipelineRecorder struct {
-	Steps []PipelineStep
-}
-
-// Record appends a step to the recorder.
-func (r *PipelineRecorder) Record(step PipelineStep) {
-	r.Steps = append(r.Steps, step)
 }
 
 // ---------------------------------------------------------------------------
@@ -576,12 +642,8 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 			Status:          "pending_input",
 		}, nil
 	}
-	if hostID := strings.TrimSpace(req.HostID); hostID != "" {
-		session.HostID = hostID
-		req.HostID = hostID
-	} else if hostID := strings.TrimSpace(session.HostID); hostID != "" {
-		req.HostID = hostID
-	}
+	req.HostID = strings.TrimSpace(req.HostID)
+	persistSessionTargetRequestState(session, req)
 	runCtx, runCancel := context.WithCancel(ctx)
 	if observedCtx, span := k.runtimeObserver().StartTurn(runCtx, TurnSpanAttrs{
 		SessionID:       session.ID,
@@ -661,7 +723,9 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 	recomputeContextWindow(&session.Context, session.Messages)
 	if pendingCancelReason != "" {
 		snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
-		k.markTurnCanceled(session, snapshot, pendingCancelReason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, pendingCancelReason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 		return TurnResult{
 			SessionType:     req.SessionType,
 			Mode:            req.Mode,
@@ -702,7 +766,9 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
 			snapshot := k.ensureCurrentTurnSnapshot(session, req, turnID)
-			k.markTurnCanceled(session, snapshot, "user stop")
+			if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+				return TurnResult{}, cancelErr
+			}
 			return TurnResult{
 				SessionType:     req.SessionType,
 				Mode:            req.Mode,
@@ -723,7 +789,8 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 		}
 		return TurnResult{}, fmt.Errorf("run agent: %w", runErr)
 	}
-	if blocked != nil {
+	completionPolicyBlocked := blocked != nil && session.CurrentTurn != nil && session.CurrentTurn.Lifecycle == TurnLifecycleCompleted
+	if blocked != nil && !completionPolicyBlocked {
 		return *blocked, nil
 	}
 
@@ -738,31 +805,16 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 		Timestamp: time.Now(),
 		Payload:   turnCompletePayload,
 	})
-
-	// Step 6: Final gate check via PolicyEngine.CompletionPolicy
-	if k.policy.CompletionPolicy != nil {
-		turnState := policyengine.TurnState{
-			SessionID: session.ID,
-			TurnID:    turnID,
-			Completed: true,
+	if completionPolicyBlocked {
+		if k.spanSource != nil && turnSpanID != "" {
+			k.spanSource.FailSpan(turnSpanID, "blocked: "+blocked.Error)
 		}
-		decision := k.policy.CompletionPolicy.CheckCompletion(runCtx, turnState)
-		if decision.Action != policyengine.PolicyActionAllow {
-			if k.spanSource != nil && turnSpanID != "" {
-				k.spanSource.FailSpan(turnSpanID, "blocked: "+decision.Reason)
-			}
-			return TurnResult{
-				SessionType:     req.SessionType,
-				Mode:            req.Mode,
-				SessionID:       session.ID,
-				TurnID:          turnID,
-				ClientTurnID:    req.ClientTurnID,
-				ClientMessageID: req.ClientMessageID,
-				Status:          "blocked",
-				Error:           decision.Reason,
-			}, nil
-		}
+		return *blocked, nil
 	}
+
+	// CompletionPolicy is evaluated once inside FinalRuntimeFacts before the
+	// final contract is committed. runHostIterationLoop returns the same typed
+	// decision as blocked when it is not allow.
 	if _, err := k.runTurnHook(runCtx, hooks.StagePostTurn, session, req, turnID, agentOutput, nil); err != nil {
 		if k.spanSource != nil && turnSpanID != "" {
 			k.spanSource.FailSpan(turnSpanID, "post_turn: "+err.Error())
@@ -910,15 +962,28 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}
+	if err := validateResumeImmutableControlMetadata(snapshot, req.Metadata); err != nil {
+		return TurnResult{}, err
+	}
+	decisionApproval, err := exactApprovalForResumeDecision(session, snapshot, req)
+	if err != nil {
+		return TurnResult{}, err
+	}
 	snapshot.Metadata = mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata)
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
-	if planApproval := pendingApprovalByID(session, snapshot, req.ApprovalID); planApproval.Source == PlanModeEntryApprovalSource || planApproval.Source == PlanExitApprovalSource {
+	if planApproval := decisionApproval; planApproval.Source == PlanModeEntryApprovalSource || planApproval.Source == PlanExitApprovalSource {
+		appendApprovalRequestedAgentItem(snapshot, planApproval)
+		k.persistTurnSnapshot(session, snapshot)
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
 		now := time.Now()
 		var err error
 		status := "completed"
+		decisionStatus := map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)]
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, planApproval, approvedResumeDecisionLabel(req.Decision), decisionStatus, now); err != nil {
+			return TurnResult{}, err
+		}
 		switch planApproval.Source {
 		case PlanModeEntryApprovalSource:
 			_, err = ApplyPlanModeEntryDecision(session, planApproval.ID, req.Decision, decisionReason, now)
@@ -943,7 +1008,6 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		}
 		session.PendingApprovals = removePendingApproval(session.PendingApprovals, planApproval.ID)
 		k.persistTurnSnapshot(session, snapshot)
-		k.emitApprovalDecided(session, snapshot, planApproval.ID, approvedResumeDecisionLabel(req.Decision), map[bool]string{true: "approved", false: "denied"}[isApprovedResumeDecision(req.Decision)], now)
 		return TurnResult{
 			SessionType:     session.Type,
 			Mode:            session.Mode,
@@ -956,47 +1020,14 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	}
 	if req.Decision != "" && !isApprovedResumeDecision(req.Decision) {
 		now := time.Now()
-		approval := pendingApprovalByID(session, snapshot, req.ApprovalID)
+		approval := decisionApproval
 		decisionReason := firstNonEmpty(req.Metadata["approval.reason"], req.Metadata["rejection.reason"], req.Metadata["reason"])
-		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, req.Decision, "denied", now)
-		return k.completeDeniedApprovalTurn(session, snapshot, approval, decisionReason, now)
-	}
-	if approval := pendingApprovalByID(session, snapshot, req.ApprovalID); isApprovedResumeDecision(req.Decision) {
-		if driftPayload, drifted := approvalFingerprintDriftPayload(approval, snapshot, req); drifted {
-			now := time.Now()
-			approval.Reason = driftPayload
-			approval.Status = "pending"
-			approval.UpdatedAt = now
-			snapshot.Lifecycle = TurnLifecycleSuspended
-			snapshot.ResumeState = TurnResumeStatePendingApproval
-			snapshot.Error = driftPayload
-			snapshot.UpdatedAt = now
-			snapshot.PendingApprovals = upsertPendingApproval(snapshot.PendingApprovals, approval)
-			session.PendingApprovals = upsertPendingApproval(session.PendingApprovals, approval)
-			k.persistTurnSnapshot(session, snapshot)
-			if k.projector != nil {
-				k.projector.Emit(LifecycleEvent{
-					Type:      EventApprovalNeeded,
-					SessionID: session.ID,
-					TurnID:    snapshot.ID,
-					Timestamp: now,
-					Payload:   []byte(driftPayload),
-				})
-			}
-			return TurnResult{
-				SessionType:     session.Type,
-				Mode:            session.Mode,
-				SessionID:       session.ID,
-				TurnID:          req.TurnID,
-				ClientTurnID:    snapshot.ClientTurnID,
-				ClientMessageID: snapshot.ClientMessageID,
-				Status:          "blocked",
-				Error:           driftPayload,
-			}, nil
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, approval, req.Decision, "denied", now); err != nil {
+			return TurnResult{}, err
 		}
+		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
+		return k.completeDeniedApprovalTurn(ctx, session, snapshot, approval, decisionReason, now)
 	}
-
 	agentKind := modelrouter.AgentKindWorker
 	if session.Type == SessionTypeWorkspace {
 		agentKind = modelrouter.AgentKindPlanner
@@ -1006,7 +1037,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
 	}
 	if pendingCancelReason != "" {
-		k.markTurnCanceled(session, snapshot, pendingCancelReason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, pendingCancelReason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 		return TurnResult{
 			SessionType:     session.Type,
 			Mode:            session.Mode,
@@ -1020,6 +1053,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 
 	resumeInput := resumeInputFromMetadata(req.Metadata)
 	if resumeInput != "" {
+		snapshot.PendingStepCause = &StepRevisionCause{Kind: StepRevisionKindUserInputResumed, CheckpointID: checkpointIDForStepCause(snapshot)}
 		appendResumeInputMessage(session, resumeInput)
 		updateRuntimeEnvironmentContext(session, TurnRequest{
 			SessionType: session.Type,
@@ -1033,12 +1067,17 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if err := k.markSnapshotResuming(session, snapshot, "resume_user_input"); err != nil {
 			return TurnResult{}, err
 		}
-	} else if toolCall, ok := pendingToolCall(snapshot); ok {
-		if isSessionApprovalResumeDecision(req.Decision) {
-			rememberSessionApprovalGrant(session, toolCall, req.ApprovalID)
+	} else if toolCall, ok := gatedPendingToolCall(snapshot); ok {
+		execution, tokenErr := k.prepareApprovalResumeExecution(session, snapshot, decisionApproval, toolCall)
+		if tokenErr != nil {
+			return k.blockStaleApprovalContext(runCtx, session, snapshot, decisionApproval, toolCall, tokenErr)
 		}
-		k.emitApprovalDecided(session, snapshot, req.ApprovalID, approvedResumeDecisionLabel(req.Decision), "approved", time.Now())
-		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot)
+		if err := k.emitApprovalDecided(runCtx, session, snapshot, decisionApproval, approvedResumeDecisionLabel(req.Decision), "approved", time.Now()); err != nil {
+			return TurnResult{}, err
+		}
+		execution.approvalID = firstNonEmpty(decisionApproval.ID, req.ApprovalID)
+		execution.rememberSessionGrant = isSessionApprovalResumeDecision(req.Decision)
+		blocked, err := k.resumePendingToolCall(runCtx, session, snapshot, execution)
 		if err != nil {
 			return TurnResult{}, err
 		}
@@ -1046,6 +1085,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 			return *blocked, nil
 		}
 	} else {
+		if snapshot.LatestCheckpoint != nil && strings.EqualFold(strings.TrimSpace(snapshot.LatestCheckpoint.Kind), "model_timeout") {
+			snapshot.PendingStepCause = &StepRevisionCause{Kind: StepRevisionKindModelRetryResumed, CheckpointID: snapshot.LatestCheckpoint.ID}
+		}
 		if err := k.markSnapshotResuming(session, snapshot, "resume_checkpoint"); err != nil {
 			return TurnResult{}, err
 		}
@@ -1064,7 +1106,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, agentKind, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
 		if errors.Is(runErr, context.Canceled) {
-			k.markTurnCanceled(session, snapshot, "user stop")
+			if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+				return TurnResult{}, cancelErr
+			}
 			return TurnResult{
 				SessionType:     session.Type,
 				Mode:            session.Mode,
@@ -1105,17 +1149,68 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	}, nil
 }
 
-func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *TurnSnapshot, approvalID, decision, status string, at time.Time) {
-	if k == nil || k.projector == nil || session == nil || snapshot == nil {
-		return
+func checkpointIDForStepCause(snapshot *TurnSnapshot) string {
+	if snapshot == nil || snapshot.LatestCheckpoint == nil {
+		return ""
+	}
+	return strings.TrimSpace(snapshot.LatestCheckpoint.ID)
+}
+
+func validateResumeImmutableControlMetadata(snapshot *TurnSnapshot, resumeMetadata map[string]string) error {
+	if snapshot == nil || len(resumeMetadata) == 0 {
+		return nil
+	}
+	for key, value := range resumeMetadata {
+		if !runtimecontract.IsAdmissionControlMetadataKey(key) {
+			continue
+		}
+		expected, ok := immutableResumeControlMetadataValue(snapshot, key)
+		if !ok || strings.TrimSpace(value) != expected {
+			return fmt.Errorf("immutable control metadata drift: %s", strings.TrimSpace(key))
+		}
+	}
+	return nil
+}
+
+func immutableResumeControlMetadataValue(snapshot *TurnSnapshot, key string) (string, bool) {
+	key = strings.TrimSpace(key)
+	if snapshot != nil && snapshot.TurnAssembly != nil {
+		assembly := snapshot.TurnAssembly
+		switch key {
+		case runtimecontract.MetadataProfile, runtimecontract.MetadataToolProfile, runtimecontract.MetadataAgentProfile:
+			return strings.TrimSpace(assembly.AdmissionFacts.Profile), true
+		case runtimecontract.MetadataAgentKind:
+			return strings.TrimSpace(assembly.AdmissionFacts.AgentKind), true
+		case runtimecontract.MetadataPermissionProfile:
+			return strings.TrimSpace(firstNonEmptyString(assembly.PermissionProfile, assembly.AdmissionFacts.PermissionProfile)), true
+		}
+	}
+	if snapshot == nil || snapshot.Metadata == nil {
+		return "", false
+	}
+	value, ok := snapshot.Metadata[key]
+	return strings.TrimSpace(value), ok
+}
+
+func (k *RuntimeKernel) emitApprovalDecided(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, decision, status string, at time.Time) error {
+	if k == nil || session == nil || snapshot == nil {
+		return nil
 	}
 	if at.IsZero() {
 		at = time.Now()
 	}
-	approval := pendingApprovalByID(session, snapshot, approvalID)
-	id := strings.TrimSpace(firstNonEmpty(approvalID, approval.ID, currentBlockedID(snapshot)))
+	id := strings.TrimSpace(approval.ID)
 	if id == "" {
-		return
+		return nil
+	}
+	approval.ID = id
+	if err := k.recordCanonicalApprovalDecided(ctx, snapshot, approval, decision, status); err != nil {
+		return fmt.Errorf("record approval decision: %w", err)
+	}
+	appendApprovalDecidedAgentItem(snapshot, approval, decision, status)
+	k.persistTurnSnapshot(session, snapshot)
+	if k.projector == nil {
+		return nil
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"id":       id,
@@ -1132,6 +1227,87 @@ func (k *RuntimeKernel) emitApprovalDecided(session *SessionState, snapshot *Tur
 		Timestamp: at,
 		Payload:   payload,
 	})
+	return nil
+}
+
+func exactApprovalForResumeDecision(session *SessionState, snapshot *TurnSnapshot, req ResumeRequest) (PendingApproval, error) {
+	if snapshot != nil && snapshot.ResumeState == TurnResumeStatePendingEvidence {
+		if req.ResumeState != "" && req.ResumeState != TurnResumeStatePendingEvidence {
+			return PendingApproval{}, fmt.Errorf("turn %q requires pending evidence resume", req.TurnID)
+		}
+		if strings.TrimSpace(req.Decision) == "" {
+			return PendingApproval{}, nil
+		}
+		evidenceID := strings.TrimSpace(req.ApprovalID)
+		if evidenceID == "" {
+			return PendingApproval{}, fmt.Errorf("evidence id is required for decision %q", req.Decision)
+		}
+		evidence := pendingEvidenceByID(session, snapshot, evidenceID)
+		if evidence.ID != evidenceID {
+			return PendingApproval{}, fmt.Errorf("evidence %q is not pending for turn %q", evidenceID, req.TurnID)
+		}
+		toolCall, ok := pendingToolCall(snapshot)
+		if !ok || strings.TrimSpace(evidence.ToolCallID) == "" || evidence.ToolCallID != toolCall.ID {
+			return PendingApproval{}, fmt.Errorf("evidence %q does not match pending tool call", evidenceID)
+		}
+		return PendingApproval{
+			ID:         evidence.ID,
+			SessionID:  evidence.SessionID,
+			TurnID:     evidence.TurnID,
+			Iteration:  evidence.Iteration,
+			ToolName:   evidence.ToolName,
+			ToolCallID: evidence.ToolCallID,
+			Reason:     evidence.Reason,
+			Source:     "pending_evidence",
+			Status:     evidence.Status,
+			CreatedAt:  evidence.CreatedAt,
+			UpdatedAt:  evidence.UpdatedAt,
+		}, nil
+	}
+	if req.ResumeState == TurnResumeStatePendingEvidence {
+		return PendingApproval{}, fmt.Errorf("turn %q is not pending evidence", req.TurnID)
+	}
+	if strings.TrimSpace(req.Decision) == "" {
+		if snapshot != nil && snapshot.ResumeState == TurnResumeStatePendingApproval {
+			return PendingApproval{}, fmt.Errorf("approval decision is required to resume pending approval for turn %q", req.TurnID)
+		}
+		return PendingApproval{}, nil
+	}
+	approvalID := strings.TrimSpace(req.ApprovalID)
+	if approvalID == "" {
+		return PendingApproval{}, fmt.Errorf("approval id is required for decision %q", req.Decision)
+	}
+	approval := pendingApprovalByID(session, snapshot, approvalID)
+	if approval.ID != approvalID {
+		return PendingApproval{}, fmt.Errorf("approval %q is not pending for turn %q", approvalID, req.TurnID)
+	}
+	if approval.Source == PlanModeEntryApprovalSource || approval.Source == PlanExitApprovalSource {
+		return approval, nil
+	}
+	toolCall, ok := pendingToolCall(snapshot)
+	if !ok || strings.TrimSpace(approval.ToolCallID) == "" || approval.ToolCallID != toolCall.ID {
+		return PendingApproval{}, fmt.Errorf("approval %q does not match pending tool call", approvalID)
+	}
+	return approval, nil
+}
+
+func pendingEvidenceByID(session *SessionState, snapshot *TurnSnapshot, evidenceID string) PendingEvidence {
+	target := strings.TrimSpace(evidenceID)
+	if snapshot != nil {
+		for _, evidence := range snapshot.PendingEvidence {
+			if target == "" || evidence.ID == target {
+				return evidence
+			}
+		}
+	}
+	if session != nil {
+		for _, evidence := range session.PendingEvidence {
+			if target == "" || evidence.ID == target {
+				return evidence
+			}
+		}
+	}
+	return PendingEvidence{}
 }
 
 func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approvalID string) PendingApproval {
@@ -1153,46 +1329,6 @@ func pendingApprovalByID(session *SessionState, snapshot *TurnSnapshot, approval
 	return PendingApproval{}
 }
 
-func approvalFingerprintDriftPayload(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) (string, bool) {
-	if strings.TrimSpace(approval.ID) == "" {
-		return "", false
-	}
-	if reason := approvalFingerprintDriftReason(approval, snapshot, req); reason != "" {
-		payload, _ := json.Marshal(map[string]string{
-			"schemaVersion": "aiops.approval_drift/v1",
-			"approvalId":    approval.ID,
-			"decision":      "requires_reapproval",
-			"reason":        reason,
-		})
-		return string(payload), true
-	}
-	return "", false
-}
-
-func approvalFingerprintDriftReason(approval PendingApproval, snapshot *TurnSnapshot, req ResumeRequest) string {
-	currentSurface := firstNonEmpty(
-		req.Metadata["toolSurfaceFingerprint"],
-		req.Metadata["aiops.toolSurfaceFingerprint"],
-	)
-	if currentSurface == "" && snapshot != nil {
-		currentSurface = snapshot.StableToolFingerprint
-	}
-	if approval.ToolSurfaceFingerprint != "" && currentSurface != "" && approval.ToolSurfaceFingerprint != currentSurface {
-		return "tool surface fingerprint changed"
-	}
-	currentPermission := firstNonEmpty(
-		req.Metadata["permissionSnapshotHash"],
-		req.Metadata["aiops.permissionSnapshotHash"],
-	)
-	if currentPermission == "" {
-		currentPermission = approval.PermissionSnapshotHash
-	}
-	if approval.PermissionSnapshotHash != "" && currentPermission != "" && approval.PermissionSnapshotHash != currentPermission {
-		return "permission snapshot changed"
-	}
-	return ""
-}
-
 func recordRejectedApproval(session *SessionState, approval PendingApproval, decision, reason string, at time.Time) {
 	if session == nil {
 		return
@@ -1202,6 +1338,7 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 	}
 	rejected := RejectedApproval{
 		ID:         strings.TrimSpace(approval.ID),
+		TurnID:     strings.TrimSpace(approval.TurnID),
 		ToolName:   strings.TrimSpace(approval.ToolName),
 		ToolCallID: strings.TrimSpace(approval.ToolCallID),
 		Reason:     firstNonEmpty(reason, approval.Reason, "approval denied"),
@@ -1224,17 +1361,18 @@ func recordRejectedApproval(session *SessionState, approval PendingApproval, dec
 	session.RejectedApprovals = append(session.RejectedApprovals, rejected)
 }
 
-func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
+func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, reason string, at time.Time) (TurnResult, error) {
 	if session == nil || snapshot == nil {
 		return TurnResult{}, fmt.Errorf("session and snapshot are required")
 	}
+	transitionSnapshot := *snapshot
 	if snapshot.Lifecycle == TurnLifecycleSuspended {
-		if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
+		if err := validateTurnLifecycleTransition(&transitionSnapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
 			return TurnResult{}, err
 		}
-		snapshot.Lifecycle = TurnLifecycleRunning
+		transitionSnapshot.Lifecycle = TurnLifecycleRunning
 	}
-	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
+	if err := validateTurnLifecycleTransition(&transitionSnapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 		return TurnResult{}, err
 	}
 	finalText := deniedApprovalFinalText(approval, reason)
@@ -1244,7 +1382,53 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 		Content:   finalText,
 		Timestamp: at,
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "approval_denied", TurnLifecycleCompleted, TurnResumeStateNone)
+	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
+	recordSnapshot := transitionSnapshot
+	recordSnapshot.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	recordSnapshot.Lifecycle = TurnLifecycleCompleted
+	recordSnapshot.ResumeState = TurnResumeStateNone
+	recordSnapshot.PendingApprovals = nil
+	recordSnapshot.PendingEvidence = nil
+	recordSnapshot.LatestCheckpoint = checkpoint
+	recordSession := *session
+	recordSession.PendingApprovals = nil
+	recordSession.PendingEvidence = nil
+	finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, &recordSnapshot, &recordSession, k.finalCompletionEvaluator())
+	finalContract := BuildFinalContract(finalText, finalRuntimeFacts)
+	finalData := assistantMessageData{
+		MessageID:        message.ID,
+		Iteration:        snapshot.Iteration,
+		Phase:            AssistantMessagePhaseFinalAnswer,
+		StreamState:      AssistantMessageStreamStateComplete,
+		EvidenceBoundary: "blocked",
+		BoundaryAction:   FinalMessageBoundaryBlock,
+		TextHash:         debugTextHash(finalText),
+		FinalContract:    &finalContract,
+	}
+	completeAssistantMessageItem(&recordSnapshot, itemID, finalText, finalData)
+	appendAgentItem(&recordSnapshot, newAgentItem(
+		finalResponseItemID(snapshot.ID, snapshot.Iteration),
+		agentstate.TurnItemTypeFinalResponse,
+		agentstate.ItemStatusCompleted,
+		finalText,
+		assistantMessageAgentItemData(finalData),
+	))
+	if err := k.recordCanonicalCheckpoint(ctx, &recordSnapshot, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalFinalFacts(ctx, &recordSnapshot, finalRuntimeFacts, finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, &recordSnapshot, TurnLifecycleCompleted, TurnResumeStateNone, checkpoint.ID, &finalContract); err != nil {
+		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+
 	session.Messages = append(session.Messages, message)
+	snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleCompleted
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = ""
@@ -1254,7 +1438,6 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 	snapshot.CompletedAt = &at
 	session.PendingApprovals = nil
 	session.PendingEvidence = nil
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "approval_denied", TurnLifecycleCompleted, TurnResumeStateNone)
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
@@ -1265,16 +1448,14 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(session *SessionState, snapsh
 		last.CompletedAt = &at
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
-	itemID := fmt.Sprintf("%s-approval-denied-final", snapshot.ID)
-	completeAssistantMessageItem(snapshot, itemID, finalText, assistantMessageData{
-		MessageID:        message.ID,
-		Iteration:        snapshot.Iteration,
-		Phase:            AssistantMessagePhaseFinalAnswer,
-		StreamState:      AssistantMessageStreamStateComplete,
-		EvidenceBoundary: "blocked",
-		BoundaryAction:   FinalMessageBoundaryBlock,
-		TextHash:         debugTextHash(finalText),
-	})
+	completeAssistantMessageItem(snapshot, itemID, finalText, finalData)
+	appendAgentItem(snapshot, newAgentItem(
+		finalResponseItemID(snapshot.ID, snapshot.Iteration),
+		agentstate.TurnItemTypeFinalResponse,
+		agentstate.ItemStatusCompleted,
+		finalText,
+		assistantMessageAgentItemData(finalData),
+	))
 	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
 	syncActiveTurnState(session, snapshot)
@@ -1371,7 +1552,7 @@ func rememberSessionApprovalGrant(session *SessionState, toolCall ToolCall, appr
 // ---------------------------------------------------------------------------
 
 // CancelTurn cancels an active turn and returns the cancellation result.
-func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnResult, error) {
+func (k *RuntimeKernel) CancelTurn(ctx context.Context, req CancelRequest) (TurnResult, error) {
 	if err := req.Validate(); err != nil {
 		return TurnResult{}, fmt.Errorf("invalid cancel request: %w", err)
 	}
@@ -1396,7 +1577,9 @@ func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnRe
 		}
 		clientTurnID = snapshot.ClientTurnID
 		clientMessageID = snapshot.ClientMessageID
-		k.markTurnCanceled(session, snapshot, req.Reason)
+		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, req.Reason); cancelErr != nil {
+			return TurnResult{}, cancelErr
+		}
 	}
 
 	return TurnResult{
@@ -1407,174 +1590,6 @@ func (k *RuntimeKernel) CancelTurn(_ context.Context, req CancelRequest) (TurnRe
 		ClientTurnID:    clientTurnID,
 		ClientMessageID: clientMessageID,
 		Status:          "cancelled",
-	}, nil
-}
-
-// RunTurnWithRecorder executes RunTurn while recording pipeline steps for testing.
-func (k *RuntimeKernel) RunTurnWithRecorder(ctx context.Context, req TurnRequest, recorder *PipelineRecorder) (result TurnResult, err error) {
-	// Panic recovery
-	defer func() {
-		if r := recover(); r != nil {
-			result = TurnResult{
-				SessionType:     req.SessionType,
-				Mode:            req.Mode,
-				SessionID:       req.SessionID,
-				TurnID:          req.TurnID,
-				ClientTurnID:    req.ClientTurnID,
-				ClientMessageID: req.ClientMessageID,
-				Status:          "error",
-				Error:           fmt.Sprintf("panic recovered: %v", r),
-			}
-			err = nil
-		}
-	}()
-
-	if valErr := req.Validate(); valErr != nil {
-		return TurnResult{}, fmt.Errorf("invalid turn request: %w", valErr)
-	}
-
-	turnID := req.TurnID
-	if turnID == "" {
-		turnID = fmt.Sprintf("turn-%d", time.Now().UnixNano())
-	}
-
-	// Step 1: Assemble context
-	recorder.Record(StepAssembleContext)
-	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
-	preTurnEvent, err := k.runTurnHook(ctx, hooks.StagePreTurn, session, req, turnID, "", nil)
-	if err != nil {
-		return TurnResult{}, fmt.Errorf("pre_turn: %w", err)
-	}
-	if preTurnEvent.UpdatedInput != "" {
-		req.Input = preTurnEvent.UpdatedInput
-	}
-	if req.Input != "" {
-		messageID := strings.TrimSpace(req.ClientMessageID)
-		if messageID == "" {
-			messageID = fmt.Sprintf("msg-%d", time.Now().UnixNano())
-		}
-		msg := Message{
-			ID:              messageID,
-			ClientMessageID: req.ClientMessageID,
-			ClientTurnID:    req.ClientTurnID,
-			Role:            "user",
-			Content:         req.Input,
-			Timestamp:       time.Now(),
-		}
-		session.Messages = append(session.Messages, msg)
-		updateRuntimeEnvironmentContext(session, req, msg.Timestamp)
-	}
-	recomputeContextWindow(&session.Context, session.Messages)
-
-	// Step 2: Compile prompt
-	recorder.Record(StepCompilePrompt)
-	turnMetadata := k.applyProgressiveToolPackMetadata(cloneTurnMetadata(req.Metadata), req.Input, req.SessionType, req.Mode, session)
-	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, req.HostID)
-	req.Metadata = turnMetadata
-	depthProfile := depthProfileFromTurnRequest(TurnRequest{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		Input:       req.Input,
-		Metadata:    turnMetadata,
-	})
-	compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, req.HostID, turnMetadata, time.Now())
-	compileCtx = applyDepthProfileToCompileContext(compileCtx, depthProfile, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
-	compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
-	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
-	compileCtx = appendSkillActivationContext(compileCtx, session)
-	compileCtx = appendMCPInstructionContext(compileCtx, session)
-	if len(preTurnEvent.AdditionalContext) > 0 {
-		compileCtx.SkillPromptAssets = append(compileCtx.SkillPromptAssets, preTurnEvent.AdditionalContext...)
-	}
-	compileCtx, _ = applyToolSurfacePolicyToCompileContext(compileCtx, req.Mode, firstMetadataValue(turnMetadata, "profile", "toolProfile"), session)
-	compiled, compileErr := k.compiler.Compile(compileCtx)
-	if compileErr != nil {
-		return TurnResult{}, fmt.Errorf("compile prompt: %w", compileErr)
-	}
-
-	// Step 3: Assemble tools
-	recorder.Record(StepAssembleTools)
-	toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
-
-	// Step 4: Create agent
-	recorder.Record(StepCreateAgent)
-	agentKind := modelrouter.AgentKindWorker
-	if req.SessionType == SessionTypeWorkspace {
-		agentKind = modelrouter.AgentKindPlanner
-	}
-	chatModel, modelErr := k.modelRouter.GetModel(agentKind, modelrouter.ProviderConfig{})
-	if modelErr != nil {
-		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
-	}
-
-	// Step 5: Runner.Run()
-	recorder.Record(StepRunnerRun)
-	agentOutput, runErr := executeAgent(ctx, chatModel, compiled, toolPool, session.Messages)
-	if runErr != nil {
-		return TurnResult{}, fmt.Errorf("run agent: %w", runErr)
-	}
-
-	// Step 6: Callback events
-	recorder.Record(StepCallbackEvents)
-
-	// Step 7: Projection
-	recorder.Record(StepProjection)
-	turnCompletePayload, _ := json.Marshal(map[string]any{
-		"watchPaths": append([]string(nil), preTurnEvent.WatchPaths...),
-	})
-	k.projector.Emit(LifecycleEvent{
-		Type:      EventTurnComplete,
-		SessionID: session.ID,
-		TurnID:    turnID,
-		Timestamp: time.Now(),
-		Payload:   turnCompletePayload,
-	})
-
-	// Step 8: Final gate
-	recorder.Record(StepFinalGate)
-	if k.policy.CompletionPolicy != nil {
-		turnState := policyengine.TurnState{
-			SessionID: session.ID,
-			TurnID:    turnID,
-			Completed: true,
-		}
-		decision := k.policy.CompletionPolicy.CheckCompletion(ctx, turnState)
-		if decision.Action != policyengine.PolicyActionAllow {
-			return TurnResult{
-				SessionType:     req.SessionType,
-				Mode:            req.Mode,
-				SessionID:       session.ID,
-				TurnID:          turnID,
-				ClientTurnID:    req.ClientTurnID,
-				ClientMessageID: req.ClientMessageID,
-				Status:          "blocked",
-				Error:           decision.Reason,
-			}, nil
-		}
-	}
-	if _, err := k.runTurnHook(ctx, hooks.StagePostTurn, session, req, turnID, agentOutput, nil); err != nil {
-		return TurnResult{}, fmt.Errorf("post_turn: %w", err)
-	}
-
-	assistantMsg := Message{
-		ID:        fmt.Sprintf("msg-%d", time.Now().UnixNano()),
-		Role:      "assistant",
-		Content:   agentOutput,
-		Timestamp: time.Now(),
-	}
-	session.Messages = append(session.Messages, assistantMsg)
-	session.UpdatedAt = time.Now()
-	k.sessions.Update(session)
-
-	return TurnResult{
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		SessionID:       session.ID,
-		TurnID:          turnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		Status:          "completed",
-		Output:          agentOutput,
 	}, nil
 }
 
@@ -1667,6 +1682,71 @@ func (k *RuntimeKernel) contextArtifactToolsForMetadata(metadata map[string]stri
 		return nil
 	}
 	return k.contextArtifactTools()
+}
+
+func (k *RuntimeKernel) appendContextArtifactToolsForExternalRefs(ctx promptcompiler.CompileContext, session *SessionState, snapshot *TurnSnapshot) promptcompiler.CompileContext {
+	if !hasReadableContextArtifactReference(session, snapshot) {
+		return ctx
+	}
+	ctx.AssembledTools = appendContextArtifactTools(ctx.AssembledTools, k.contextArtifactTools()...)
+	return ctx
+}
+
+func hasReadableContextArtifactReference(session *SessionState, snapshot *TurnSnapshot) bool {
+	if snapshotHasReadableContextArtifactReference(snapshot) {
+		return true
+	}
+	if session == nil {
+		return false
+	}
+	for _, ref := range session.ExternalReferences {
+		if externalReferenceReadableByContextArtifact(ref) {
+			return true
+		}
+	}
+	if snapshotHasReadableContextArtifactReference(session.CurrentTurn) {
+		return true
+	}
+	for i := len(session.TurnHistory) - 1; i >= 0 && len(session.TurnHistory)-i <= 8; i-- {
+		if snapshotHasReadableContextArtifactReference(&session.TurnHistory[i]) {
+			return true
+		}
+	}
+	return false
+}
+
+func snapshotHasReadableContextArtifactReference(snapshot *TurnSnapshot) bool {
+	if snapshot == nil {
+		return false
+	}
+	for _, ref := range snapshot.ExternalReferences {
+		if externalReferenceReadableByContextArtifact(ref) {
+			return true
+		}
+	}
+	for _, iteration := range snapshot.Iterations {
+		for _, ref := range iteration.ExternalReferences {
+			if externalReferenceReadableByContextArtifact(ref) {
+				return true
+			}
+		}
+		for _, result := range iteration.ToolResults {
+			for _, ref := range result.ExternalReferences {
+				if externalReferenceReadableByContextArtifact(ref) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func externalReferenceReadableByContextArtifact(ref ExternalReference) bool {
+	uri := strings.TrimSpace(ref.URI)
+	if uri == "" {
+		return false
+	}
+	return strings.HasPrefix(uri, "store://tool-spills/") || strings.HasPrefix(uri, "store://artifacts/")
 }
 
 func contextArtifactToolsEnabled(metadata map[string]string) bool {
@@ -1886,17 +1966,6 @@ func applyRuntimeFeatureFlags(ctx promptcompiler.CompileContext, flags featurefl
 	return ctx
 }
 
-func (k *RuntimeKernel) assembleToolPool(session SessionType, mode Mode, metadata map[string]string) []tool.BaseTool {
-	assemblyMode := effectiveToolAssemblyMode(session, mode, metadata)
-	if source, ok := k.tools.(metadataToolAssemblySource); ok {
-		return source.AssembleToolPoolWithMetadata(session, assemblyMode, metadata)
-	}
-	if !opsManualsOptedOut(metadata) {
-		return k.tools.AssembleToolPool(session, assemblyMode)
-	}
-	return tooling.AssembleEinoToolPool(filterOpsManualTools(k.tools.CompileContext(session, assemblyMode).AssembledTools))
-}
-
 func effectiveToolAssemblyMode(session SessionType, mode Mode, metadata map[string]string) Mode {
 	if session != SessionTypeHost || mode != ModeChat {
 		return mode
@@ -1931,12 +2000,54 @@ func (k *RuntimeKernel) runHostIterationLoop(
 	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, session.HostID)
 	req.Metadata = turnMetadata
 	snapshot.Metadata = turnMetadata
-	depthProfile := depthProfileFromTurnRequest(TurnRequest{
-		SessionType: req.SessionType,
-		Mode:        req.Mode,
-		Input:       req.Input,
-		Metadata:    turnMetadata,
-	})
+	depthReq := TurnRequest{
+		SessionID:             session.ID,
+		TurnID:                turnID,
+		SessionType:           req.SessionType,
+		Mode:                  req.Mode,
+		Input:                 req.Input,
+		HostID:                req.HostID,
+		IntentFrame:           req.IntentFrame,
+		PermissionProfile:     req.PermissionProfile,
+		Metadata:              turnMetadata,
+		ResourceBindings:      req.ResourceBindings,
+		ResourceRoleBindings:  req.ResourceRoleBindings,
+		SessionTargetSnapshot: req.SessionTargetSnapshot,
+		RoleBindingConflicts:  req.RoleBindingConflicts,
+	}
+	var admissionContext RuntimeTurnContext
+	var admissionFacts runtimecontract.AdmissionFacts
+	if snapshot.TurnAssembly != nil {
+		if assemblyErr := snapshot.TurnAssembly.Validate(); assemblyErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
+		admissionFacts = snapshot.TurnAssembly.AdmissionFacts
+	} else {
+		var admissionErr error
+		admissionContext, admissionErr = BuildRuntimeTurnContext(depthReq, session, RuntimeTurnContextOptions{
+			Lineage: RuntimeLineageSnapshot{AgentKind: string(agentKind)},
+		})
+		if admissionErr != nil {
+			return "", nil, fmt.Errorf("turn admission context: %w", admissionErr)
+		}
+		admissionFacts = admissionContext.AdmissionFacts
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			Kind: modeltrace.CanonicalRolloutKindAdmission,
+			Payload: map[string]any{
+				"factsHash":   admissionFacts.Hash,
+				"intentKind":  admissionFacts.Intent.Kind,
+				"targetCount": len(admissionFacts.TargetRefs),
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record turn admission: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
+		if admissionContext.AdmissionError == runtimeAdmissionErrorTargetRequired {
+			finalText, completeErr := k.completeAdmissionTargetRequiredTurn(ctx, session, snapshot)
+			return finalText, nil, completeErr
+		}
+	}
+	depthProfile := depthProfileFromAdmissionFacts(depthReq, admissionFacts)
 	if snapshot.TaskDepth.Level == "" {
 		snapshot.TaskDepth = depthProfile
 	}
@@ -1978,6 +2089,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx := enrichCompileContext(k.compileContext(req.SessionType, req.Mode, turnMetadata), req.SessionType, session.HostID, turnMetadata, time.Now())
 		compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(turnMetadata, "reasoningEffort", "reasoning_effort"))
 		compileCtx = applyTurnPromptProfileMetadata(compileCtx, turnMetadata)
+		compileCtx = k.appendContextArtifactToolsForExternalRefs(compileCtx, session, snapshot)
 		compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
 		compileCtx = appendSkillActivationContext(compileCtx, session)
 		compileCtx = appendMCPInstructionContext(compileCtx, session)
@@ -2022,14 +2134,78 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		compileCtx.EvidenceReminders = compileEvidenceReminders(req.Mode, session.PendingEvidence)
 		compileCtx.ToolDelta = iterationToolDelta(snapshot, compileCtx.AssembledTools)
 		compileCtx.ProtocolState = buildProtocolPromptState(snapshot, compileCtx.ToolDelta, session.PendingApprovals, session.PendingEvidence, session.RejectedApprovals)
-		compileCtx.VisibleToolFingerprint = assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		sourceToolFingerprint := assembledToolFingerprint(k.tools, req.SessionType, req.Mode, compileCtx.AssembledTools)
+		stepToolRouter, routerErr := BuildStepToolRouter(StepToolRouterInput{
+			Registered:        toolNames(dispatchTools),
+			ModelVisible:      toolNames(compileCtx.AssembledTools),
+			Dispatchable:      toolNames(compileCtx.AssembledTools),
+			HiddenReasons:     hiddenReasonsFromToolSurfacePolicy(surfacePolicy),
+			PolicyHash:        surfacePolicy.Hash,
+			SourceFingerprint: sourceToolFingerprint,
+		})
+		if routerErr != nil {
+			return "", nil, fmt.Errorf("step tool router: %w", routerErr)
+		}
+		compileCtx.VisibleToolFingerprint = stepToolRouter.Fingerprint
 		compileCtx = applyRuntimeStateMetadata(compileCtx, turnMetadata, session, snapshot)
+		if snapshot.TurnAssembly == nil {
+			modelCaps := modelrouter.ModelCapabilities{
+				Provider:         string(agentKind),
+				Model:            modelNameForTrace(chatModel),
+				MaxContextTokens: thresholds.MaxContextTokens,
+				MaxOutputTokens:  thresholds.ReservedOutputTokens,
+			}
+			if k.modelRouter != nil {
+				modelCaps = k.modelRouter.ResolveModelCapabilities(agentKind, modelrouter.ProviderConfig{})
+			}
+			turnContext := admissionContext
+			turnContext.Model = modelCaps
+			turnContext.ContextBudget = RuntimeContextBudgetSnapshot{
+				MaxTokens:    thresholds.MaxContextTokens,
+				TargetTokens: thresholds.EffectiveContextWindow,
+			}
+			turnContext.ToolPolicyHash = surfacePolicy.Hash
+			assembly, assemblyErr := buildRuntimeTurnAssembly(runtimeTurnAssemblyInput{
+				TurnContext:            turnContext,
+				CompileContext:         compileCtx,
+				ToolSurfacePolicy:      surfacePolicy,
+				ToolSurfaceFingerprint: compileCtx.VisibleToolFingerprint,
+				ResourceBindings:       req.ResourceBindings,
+				RollbackPolicy:         req.RollbackPolicy,
+				Mode:                   req.Mode,
+				MaxIterations:          maxIterations,
+			})
+			if assemblyErr != nil {
+				appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "turn assembly validation failed", nil))
+				k.persistTurnSnapshot(session, snapshot)
+				return "", nil, assemblyErr
+			}
+			if captureErr := k.captureReplayTurnAssembly(ctx, snapshot, assembly); captureErr != nil {
+				return "", nil, captureErr
+			}
+			snapshot.TurnAssembly = assembly
+			if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+				Kind:             modeltrace.CanonicalRolloutKindAssembly,
+				TurnAssemblyHash: assembly.Hash,
+				Payload: map[string]any{
+					"schemaVersion":        assembly.SchemaVersion,
+					"capabilityPolicyHash": assembly.CapabilityPolicy.Hash,
+				},
+			}); recordErr != nil {
+				return "", nil, fmt.Errorf("record turn assembly: %w", recordErr)
+			}
+			k.persistTurnSnapshot(session, snapshot)
+			k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")
+		} else if assemblyErr := snapshot.TurnAssembly.Validate(); assemblyErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
 		compiled, compileErr := k.compiler.Compile(compileCtx)
 		if compileErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, compileErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, fmt.Errorf("compile prompt: %w", compileErr)
 		}
+		k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")
 		var retentionDecisions []ContextRetentionDecision
 		compiled.PromptSections, retentionDecisions, compileErr = ApplyPromptSectionRetentionPolicy(compiled.PromptSections, DefaultContextRetentionPolicy())
 		if compileErr != nil {
@@ -2052,10 +2228,12 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		promptFingerprint := promptFingerprintMap(compiled.Fingerprint)
 		toolFingerprint := compileCtx.VisibleToolFingerprint
 		visibleToolNames := toolNames(compileCtx.AssembledTools)
+		frozenStepToolRouter := cloneStepToolRouter(stepToolRouter)
 		toolSurfaceSnapshot := ToolSurfaceSnapshotRef{
 			ID:                 fmt.Sprintf("toolsurface-%s-%d", turnID, iteration),
 			Fingerprint:        toolFingerprint,
 			ToolNames:          append([]string(nil), visibleToolNames...),
+			StepRouter:         &frozenStepToolRouter,
 			PolicySnapshotHash: surfacePolicy.Hash,
 			PolicySnapshot:     &surfacePolicy,
 			CreatedAt:          time.Now(),
@@ -2064,21 +2242,85 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		refreshedTools := refreshedToolNames(snapshot, toolFingerprint, compileCtx.AssembledTools)
 
 		k.emitIterationStage(session.ID, turnID, iteration, "assemble_tools", turnSpanID)
-		toolPool := tooling.AssembleEinoToolPool(compileCtx.AssembledTools)
+		modelVisibleStepTools := modelVisibleToolsForStep(dispatchTools, stepToolRouter)
+		toolPool := tooling.AssembleEinoToolPool(modelVisibleStepTools)
 		k.emitIterationStage(session.ID, turnID, iteration, "call_model", turnSpanID)
-		runtimeToolSurface := runtimeToolRouterSnapshotFromCompile(compileCtx.AssembledTools, visibleToolNames, toolFingerprint, surfacePolicy)
-		stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, thresholds, modelNameForTrace(chatModel))
+		runtimeToolSurface := stepToolRouter
+		checkpointRef := ""
+		if snapshot.LatestCheckpoint != nil {
+			checkpointRef = snapshot.LatestCheckpoint.ID
+		}
+		stepPermissionHash := k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, surfacePolicy)
+		stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, RuntimeStepControlFacts{
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			PermissionHash:   stepPermissionHash,
+			CheckpointRef:    checkpointRef,
+		}, thresholds, modelNameForTrace(chatModel), snapshot.TurnAssembly)
 		if modelErr != nil {
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, modelErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
 			return "", nil, modelErr
 		}
+		if captureErr := k.captureReplayStepContext(ctx, stepCtx); captureErr != nil {
+			return "", nil, captureErr
+		}
+		compiled.Fingerprint = stepCtx.ProviderRequest.PromptFingerprint
+		promptFingerprint = promptFingerprintMap(stepCtx.ProviderRequest.PromptFingerprint)
+		stablePromptHash = firstNonBlankRuntimeString(stepCtx.ProviderRequest.PromptFingerprint.StablePrefixHash, stablePromptHash)
+		stepRevisionFacts, revisionErr := BuildRuntimeStepRevisionFacts(snapshot.TurnAssembly, stepCtx, session, snapshot)
+		if revisionErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, revisionErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, revisionErr
+		}
+		stepReference, revisionErr := BuildStepReference(snapshot.LatestStepReference, stepCtx, stepRevisionFacts)
+		if revisionErr != nil {
+			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, revisionErr.Error(), nil))
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, revisionErr
+		}
+		frozenStepReference := cloneStepReference(stepReference)
+		snapshot.LatestStepReference = &frozenStepReference
+		snapshot.PendingStepCause = nil
+		stepRevisionKinds := make([]string, 0, len(stepReference.Transition.Revisions))
+		for _, revision := range stepReference.Transition.Revisions {
+			if kind := strings.TrimSpace(revision.Kind); kind != "" {
+				stepRevisionKinds = append(stepRevisionKinds, kind)
+			}
+		}
+		stepRevisionKind := strings.TrimSpace(stepRevisionFacts.Cause.Kind)
+		if stepRevisionKind == "" && len(stepRevisionKinds) > 0 {
+			stepRevisionKind = stepRevisionKinds[0]
+		}
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindPrompt,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"modelInputHash":     stepCtx.ProviderRequest.ModelInputHash,
+				"promptSectionCount": len(compiled.PromptSections),
+				"visibleToolCount":   len(visibleToolNames),
+				"stepRevisionKind":   stepRevisionKind,
+				"stepRevisionKinds":  stepRevisionKinds,
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record compiled prompt: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		var promptInputDiff *promptinput.TraceDiff
 		if previousPromptInputTrace != nil {
 			diff := promptinput.DiffTrace(*previousPromptInputTrace, promptBuild.Trace)
 			promptInputDiff = &diff
 		}
 		toolTraceFields := buildModelInputToolTraceFields(session, snapshot, toolFingerprint, surfacePolicy.Hash)
+		toolTraceFields.ResourceBindings = append([]resourcebinding.ResourceBindingSnapshot(nil), req.ResourceBindings...)
+		toolTraceFields.ResourceRoleBindings = append([]resourcebinding.ResourceRoleBinding(nil), req.ResourceRoleBindings...)
+		toolTraceFields.ResourceEvidenceRefs = append([]resourcebinding.EvidenceRef(nil), req.ResourceEvidenceRefs...)
+		toolTraceFields.ResourceCapabilities = append([]resourcebinding.ResourceCapability(nil), req.ResourceCapabilities...)
+		if len(toolTraceFields.ResourceCapabilities) == 0 {
+			toolTraceFields.ResourceCapabilities = resourceCapabilitiesFromAssembledTools(toolTraceFields.ResourceBindings, compileCtx.AssembledTools, surfacePolicy.Hash)
+		}
 		webSearchTrace := promptInputWebSearchTrace(snapshot, dispatchTools)
 		finalTrace := promptInputFinalTrace(snapshot)
 		finalEvidenceTrace := BuildFinalEvidenceState(snapshot, session)
@@ -2089,13 +2331,32 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		verificationCompletionTrace := verificationCompletionGateTrace(verificationCompletionDecision)
 		uxProgressTrace := BuildUXProgressTrace(snapshot)
 		evidenceCoverageDecision := EvaluateEvidenceCoverageGate(snapshot)
+		assemblyTrace, assemblyTraceErr := buildAgentAssemblyTraceSnapshots(agentAssemblyTraceInput{
+			AgentKind:              agentKind,
+			SessionType:            req.SessionType,
+			Mode:                   req.Mode,
+			Metadata:               turnMetadata,
+			CompileContext:         compileCtx,
+			Compiled:               compiled,
+			ToolSurfacePolicy:      surfacePolicy,
+			ToolSurfaceFingerprint: toolFingerprint,
+			ResourceBindings:       toolTraceFields.ResourceBindings,
+			SessionTargetSnapshot:  req.SessionTargetSnapshot,
+			RoleBindings:           toolTraceFields.ResourceRoleBindings,
+			TurnAssembly:           snapshot.TurnAssembly,
+		})
+		if assemblyTraceErr != nil {
+			return "", nil, fmt.Errorf("turn assembly validation failed")
+		}
+		snapshot.TurnAssemblyShadow = assemblyTrace.Shadow
 		debugConfig := k.runtimeDebugConfig(ctx)
 		tracePath, _ := writeRuntimeStepTrace(modeltrace.Config{
 			Enabled: debugConfig.ModelInputTrace,
 			RootDir: debugConfig.ModelInputTraceRoot,
 		}, stepCtx, RuntimeTraceDebugRequest{
 			Metadata:                      turnMetadata,
-			ModelInput:                    append([]promptinput.ModelInputItem(nil), promptBuild.Items...),
+			ModelInput:                    append([]promptinput.ModelInputItem(nil), stepCtx.ProviderRequest.Input...),
+			PreviousPromptFingerprint:     latestRuntimePromptFingerprint(snapshot),
 			PromptInputTrace:              promptBuild.Trace,
 			PromptInputDiff:               promptInputDiff,
 			DiagnosticTrace:               buildRuntimeDiagnosticTrace(turnID, session, req, compileCtx),
@@ -2112,6 +2373,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			ApprovalScope:                 toolTraceFields.ApprovalScope,
 			ReasoningEffort:               compileCtx.ReasoningEffort,
 			AnswerStyle:                   compileCtx.AnswerStyle,
+			AssemblySource:                toolTraceFields.AssemblySource,
+			PromptCompilerSource:          toolTraceFields.PromptCompilerSource,
+			ToolSurfaceSource:             toolTraceFields.ToolSurfaceSource,
+			AdapterName:                   toolTraceFields.AdapterName,
 			ToolSurfaceFingerprint:        toolTraceFields.ToolSurfaceFingerprint,
 			ToolSurfacePolicySnapshotHash: toolTraceFields.ToolSurfacePolicySnapshotHash,
 			ToolSurfaceSnapshot:           toolTraceFields.ToolSurfaceSnapshot,
@@ -2131,11 +2396,22 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			MCPInstructionDeltas:          toolTraceFields.MCPInstructionDeltas,
 			ParallelDispatchGroups:        toolTraceFields.ParallelDispatchGroups,
 			TaskClaims:                    taskClaimTracesFromSnapshot(snapshot),
+			ResourceBindings:              toolTraceFields.ResourceBindings,
+			ResourceRoleBindings:          toolTraceFields.ResourceRoleBindings,
+			ResourceCapabilities:          toolTraceFields.ResourceCapabilities,
+			ResourceEvidenceRefs:          toolTraceFields.ResourceEvidenceRefs,
+			SpecialInputWorldState:        toolTraceFields.SpecialInputWorldState,
+			SessionTargetSnapshot:         req.SessionTargetSnapshot,
+			RoleBindingConflicts:          req.RoleBindingConflicts,
+			AgentAssemblySnapshot:         assemblyTrace.Projected,
+			LegacyAgentAssemblySnapshot:   assemblyTrace.Legacy,
+			TurnAssembly:                  snapshot.TurnAssembly,
+			TurnAssemblyShadow:            assemblyTrace.Shadow,
 			ResourceLocks:                 toolTraceFields.ResourceLocks,
 			OwnerWriteTraces:              toolTraceFields.OwnerWriteTraces,
 			FailedToolSummaries:           toolTraceFields.FailedToolSummaries,
 			FinalEvidenceState:            &finalEvidenceTrace,
-		})
+		}, &stepReference)
 		traceFile := modelTraceMarkdownPath(tracePath)
 		traceDiffFile := ""
 		if promptInputDiff != nil {
@@ -2155,11 +2431,31 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				"traceFile":                traceFile,
 				"traceDiffFile":            traceDiffFile,
 				"promptFingerprint":        promptFingerprint,
+				"promptShadowParity":       stepCtx.PromptShadowParity,
 				"taskDepth":                snapshot.TaskDepth,
 				"uxProgressTrace":          uxProgressTrace,
 				"evidenceCoverageDecision": evidenceCoverageDecision,
 			},
 		))
+		k.persistTurnSnapshot(session, snapshot)
+		validatedProviderRequest, validationErr := stepCtx.ValidatedProviderRequest()
+		if validationErr != nil {
+			return "", nil, fmt.Errorf("runtime step validation failed")
+		}
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindProviderRequest,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"iteration":             iteration,
+				"modelInputHash":        stepCtx.ProviderRequest.ModelInputHash,
+				"requestPropertiesHash": stepCtx.ProviderRequest.RequestPropertiesHash,
+				"toolCount":             len(stepCtx.ProviderRequest.Tools),
+			},
+		}); recordErr != nil {
+			return "", nil, fmt.Errorf("record provider request: %w", recordErr)
+		}
 		k.persistTurnSnapshot(session, snapshot)
 		reasoningSummaries := map[string]modelrouter.ReasoningStreamEvent{}
 		reasoningOrder := make([]string, 0, 2)
@@ -2187,7 +2483,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		var lastDeltaAt time.Time
 		effectiveProviderConfig := k.modelRouter.ResolveEffectiveProviderConfig(agentKind, modelrouter.ProviderConfig{})
 		providerAdapter := modelrouter.NewEinoProviderAdapter(chatModel, modelrouter.WithEinoTools(toolPool), modelrouter.WithEinoRequestTimeoutMs(effectiveProviderConfig.RequestTimeoutMs))
-		providerResponse, genErr := providerAdapter.Call(modelCtx, stepCtx.ProviderRequest, func(delta string) {
+		k.observeRuntimeStage(modelCtx, session.ID, turnID, iteration, "provider_request_started")
+		providerResponse, genErr := providerAdapter.Call(modelCtx, validatedProviderRequest, func(delta string) {
 			if delta != "" {
 				now := time.Now()
 				if firstDeltaAt.IsZero() {
@@ -2252,6 +2549,29 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				"foldable":     true,
 			})
 		})
+		providerStatus := "completed"
+		if genErr != nil {
+			providerStatus = "failed"
+		}
+		if recordErr := k.appendCanonicalRolloutEvent(ctx, snapshot, modeltrace.CanonicalRolloutEvent{
+			StepID:           stepReference.StepHash,
+			Kind:             modeltrace.CanonicalRolloutKindProviderResponse,
+			TurnAssemblyHash: snapshot.TurnAssembly.Hash,
+			StepContextHash:  stepCtx.Hash,
+			Payload: map[string]any{
+				"finishReason":  canonicalRolloutProviderFinishReason(providerResponse),
+				"iteration":     iteration,
+				"outputHash":    promptContentHash(iterationAssistantOutput),
+				"status":        providerStatus,
+				"toolCallCount": len(providerResponse.ToolCalls),
+			},
+		}); recordErr != nil {
+			finishObservedSpan(modelSpan, "failed", "canonical rollout provider response append failed", nil)
+			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, "canonical rollout provider response append failed")
+			k.persistTurnSnapshot(session, snapshot)
+			return "", nil, fmt.Errorf("record provider response: %w", recordErr)
+		}
+		k.persistTurnSnapshot(session, snapshot)
 		modelCallDuration := time.Since(modelCallStartedAt)
 		if !firstDeltaAt.IsZero() {
 			streamEnd := time.Now()
@@ -2277,7 +2597,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				finishObservedSpan(modelSpan, "cancelled", genErr.Error(), map[string]any{"error": genErr.Error()})
 				updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCancelled, "模型调用已取消")
 				if snapshot.Lifecycle != TurnLifecycleCanceled {
-					k.markTurnCanceled(session, snapshot, "user stop")
+					if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
+						return "", nil, cancelErr
+					}
 				} else {
 					snapshot.UpdatedAt = time.Now()
 					k.persistTurnSnapshot(session, snapshot)
@@ -2355,9 +2677,11 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			RefreshedTools:          refreshedTools,
 			PromptDelta:             promptcompiler.CompiledPromptDynamicText(compiled),
 			PromptFingerprint:       promptFingerprint,
+			PromptShadowParity:      stepCtx.PromptShadowParity,
 			ModelInputTraceFile:     tracePath,
 			TokenBudget:             session.Context.MaxTokens,
 			Checkpoint:              checkpoint,
+			StepReference:           &stepReference,
 			CompactedSegments:       append([]CompactedSegment(nil), contextState.CompactedSegments...),
 			ExternalReferences:      append([]ExternalReference(nil), contextState.ExternalReferences...),
 			ContextGovernanceEvents: append([]ContextGovernanceEvent(nil), contextState.GovernanceEvents...),
@@ -2381,6 +2705,9 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 				snapshot.Metadata["rawToolCallMarkupParsed"] = "true"
 			}
+		}
+		if err := k.recordCanonicalToolProposals(ctx, snapshot, assistantMsg.ToolCalls); err != nil {
+			return "", nil, fmt.Errorf("record tool proposals: %w", err)
 		}
 		iterState.ToolCalls = append(iterState.ToolCalls, assistantMsg.ToolCalls...)
 		appendProviderNativeWebSearchTurnItems(snapshot, &iterState, turnID, providerResponse.NativeWebSearchEvents)
@@ -2471,7 +2798,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 			}
 			mandatorySkillDecision := EvaluateMandatorySkillActivation(k.mandatorySkillDefinitionsForInput(req.Input), req.Input, assistantContent, session.SkillActivation)
-			if mandatorySkillDecision.Action == "require_skill_read" {
+			if mandatorySkillDecision.Action == "require_skill_read" && !mandatorySkillActivationSatisfiedByToolSurface(mandatorySkillDecision, compileCtx.AssembledTools) {
 				if snapshot.Metadata == nil {
 					snapshot.Metadata = map[string]string{}
 				}
@@ -2495,6 +2822,26 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					RequiredAction: "skill_read",
 					TurnID:         turnID,
 				}, time.Now())
+			}
+			agentFinalGate := EvaluateRuntimeAgentFinalGate("", runtimeAgentNotifications(snapshot))
+			if agentFinalGate.Action == "require_wait" {
+				appendAgentItem(snapshot, newAgentItem(
+					fmt.Sprintf("%s-agent-final-gate-%d", turnID, iteration),
+					agentstate.TurnItemTypeEvidence,
+					agentstate.ItemStatusBlocked,
+					"worker completion gate: require_wait",
+					agentFinalGate,
+				))
+				if snapshot.Metadata[runtimeAgentFinalGateRetryMetadataKey] != "1" {
+					if snapshot.Metadata == nil {
+						snapshot.Metadata = map[string]string{}
+					}
+					snapshot.Metadata[runtimeAgentFinalGateRetryMetadataKey] = "1"
+					additionalContext = append(additionalContext, runtimeAgentFinalGateRetryPrompt(agentFinalGate))
+					markAssistantMessageReplacedForRetry(snapshot, assistantMessageID, assistantContent, assistantMsg.ID, iteration, modelCallDuration, "blocked", FinalMessageBoundaryRetryOnce)
+					k.persistTurnSnapshot(session, snapshot)
+					continue
+				}
 			}
 			finalCompletenessDecision := EvaluateFinalCompleteness(assistantContent, providerResponseFinishReason(providerResponse))
 			if finalCompletenessDecision.Action == "retry_complete_final" && snapshot.Metadata[finalCompletenessRetryMetadataKey] != "1" {
@@ -2538,96 +2885,26 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				}
 				return "", nil, incompleteErr
 			}
-			finalEvidence := BuildFinalEvidenceState(snapshot, session)
-			finalEvidenceDecision := VerifyFinalEvidence(assistantContent, finalEvidence)
+			finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, snapshot, session, k.finalCompletionEvaluator())
+			finalEvidenceDecision := finalRuntimeFacts.EvidenceDecision
+			boundaryDecision := finalMessageBoundaryDecision{
+				Action:           FinalMessageBoundaryAllow,
+				EvidenceBoundary: finalEvidenceBoundaryFromFacts(finalRuntimeFacts),
+			}
 			if sanitized, changed := sanitizeFinalAssistantContentForCommit(assistantContent, finalEvidenceDecision); changed {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalRawToolCallMarkupConstrained"] = "true"
+				recordRawToolCallMarkupFinalSanitized(snapshot, turnID, iteration, assistantContent)
 				fields := debugTextFacts(assistantContent)
 				fields["replaceReason"] = "raw_tool_call_markup_final"
 				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
 				assistantContent = sanitized
-				finalEvidenceDecision = VerifyFinalEvidence(assistantContent, finalEvidence)
+				boundaryDecision.Action = FinalMessageBoundaryConstrain
+				boundaryDecision.Reasons = []string{"raw_tool_call_markup_sanitized"}
 			}
-			boundaryDecision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
-				Text:                assistantContent,
-				FinishReason:        providerResponseFinishReason(providerResponse),
-				PendingToolIntent:   finalMessageHasProcessIntent(assistantContent),
-				FinalEvidenceAction: finalEvidenceDecision.Action,
-				RequiresEvidence:    len(finalEvidence.FailedTools) > 0 || len(finalEvidence.NotChecked) > 0,
-			})
-			finalEvidenceBlocked := false
-			if boundaryDecision.Action == FinalMessageBoundaryBlock {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalEvidenceBlocked"] = "true"
-				if len(finalEvidenceDecision.Reasons) > 0 {
-					snapshot.Metadata["finalEvidenceBlockReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
-				}
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "final_message_boundary_block"
-				fields["decisionAction"] = string(finalEvidenceDecision.Action)
-				fields["decisionReasons"] = finalEvidenceDecision.Reasons
-				fields["boundaryAction"] = string(boundaryDecision.Action)
-				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				if finalMessageHasProcessIntent(assistantContent) {
-					assistantContent = incompleteFinalFromEvidenceDecision(finalEvidenceDecision)
-				} else {
-					assistantContent = finalEvidenceBlockedFallback(finalEvidenceDecision)
-				}
-				finalEvidenceBlocked = true
-			} else if boundaryDecision.Action == FinalMessageBoundaryConstrain {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["finalEvidenceConstrained"] = "true"
-				if len(finalEvidenceDecision.Reasons) > 0 {
-					snapshot.Metadata["finalEvidenceConstrainReasons"] = strings.Join(finalEvidenceDecision.Reasons, ",")
-				}
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "final_message_boundary_constrain"
-				fields["decisionAction"] = string(finalEvidenceDecision.Action)
-				fields["decisionReasons"] = finalEvidenceDecision.Reasons
-				fields["boundaryAction"] = string(boundaryDecision.Action)
-				fields["boundaryReasons"] = boundaryDecision.Reasons
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				assistantContent = constrainFinalMessageForEvidenceBoundary(assistantContent, finalEvidenceDecision)
-			}
-			if blocker, blocked := missingEvidenceFinalBlocker(snapshot.TaskDepth, snapshot, assistantContent); !finalEvidenceBlocked && blocked {
-				if snapshot.Metadata == nil {
-					snapshot.Metadata = map[string]string{}
-				}
-				snapshot.Metadata["taskDepth.missingEvidenceFinalBlocked"] = "true"
-				fields := debugTextFacts(assistantContent)
-				fields["replaceReason"] = "missing_evidence_final_blocker"
-				fields["blockerHash"] = debugTextHash(blocker)
-				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_message_constrained_before_final", snapshot, fields)
-				assistantContent = blocker
-				boundaryDecision.Action = FinalMessageBoundaryBlock
-				boundaryDecision.EvidenceBoundary = "blocked"
-			}
-			if boundaryDecision.Action == "" {
-				boundaryDecision.Action = FinalMessageBoundaryAllow
-			}
-			if strings.TrimSpace(boundaryDecision.EvidenceBoundary) == "" {
-				boundaryDecision.EvidenceBoundary = "sufficient"
-			}
+			finalContract := BuildFinalContract(assistantContent, finalRuntimeFacts)
 			if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnCompleted, TurnLifecycleCompleted); err != nil {
 				return "", nil, err
 			}
-			now := time.Now()
-			if !assistantMessageCommitted {
-				assistantMsg.Content = assistantContent
-				session.Messages = append(session.Messages, assistantMsg)
-				assistantMessageCommitted = true
-			}
-			snapshot.Lifecycle = TurnLifecycleCompleted
-			snapshot.ResumeState = TurnResumeStateNone
-			commitFinalAssistantOutput(snapshot, assistantOutputCommitInput{
+			finalCommit := assistantOutputCommitInput{
 				TurnID:           turnID,
 				Iteration:        iteration,
 				MessageID:        assistantMsg.ID,
@@ -2637,7 +2914,34 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				EvidenceBoundary: boundaryDecision.EvidenceBoundary,
 				BoundaryAction:   boundaryDecision.Action,
 				EvidenceRefs:     assistantMessageEvidenceRefsFromSnapshot(snapshot),
-			})
+				FinalContract:    &finalContract,
+			}
+			recordSnapshot := *snapshot
+			recordSnapshot.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+			recordSnapshot.Lifecycle = TurnLifecycleCompleted
+			recordSnapshot.ResumeState = TurnResumeStateNone
+			recordSnapshot.PendingApprovals = nil
+			recordSnapshot.PendingEvidence = nil
+			commitFinalAssistantOutput(&recordSnapshot, finalCommit)
+			if err := k.recordCanonicalFinalFacts(ctx, &recordSnapshot, finalRuntimeFacts, finalContract); err != nil {
+				snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+				return "", nil, err
+			}
+			checkpointRef := checkpointIDForStepCause(snapshot)
+			if err := k.recordCanonicalTransportProjection(ctx, &recordSnapshot, TurnLifecycleCompleted, TurnResumeStateNone, checkpointRef, &finalContract); err != nil {
+				snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+				return "", nil, err
+			}
+			snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
+			now := time.Now()
+			if !assistantMessageCommitted {
+				assistantMsg.Content = assistantContent
+				session.Messages = append(session.Messages, assistantMsg)
+				assistantMessageCommitted = true
+			}
+			snapshot.Lifecycle = TurnLifecycleCompleted
+			snapshot.ResumeState = TurnResumeStateNone
+			commitFinalAssistantOutput(snapshot, finalCommit)
 			snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
@@ -2663,6 +2967,18 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "final_committed", snapshot, fields)
 			}
 			k.persistTurnSnapshot(session, snapshot)
+			if finalRuntimeFacts.PolicyCompletion.Action != policyengine.PolicyActionAllow {
+				return assistantContent, &TurnResult{
+					SessionType:     req.SessionType,
+					Mode:            req.Mode,
+					SessionID:       session.ID,
+					TurnID:          turnID,
+					ClientTurnID:    req.ClientTurnID,
+					ClientMessageID: req.ClientMessageID,
+					Status:          "blocked",
+					Error:           finalRuntimeFacts.PolicyCompletion.Reason,
+				}, nil
+			}
 			return assistantContent, nil, nil
 		}
 
@@ -2692,7 +3008,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			k.persistTurnSnapshot(session, snapshot)
 		}
 
-		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface)
+		dispatchExpectedPermissionHash := stepPermissionHash
+		if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
+			dispatchExpectedPermissionHash = k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, *snapshot.ToolSurfaceSnapshot.PolicySnapshot)
+		}
+		dispatcher := k.newIterationDispatcher(session, snapshot, iteration, dispatchTools, runtimeToolSurface, dispatcherPermissionBinding{
+			expected: dispatchExpectedPermissionHash,
+			current:  stepCtx.PermissionHash,
+		})
 		k.emitIterationStage(session.ID, turnID, iteration, "dispatch_tools", turnSpanID)
 
 		appendToolCallState := func(tc ToolCall) string {
@@ -2760,6 +3083,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				k.persistTurnSnapshot(session, snapshot)
 				return nil, fmt.Errorf("materialize tool result %q: %w", tc.Name, materializeErr)
 			}
+			if err := k.recordCanonicalToolResult(ctx, snapshot, tc, recordedResult, failureKindForDispatchResult(dispatchResult)); err != nil {
+				return nil, fmt.Errorf("record tool result %q: %w", tc.Name, err)
+			}
+			checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
+			checkpoint.Incremental = true
+			if err := k.recordCanonicalCheckpoint(ctx, snapshot, checkpoint); err != nil {
+				return nil, fmt.Errorf("record tool-result checkpoint: %w", err)
+			}
 			turnMetadata = updateOpsManualFlowTurnMetadata(turnMetadata, recordedResult)
 			turnMetadata = updateToolSearchPackTurnMetadata(turnMetadata, tc.Name, recordedResult)
 			applyToolSearchDiscoveryState(session, tc.Name, recordedResult, turnID)
@@ -2777,6 +3108,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			if recordedResult.Error != "" {
 				markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+			} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+				markToolInvocationPartial(snapshot, tc.ID)
 			} else {
 				markToolInvocationCompleted(snapshot, tc.ID)
 			}
@@ -2796,17 +3129,19 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			}
 			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
 			k.applyAggregateToolResultBudget(session, snapshot, iteration, dispatchTools)
-			snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "tool_result", TurnLifecycleRunning, snapshot.ResumeState)
+			snapshot.LatestCheckpoint = checkpoint
 			appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 			appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
 			if snapshot.LatestCheckpoint != nil {
 				appendCheckpointExternalRefs(snapshot.LatestCheckpoint, recordedResult.ExternalReferences)
-				snapshot.LatestCheckpoint.Incremental = true
 			}
 			if last := latestIteration(snapshot); last != nil {
 				last.Checkpoint = snapshot.LatestCheckpoint
 			}
 			session.LatestCheckpoint = snapshot.LatestCheckpoint
+			if err := k.recordCanonicalTransportProjection(ctx, snapshot, TurnLifecycleRunning, snapshot.ResumeState, checkpoint.ID, nil); err != nil {
+				return nil, fmt.Errorf("record tool-result projection source: %w", err)
+			}
 			k.persistTurnSnapshot(session, snapshot)
 			return nil, nil
 		}
@@ -2835,6 +3170,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					// Fall through to the sequential path so this call gets a
 					// structured budget result instead of silently disappearing.
 				} else {
+					batch = broadenCoveredReadBatch(dispatchTools, batch)
 					toolItemIDs := make([]string, len(batch))
 					for j, batchCall := range batch {
 						toolItemIDs[j] = appendToolCallState(batchCall)
@@ -2847,19 +3183,58 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					k.persistTurnSnapshot(session, snapshot)
 
 					results := make([]DispatchResult, len(batch))
-					var wg sync.WaitGroup
+					dispatchBatch := make([]struct {
+						index int
+						call  ToolCall
+					}, 0, len(batch))
+					deferredReuses := make([]coveredReadBatchReuse, 0)
 					for j, batchCall := range batch {
+						if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, batchCall); ok {
+							results[j] = reused
+							continue
+						}
+						if priorIndex, ok := coveredReadReusePriorIndex(dispatchTools, batch[:j], batchCall); ok {
+							deferredReuses = append(deferredReuses, coveredReadBatchReuse{index: j, priorIndex: priorIndex})
+							continue
+						}
+						dispatchBatch = append(dispatchBatch, struct {
+							index int
+							call  ToolCall
+						}{index: j, call: batchCall})
+					}
+					dispatchedBatchCalls := make([]ToolCall, 0, len(dispatchBatch))
+					for _, task := range dispatchBatch {
+						dispatchedBatchCalls = append(dispatchedBatchCalls, task.call)
+					}
+					if err := k.recordCanonicalToolDispatch(ctx, snapshot, dispatchedBatchCalls); err != nil {
+						return "", nil, fmt.Errorf("record parallel tool dispatch: %w", err)
+					}
+					var wg sync.WaitGroup
+					for _, task := range dispatchBatch {
 						wg.Add(1)
 						go func(index int, call ToolCall) {
 							defer wg.Done()
 							dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 							results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
-						}(j, batchCall)
+						}(task.index, task.call)
 					}
 					wg.Wait()
-					toolDispatches += countToolCallsTowardBudget(batch)
-					publicWebDispatches += countPublicWebToolCalls(dispatchTools, batch)
-					publicWebQueries += countPublicWebQueriesForToolCalls(dispatchTools, batch)
+					for _, deferred := range deferredReuses {
+						if reused, ok := coveredReadReuseFromBatchResult(dispatchTools, batch, results, deferred); ok {
+							results[deferred.index] = reused
+							continue
+						}
+						fallbackCall := batch[deferred.index]
+						if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{fallbackCall}); err != nil {
+							return "", nil, fmt.Errorf("record deferred tool dispatch: %w", err)
+						}
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+						results[deferred.index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, fallbackCall, req.SessionType, req.Mode, turnSpanID)
+						dispatchedBatchCalls = append(dispatchedBatchCalls, fallbackCall)
+					}
+					toolDispatches += countToolCallsTowardBudget(dispatchedBatchCalls)
+					publicWebDispatches += countPublicWebToolCalls(dispatchTools, dispatchedBatchCalls)
+					publicWebQueries += countPublicWebQueriesForToolCalls(dispatchTools, dispatchedBatchCalls)
 
 					for j, batchCall := range batch {
 						blocked, err := processDispatchResult(batchCall, toolItemIDs[j], results[j])
@@ -2887,7 +3262,12 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			} else if countsTowardToolBudget(tc) && toolDispatches >= defaultMaxToolDispatchesPerTurn {
 				dispatchResult.Result = toolBudgetReachedResultForModel(tc, toolDispatches)
 				applyHiddenTools(snapshot, toolNames(compileCtx.AssembledTools))
+			} else if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, tc); ok {
+				dispatchResult = reused
 			} else {
+				if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
+					return "", nil, fmt.Errorf("record tool dispatch: %w", err)
+				}
 				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
@@ -2918,11 +3298,24 @@ func (k *RuntimeKernel) runHostIterationLoop(
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnFailed, TurnLifecycleFailed); err != nil {
 		return "", nil, err
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, maxIterations, nextCheckpointSequence(snapshot), "iteration_limit", TurnLifecycleFailed, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	appendAgentItem(&candidate, newAgentItem(errorItemID(turnID, maxIterations), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, "iteration limit exceeded", nil))
+	if err := k.recordCanonicalTerminalBoundary(ctx, &candidate, checkpoint, FinalContractStatusFailed, "iteration_limit"); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return "", nil, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = "iteration limit exceeded"
 	snapshot.UpdatedAt = now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, maxIterations, nextCheckpointSequence(snapshot), "iteration_limit", TurnLifecycleFailed, TurnResumeStateNone)
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
@@ -3207,7 +3600,8 @@ func toolReferenceSummaryForFinalPrompt(result ToolResult) string {
 	if len(result.References) == 0 {
 		return ""
 	}
-	parts := make([]string, 0, len(result.References))
+	webParts := make([]string, 0, len(result.References))
+	resourceParts := make([]string, 0, len(result.References))
 	for _, ref := range result.References {
 		uri := strings.TrimSpace(ref.URI)
 		if uri == "" {
@@ -3217,15 +3611,27 @@ func toolReferenceSummaryForFinalPrompt(result ToolResult) string {
 		if title == "" {
 			title = uri
 		}
-		parts = append(parts, fmt.Sprintf("[参考: %s](%s)", title, uri))
-		if len(parts) >= 4 {
+		part := fmt.Sprintf("[参考: %s](%s)", title, uri)
+		if strings.HasPrefix(strings.ToLower(uri), "http://") || strings.HasPrefix(strings.ToLower(uri), "https://") {
+			webParts = append(webParts, part)
+		} else {
+			resourceParts = append(resourceParts, part)
+		}
+		if len(webParts)+len(resourceParts) >= 4 {
 			break
 		}
 	}
-	if len(parts) == 0 {
+	if len(webParts) == 0 && len(resourceParts) == 0 {
 		return ""
 	}
-	return "网页来源: " + strings.Join(parts, "; ")
+	lines := make([]string, 0, 2)
+	if len(webParts) > 0 {
+		lines = append(lines, "网页来源: "+strings.Join(webParts, "; "))
+	}
+	if len(resourceParts) > 0 {
+		lines = append(lines, "工具证据引用: "+strings.Join(resourceParts, "; "))
+	}
+	return strings.Join(lines, "\n")
 }
 
 type finalPromptWebSource struct {
@@ -4491,21 +4897,213 @@ func filterOpsManualTools(tools []promptcompiler.Tool) []promptcompiler.Tool {
 	return filtered
 }
 
-func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot) (*TurnResult, error) {
+func (k *RuntimeKernel) prepareApprovalResumeExecution(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall) (approvalResumeExecution, error) {
+	if session == nil || snapshot == nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("turn")
+	}
+	if approval.ActionToken == nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("token")
+	}
+	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
+	if err != nil {
+		return approvalResumeExecution{}, newApprovalContextStaleError("tool_router")
+	}
+	verified, err := VerifyActionToken(*approval.ActionToken, world.facts, time.Now())
+	if err != nil {
+		return approvalResumeExecution{}, err
+	}
+	return approvalResumeExecution{compileContext: world.compileContext, dispatcher: world.dispatcher, authorization: verified}, nil
+}
+
+type approvalCurrentWorld struct {
+	compileContext promptcompiler.CompileContext
+	dispatcher     *ToolDispatcher
+	facts          ActionTokenCurrentFacts
+	resourceScopes []string
+}
+
+func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall) (approvalCurrentWorld, error) {
+	metadata := applyDefaultRuntimePromptProfile(cloneTurnMetadata(snapshot.Metadata), session.Type, session.HostID)
+	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, metadata), session.Type, session.HostID, metadata, time.Now())
+	compileCtx = applyDepthProfileToCompileContext(compileCtx, snapshot.TaskDepth, firstMetadataValue(metadata, "reasoningEffort", "reasoning_effort"))
+	compileCtx = applyTurnPromptProfileMetadata(compileCtx, metadata)
+	compileCtx = k.appendContextArtifactToolsForExternalRefs(compileCtx, session, snapshot)
+	compileCtx = appendRuntimeEnvironmentContextSection(compileCtx, session)
+	compileCtx = appendSkillActivationContext(compileCtx, session)
+	compileCtx = appendMCPInstructionContext(compileCtx, session)
+	compileCtx.AssembledTools = filterToolsForContextMode(compileCtx.AssembledTools, k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())
+	compileCtx.AssembledTools = filterHiddenTools(compileCtx.AssembledTools, snapshot.HiddenTools)
+	dispatchTools := append([]promptcompiler.Tool(nil), compileCtx.AssembledTools...)
+	var surfacePolicy tooling.ToolSurfacePolicySnapshot
+	compileCtx, surfacePolicy = applyToolSurfacePolicyToCompileContext(compileCtx, session.Mode, firstMetadataValue(metadata, "profile", "toolProfile"), session)
+	currentRouter, err := BuildStepToolRouter(StepToolRouterInput{
+		Registered: toolNames(dispatchTools), ModelVisible: toolNames(compileCtx.AssembledTools), Dispatchable: toolNames(compileCtx.AssembledTools),
+		HiddenReasons: hiddenReasonsFromToolSurfacePolicy(surfacePolicy), PolicyHash: surfacePolicy.Hash,
+		SourceFingerprint: assembledToolFingerprint(k.tools, session.Type, session.Mode, compileCtx.AssembledTools),
+	})
+	if err != nil {
+		return approvalCurrentWorld{}, err
+	}
+	compileCtx.VisibleToolFingerprint = currentRouter.Fingerprint
+	currentPermissionHash := k.runtimePermissionSnapshotHash(snapshot.TurnAssembly, surfacePolicy)
+	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, currentRouter, dispatcherPermissionBinding{
+		expected: currentPermissionHash,
+		current:  currentPermissionHash,
+	})
+	decision := dispatcher.dispatchDecisionTrace(toolCall)
+	meta := toolMetadataForToolCall(compileCtx.AssembledTools, toolCall)
+	resourceScopes := pendingApprovalResourceScopes(meta)
+	currentTargets := pendingApprovalTargetRefs(session.HostID, resourceScopes)
+	if len(currentTargets) == 0 {
+		currentTargets = approvalActionTokenTargetRefs(PendingApproval{ToolName: toolCall.Name})
+	}
+	checkpointID := checkpointIDForStepCause(snapshot)
+	current := ActionTokenCurrentFacts{
+		ApprovalID: approval.ID, TurnID: snapshot.ID, ToolCallID: toolCall.ID, ToolName: toolCall.Name,
+		ArgumentsHash: decision.ArgumentsHash, TargetRefs: currentTargets,
+		ToolSurfaceFingerprint: decision.ToolSurfaceFingerprint, PermissionHash: decision.PermissionSnapshotHash,
+		RollbackHash: approvalRollbackContractHash(approval), CheckpointID: checkpointID,
+	}
+	return approvalCurrentWorld{compileContext: compileCtx, dispatcher: dispatcher, facts: current, resourceScopes: resourceScopes}, nil
+}
+
+func (k *RuntimeKernel) blockStaleApprovalContext(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, cause error) (TurnResult, error) {
+	fields := []string{"token"}
+	if stale, ok := cause.(*ApprovalContextStaleError); ok && len(stale.MismatchFields) > 0 {
+		fields = append([]string(nil), stale.MismatchFields...)
+	}
+	now := time.Now()
+	if reissued, checkpoint, err := k.reissueStaleApprovalBinding(session, snapshot, approval, toolCall, now); err == nil {
+		approval = reissued
+		if err := k.recordCanonicalApprovalRequestedWithMismatches(ctx, snapshot, approval, fields); err != nil {
+			return TurnResult{}, fmt.Errorf("record reissued approval request: %w", err)
+		}
+		snapshot.LatestCheckpoint = checkpoint
+		session.LatestCheckpoint = checkpoint
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"schemaVersion": "aiops.approval-context-stale/v1", "code": ApprovalContextStaleCode,
+		"approvalId": approval.ID, "decision": "requires_reapproval", "mismatchFields": uniqueSortedTraceStrings(fields),
+	})
+	reason := string(payload)
+	approval.Reason = reason
+	approval.Status = "pending"
+	approval.UpdatedAt = now
+	snapshot.Lifecycle = TurnLifecycleSuspended
+	snapshot.ResumeState = TurnResumeStatePendingApproval
+	snapshot.Error = reason
+	snapshot.UpdatedAt = now
+	snapshot.PendingApprovals = []PendingApproval{approval}
+	snapshot.PendingEvidence = nil
+	session.PendingApprovals = []PendingApproval{approval}
+	session.PendingEvidence = nil
+	if last := latestIteration(snapshot); last != nil {
+		last.PendingApprovals = []PendingApproval{approval}
+		last.PendingEvidence = nil
+		last.Checkpoint = snapshot.LatestCheckpoint
+		last.ResumeState = TurnResumeStatePendingApproval
+		last.Lifecycle = TurnLifecycleSuspended
+		last.UpdatedAt = now
+	}
+	k.persistTurnSnapshot(session, snapshot)
+	if k.projector != nil {
+		k.projector.Emit(LifecycleEvent{Type: EventApprovalNeeded, SessionID: session.ID, TurnID: snapshot.ID, Timestamp: now, Payload: payload})
+	}
+	return TurnResult{
+		SessionType: session.Type, Mode: session.Mode, SessionID: session.ID, TurnID: snapshot.ID,
+		ClientTurnID: snapshot.ClientTurnID, ClientMessageID: snapshot.ClientMessageID,
+		Status: "blocked", Error: reason,
+	}, nil
+}
+
+func (k *RuntimeKernel) reissueStaleApprovalBinding(session *SessionState, snapshot *TurnSnapshot, approval PendingApproval, toolCall ToolCall, now time.Time) (PendingApproval, *CheckpointMetadata, error) {
+	world, err := k.currentApprovalResumeWorld(session, snapshot, approval, toolCall)
+	if err != nil {
+		return PendingApproval{}, nil, err
+	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), ApprovalContextStaleCode, TurnLifecycleSuspended, TurnResumeStatePendingApproval)
+	checkpoint.Source = "runtime"
+	approval.ID = fmt.Sprintf("approval-reissued-%d", now.UnixNano())
+	if approval.Source == "pending_evidence" {
+		approval.Source = "runtime_reapproval"
+	}
+	approval.ToolName = toolCall.Name
+	approval.ToolCallID = toolCall.ID
+	approval.HostID = session.HostID
+	approval.Command = approvalCommandForToolCall(toolCall)
+	approval.ArgumentsHash = world.facts.ArgumentsHash
+	approval.InputHash = world.facts.ArgumentsHash
+	approval.TargetRefs = append([]string(nil), world.facts.TargetRefs...)
+	approval.ResourceScopes = append([]string(nil), world.resourceScopes...)
+	approval.RequestedScope = strings.Join(world.facts.TargetRefs, ",")
+	approval.ApprovalScope = approval.RequestedScope
+	approval.ToolSurfaceFingerprint = world.facts.ToolSurfaceFingerprint
+	approval.PermissionSnapshotHash = world.facts.PermissionHash
+	approval.IdempotencyKey = world.facts.ArgumentsHash
+	approval.Status = "pending"
+	approval.CreatedAt = now
+	approval.UpdatedAt = now
+	approval.DecidedAt = nil
+	approval.Decision = ""
+	approval.ExpiresAt = pendingApprovalDefaultExpiry(now)
+	approval.ActionToken = nil
+	contract := BuildActionRollbackContractFromApproval(approval)
+	contract.ActionID = approval.ID
+	contract.ToolName = approval.ToolName
+	contract.TargetRefs = append([]string(nil), approval.TargetRefs...)
+	contract.InputHash = approval.InputHash
+	contract.ApprovalScope = approval.ApprovalScope
+	contract.ResourceScopes = append([]string(nil), approval.ResourceScopes...)
+	contract.IdempotencyKey = approval.IdempotencyKey
+	contract.ToolSurfaceFingerprint = approval.ToolSurfaceFingerprint
+	contract.PermissionSnapshotHash = approval.PermissionSnapshotHash
+	approval.RollbackContract = contract.Normalize()
+	if err := ValidatePendingApprovalRollbackContract(approval); err != nil {
+		return PendingApproval{}, nil, err
+	}
+	token, err := BuildPendingApprovalActionToken(approval, checkpoint.ID)
+	if err != nil {
+		return PendingApproval{}, nil, err
+	}
+	approval.ActionToken = &token
+	return approval, checkpoint, nil
+}
+
+type approvalResumeExecution struct {
+	compileContext       promptcompiler.CompileContext
+	dispatcher           *ToolDispatcher
+	authorization        VerifiedActionToken
+	approvalID           string
+	rememberSessionGrant bool
+}
+
+func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, execution approvalResumeExecution) (*TurnResult, error) {
 	toolCall, ok := pendingToolCall(snapshot)
 	if !ok {
 		return nil, fmt.Errorf("turn %q has no pending tool call", snapshot.ID)
 	}
-	if err := k.markSnapshotResuming(session, snapshot, "resume_tool_approval"); err != nil {
+	if err := validateSnapshotResuming(session, snapshot); err != nil {
 		return nil, err
 	}
-	snapshot.Metadata = applyDefaultRuntimePromptProfile(snapshot.Metadata, session.Type, session.HostID)
-	compileCtx := enrichCompileContext(k.compileContext(session.Type, session.Mode, snapshot.Metadata), session.Type, session.HostID, snapshot.Metadata, time.Now())
-	dispatcher := k.newIterationDispatcher(session, snapshot, snapshot.Iteration, compileCtx.AssembledTools, runtimeToolRouterSnapshotFromTurnSnapshot(snapshot))
+	if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{toolCall}); err != nil {
+		return nil, fmt.Errorf("record approved tool dispatch: %w", err)
+	}
+	checkpoint, err := k.prepareSnapshotResumeBoundary(ctx, snapshot, "resume_tool_approval")
+	if err != nil {
+		return nil, err
+	}
+	snapshot.PendingStepCause = &StepRevisionCause{
+		Kind: StepRevisionKindApprovalResumed, ApprovalID: execution.approvalID,
+		ToolCallID: toolCall.ID, CheckpointID: checkpointIDForStepCause(snapshot),
+	}
+	if execution.rememberSessionGrant {
+		rememberSessionApprovalGrant(session, toolCall, execution.approvalID)
+	}
+	k.commitSnapshotResuming(session, snapshot, checkpoint)
 	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
-	result := dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode)
+	result := execution.dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode, execution.authorization)
 	appendResourceLockTraces(snapshot, result.ResourceLocks)
 	appendToolAttemptStates(snapshot, toolCall.ID, result.Attempts)
 	if result.Blocked {
@@ -4528,7 +5126,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 			result.Metadata.Name = toolCall.Name
 		}
 	}
-	recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result)
+	recordedResult, materializeErr := k.recordResumedToolResult(ctx, session, snapshot, snapshot.Iteration, toolCall, result.Metadata, result.Result, failureKindForDispatchResult(result))
 	if materializeErr != nil {
 		markToolInvocationFailed(snapshot, toolCall.ID, "")
 		return nil, fmt.Errorf("materialize resumed tool result %q: %w", toolCall.Name, materializeErr)
@@ -4542,11 +5140,20 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 	))
 	if recordedResult.Error != "" {
 		markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
+	} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+		markToolInvocationPartial(snapshot, toolCall.ID)
 	} else {
 		markToolInvocationCompleted(snapshot, toolCall.ID)
 	}
+	checkpointRef := ""
+	if snapshot.LatestCheckpoint != nil {
+		checkpointRef = snapshot.LatestCheckpoint.ID
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, snapshot, snapshot.Lifecycle, snapshot.ResumeState, checkpointRef, nil); err != nil {
+		return nil, err
+	}
 	k.persistTurnSnapshot(session, snapshot)
-	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, compileCtx, dispatcher)
+	return k.drainRemainingToolCallsAfterResume(ctx, session, snapshot, execution.compileContext, execution.dispatcher)
 }
 
 func blockedTurnResult(session *SessionState, snapshot *TurnSnapshot, reason string) *TurnResult {
@@ -4590,8 +5197,14 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 		markToolInvocationRunning(snapshot, tc.ID)
 		k.persistTurnSnapshot(session, snapshot)
 
-		dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
-		dispatchResult := dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
+		dispatchResult, reused := maybeReuseCoveredReadResult(snapshot, compileCtx.AssembledTools, tc)
+		if !reused {
+			if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
+				return nil, fmt.Errorf("record resumed tool dispatch: %w", err)
+			}
+			dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+			dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
+		}
 		if dispatchResult.ToolCallID == "" {
 			dispatchResult.ToolCallID = tc.ID
 		}
@@ -4624,7 +5237,7 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 			}
 		}
 		applyHiddenTools(snapshot, dispatchResult.HiddenTools)
-		recordedResult, materializeErr := k.recordResumedToolResult(session, snapshot, last.Iteration, tc, dispatchResult.Metadata, dispatchResult.Result)
+		recordedResult, materializeErr := k.recordResumedToolResult(ctx, session, snapshot, last.Iteration, tc, dispatchResult.Metadata, dispatchResult.Result, failureKindForDispatchResult(dispatchResult))
 		if materializeErr != nil {
 			updateAgentItem(snapshot, toolItemID, agentstate.ItemStatusFailed, materializeErr.Error())
 			appendAgentItem(snapshot, newAgentItem(errorItemID(snapshot.ID, snapshot.Iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, materializeErr.Error(), map[string]string{"toolCallId": tc.ID, "toolName": tc.Name}))
@@ -4645,6 +5258,8 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 		}
 		if recordedResult.Error != "" {
 			markToolInvocationFailed(snapshot, tc.ID, failureKindForDispatchResult(dispatchResult))
+		} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
+			markToolInvocationPartial(snapshot, tc.ID)
 		} else {
 			markToolInvocationCompleted(snapshot, tc.ID)
 		}
@@ -4679,6 +5294,9 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 		"rawRef":          rawRef,
 		"resultBytes":     resultBytes,
 		"resultTruncated": resultTruncated,
+	}
+	if result.Outcome != "" {
+		payload["outcome"] = result.Outcome
 	}
 	if inputSummary := strings.TrimSpace(approvalCommandForToolCall(tc)); inputSummary != "" {
 		payload["inputSummary"] = inputSummary
@@ -4728,6 +5346,17 @@ func providerResponseFinishReason(response modelrouter.ProviderResponse) string 
 	return strings.TrimSpace(response.FinishReason)
 }
 
+func canonicalRolloutProviderFinishReason(response modelrouter.ProviderResponse) string {
+	switch reason := strings.ToLower(providerResponseFinishReason(response)); reason {
+	case "stop", "tool_calls", "length", "content_filter", "cancelled", "error":
+		return reason
+	case "":
+		return "unspecified"
+	default:
+		return "unknown"
+	}
+}
+
 func compactStringList(values []string) []string {
 	out := make([]string, 0, len(values))
 	seen := map[string]struct{}{}
@@ -4743,10 +5372,6 @@ func compactStringList(values []string) []string {
 		out = append(out, value)
 	}
 	return out
-}
-
-func toolDisplayDataShouldStayOutOfPreview(displayType string) bool {
-	return strings.TrimSpace(displayType) != ""
 }
 
 type terminalToolResultEnvelope struct {
@@ -4837,10 +5462,18 @@ func cleanEvidenceRefs(values []string) []string {
 	return out
 }
 
-func (k *RuntimeKernel) recordResumedToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult) (ToolResult, error) {
+func (k *RuntimeKernel) recordResumedToolResult(ctx context.Context, session *SessionState, snapshot *TurnSnapshot, iteration int, toolCall ToolCall, meta tooling.ToolMetadata, result tooling.ToolResult, errorClass string) (ToolResult, error) {
 	recordedResult, materializeErr := k.materializeToolResult(session, snapshot, iteration, toolCall, meta, result)
 	if materializeErr != nil {
 		return ToolResult{}, materializeErr
+	}
+	if err := k.recordCanonicalToolResult(ctx, snapshot, toolCall, recordedResult, errorClass); err != nil {
+		return ToolResult{}, err
+	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
+	checkpoint.Incremental = true
+	if err := k.recordCanonicalCheckpoint(ctx, snapshot, checkpoint); err != nil {
+		return ToolResult{}, err
 	}
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
@@ -4869,11 +5502,10 @@ func (k *RuntimeKernel) recordResumedToolResult(session *SessionState, snapshot 
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteToolResult, OwnerToolDispatcher)
-	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "resume_tool_result", TurnLifecycleRunning, TurnResumeStateCheckpointReady)
+	snapshot.LatestCheckpoint = checkpoint
 	appendExternalReferences(&snapshot.ExternalReferences, recordedResult.ExternalReferences...)
 	appendExternalReferences(&session.ExternalReferences, recordedResult.ExternalReferences...)
 	appendCheckpointExternalRefs(snapshot.LatestCheckpoint, recordedResult.ExternalReferences)
-	snapshot.LatestCheckpoint.Incremental = true
 	if last := latestIteration(snapshot); last != nil {
 		last.Checkpoint = snapshot.LatestCheckpoint
 	}
@@ -4900,12 +5532,48 @@ func appendResumeInputMessage(session *SessionState, input string) {
 }
 
 func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpointKind string) error {
+	if err := validateSnapshotResuming(session, snapshot); err != nil {
+		return err
+	}
+	checkpoint, err := k.prepareSnapshotResumeBoundary(context.Background(), snapshot, checkpointKind)
+	if err != nil {
+		return err
+	}
+	k.commitSnapshotResuming(session, snapshot, checkpoint)
+	return nil
+}
+
+func validateSnapshotResuming(session *SessionState, snapshot *TurnSnapshot) error {
 	if session == nil || snapshot == nil {
 		return fmt.Errorf("session and snapshot are required")
 	}
 	if err := validateTurnLifecycleTransition(snapshot, runtimestate.TransitionTurnResumed, TurnLifecycleRunning); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (k *RuntimeKernel) prepareSnapshotResumeBoundary(ctx context.Context, snapshot *TurnSnapshot, checkpointKind string) (*CheckpointMetadata, error) {
+	checkpoint := newCheckpointMetadata(snapshot.SessionID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleRunning, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.Lifecycle = TurnLifecycleRunning
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalCheckpoint(ctx, &candidate, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return nil, err
+	}
+	if err := k.recordCanonicalTransportProjection(ctx, &candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return nil, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+	return checkpoint, nil
+}
+
+func (k *RuntimeKernel) commitSnapshotResuming(session *SessionState, snapshot *TurnSnapshot, checkpoint *CheckpointMetadata) {
 	now := time.Now()
 	snapshot.Lifecycle = TurnLifecycleRunning
 	snapshot.ResumeState = TurnResumeStateNone
@@ -4913,7 +5581,7 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 	snapshot.UpdatedAt = now
 	snapshot.PendingApprovals = nil
 	snapshot.PendingEvidence = nil
-	snapshot.LatestCheckpoint = newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleRunning, TurnResumeStateNone)
+	snapshot.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil
 	session.PendingEvidence = nil
 	session.LatestCheckpoint = snapshot.LatestCheckpoint
@@ -4926,10 +5594,37 @@ func (k *RuntimeKernel) markSnapshotResuming(session *SessionState, snapshot *Tu
 		last.UpdatedAt = now
 	}
 	k.persistTurnSnapshot(session, snapshot)
-	return nil
 }
 
-func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot) *ToolDispatcher {
+type dispatcherPermissionBinding struct {
+	expected string
+	current  string
+}
+
+func (k *RuntimeKernel) runtimePermissionSnapshotHash(assembly *agentassembly.TurnAssembly, policy tooling.ToolSurfacePolicySnapshot) string {
+	if assembly == nil || assembly.Validate() != nil {
+		return ""
+	}
+	base := runtimeStepPermissionHash(assembly, policy)
+	if base == "" {
+		return ""
+	}
+	var rules []permissions.Rule
+	if k != nil && k.permissions != nil {
+		rules = k.permissions.Rules()
+	}
+	payload, err := json.Marshal(map[string]any{
+		"turnPermissionHash": base,
+		"permissionRules":    rules,
+	})
+	if err != nil {
+		return ""
+	}
+	return toolArgumentsHash(payload)
+}
+
+func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *TurnSnapshot, iteration int, tools []promptcompiler.Tool, runtimeToolSurface RuntimeToolRouterSnapshot, permissionBindings ...dispatcherPermissionBinding) *ToolDispatcher {
+	runtimeToolSurface = hydrateStepToolRouterForDispatch(tools, runtimeToolSurface)
 	lookup := assembledToolLookup{byName: make(map[string]tooling.Tool, len(tools))}
 	for _, toolDef := range tools {
 		if toolDef == nil {
@@ -4952,12 +5647,17 @@ func (k *RuntimeKernel) newIterationDispatcher(session *SessionState, snapshot *
 		WithUnexpectedStateSignals(collectUnexpectedStateSignalsFromSession(session)).
 		WithHooks(k.hooks).
 		WithObserver(k.runtimeObserver()).
-		WithToolSurfaceFingerprint(snapshot.StableToolFingerprint).
-		WithRuntimeToolRouterSnapshot(runtimeToolSurface).
+		WithStepToolRouter(runtimeToolSurface).
 		WithVisibleToolMetadata(toolMetadataList(tools)).
 		WithReadOnlyRetryConfig(ReadOnlyRetryConfigFromFlags(k.runtimeFeatureFlags(context.Background()))).
+		WithExecutionScopeGuard(executionScopeGuardConfigFromSnapshot(snapshot)).
+		WithRoleBindingGuard(roleBindingGuardConfigFromSession(session, snapshot)).
 		WithResourceLockGate(k.resourceLockGate).
 		WithProgressSink(k.progressSink(session, snapshot, iteration))
+	if len(permissionBindings) > 0 {
+		binding := permissionBindings[0]
+		dispatcher = dispatcher.WithPermissionBinding(binding.expected, binding.current)
+	}
 	if snapshot.ToolSurfaceSnapshot != nil && snapshot.ToolSurfaceSnapshot.PolicySnapshot != nil {
 		dispatcher = dispatcher.WithToolSurfacePolicySnapshot(snapshot.ToolSurfaceSnapshot.PolicySnapshot)
 	}
@@ -5036,10 +5736,11 @@ func reasoningItemID(event modelrouter.ReasoningStreamEvent) string {
 
 func runtimeMessageFromProviderResponse(response modelrouter.ProviderResponse) Message {
 	return Message{
-		Role:      "assistant",
-		Content:   response.Output,
-		ToolCalls: runtimeToolCallsFromModelInput(response.ToolCalls),
-		Timestamp: time.Now(),
+		Role:             "assistant",
+		Content:          response.Output,
+		ReasoningContent: response.ReasoningContent,
+		ToolCalls:        runtimeToolCallsFromModelInput(response.ToolCalls),
+		Timestamp:        time.Now(),
 	}
 }
 
@@ -5071,11 +5772,13 @@ const (
 
 func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, toolResult tooling.ToolResult) (ToolResult, error) {
 	result := ToolResult{
-		ToolCallID: tc.ID,
-		Content:    toolResult.Content,
-		Display:    copyToolDisplay(toolResult.Display),
-		Error:      toolResult.Error,
-		References: normalizeToolResultReferences(toolResult.References, toolResult.Display),
+		ToolCallID:         tc.ID,
+		TargetIdentityHash: frozenResourceTargetIdentityHashFromSnapshot(snapshot),
+		Content:            toolResult.Content,
+		Display:            copyToolDisplay(toolResult.Display),
+		Error:              toolResult.Error,
+		Outcome:            toolResult.Outcome,
+		References:         normalizeToolResultReferences(toolResult.References, toolResult.Display),
 	}
 	defaultInlineBytes := defaultInlineResultBytesForContext(k.contextBudgetPolicyForSession(session, agentKindForSession(session)).Thresholds())
 	budget := mergeResultBudget(meta.EffectiveResultBudget(defaultInlineBytes), toolResult.ResultBudget, defaultInlineBytes)
@@ -5129,6 +5832,13 @@ func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *T
 	appendExternalReferences(&result.ExternalReferences, ref)
 	finalizeToolResultMaterialization(session, snapshot, iteration, tc, &result, tier, inlineBytes)
 	return result, nil
+}
+
+func frozenResourceTargetIdentityHashFromSnapshot(snapshot *TurnSnapshot) string {
+	if snapshot == nil || snapshot.TurnAssembly == nil || snapshot.TurnAssembly.Validate() != nil {
+		return ""
+	}
+	return resourceTargetIdentityHash(snapshot.TurnAssembly.AdmissionFacts)
 }
 
 func (k *RuntimeKernel) persistToolResultSpill(session *SessionState, snapshot *TurnSnapshot, iteration int, tc ToolCall, meta tooling.ToolMetadata, spill *tooling.ResultSpill) (ExternalReference, error) {
@@ -5670,22 +6380,26 @@ func appendCheckpointExternalRefs(checkpoint *CheckpointMetadata, refs []Externa
 
 func (k *RuntimeKernel) ensureCurrentTurnSnapshot(session *SessionState, req TurnRequest, turnID string) *TurnSnapshot {
 	if session.CurrentTurn != nil && session.CurrentTurn.ID == turnID {
+		if req.SpecialInputReadPlan != nil {
+			session.CurrentTurn.SpecialInputReadPlan = req.SpecialInputReadPlan
+		}
 		syncActiveTurnState(session, session.CurrentTurn)
 		return session.CurrentTurn
 	}
 	now := time.Now()
 	snapshot := &TurnSnapshot{
-		ID:              turnID,
-		ClientTurnID:    req.ClientTurnID,
-		ClientMessageID: req.ClientMessageID,
-		SessionID:       session.ID,
-		SessionType:     req.SessionType,
-		Mode:            req.Mode,
-		Metadata:        cloneTurnMetadata(req.Metadata),
-		Lifecycle:       TurnLifecycleRunning,
-		ResumeState:     TurnResumeStateNone,
-		StartedAt:       now,
-		UpdatedAt:       now,
+		ID:                   turnID,
+		ClientTurnID:         req.ClientTurnID,
+		ClientMessageID:      req.ClientMessageID,
+		SessionID:            session.ID,
+		SessionType:          req.SessionType,
+		Mode:                 req.Mode,
+		Metadata:             cloneTurnMetadata(req.Metadata),
+		SpecialInputReadPlan: req.SpecialInputReadPlan,
+		Lifecycle:            TurnLifecycleRunning,
+		ResumeState:          TurnResumeStateNone,
+		StartedAt:            now,
+		UpdatedAt:            now,
 	}
 	session.CurrentTurn = snapshot
 	syncActiveTurnState(session, snapshot)
@@ -5696,6 +6410,7 @@ func (k *RuntimeKernel) persistTurnSnapshot(session *SessionState, snapshot *Tur
 	if session == nil || snapshot == nil {
 		return
 	}
+	syncPendingApprovalAgentItems(snapshot)
 	session.CurrentTurn = snapshot
 	syncActiveTurnState(session, snapshot)
 	upsertTurnHistory(&session.TurnHistory, *snapshot)
@@ -5763,10 +6478,6 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 	if result.Outcome == "evidence_needed" || containsPhrase(reason, "evidence") {
 		resumeState = TurnResumeStatePendingEvidence
 	}
-	snapshot.Lifecycle = TurnLifecycleSuspended
-	snapshot.ResumeState = resumeState
-	snapshot.Error = reason
-	snapshot.UpdatedAt = now
 	kind := result.Outcome
 	if kind == "" {
 		kind = "suspended"
@@ -5775,14 +6486,41 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 	if result.Source != "" {
 		checkpoint.Source = result.Source
 	}
-	snapshot.LatestCheckpoint = checkpoint
-	session.LatestCheckpoint = checkpoint
-
-	if last := latestIteration(snapshot); last != nil {
-		last.Lifecycle = TurnLifecycleSuspended
-		last.ResumeState = resumeState
-		last.Checkpoint = checkpoint
-		last.UpdatedAt = now
+	last := latestIteration(snapshot)
+	commitBlockedState := func(state TurnResumeState, blockedReason string) {
+		snapshot.Lifecycle = TurnLifecycleSuspended
+		snapshot.ResumeState = state
+		snapshot.Error = blockedReason
+		snapshot.UpdatedAt = now
+		snapshot.LatestCheckpoint = checkpoint
+		session.LatestCheckpoint = checkpoint
+		if last != nil {
+			last.Lifecycle = TurnLifecycleSuspended
+			last.ResumeState = state
+			last.Checkpoint = checkpoint
+			last.UpdatedAt = now
+		}
+	}
+	recordBlockedBoundary := func(candidate *TurnSnapshot, approval *PendingApproval) error {
+		if approval != nil {
+			if err := k.recordCanonicalApprovalRequested(context.Background(), candidate, *approval); err != nil {
+				return fmt.Errorf("record approval request: %w", err)
+			}
+		}
+		if err := k.recordCanonicalCheckpoint(context.Background(), candidate, checkpoint); err != nil {
+			return fmt.Errorf("record blocked checkpoint: %w", err)
+		}
+		if err := k.recordCanonicalTransportProjection(context.Background(), candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+			return fmt.Errorf("record blocked projection source: %w", err)
+		}
+		return nil
+	}
+	newBlockedCandidate := func(state TurnResumeState) TurnSnapshot {
+		candidate := *snapshot
+		candidate.Lifecycle = TurnLifecycleSuspended
+		candidate.ResumeState = state
+		candidate.LatestCheckpoint = checkpoint
+		return candidate
 	}
 
 	if resumeState == TurnResumeStatePendingEvidence {
@@ -5798,26 +6536,36 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			CreatedAt:  now,
 			UpdatedAt:  now,
 		}
-		snapshot.PendingEvidence = []PendingEvidence{evidence}
-		snapshot.PendingApprovals = nil
+		candidate := newBlockedCandidate(resumeState)
+		candidate.PendingEvidence = []PendingEvidence{evidence}
+		candidate.PendingApprovals = nil
+		if err := recordBlockedBoundary(&candidate, nil); err != nil {
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			return err
+		}
+		commitBlockedState(resumeState, reason)
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		snapshot.PendingEvidence = candidate.PendingEvidence
+		snapshot.PendingApprovals = candidate.PendingApprovals
 		session.PendingEvidence = []PendingEvidence{evidence}
 		session.PendingApprovals = nil
 	} else {
 		resourceScopes := pendingApprovalResourceScopes(result.Metadata)
 		argumentsHash := firstNonEmpty(result.DecisionTrace.ArgumentsHash, toolArgumentsHash(tc.Arguments))
+		targetRefs := pendingApprovalTargetRefs(session.HostID, resourceScopes)
 		iterationID := ""
-		if last := latestIteration(snapshot); last != nil {
+		if last != nil {
 			iterationID = last.ID
 		}
 		approval := PendingApproval{
-			ID:            fmt.Sprintf("approval-%d", now.UnixNano()),
+			ID:            pendingApprovalID(session.ID, snapshot.ID, snapshot.Iteration, tc, argumentsHash, targetRefs),
 			SessionID:     session.ID,
 			TurnID:        snapshot.ID,
 			Iteration:     snapshot.Iteration,
 			IterationID:   iterationID,
 			ToolName:      tc.Name,
 			ToolCallID:    tc.ID,
-			TargetRefs:    append([]string(nil), resourceScopes...),
+			TargetRefs:    targetRefs,
 			HostID:        session.HostID,
 			Command:       command,
 			ArgumentsHash: argumentsHash,
@@ -5827,12 +6575,18 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			},
 			ResourceScopes:         resourceScopes,
 			RiskCeiling:            firstNonEmpty(approvalPayloadField(result.Approval, "risk"), string(result.Metadata.EffectiveGovernance(0).RiskLevel)),
-			RequestedScope:         strings.Join(resourceScopes, ","),
+			RequestedScope:         strings.Join(targetRefs, ","),
+			ApprovalScope:          strings.Join(targetRefs, ","),
 			ApprovalOptions:        []string{"approved", "denied"},
 			ToolSurfaceFingerprint: result.DecisionTrace.ToolSurfaceFingerprint,
 			PermissionSnapshotHash: result.DecisionTrace.PermissionSnapshotHash,
 			ExpiresAt:              pendingApprovalDefaultExpiry(now),
 			InputHash:              argumentsHash,
+			PreChangeEvidenceRefs:  assistantMessageEvidenceRefsFromSnapshot(snapshot),
+			PostCheck:              strings.Join(normalizedPostCheckRefs(result.Metadata), "; "),
+			StopCondition:          "stop if validation fails or observed state diverges",
+			IdempotencyKey:         argumentsHash,
+			Mutating:               dispatchResultRequiresRollbackContract(result),
 			Status:                 "pending",
 			CreatedAt:              now,
 			UpdatedAt:              now,
@@ -5846,8 +6600,58 @@ func (k *RuntimeKernel) markTurnBlocked(session *SessionState, snapshot *TurnSna
 			approval.Rollback = result.Approval.Rollback
 			approval.Validation = result.Approval.Validation
 		}
-		snapshot.PendingApprovals = []PendingApproval{approval}
-		snapshot.PendingEvidence = nil
+		approval.RollbackContract = BuildActionRollbackContractFromApproval(approval)
+		if err := ValidatePendingApprovalRollbackContract(approval); err != nil {
+			reason := err.Error()
+			evidence := PendingEvidence{
+				ID:         fmt.Sprintf("evidence-%d", now.UnixNano()),
+				SessionID:  session.ID,
+				TurnID:     snapshot.ID,
+				Iteration:  snapshot.Iteration,
+				ToolName:   tc.Name,
+				ToolCallID: tc.ID,
+				Reason:     reason,
+				Status:     "pending",
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			}
+			if checkpoint != nil {
+				checkpoint.Kind = "rollback_contract_invalid"
+				checkpoint.ResumeState = TurnResumeStatePendingEvidence
+			}
+			candidate := newBlockedCandidate(TurnResumeStatePendingEvidence)
+			candidate.PendingEvidence = []PendingEvidence{evidence}
+			candidate.PendingApprovals = nil
+			if recordErr := recordBlockedBoundary(&candidate, nil); recordErr != nil {
+				snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+				return recordErr
+			}
+			commitBlockedState(TurnResumeStatePendingEvidence, reason)
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			snapshot.PendingEvidence = candidate.PendingEvidence
+			snapshot.PendingApprovals = candidate.PendingApprovals
+			session.PendingEvidence = []PendingEvidence{evidence}
+			session.PendingApprovals = nil
+			appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
+			k.persistTurnSnapshot(session, snapshot)
+			return nil
+		}
+		actionToken, tokenErr := BuildPendingApprovalActionToken(approval, checkpoint.ID)
+		if tokenErr != nil {
+			return fmt.Errorf("freeze approval action token: %w", tokenErr)
+		}
+		approval.ActionToken = &actionToken
+		candidate := newBlockedCandidate(resumeState)
+		candidate.PendingApprovals = []PendingApproval{approval}
+		candidate.PendingEvidence = nil
+		if err := recordBlockedBoundary(&candidate, &approval); err != nil {
+			snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+			return err
+		}
+		commitBlockedState(resumeState, reason)
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		snapshot.PendingApprovals = candidate.PendingApprovals
+		snapshot.PendingEvidence = candidate.PendingEvidence
 		session.PendingApprovals = []PendingApproval{approval}
 		session.PendingEvidence = nil
 		appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteApprovalLedger, OwnerPendingApproval)
@@ -5893,10 +6697,6 @@ func (k *RuntimeKernel) markTurnFailed(session *SessionState, snapshot *TurnSnap
 		return err
 	}
 	now := time.Now()
-	snapshot.Lifecycle = TurnLifecycleFailed
-	snapshot.ResumeState = TurnResumeStateNone
-	snapshot.Error = result.Error
-	snapshot.UpdatedAt = now
 	checkpointKind := result.Outcome
 	if checkpointKind == "" {
 		checkpointKind = "tool_failed"
@@ -5905,6 +6705,22 @@ func (k *RuntimeKernel) markTurnFailed(session *SessionState, snapshot *TurnSnap
 	if result.Source != "" {
 		checkpoint.Source = result.Source
 	}
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalTerminalBoundary(context.Background(), &candidate, checkpoint, FinalContractStatusFailed, checkpointKind); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+	snapshot.Lifecycle = TurnLifecycleFailed
+	snapshot.ResumeState = TurnResumeStateNone
+	snapshot.Error = result.Error
+	snapshot.UpdatedAt = now
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil
@@ -5938,12 +6754,24 @@ func (k *RuntimeKernel) markTurnFailedFromError(session *SessionState, snapshot 
 	if checkpointKind == "" {
 		checkpointKind = "turn_failed"
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleFailed, TurnResumeStateNone)
+	candidate := *snapshot
+	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
+	candidate.Lifecycle = TurnLifecycleFailed
+	candidate.ResumeState = TurnResumeStateNone
+	candidate.PendingApprovals = nil
+	candidate.PendingEvidence = nil
+	candidate.LatestCheckpoint = checkpoint
+	if recordErr := k.recordCanonicalTerminalBoundary(context.Background(), &candidate, checkpoint, FinalContractStatusFailed, checkpointKind); recordErr != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return recordErr
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleFailed
 	snapshot.ResumeState = TurnResumeStateNone
 	snapshot.Error = errText
 	snapshot.UpdatedAt = now
 	snapshot.CompletedAt = &now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), checkpointKind, TurnLifecycleFailed, TurnResumeStateNone)
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	session.PendingApprovals = nil
@@ -5991,6 +6819,21 @@ func (k *RuntimeKernel) markTurnResumableFromModelTimeout(session *SessionState,
 	if err != nil {
 		errText = err.Error()
 	}
+	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "model_timeout", TurnLifecycleResumable, TurnResumeStateResumable)
+	checkpoint.Incremental = false
+	candidate := *snapshot
+	candidate.Lifecycle = TurnLifecycleResumable
+	candidate.ResumeState = TurnResumeStateResumable
+	candidate.LatestCheckpoint = checkpoint
+	if err := k.recordCanonicalCheckpoint(context.Background(), &candidate, checkpoint); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	if err := k.recordCanonicalTransportProjection(context.Background(), &candidate, candidate.Lifecycle, candidate.ResumeState, checkpoint.ID, nil); err != nil {
+		snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
+		return TurnResult{}, err
+	}
+	snapshot.CanonicalRolloutHead = candidate.CanonicalRolloutHead
 	snapshot.Lifecycle = TurnLifecycleResumable
 	snapshot.ResumeState = TurnResumeStateResumable
 	snapshot.Error = errText
@@ -6000,8 +6843,6 @@ func (k *RuntimeKernel) markTurnResumableFromModelTimeout(session *SessionState,
 	snapshot.Metadata["recovery.reason"] = "model_timeout"
 	snapshot.Metadata["recovery.recoverable"] = "true"
 	snapshot.UpdatedAt = now
-	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, iteration, nextCheckpointSequence(snapshot), "model_timeout", TurnLifecycleResumable, TurnResumeStateResumable)
-	checkpoint.Incremental = false
 	snapshot.LatestCheckpoint = checkpoint
 	session.LatestCheckpoint = checkpoint
 	if last := latestIteration(snapshot); last != nil {
@@ -6142,6 +6983,11 @@ func (k *RuntimeKernel) upsertPartialToolProgressMessage(session *SessionState, 
 		if session.Messages[i].ID != messageID {
 			continue
 		}
+		if session.Messages[i].Metadata == nil {
+			session.Messages[i].Metadata = map[string]string{}
+		}
+		session.Messages[i].Metadata["runtime.context.kind"] = promptinput.ContextKindToolProgress
+		session.Messages[i].Metadata["runtime.context.ref"] = update.ToolCallID
 		if delta := strings.TrimSpace(update.Delta); delta != "" {
 			raw := partialToolProgressBody(session.Messages[i].Content)
 			session.Messages[i].Content = partialToolProgressContent(update.ToolName, raw+update.Delta)
@@ -6157,6 +7003,10 @@ func (k *RuntimeKernel) upsertPartialToolProgressMessage(session *SessionState, 
 		Role:      "system",
 		Content:   content,
 		Timestamp: now,
+		Metadata: map[string]string{
+			"runtime.context.kind": promptinput.ContextKindToolProgress,
+			"runtime.context.ref":  update.ToolCallID,
+		},
 	})
 	recomputeContextWindow(&session.Context, session.Messages)
 }
@@ -6183,8 +7033,15 @@ func partialToolProgressBody(content string) string {
 
 func newCheckpointMetadata(sessionID, turnID string, iteration, sequence int, kind string, lifecycle TurnLifecycleState, resumeState TurnResumeState) *CheckpointMetadata {
 	now := time.Now()
+	digest := strings.TrimPrefix(agentassembly.StableHash("runtime-checkpoint-id", map[string]any{
+		"sessionId": sessionID, "turnId": turnID, "iteration": iteration, "sequence": sequence,
+		"kind": kind, "lifecycle": lifecycle, "resumeState": resumeState,
+	}), "sha256:")
+	if len(digest) > 24 {
+		digest = digest[:24]
+	}
 	return &CheckpointMetadata{
-		ID:          fmt.Sprintf("chk-%d", now.UnixNano()),
+		ID:          "chk-" + digest,
 		SessionID:   sessionID,
 		TurnID:      turnID,
 		Iteration:   iteration,
@@ -6196,6 +7053,18 @@ func newCheckpointMetadata(sessionID, turnID string, iteration, sequence int, ki
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+}
+
+func pendingApprovalID(sessionID, turnID string, iteration int, call ToolCall, argumentsHash string, targetRefs []string) string {
+	digest := strings.TrimPrefix(agentassembly.StableHash("runtime-pending-approval-id", map[string]any{
+		"sessionId": sessionID, "turnId": turnID, "iteration": iteration,
+		"toolCallId": call.ID, "toolName": call.Name, "argumentsHash": argumentsHash,
+		"targetRefs": uniqueSortedTraceStrings(targetRefs),
+	}), "sha256:")
+	if len(digest) > 24 {
+		digest = digest[:24]
+	}
+	return "approval-" + digest
 }
 
 func nextCheckpointSequence(snapshot *TurnSnapshot) int {
@@ -6420,6 +7289,21 @@ func pendingApprovalResourceScopes(meta tooling.ToolMetadata) []string {
 	return uniqueRuntimeStrings(scopes)
 }
 
+func pendingApprovalTargetRefs(hostID string, resourceScopes []string) []string {
+	refs := make([]string, 0, 1+len(resourceScopes))
+	if hostID = strings.TrimSpace(hostID); hostID != "" {
+		refs = append(refs, "host:"+hostID)
+	}
+	refs = append(refs, resourceScopes...)
+	return uniqueRuntimeStrings(refs)
+}
+
+func dispatchResultRequiresRollbackContract(result DispatchResult) bool {
+	meta := result.Metadata
+	governance := meta.EffectiveGovernance(0)
+	return governance.Mutating || meta.Layer == tooling.ToolLayerMutation
+}
+
 func approvalPayloadField(payload *tooling.PermissionApprovalPayload, field string) string {
 	if payload == nil {
 		return ""
@@ -6572,6 +7456,13 @@ func pendingToolCall(snapshot *TurnSnapshot) (ToolCall, bool) {
 	return ToolCall{}, false
 }
 
+func gatedPendingToolCall(snapshot *TurnSnapshot) (ToolCall, bool) {
+	if snapshot == nil || (len(snapshot.PendingApprovals) == 0 && len(snapshot.PendingEvidence) == 0) {
+		return ToolCall{}, false
+	}
+	return pendingToolCall(snapshot)
+}
+
 func resumeInputFromMetadata(metadata map[string]string) string {
 	if len(metadata) == 0 {
 		return ""
@@ -6661,25 +7552,4 @@ func (a toolExecutorAdapter) Execute(ctx context.Context, args json.RawMessage) 
 		return tooling.ToolResult{}, errors.New(result.Error)
 	}
 	return result, nil
-}
-
-// ---------------------------------------------------------------------------
-// executeAgent — simplified agent execution (real ADK integration in dispatch.go)
-// ---------------------------------------------------------------------------
-
-// executeAgent runs the model with the compiled prompt and tools.
-// This is a simplified version; full ADK Runner integration is in dispatch.go.
-func executeAgent(
-	_ context.Context,
-	_ modelrouter.ChatModel,
-	_ promptcompiler.CompiledPrompt,
-	_ []tool.BaseTool,
-	_ []Message,
-) (string, error) {
-	// In production, this would:
-	// 1. Create adk.ChatModelAgent with model + tools + instruction
-	// 2. Create adk.Runner and execute via runner.Run()
-	// 3. Process AgentEvents via callback
-	// For now, return empty output (real implementation uses dispatch.go)
-	return "", nil
 }

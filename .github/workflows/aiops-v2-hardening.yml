@@ -9,6 +9,11 @@ on:
       - "web/**"
       - "docs/**"
       - "scripts/aichat-harness-hardening-gate.sh"
+      - "scripts/check-aiops-change-budget.sh"
+      - "scripts/check-aiops-final-text-control.py"
+      - "scripts/check-aiops-harness-contract-boundaries.sh"
+      - "scripts/test-aiops-change-budget.sh"
+      - "scripts/test-aiops-harness-contract-boundaries.sh"
       - ".github/workflows/aiops-v2-hardening.yml"
   push:
     branches:
@@ -22,11 +27,30 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install web dependencies
+        working-directory: web
+        run: npm ci
+      - name: Run harness boundary self-test
+        run: |
+          scripts/test-aiops-harness-contract-boundaries.sh
+          scripts/test-aiops-change-budget.sh
       - name: Run agent harness hardening gate
+        env:
+          AIOPS_HARNESS_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AIOPS_HARNESS_REQUIRE_BASELINE_ACK: "1"
+          AIOPS_CHANGE_BASELINE_ACK: "2026-07-14-harness-change-policy-bootstrap"
+          AIOPS_CHANGE_BASELINE_REASON: "Commits before the permanent change gate are the reviewed harness rollout baseline."
         run: scripts/aichat-harness-hardening-gate.sh
 
   web:

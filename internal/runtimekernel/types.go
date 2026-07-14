@@ -1,18 +1,65 @@
 package runtimekernel
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"aiops-v2/internal/agentassembly"
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/envcontext"
 	"aiops-v2/internal/mcp"
+	"aiops-v2/internal/modeltrace"
 	"aiops-v2/internal/promptinput"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/resourceio"
+	"aiops-v2/internal/runtimecontract"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/taskdepth"
 	"aiops-v2/internal/tooling"
 )
+
+// CanonicalRolloutHeadRef is the typed, model-input-inert reference to the
+// latest durable rollout event for a turn.
+type CanonicalRolloutHeadRef struct {
+	SchemaVersion string              `json:"schemaVersion"`
+	EventID       string              `json:"eventId"`
+	Hash          string              `json:"hash"`
+	Sequence      int64               `json:"sequence"`
+	Status        RolloutRecordStatus `json:"status"`
+}
+
+func (ref CanonicalRolloutHeadRef) Validate() error {
+	if ref.SchemaVersion != modeltrace.CanonicalRolloutSchemaVersion {
+		return fmt.Errorf("invalid canonical rollout schema version")
+	}
+	if err := validateCanonicalRolloutRef(ref.EventID, "event:", "event id"); err != nil {
+		return err
+	}
+	if err := validateCanonicalRolloutRef(ref.Hash, "sha256:", "hash"); err != nil {
+		return err
+	}
+	if ref.Sequence <= 0 {
+		return fmt.Errorf("canonical rollout sequence must be greater than zero")
+	}
+	if ref.Status != RolloutRecordStatusRecorded && ref.Status != RolloutRecordStatusDegraded {
+		return fmt.Errorf("invalid canonical rollout status %q", ref.Status)
+	}
+	return nil
+}
+
+func validateCanonicalRolloutRef(value, prefix, name string) error {
+	encoded := strings.TrimPrefix(value, prefix)
+	if encoded == value || len(encoded) != 64 {
+		return fmt.Errorf("invalid canonical rollout %s", name)
+	}
+	if _, err := hex.DecodeString(encoded); err != nil {
+		return fmt.Errorf("invalid canonical rollout %s", name)
+	}
+	return nil
+}
 
 // ---------------------------------------------------------------------------
 // SessionState carries the full state of a session.
@@ -20,34 +67,38 @@ import (
 
 // SessionState represents the full state of a session (host or workspace).
 type SessionState struct {
-	ID                      string                         `json:"id"`
-	Type                    SessionType                    `json:"type"`
-	Mode                    Mode                           `json:"mode"`
-	HostID                  string                         `json:"hostId,omitempty"`
-	Messages                []Message                      `json:"messages"`
-	Context                 ContextWindow                  `json:"context"`
-	Activity                ActivityStats                  `json:"activity"`
-	ActiveTurn              ActiveTurnState                `json:"activeTurn,omitempty"`
-	CurrentTurn             *TurnSnapshot                  `json:"currentTurn,omitempty"`
-	TurnHistory             []TurnSnapshot                 `json:"turnHistory,omitempty"`
-	PendingApprovals        []PendingApproval              `json:"pendingApprovals,omitempty"`
-	PendingEvidence         []PendingEvidence              `json:"pendingEvidence,omitempty"`
-	RejectedApprovals       []RejectedApproval             `json:"rejectedApprovals,omitempty"`
-	ApprovalGrants          []SessionApprovalGrant         `json:"approvalGrants,omitempty"`
-	PlanMode                PlanModeState                  `json:"planMode,omitempty"`
-	PlanApprovalScopes      []PlanApprovalScope            `json:"planApprovalScopes,omitempty"`
-	LatestCheckpoint        *CheckpointMetadata            `json:"latestCheckpoint,omitempty"`
-	CompactedSegments       []CompactedSegment             `json:"compactedSegments,omitempty"`
-	ExternalReferences      []ExternalReference            `json:"externalReferences,omitempty"`
-	ObservationState        ObservationState               `json:"observationState,omitempty"`
-	ContextGovernanceEvents []ContextGovernanceEvent       `json:"contextGovernanceEvents,omitempty"`
-	OwnerWriteTraces        []OwnerWriteTrace              `json:"ownerWriteTraces,omitempty"`
-	EnvironmentContext      envcontext.State               `json:"environmentContext,omitempty"`
-	ToolDiscovery           ToolDiscoverySessionState      `json:"toolDiscovery,omitempty"`
-	SkillActivation         SkillActivationSessionState    `json:"skillActivation,omitempty"`
-	MCPInstructions         mcp.MCPInstructionSessionState `json:"mcpInstructions,omitempty"`
-	CreatedAt               time.Time                      `json:"createdAt"`
-	UpdatedAt               time.Time                      `json:"updatedAt"`
+	ID                      string                                      `json:"id"`
+	Type                    SessionType                                 `json:"type"`
+	Mode                    Mode                                        `json:"mode"`
+	HostID                  string                                      `json:"hostId,omitempty"`
+	SessionTargetSnapshot   *resourcebinding.SessionTargetSnapshot      `json:"sessionTargetSnapshot,omitempty"`
+	SpecialInputMemory      specialinputmemory.SessionSpecialInputState `json:"specialInputMemory,omitempty"`
+	ResourceRoleBindings    []resourcebinding.ResourceRoleBinding       `json:"resourceRoleBindings,omitempty"`
+	RoleBindingConflicts    []resourcebinding.RoleBindingConflict       `json:"roleBindingConflicts,omitempty"`
+	Messages                []Message                                   `json:"messages"`
+	Context                 ContextWindow                               `json:"context"`
+	Activity                ActivityStats                               `json:"activity"`
+	ActiveTurn              ActiveTurnState                             `json:"activeTurn,omitempty"`
+	CurrentTurn             *TurnSnapshot                               `json:"currentTurn,omitempty"`
+	TurnHistory             []TurnSnapshot                              `json:"turnHistory,omitempty"`
+	PendingApprovals        []PendingApproval                           `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence                           `json:"pendingEvidence,omitempty"`
+	RejectedApprovals       []RejectedApproval                          `json:"rejectedApprovals,omitempty"`
+	ApprovalGrants          []SessionApprovalGrant                      `json:"approvalGrants,omitempty"`
+	PlanMode                PlanModeState                               `json:"planMode,omitempty"`
+	PlanApprovalScopes      []PlanApprovalScope                         `json:"planApprovalScopes,omitempty"`
+	LatestCheckpoint        *CheckpointMetadata                         `json:"latestCheckpoint,omitempty"`
+	CompactedSegments       []CompactedSegment                          `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference                         `json:"externalReferences,omitempty"`
+	ObservationState        ObservationState                            `json:"observationState,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent                    `json:"contextGovernanceEvents,omitempty"`
+	OwnerWriteTraces        []OwnerWriteTrace                           `json:"ownerWriteTraces,omitempty"`
+	EnvironmentContext      envcontext.State                            `json:"environmentContext,omitempty"`
+	ToolDiscovery           ToolDiscoverySessionState                   `json:"toolDiscovery,omitempty"`
+	SkillActivation         SkillActivationSessionState                 `json:"skillActivation,omitempty"`
+	MCPInstructions         mcp.MCPInstructionSessionState              `json:"mcpInstructions,omitempty"`
+	CreatedAt               time.Time                                   `json:"createdAt"`
+	UpdatedAt               time.Time                                   `json:"updatedAt"`
 }
 
 type ActiveTurnState struct {
@@ -173,15 +224,16 @@ func (s SessionState) Validate() error {
 
 // Message represents a single message in a session conversation.
 type Message struct {
-	ID              string            `json:"id"`
-	ClientMessageID string            `json:"clientMessageId,omitempty"`
-	ClientTurnID    string            `json:"clientTurnId,omitempty"`
-	Role            string            `json:"role"` // user, assistant, system, tool
-	Content         string            `json:"content,omitempty"`
-	ToolCalls       []ToolCall        `json:"toolCalls,omitempty"`
-	ToolResult      *ToolResult       `json:"toolResult,omitempty"`
-	Timestamp       time.Time         `json:"timestamp"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	ID               string            `json:"id"`
+	ClientMessageID  string            `json:"clientMessageId,omitempty"`
+	ClientTurnID     string            `json:"clientTurnId,omitempty"`
+	Role             string            `json:"role"` // user, assistant, system, tool
+	Content          string            `json:"content,omitempty"`
+	ReasoningContent string            `json:"reasoningContent,omitempty"`
+	ToolCalls        []ToolCall        `json:"toolCalls,omitempty"`
+	ToolResult       *ToolResult       `json:"toolResult,omitempty"`
+	Timestamp        time.Time         `json:"timestamp"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 // ---------------------------------------------------------------------------
@@ -201,17 +253,19 @@ type ToolCall struct {
 
 // ToolResult represents the result of a tool execution.
 type ToolResult struct {
-	ToolCallID          string                `json:"toolCallId"`
-	Content             string                `json:"content"`
-	Summary             string                `json:"summary,omitempty"`
-	Display             *ToolDisplayPayload   `json:"display,omitempty"`
-	Error               string                `json:"error,omitempty"`
-	References          []ToolResultReference `json:"references,omitempty"`
-	Spilled             bool                  `json:"spilled,omitempty"`
-	ExternalReferences  []ExternalReference   `json:"externalReferences,omitempty"`
-	MaterializationTier string                `json:"materializationTier,omitempty"`
-	OriginalBytes       int64                 `json:"originalBytes,omitempty"`
-	InlineBytes         int64                 `json:"inlineBytes,omitempty"`
+	ToolCallID          string                    `json:"toolCallId"`
+	TargetIdentityHash  string                    `json:"targetIdentityHash,omitempty"`
+	Content             string                    `json:"content"`
+	Summary             string                    `json:"summary,omitempty"`
+	Display             *ToolDisplayPayload       `json:"display,omitempty"`
+	Error               string                    `json:"error,omitempty"`
+	Outcome             tooling.ToolResultOutcome `json:"outcome,omitempty"`
+	References          []ToolResultReference     `json:"references,omitempty"`
+	Spilled             bool                      `json:"spilled,omitempty"`
+	ExternalReferences  []ExternalReference       `json:"externalReferences,omitempty"`
+	MaterializationTier string                    `json:"materializationTier,omitempty"`
+	OriginalBytes       int64                     `json:"originalBytes,omitempty"`
+	InlineBytes         int64                     `json:"inlineBytes,omitempty"`
 }
 
 // Validate checks the tool result payload.
@@ -244,6 +298,7 @@ type ToolSurfaceSnapshotRef struct {
 	ID                 string                             `json:"id"`
 	Fingerprint        string                             `json:"fingerprint"`
 	ToolNames          []string                           `json:"toolNames,omitempty"`
+	StepRouter         *StepToolRouter                    `json:"stepRouter,omitempty"`
 	PolicySnapshotHash string                             `json:"policySnapshotHash,omitempty"`
 	PolicySnapshot     *tooling.ToolSurfacePolicySnapshot `json:"policySnapshot,omitempty"`
 	CreatedAt          time.Time                          `json:"createdAt"`
@@ -437,44 +492,53 @@ func (m CheckpointMetadata) Validate() error {
 
 // PendingApproval represents a structured approval gate waiting to be resumed.
 type PendingApproval struct {
-	ID                     string     `json:"id"`
-	SessionID              string     `json:"sessionId"`
-	TurnID                 string     `json:"turnId"`
-	Iteration              int        `json:"iteration"`
-	IterationID            string     `json:"iterationId,omitempty"`
-	ToolName               string     `json:"toolName"`
-	ToolCallID             string     `json:"toolCallId,omitempty"`
-	TargetRefs             []string   `json:"targetRefs,omitempty"`
-	HostID                 string     `json:"hostId,omitempty"`
-	Command                string     `json:"command,omitempty"`
-	ArgumentsHash          string     `json:"argumentsHash,omitempty"`
-	Reason                 string     `json:"reason,omitempty"`
-	Risk                   string     `json:"risk,omitempty"`
-	Source                 string     `json:"source,omitempty"`
-	RequestedScope         string     `json:"requestedScope,omitempty"`
-	PreChangeEvidenceRefs  []string   `json:"preChangeEvidenceRefs,omitempty"`
-	ApprovalOptions        []string   `json:"approvalOptions,omitempty"`
-	ToolSurfaceFingerprint string     `json:"toolSurfaceFingerprint,omitempty"`
-	PermissionSnapshotHash string     `json:"permissionSnapshotHash,omitempty"`
-	RunbookID              string     `json:"runbookId,omitempty"`
-	RunbookStep            string     `json:"runbookStep,omitempty"`
-	ExpectedEffect         string     `json:"expectedEffect,omitempty"`
-	Rollback               string     `json:"rollback,omitempty"`
-	Validation             string     `json:"validation,omitempty"`
-	AllowedActions         []string   `json:"allowedActions,omitempty"`
-	ResourceScopes         []string   `json:"resourceScopes,omitempty"`
-	RiskCeiling            string     `json:"riskCeiling,omitempty"`
-	ExpiresAt              *time.Time `json:"expiresAt,omitempty"`
-	InputHash              string     `json:"inputHash,omitempty"`
-	Status                 string     `json:"status,omitempty"`
-	CreatedAt              time.Time  `json:"createdAt"`
-	UpdatedAt              time.Time  `json:"updatedAt"`
-	DecidedAt              *time.Time `json:"decidedAt,omitempty"`
-	Decision               string     `json:"decision,omitempty"`
+	ID                     string                 `json:"id"`
+	SessionID              string                 `json:"sessionId"`
+	TurnID                 string                 `json:"turnId"`
+	Iteration              int                    `json:"iteration"`
+	IterationID            string                 `json:"iterationId,omitempty"`
+	ToolName               string                 `json:"toolName"`
+	ToolCallID             string                 `json:"toolCallId,omitempty"`
+	TargetRefs             []string               `json:"targetRefs,omitempty"`
+	HostID                 string                 `json:"hostId,omitempty"`
+	Command                string                 `json:"command,omitempty"`
+	ArgumentsHash          string                 `json:"argumentsHash,omitempty"`
+	Reason                 string                 `json:"reason,omitempty"`
+	Risk                   string                 `json:"risk,omitempty"`
+	Source                 string                 `json:"source,omitempty"`
+	RequestedScope         string                 `json:"requestedScope,omitempty"`
+	PreChangeEvidenceRefs  []string               `json:"preChangeEvidenceRefs,omitempty"`
+	ApprovalOptions        []string               `json:"approvalOptions,omitempty"`
+	ToolSurfaceFingerprint string                 `json:"toolSurfaceFingerprint,omitempty"`
+	PermissionSnapshotHash string                 `json:"permissionSnapshotHash,omitempty"`
+	RunbookID              string                 `json:"runbookId,omitempty"`
+	RunbookStep            string                 `json:"runbookStep,omitempty"`
+	ExpectedEffect         string                 `json:"expectedEffect,omitempty"`
+	Rollback               string                 `json:"rollback,omitempty"`
+	Validation             string                 `json:"validation,omitempty"`
+	PostCheck              string                 `json:"postCheck,omitempty"`
+	StopCondition          string                 `json:"stopCondition,omitempty"`
+	IdempotencyKey         string                 `json:"idempotencyKey,omitempty"`
+	ManualTakeover         string                 `json:"manualTakeover,omitempty"`
+	ApprovalScope          string                 `json:"approvalScope,omitempty"`
+	Mutating               bool                   `json:"mutating,omitempty"`
+	RollbackContract       ActionRollbackContract `json:"rollbackContract,omitempty"`
+	ActionToken            *ActionToken           `json:"actionToken,omitempty"`
+	AllowedActions         []string               `json:"allowedActions,omitempty"`
+	ResourceScopes         []string               `json:"resourceScopes,omitempty"`
+	RiskCeiling            string                 `json:"riskCeiling,omitempty"`
+	ExpiresAt              *time.Time             `json:"expiresAt,omitempty"`
+	InputHash              string                 `json:"inputHash,omitempty"`
+	Status                 string                 `json:"status,omitempty"`
+	CreatedAt              time.Time              `json:"createdAt"`
+	UpdatedAt              time.Time              `json:"updatedAt"`
+	DecidedAt              *time.Time             `json:"decidedAt,omitempty"`
+	Decision               string                 `json:"decision,omitempty"`
 }
 
 type RejectedApproval struct {
 	ID         string    `json:"id,omitempty"`
+	TurnID     string    `json:"turnId,omitempty"`
 	ToolName   string    `json:"toolName,omitempty"`
 	ToolCallID string    `json:"toolCallId,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
@@ -500,6 +564,14 @@ func (p PendingApproval) Validate() error {
 	}
 	if p.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if p.ActionToken != nil {
+		if err := p.ActionToken.Validate(); err != nil {
+			return fmt.Errorf("action token: %w", err)
+		}
+		if p.ActionToken.ApprovalID != p.ID || p.ActionToken.TurnID != p.TurnID || p.ActionToken.ToolCallID != p.ToolCallID || p.ActionToken.ToolName != p.ToolName {
+			return fmt.Errorf("action token approval binding mismatch")
+		}
 	}
 	return nil
 }
@@ -637,39 +709,46 @@ func (s CompactedSegment) Validate() error {
 
 // TurnSnapshot freezes the turn-level state at a stable boundary.
 type TurnSnapshot struct {
-	ID                      string                   `json:"id"`
-	ClientTurnID            string                   `json:"clientTurnId,omitempty"`
-	ClientMessageID         string                   `json:"clientMessageId,omitempty"`
-	SessionID               string                   `json:"sessionId"`
-	SessionType             SessionType              `json:"sessionType"`
-	Mode                    Mode                     `json:"mode"`
-	Metadata                map[string]string        `json:"metadata,omitempty"`
-	TaskDepth               taskdepth.Profile        `json:"taskDepth,omitempty"`
-	Lifecycle               TurnLifecycleState       `json:"lifecycle"`
-	ResumeState             TurnResumeState          `json:"resumeState"`
-	Iteration               int                      `json:"iteration"`
-	StartedAt               time.Time                `json:"startedAt"`
-	UpdatedAt               time.Time                `json:"updatedAt"`
-	CompletedAt             *time.Time               `json:"completedAt,omitempty"`
-	StablePromptHash        string                   `json:"stablePromptHash,omitempty"`
-	StableToolFingerprint   string                   `json:"stableToolFingerprint,omitempty"`
-	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef  `json:"toolSurfaceSnapshot,omitempty"`
-	GovernanceSnapshot      string                   `json:"governanceSnapshot,omitempty"`
-	TraceContext            TraceContextCarrier      `json:"traceContext,omitempty"`
-	PromptSections          []string                 `json:"promptSections,omitempty"`
-	LatestCheckpoint        *CheckpointMetadata      `json:"latestCheckpoint,omitempty"`
-	Iterations              []IterationState         `json:"iterations,omitempty"`
-	AgentItems              []agentstate.TurnItem    `json:"agentItems,omitempty"`
-	PendingApprovals        []PendingApproval        `json:"pendingApprovals,omitempty"`
-	PendingEvidence         []PendingEvidence        `json:"pendingEvidence,omitempty"`
-	PendingInputs           []PendingTurnInput       `json:"pendingInputs,omitempty"`
-	HiddenTools             []string                 `json:"hiddenTools,omitempty"`
-	CompactedSegments       []CompactedSegment       `json:"compactedSegments,omitempty"`
-	ExternalReferences      []ExternalReference      `json:"externalReferences,omitempty"`
-	ContextGovernanceEvents []ContextGovernanceEvent `json:"contextGovernanceEvents,omitempty"`
-	OwnerWriteTraces        []OwnerWriteTrace        `json:"ownerWriteTraces,omitempty"`
-	FinalOutput             string                   `json:"finalOutput,omitempty"`
-	Error                   string                   `json:"error,omitempty"`
+	ID                      string                             `json:"id"`
+	ClientTurnID            string                             `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                             `json:"clientMessageId,omitempty"`
+	SessionID               string                             `json:"sessionId"`
+	SessionType             SessionType                        `json:"sessionType"`
+	Mode                    Mode                               `json:"mode"`
+	Metadata                map[string]string                  `json:"metadata,omitempty"`
+	TaskDepth               taskdepth.Profile                  `json:"taskDepth,omitempty"`
+	SystemTurn              *SystemTurnRecord                  `json:"systemTurn,omitempty"`
+	Lifecycle               TurnLifecycleState                 `json:"lifecycle"`
+	ResumeState             TurnResumeState                    `json:"resumeState"`
+	Iteration               int                                `json:"iteration"`
+	StartedAt               time.Time                          `json:"startedAt"`
+	UpdatedAt               time.Time                          `json:"updatedAt"`
+	CompletedAt             *time.Time                         `json:"completedAt,omitempty"`
+	StablePromptHash        string                             `json:"stablePromptHash,omitempty"`
+	StableToolFingerprint   string                             `json:"stableToolFingerprint,omitempty"`
+	CanonicalRolloutHead    *CanonicalRolloutHeadRef           `json:"canonicalRolloutHead,omitempty"`
+	TurnAssembly            *agentassembly.TurnAssembly        `json:"turnAssembly,omitempty"`
+	TurnAssemblyShadow      *TurnAssemblyShadowTrace           `json:"turnAssemblyShadow,omitempty"`
+	SpecialInputReadPlan    *specialinputmemory.MemoryReadPlan `json:"specialInputReadPlan,omitempty"`
+	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef            `json:"toolSurfaceSnapshot,omitempty"`
+	GovernanceSnapshot      string                             `json:"governanceSnapshot,omitempty"`
+	TraceContext            TraceContextCarrier                `json:"traceContext,omitempty"`
+	PromptSections          []string                           `json:"promptSections,omitempty"`
+	LatestCheckpoint        *CheckpointMetadata                `json:"latestCheckpoint,omitempty"`
+	LatestStepReference     *StepReference                     `json:"latestStepReference,omitempty"`
+	PendingStepCause        *StepRevisionCause                 `json:"pendingStepCause,omitempty"`
+	Iterations              []IterationState                   `json:"iterations,omitempty"`
+	AgentItems              []agentstate.TurnItem              `json:"agentItems,omitempty"`
+	PendingApprovals        []PendingApproval                  `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence                  `json:"pendingEvidence,omitempty"`
+	PendingInputs           []PendingTurnInput                 `json:"pendingInputs,omitempty"`
+	HiddenTools             []string                           `json:"hiddenTools,omitempty"`
+	CompactedSegments       []CompactedSegment                 `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference                `json:"externalReferences,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent           `json:"contextGovernanceEvents,omitempty"`
+	OwnerWriteTraces        []OwnerWriteTrace                  `json:"ownerWriteTraces,omitempty"`
+	FinalOutput             string                             `json:"finalOutput,omitempty"`
+	Error                   string                             `json:"error,omitempty"`
 }
 
 // Validate checks the turn snapshot.
@@ -692,12 +771,37 @@ func (s TurnSnapshot) Validate() error {
 	if !s.ResumeState.IsValid() {
 		return fmt.Errorf("invalid resume state %q", s.ResumeState)
 	}
+	if s.SystemTurn != nil {
+		if err := s.SystemTurn.Validate(); err != nil {
+			return fmt.Errorf("system turn: %w", err)
+		}
+	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
+	}
+	if s.CanonicalRolloutHead != nil {
+		if err := s.CanonicalRolloutHead.Validate(); err != nil {
+			return fmt.Errorf("canonical rollout head: %w", err)
+		}
+	}
+	if s.TurnAssembly != nil {
+		if err := s.TurnAssembly.Validate(); err != nil {
+			return fmt.Errorf("turn assembly: %w", err)
+		}
 	}
 	if s.LatestCheckpoint != nil {
 		if err := s.LatestCheckpoint.Validate(); err != nil {
 			return fmt.Errorf("latest checkpoint: %w", err)
+		}
+	}
+	if s.LatestStepReference != nil {
+		if err := s.LatestStepReference.Validate(); err != nil {
+			return fmt.Errorf("latest step reference: %w", err)
+		}
+	}
+	if s.PendingStepCause != nil {
+		if err := s.PendingStepCause.Validate(); err != nil {
+			return fmt.Errorf("pending step cause: %w", err)
 		}
 	}
 	for i := range s.Iterations {
@@ -739,6 +843,8 @@ func (s TurnSnapshot) Validate() error {
 }
 
 // IterationState captures a single model/tool iteration within a turn.
+// PromptShadowParity is a deprecated, best-effort migration trace and never
+// participates in iteration validation or runtime control.
 type IterationState struct {
 	ID                      string                                   `json:"id"`
 	SessionID               string                                   `json:"sessionId"`
@@ -759,10 +865,12 @@ type IterationState struct {
 	RefreshedTools          []string                                 `json:"refreshedTools,omitempty"`
 	PromptDelta             string                                   `json:"promptDelta,omitempty"`
 	PromptFingerprint       map[string]string                        `json:"promptFingerprint,omitempty"`
+	PromptShadowParity      promptinput.PromptShadowParityReport     `json:"promptShadowParity,omitempty"`
 	ModelInputTraceFile     string                                   `json:"modelInputTraceFile,omitempty"`
 	TokenBudget             int                                      `json:"tokenBudget,omitempty"`
 	ResultBudget            int                                      `json:"resultBudget,omitempty"`
 	Checkpoint              *CheckpointMetadata                      `json:"checkpoint,omitempty"`
+	StepReference           *StepReference                           `json:"stepReference,omitempty"`
 	PendingApprovals        []PendingApproval                        `json:"pendingApprovals,omitempty"`
 	PendingEvidence         []PendingEvidence                        `json:"pendingEvidence,omitempty"`
 	CompactedSegments       []CompactedSegment                       `json:"compactedSegments,omitempty"`
@@ -796,6 +904,14 @@ func (s IterationState) Validate() error {
 	if s.Checkpoint != nil {
 		if err := s.Checkpoint.Validate(); err != nil {
 			return fmt.Errorf("checkpoint: %w", err)
+		}
+	}
+	if s.StepReference != nil {
+		if err := s.StepReference.Validate(); err != nil {
+			return fmt.Errorf("step reference: %w", err)
+		}
+		if s.StepReference.Iteration != s.Iteration {
+			return fmt.Errorf("step reference iteration mismatch")
 		}
 	}
 	for i := range s.ToolResults {
@@ -1009,16 +1125,31 @@ func (m Mode) IsValid() bool {
 // ---------------------------------------------------------------------------
 
 // TurnRequest is the typed V2 input contract for a runtime turn.
+const (
+	RuntimePermissionProfileApprovalRequired    = "runtime-approval-required"
+	RuntimeRollbackPolicyActionContractRequired = "action-rollback-contract-required"
+)
+
 type TurnRequest struct {
-	SessionType     SessionType       `json:"sessionType"`
-	Mode            Mode              `json:"mode"`
-	SessionID       string            `json:"sessionId,omitempty"`
-	TurnID          string            `json:"turnId,omitempty"`
-	ClientTurnID    string            `json:"clientTurnId,omitempty"`
-	ClientMessageID string            `json:"clientMessageId,omitempty"`
-	Input           string            `json:"input,omitempty"`
-	HostID          string            `json:"hostId,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	SessionType           SessionType                               `json:"sessionType"`
+	Mode                  Mode                                      `json:"mode"`
+	SessionID             string                                    `json:"sessionId,omitempty"`
+	TurnID                string                                    `json:"turnId,omitempty"`
+	ClientTurnID          string                                    `json:"clientTurnId,omitempty"`
+	ClientMessageID       string                                    `json:"clientMessageId,omitempty"`
+	Input                 string                                    `json:"input,omitempty"`
+	HostID                string                                    `json:"hostId,omitempty"`
+	IntentFrame           *runtimecontract.IntentFrame              `json:"intentFrame,omitempty"`
+	PermissionProfile     string                                    `json:"permissionProfile,omitempty"`
+	RollbackPolicy        string                                    `json:"rollbackPolicy,omitempty"`
+	Metadata              map[string]string                         `json:"metadata,omitempty"`
+	ResourceBindings      []resourcebinding.ResourceBindingSnapshot `json:"resourceBindings,omitempty"`
+	ResourceRoleBindings  []resourcebinding.ResourceRoleBinding     `json:"resourceRoleBindings,omitempty"`
+	ResourceCapabilities  []resourcebinding.ResourceCapability      `json:"resourceCapabilities,omitempty"`
+	ResourceEvidenceRefs  []resourcebinding.EvidenceRef             `json:"resourceEvidenceRefs,omitempty"`
+	SessionTargetSnapshot *resourcebinding.SessionTargetSnapshot    `json:"sessionTargetSnapshot,omitempty"`
+	RoleBindingConflicts  []resourcebinding.RoleBindingConflict     `json:"roleBindingConflicts,omitempty"`
+	SpecialInputReadPlan  *specialinputmemory.MemoryReadPlan        `json:"specialInputReadPlan,omitempty"`
 }
 
 // Validate checks that the request uses canonical session and mode values.

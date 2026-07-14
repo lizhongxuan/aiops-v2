@@ -43,7 +43,7 @@ type storeCorootClientProvider struct {
 	repo corootConfigRepository
 }
 
-func (p storeCorootClientProvider) CorootClient(context.Context) (*coroot.Client, error) {
+func (p storeCorootClientProvider) CorootClient(ctx context.Context) (*coroot.Client, error) {
 	if p.repo == nil {
 		return nil, &coroot.CorootError{Kind: "not_configured", Message: "Coroot is not configured from the Coroot observability page"}
 	}
@@ -65,13 +65,21 @@ func (p storeCorootClientProvider) CorootClient(context.Context) (*coroot.Client
 		timeout = parsed
 	}
 	client, err := coroot.NewClient(coroot.ClientConfig{
-		BaseURL: cfg.BaseURL,
-		Token:   cfg.Token,
-		Project: cfg.Project,
-		Timeout: timeout,
+		BaseURL:          cfg.BaseURL,
+		ProductBasePath:  cfg.ProductBasePath,
+		Token:            cfg.Token,
+		AuthMode:         cfg.AuthMode,
+		EmbedTrustSecret: cfg.EmbedTrustSecret,
+		Project:          cfg.Project,
+		Timeout:          timeout,
 	})
 	if err != nil {
 		return nil, &coroot.CorootError{Kind: "bad_config", Message: err.Error()}
+	}
+	if strings.TrimSpace(cfg.Username) != "" || strings.TrimSpace(cfg.Password) != "" {
+		if err := client.Login(ctx, cfg.Username, cfg.Password); err != nil {
+			return nil, err
+		}
 	}
 	return client, nil
 }

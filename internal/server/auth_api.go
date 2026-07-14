@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -152,11 +151,4 @@ func authServiceFromHTTP(ui appui.HTTPServices) (appui.AuthService, bool) {
 func buildAuthRouter(ui appui.HTTPServices, next http.Handler) http.Handler {
 	svc, _ := authServiceFromHTTP(ui)
 	return NewAuthAPIRouter(svc, next)
-}
-
-func withBackground(ctx context.Context) context.Context {
-	if ctx != nil {
-		return ctx
-	}
-	return context.Background()
 }

@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"aiops-v2/internal/resourcebinding"
 )
 
 // ParseHostMentions extracts @host references for UX and orchestration routing.
@@ -44,12 +46,13 @@ func ParseHostMentions(input string) []HostMention {
 		source := HostMentionSourceHostnameLiteral
 		address := ""
 		display := token
-		if isIPLiteral(token) {
+		if isLocalAliasToken(token) {
+			source = HostMentionSourceLocalAlias
+			display = "server-local"
+			address = "server-local"
+		} else if isIPLiteral(token) {
 			source = HostMentionSourceIPLiteral
 			address = token
-		} else if isLocalAliasToken(token) {
-			source = HostMentionSourceLocalAlias
-			display = "local"
 		}
 		mentions = append(mentions, HostMention{
 			TokenID:     stableMentionTokenID(start, raw),
@@ -79,127 +82,6 @@ func DetectInventoryHostMentions(input string, hosts []HostRecordView) []HostMen
 	return nil
 }
 
-func detectInventoryHostMentionsLegacy(input string, hosts []HostRecordView) []HostMention {
-	candidates := inventoryHostMentionCandidates(hosts)
-	if len(candidates) == 0 {
-		return nil
-	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if len(candidates[i].value) == len(candidates[j].value) {
-			return candidates[i].host.ID < candidates[j].host.ID
-		}
-		return len(candidates[i].value) > len(candidates[j].value)
-	})
-	seenHosts := map[string]struct{}{}
-	mentions := make([]HostMention, 0)
-	lowerInput := strings.ToLower(input)
-	for _, candidate := range candidates {
-		hostID := strings.TrimSpace(candidate.host.ID)
-		if hostID == "" {
-			continue
-		}
-		if _, ok := seenHosts[strings.ToLower(hostID)]; ok {
-			continue
-		}
-		start := firstBoundedHostTokenIndex(lowerInput, strings.ToLower(candidate.value))
-		if start < 0 {
-			continue
-		}
-		end := start + len(candidate.value)
-		mentions = append(mentions, HostMention{
-			TokenID:     stableMentionTokenID(start, input[start:end]),
-			Raw:         input[start:end],
-			SpanStart:   start,
-			SpanEnd:     end,
-			HostID:      hostID,
-			Address:     strings.TrimSpace(candidate.host.Address),
-			DisplayName: firstNonEmpty(candidate.host.DisplayName, candidate.host.Hostname, candidate.host.Address, hostID),
-			Source:      HostMentionSourceInventory,
-			Resolved:    true,
-			Confidence:  1,
-		})
-		seenHosts[strings.ToLower(hostID)] = struct{}{}
-	}
-	sort.SliceStable(mentions, func(i, j int) bool {
-		return mentions[i].SpanStart < mentions[j].SpanStart
-	})
-	return mentions
-}
-
-type inventoryHostMentionCandidate struct {
-	value string
-	host  HostRecordView
-}
-
-func inventoryHostMentionCandidates(hosts []HostRecordView) []inventoryHostMentionCandidate {
-	candidates := make([]inventoryHostMentionCandidate, 0, len(hosts)*4)
-	seen := map[string]struct{}{}
-	for _, host := range hosts {
-		host.ID = strings.TrimSpace(host.ID)
-		if host.ID == "" || isBareLocalHostAlias(host.ID) {
-			continue
-		}
-		for _, value := range []string{host.ID, host.Hostname, host.DisplayName, host.Address} {
-			value = strings.TrimSpace(value)
-			if value == "" || isBareLocalHostAlias(value) {
-				continue
-			}
-			key := strings.ToLower(host.ID + "\x00" + value)
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			candidates = append(candidates, inventoryHostMentionCandidate{value: value, host: host})
-		}
-	}
-	return candidates
-}
-
-func isBareLocalHostAlias(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "local", "localhost", "server-local", "127.0.0.1", "::1", "[::1]":
-		return true
-	default:
-		return false
-	}
-}
-
-func firstBoundedHostTokenIndex(inputLower, tokenLower string) int {
-	if tokenLower == "" {
-		return -1
-	}
-	offset := 0
-	for {
-		idx := strings.Index(inputLower[offset:], tokenLower)
-		if idx < 0 {
-			return -1
-		}
-		start := offset + idx
-		end := start + len(tokenLower)
-		if hasHostTokenBoundary(inputLower, start, end) {
-			return start
-		}
-		offset = end
-		if offset >= len(inputLower) {
-			return -1
-		}
-	}
-}
-
-func hasHostTokenBoundary(input string, start, end int) bool {
-	if start > 0 && isBareHostTokenByte(input[start-1]) {
-		return false
-	}
-	if end < len(input) && isBareHostTokenByte(input[end]) {
-		return false
-	}
-	return true
-}
-
-func isBareHostTokenByte(ch byte) bool {
-	return isASCIILetter(ch) || isASCIIDigit(ch) || ch == '_' || ch == '-' || ch == '.' || ch == ':' || ch == '[' || ch == ']'
-}
-
 // UniqueMentionKeys returns normalized unique mention keys in deterministic
 // order. It is used for deciding one-child-agent-per-host before resolution.
 func UniqueMentionKeys(mentions []HostMention) []string {
@@ -217,6 +99,22 @@ func UniqueMentionKeys(mentions []HostMention) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func ResourceBindingProjectionFromMention(mention HostMention) resourcebinding.HostMentionProjection {
+	return resourcebinding.HostMentionProjection{
+		Raw:         mention.Raw,
+		HostID:      mention.HostID,
+		Address:     mention.Address,
+		DisplayName: mention.DisplayName,
+		Source:      string(mention.Source),
+		Resolved:    mention.Resolved,
+		Confidence:  mention.Confidence,
+	}
+}
+
+func ResourceRefFromHostMention(mention HostMention) resourcebinding.ResourceRef {
+	return resourcebinding.HostBindingFromMention(ResourceBindingProjectionFromMention(mention)).Ref
 }
 
 func mentionKey(mention HostMention) string {
@@ -284,7 +182,12 @@ func isPlausibleHostToken(token string) bool {
 }
 
 func isLocalAliasToken(token string) bool {
-	return strings.EqualFold(strings.TrimSpace(token), "local")
+	switch strings.ToLower(strings.TrimSpace(token)) {
+	case "local", "server-local", "localhost", "127.0.0.1", "::1", "[::1]":
+		return true
+	default:
+		return false
+	}
 }
 
 func isObservabilityMentionToken(token string) bool {

@@ -4,15 +4,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"aiops-v2/internal/hostops"
+	"aiops-v2/internal/resourcebinding"
 	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/specialinputmemory"
 	"aiops-v2/internal/workflowgen"
 )
 
@@ -30,6 +35,10 @@ type defaultChatService struct {
 
 type AsyncTurnRunner interface {
 	Start(ctx context.Context, req runtimekernel.TurnRequest)
+}
+
+type systemTurnRuntimeGateway interface {
+	CommitSystemTurn(ctx context.Context, req runtimekernel.SystemTurnRequest) (runtimekernel.TurnResult, error)
 }
 
 type defaultAsyncTurnRunner struct {
@@ -69,7 +78,7 @@ func NewChatServiceWithContextHostsHostOpsAndRuntimeSettings(baseContext context
 	baseContext = normalizeBaseContext(baseContext)
 	var workflowGeneration *WorkflowGenerationChatService
 	if sessionStore, ok := sessions.(SessionStore); ok {
-		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService, runtimeSettings)
+		workflowGeneration = NewWorkflowGenerationChatService(sessionStore, workflowgen.NewMemorySessionStore(), workflowgen.DeterministicPlanBuilder{}, workflowgen.RunnerGraphGenerator{}, eventService, runtimeSettings).WithSystemTurnGateway(runtime)
 	}
 	return &defaultChatService{
 		runtime:            runtime,
@@ -149,27 +158,77 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	structuredMentions := parseInputMentions(content, cmd.Metadata)
 	mentions := s.hostOpsMentionsForCommand(ctx, cmd, content, &structuredMentions)
 	mentionSource, mentionValidation := mentionSourceForCommand(cmd, content, structuredMentions, mentions)
+	specialInputObservations := inputMentionsToSpecialInputObservations(structuredMentions)
+	specialInputObservations = appendRawCorootCapabilityObservation(content, structuredMentions, specialInputObservations)
+	specialInputIntent := specialInputIntentFromContent(content, specialInputObservations, cmd.Metadata, commandSession)
+	if commandSession != nil {
+		commandSession.SpecialInputMemory, _ = specialinputmemory.Consolidate(commandSession.SpecialInputMemory, specialinputmemory.ConsolidateInput{
+			SessionID: commandSession.ID,
+			TaskID:    firstNonEmptyString(strings.TrimSpace(cmd.ClientTurnID), commandSession.ID),
+			TurnID:    req.TurnID,
+			Now:       time.Now().UTC(),
+			Mentions:  specialInputObservations,
+			Intent:    specialInputIntent,
+		})
+		if writer, ok := s.sessions.(SessionStore); ok {
+			writer.Update(commandSession)
+		}
+	}
+	if commandSession != nil && specialInputIntentConsumesTurn(specialInputIntent) {
+		opsRun := ensureOpsRunMetadata(&req)
+		return attachOpsRunToTurnResponse(TurnResponse{
+			SessionID:       req.SessionID,
+			TurnID:          req.TurnID,
+			ClientTurnID:    req.ClientTurnID,
+			ClientMessageID: req.ClientMessageID,
+			Status:          "completed",
+			Output:          specialInputIntentOutput(specialInputIntent),
+		}, opsRun), nil
+	}
+	specialInputReadPlan := buildSpecialInputReadPlan(ctx, commandSession, req.TurnID, cmd.ClientTurnID, s.hosts)
+	priorCorootContextActive := shouldActivatePriorCorootContextForInput(content)
+	specialInputReadPlan = specialInputReadPlanForCurrentTurn(specialInputReadPlan, priorCorootContextActive)
+	sessionCorootContext := sessionHasPriorCorootContext(commandSession) && priorCorootContextActive
 	route := BuildChatRuntimeRoute(content, mentions, evidence)
 	envelope := BuildEvidenceEnvelope(content, nil, nil)
 	intentFrame := BuildIntentFrame(content, envelope, nil)
 	intentRoute := BuildChatRuntimeRouteFromIntentFrame(intentFrame, route)
 	activeRoute, routingMode := selectActiveChatRuntimeRoute(route, intentRoute, intentFrame, s.intentFrameRoutingMode(ctx))
 	applyStructuredMentionRouteHints(&activeRoute, structuredMentions)
+	applySpecialInputCapabilityRouteHints(&activeRoute, specialInputReadPlan)
+	applySessionCorootContextRouteHints(&activeRoute, sessionCorootContext)
 	if selectedHostContextShouldUseHostBoundRoute(activeRoute, intentFrame, selectedHostID) {
 		activeRoute = promoteSelectedHostContextRoute(activeRoute, selectedHostID)
 		mentions = appendSelectedHostContextMention(mentions, selectedHostID)
 	}
+	if specialInputReadPlanShouldUseHostBoundRoute(activeRoute, specialInputReadPlan) {
+		activeRoute = promoteSpecialInputGrantRoute(activeRoute, specialInputReadPlan.ActiveExecutionScope.ResourceID)
+		mentions = appendSpecialInputGrantMention(mentions, specialInputReadPlan.ActiveExecutionScope)
+	}
+	routeBindingMentions := append([]hostops.HostMention(nil), mentions...)
+	sessionTargetRoute := s.selectSessionTargetRoute(ctx, activeRoute, intentFrame, commandSession, content, structuredMentions, mentions, req.Metadata)
+	if sessionTargetRoute.Applied || sessionTargetRoute.RequiresClarification {
+		activeRoute = sessionTargetRoute.Route
+	}
+	if sessionTargetRoute.Applied {
+		routeBindingMentions = appendSessionTargetRouteMentions(routeBindingMentions, sessionTargetRoute)
+	}
 	applyChatRuntimeRouteMetadata(&req, activeRoute)
 	applyIntentFrameRouteMetadata(&req, route, intentRoute, activeRoute, intentFrame, routingMode)
+	applyRuntimeMutationPolicies(&req, intentFrameForActiveRoute(intentFrame, activeRoute))
 	req.Metadata["aiops.route.activeSource"] = routingMode
+	applySessionTargetRouteMetadata(&req, sessionTargetRoute)
 	applyChatRuntimeToolSurfaceMetadata(&req, activeRoute)
+	applySpecialInputReadPlanMetadata(&req, specialInputReadPlan)
+	applySessionCorootContextMetadata(&req, sessionCorootContext, specialInputReadPlan)
 	applyStructuredCapabilityMetadata(req.Metadata, structuredMentions)
 	applyInputMentionDiagnosticValues(&req, mentionSource, mentionValidation)
 	applyUserEvidenceMetadata(&req, evidence)
 	applyFollowupPromptProfileMetadata(&req, commandSession, content, evidence)
-	applyChatRuntimeRouteHostBinding(&req, activeRoute, mentions)
+	applyChatRuntimeRouteHostBinding(&req, activeRoute, routeBindingMentions)
 	applyExplicitSelectedHostContext(&req, activeRoute, selectedHostID, requestedSessionType, requestedMode)
-	s.applyHostOpsTurnMetadata(ctx, cmd, &req, &structuredMentions)
+	s.applyHostOpsTurnMetadata(ctx, cmd, &req, &structuredMentions, routeBindingMentions)
+	applyWorkflowAgentRuntimeMetadata(&req)
 	if req.SessionID == "" {
 		req.SessionID = strings.TrimSpace(cmd.SessionID)
 	}
@@ -179,7 +238,17 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	opsRun := ensureOpsRunMetadata(&req)
 	ensureCorootRCAMetadata(&req)
 	s.enrichTurnHostMetadata(&req)
-	if s.workflowGeneration != nil {
+	applyChatRuntimeResourceProjection(&req, mentions)
+	applySessionTargetRouteResourceProjection(&req, sessionTargetRoute)
+	applyChatRuntimeSessionTargetRoleTrace(&req, commandSession, content, mentions)
+	if !isWorkflowAIChatSource(req.Metadata) {
+		if notice, ok := workflowCreationMigrationNotice(content); ok {
+			response, err := s.commitWorkflowCreationMigrationTurn(ctx, req, notice)
+			response = attachOpsRunToTurnResponse(response, opsRun)
+			return response, err
+		}
+	}
+	if s.workflowGeneration != nil && !isWorkflowAIChatSource(req.Metadata) {
 		if response, handled, err := s.workflowGeneration.Handle(ctx, cmd, req); handled || err != nil {
 			response = attachOpsRunToTurnResponse(response, opsRun)
 			return response, err
@@ -207,6 +276,56 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	}, nil
 }
 
+func workflowCreationMigrationNotice(input string) (string, bool) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", false
+	}
+	if _, ok := parseAddWorkflowMention(trimmed); ok {
+		return workflowCreationMigrationNoticeText(trimmed), true
+	}
+	if _, ok := parsePlainWorkflowWritingRequest(trimmed); ok {
+		return workflowCreationMigrationNoticeText(trimmed), true
+	}
+	return "", false
+}
+
+func isWorkflowAIChatSource(metadata map[string]string) bool {
+	return strings.EqualFold(strings.TrimSpace(metadata["source"]), "workflow_ai_chat")
+}
+
+func workflowCreationMigrationNoticeText(input string) string {
+	requirement := strings.TrimSpace(input)
+	if parsed, ok := parseAddWorkflowMention(requirement); ok {
+		requirement = parsed
+	}
+	if parsed, ok := parsePlainWorkflowWritingRequest(requirement); ok {
+		requirement = parsed
+	}
+	link := "/runner?workflow_ai=create"
+	if requirement != "" {
+		link += "&prompt=" + url.QueryEscape(requirement)
+	}
+	return "Workflow 创建已经迁移到 Runner Studio 的 Workflow AI Chat。\n\n[打开 Workflow AI Chat 创建](" + link + ") [复制需求]"
+}
+
+func (s *defaultChatService) commitWorkflowCreationMigrationTurn(ctx context.Context, req runtimekernel.TurnRequest, notice string) (TurnResponse, error) {
+	gateway, ok := s.runtime.(systemTurnRuntimeGateway)
+	if !ok {
+		return TurnResponse{}, fmt.Errorf("runtime gateway does not support deterministic system turns")
+	}
+	result, err := gateway.CommitSystemTurn(ctx, runtimekernel.SystemTurnRequest{
+		Turn: req,
+		Output: runtimekernel.SystemTurnOutput{
+			Kind:           runtimekernel.SystemTurnKindNotice,
+			FinalText:      notice,
+			ContractStatus: runtimekernel.FinalContractStatusPartial,
+			FailureCodes:   []string{"workflow_creation_migrated_to_runner_studio"},
+		},
+	})
+	return mapTurnResponse(result), err
+}
+
 func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool {
 	return session != nil &&
 		session.CurrentTurn != nil &&
@@ -214,15 +333,259 @@ func chatSessionHasRunningRegularTurn(session *runtimekernel.SessionState) bool 
 		session.CurrentTurn.ResumeState == runtimekernel.TurnResumeStateNone
 }
 
-func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest, structured *parsedInputMentions) {
+type sessionTargetRouteDecision struct {
+	Enabled               bool
+	Applied               bool
+	RequiresClarification bool
+	Reason                string
+	HostIDs               []string
+	TargetSetID           string
+	SourceTurnID          string
+	Route                 ChatRuntimeRoute
+}
+
+const (
+	metadataSessionTargetRouteEnabled = "aiops.sessionTarget.route.enabled"
+	envSessionTargetRouteEnabled      = "AIOPS_SESSION_TARGET_ROUTE"
+	sessionTargetRouteMinConfidence   = 0.8
+)
+
+func (s *defaultChatService) selectSessionTargetRoute(ctx context.Context, route ChatRuntimeRoute, frame runtimecontract.IntentFrame, session *runtimekernel.SessionState, input string, structured parsedInputMentions, mentions []hostops.HostMention, metadata map[string]string) sessionTargetRouteDecision {
+	decision := sessionTargetRouteDecision{Route: route}
+	if !sessionTargetRouteFeatureEnabled(metadata) {
+		return decision
+	}
+	decision.Enabled = true
+	if session == nil || session.SessionTargetSnapshot == nil {
+		decision.Reason = "session_target_absent"
+		return decision
+	}
+	snapshot := session.SessionTargetSnapshot
+	decision.TargetSetID = strings.TrimSpace(snapshot.ActiveTargetSetID)
+	decision.SourceTurnID = strings.TrimSpace(snapshot.SourceTurnID)
+	if userHasExplicitHostTarget(input, structured, mentions) {
+		decision.Reason = "explicit_target_overrides_session_target"
+		return decision
+	}
+	if route.Mode != ChatRouteAdvisory || route.UserProhibitedHostExec || strings.TrimSpace(route.EnvironmentReadOnlyReason) != "" {
+		decision.Reason = "route_not_eligible"
+		return decision
+	}
+	if !sessionTargetIntentAllowsRoute(frame) {
+		decision.Reason = "intent_not_target_operation"
+		return decision
+	}
+	if snapshot.Expired() {
+		return sessionTargetClarificationDecision(decision, route, "session_target_expired")
+	}
+	if snapshot.RequiresConfirmation {
+		return sessionTargetClarificationDecision(decision, route, "session_target_requires_confirmation")
+	}
+	if snapshot.Confidence < sessionTargetRouteMinConfidence {
+		return sessionTargetClarificationDecision(decision, route, "session_target_low_confidence")
+	}
+	if len(session.RoleBindingConflicts) > 0 {
+		return sessionTargetClarificationDecision(decision, route, "role_binding_conflict")
+	}
+	hostIDs := s.validatedSessionTargetHostIDs(ctx, snapshot)
+	if len(hostIDs) == 0 {
+		return sessionTargetClarificationDecision(decision, route, "session_target_hosts_unavailable")
+	}
+	decision.HostIDs = hostIDs
+	decision.Applied = true
+	switch len(hostIDs) {
+	case 1:
+		decision.Route = promoteSessionTargetSingleHostRoute(route, hostIDs[0])
+		decision.Reason = "session_target_single_host"
+	default:
+		decision.Route = promoteSessionTargetMultiHostRoute(route)
+		decision.Reason = "session_target_multi_host"
+	}
+	return decision
+}
+
+func sessionTargetRouteFeatureEnabled(metadata map[string]string) bool {
+	if raw, ok := metadata[metadataSessionTargetRouteEnabled]; ok {
+		switch strings.ToLower(strings.TrimSpace(raw)) {
+		case "false", "0", "no", "n", "off":
+			return false
+		case "true", "1", "yes", "y", "on":
+			return true
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(envSessionTargetRouteEnabled))) {
+	case "false", "0", "no", "n", "off":
+		return false
+	case "true", "1", "yes", "y", "on":
+		return true
+	default:
+		return true
+	}
+}
+
+func userHasExplicitHostTarget(input string, structured parsedInputMentions, mentions []hostops.HostMention) bool {
+	if structured.Present {
+		return true
+	}
+	if len(mentions) > 0 {
+		return true
+	}
+	return len(hostops.ParseHostMentions(input)) > 0
+}
+
+func sessionTargetIntentAllowsRoute(frame runtimecontract.IntentFrame) bool {
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	switch frame.Kind {
+	case runtimecontract.IntentKindExplain, runtimecontract.IntentKindResearch, runtimecontract.IntentKindRunbookAuthoring, runtimecontract.IntentKindPlan:
+		return false
+	}
+	return runtimecontract.ContainsDataScope(frame.DataScopes, runtimecontract.DataScopeLocalRuntime) ||
+		runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec)
+}
+
+func sessionTargetClarificationDecision(decision sessionTargetRouteDecision, route ChatRuntimeRoute, reason string) sessionTargetRouteDecision {
+	route.AllowsExecCommand = false
+	route.RequiresHostBinding = false
+	if route.Mode == ChatRouteHostBoundOps || route.Mode == ChatRouteMultiHostOps {
+		route.Mode = ChatRouteAdvisory
+	}
+	route.Reasons = appendUniqueEvidenceString(route.Reasons, "session target requires clarification: "+strings.TrimSpace(reason))
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
+	decision.Route = route
+	decision.RequiresClarification = true
+	decision.Reason = strings.TrimSpace(reason)
+	return decision
+}
+
+func promoteSessionTargetSingleHostRoute(route ChatRuntimeRoute, hostID string) ChatRuntimeRoute {
+	route.Mode = ChatRouteHostBoundOps
+	route.RequiresHostBinding = true
+	route.AllowsExecCommand = true
+	route.Reasons = appendUniqueEvidenceString(route.Reasons, "session target single host: "+strings.TrimSpace(hostID))
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
+	return route
+}
+
+func promoteSessionTargetMultiHostRoute(route ChatRuntimeRoute) ChatRuntimeRoute {
+	route.Mode = ChatRouteMultiHostOps
+	route.RequiresHostBinding = true
+	route.AllowsExecCommand = false
+	route.Reasons = appendUniqueEvidenceString(route.Reasons, "session target multi host")
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
+	return route
+}
+
+func (s *defaultChatService) validatedSessionTargetHostIDs(ctx context.Context, snapshot *resourcebinding.SessionTargetSnapshot) []string {
+	hostIDs := resourcebinding.HostIDsFromSessionTarget(snapshot)
+	if len(hostIDs) == 0 {
+		return nil
+	}
+	if s == nil || s.hosts == nil {
+		return uniqueSortedHostIDs(hostIDs)
+	}
+	valid := make([]string, 0, len(hostIDs))
+	for _, hostID := range hostIDs {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			continue
+		}
+		if hostID == serverLocalHostID {
+			valid = append(valid, hostID)
+			continue
+		}
+		host, err := s.hosts.GetHost(hostID)
+		if err == nil && host != nil && strings.TrimSpace(host.ID) != "" {
+			valid = append(valid, strings.TrimSpace(host.ID))
+			continue
+		}
+		if s.resolveSelectedHostContextID(ctx, hostID) != "" {
+			valid = append(valid, hostID)
+		}
+	}
+	return uniqueSortedHostIDs(valid)
+}
+
+func uniqueSortedHostIDs(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func appendSessionTargetRouteMentions(mentions []hostops.HostMention, decision sessionTargetRouteDecision) []hostops.HostMention {
+	if !decision.Applied {
+		return mentions
+	}
+	out := append([]hostops.HostMention(nil), mentions...)
+	for _, hostID := range decision.HostIDs {
+		hostID = strings.TrimSpace(hostID)
+		if hostID == "" {
+			continue
+		}
+		alreadyPresent := false
+		for _, mention := range out {
+			if strings.EqualFold(strings.TrimSpace(mention.HostID), hostID) {
+				alreadyPresent = true
+				break
+			}
+		}
+		if alreadyPresent {
+			continue
+		}
+		out = append(out, hostops.HostMention{
+			TokenID:     "session-target:" + strings.TrimSpace(decision.TargetSetID) + ":" + hostID,
+			Raw:         "@" + hostID,
+			HostID:      hostID,
+			DisplayName: hostID,
+			Source:      hostops.HostMentionSourceInventory,
+			Resolved:    true,
+			Confidence:  1,
+			CreatedAt:   time.Now(),
+		})
+	}
+	return out
+}
+
+func (s *defaultChatService) applyHostOpsTurnMetadata(ctx context.Context, cmd ChatCommand, req *runtimekernel.TurnRequest, structured *parsedInputMentions, routeMentions []hostops.HostMention) {
 	if s == nil || req == nil {
 		return
 	}
 	if routeMode := strings.TrimSpace(req.Metadata["aiops.route.mode"]); routeMode != "" && routeMode != string(ChatRouteMultiHostOps) {
 		return
 	}
-	mentions := s.hostOpsMentionsForCommand(ctx, cmd, req.Input, structured)
+	mentions := append([]hostops.HostMention(nil), routeMentions...)
+	if len(mentions) == 0 {
+		mentions = s.hostOpsMentionsForCommand(ctx, cmd, req.Input, structured)
+	}
 	decision := hostops.DetectRoute(req.Input, mentions)
+	if strings.TrimSpace(req.Metadata["aiops.route.mode"]) == string(ChatRouteMultiHostOps) &&
+		req.Metadata["aiops.sessionTarget.route.applied"] == "true" &&
+		len(mentions) >= 2 {
+		decision = hostops.RouteDecision{
+			Kind:         hostops.RouteKindHostOps,
+			Mentions:     append([]hostops.HostMention(nil), mentions...),
+			PlanRequired: true,
+			Reason:       "session target multi-host operation requires plan mode",
+		}
+	}
 	if decision.Kind != hostops.RouteKindHostOps {
 		return
 	}
@@ -267,6 +630,9 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 		return filtered
 	}
 	mentions := hostOpsMentionsFromMetadata(cmd.Metadata["aiops.hostops.mentions"])
+	if strings.TrimSpace(cmd.Metadata["aiops.hostops.mentions"]) != "" {
+		return s.confirmHostOpsMetadataMentions(ctx, mentions)
+	}
 	if len(mentions) == 0 {
 		if inputMentionStrictMode() {
 			return nil
@@ -281,6 +647,72 @@ func (s *defaultChatService) hostOpsMentionsForCommand(ctx context.Context, cmd 
 	}
 	resolved, _ := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, mentions)
 	return filterHostOpsRouteMentions(resolved)
+}
+
+func (s *defaultChatService) confirmHostOpsMetadataMentions(ctx context.Context, mentions []hostops.HostMention) []hostops.HostMention {
+	if len(mentions) == 0 {
+		return nil
+	}
+	if s == nil || s.hosts == nil {
+		return filterHostOpsMetadataWithoutRepository(mentions)
+	}
+	resolutionHints := make([]hostops.HostMention, 0, len(mentions))
+	originals := make([]hostops.HostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		hint := mention
+		hint.Resolved = false
+		if hint.Source == hostops.HostMentionSourceInventory && strings.TrimSpace(hint.HostID) != "" {
+			hint.Raw = "@" + strings.TrimSpace(hint.HostID)
+			hint.Address = ""
+			hint.DisplayName = ""
+		}
+		resolutionHints = append(resolutionHints, hint)
+		originals = append(originals, mention)
+	}
+	resolved, _ := hostops.NewResolver(hostRepositoryLookup{repo: s.hosts}).Resolve(ctx, resolutionHints)
+	confirmed := make([]hostops.HostMention, 0, len(resolved))
+	for index, mention := range resolved {
+		if !mention.Resolved || strings.TrimSpace(mention.HostID) == "" {
+			continue
+		}
+		if index < len(originals) {
+			mention.TokenID = firstNonEmptyString(strings.TrimSpace(originals[index].TokenID), mention.TokenID)
+			mention.Raw = firstNonEmptyString(strings.TrimSpace(originals[index].Raw), mention.Raw)
+			mention.SpanStart = firstNonZeroInt(originals[index].SpanStart, mention.SpanStart)
+			mention.SpanEnd = firstNonZeroInt(originals[index].SpanEnd, mention.SpanEnd)
+		}
+		confirmed = append(confirmed, mention)
+	}
+	return filterHostOpsRouteMentions(confirmed)
+}
+
+func filterHostOpsMetadataWithoutRepository(mentions []hostops.HostMention) []hostops.HostMention {
+	safe := make([]hostops.HostMention, 0, len(mentions))
+	for _, mention := range mentions {
+		switch mention.Source {
+		case hostops.HostMentionSourceLocalAlias:
+			mention.HostID = serverLocalHostID
+			mention.Address = firstNonEmptyString(strings.TrimSpace(mention.Address), serverLocalHostID)
+			mention.DisplayName = firstNonEmptyString(strings.TrimSpace(mention.DisplayName), serverLocalHostID)
+			mention.Resolved = true
+			mention.Confidence = 1
+			safe = append(safe, mention)
+		case hostops.HostMentionSourceIPLiteral:
+			mention.HostID = ""
+			mention.Resolved = false
+			safe = append(safe, mention)
+		}
+	}
+	return filterHostOpsRouteMentions(safe)
+}
+
+func firstNonZeroInt(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func (s *defaultChatService) resolveSelectedHostContextID(ctx context.Context, candidate string) string {
@@ -334,6 +766,538 @@ func promoteSelectedHostContextRoute(route ChatRuntimeRoute, selectedHostID stri
 	return route
 }
 
+func buildSpecialInputReadPlan(ctx context.Context, session *runtimekernel.SessionState, turnID, taskID string, hosts HostRepository) *specialinputmemory.MemoryReadPlan {
+	if session == nil {
+		return nil
+	}
+	plan := specialinputmemory.BuildMemoryReadPlan(ctx, session.SpecialInputMemory, specialinputmemory.MemoryReadPlanInput{
+		SessionID:    session.ID,
+		TaskID:       firstNonEmptyString(strings.TrimSpace(taskID), session.ID),
+		TurnID:       strings.TrimSpace(turnID),
+		Now:          time.Now().UTC(),
+		HostResolver: specialInputHostResolver{hosts: hosts},
+	})
+	if plan.ActiveExecutionScope == nil && len(plan.VisibleFacts) == 0 && len(plan.PendingConfirmations) == 0 && len(plan.SuspendedGrants) == 0 {
+		return nil
+	}
+	return &plan
+}
+
+func specialInputIntentFromContent(input string, observations []specialinputmemory.MentionObservation, metadata map[string]string, session *runtimekernel.SessionState) specialinputmemory.UserSpecialInputIntent {
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" {
+		return specialinputmemory.UserSpecialInputIntent{}
+	}
+	targetKind, targetKey := specialInputIntentTarget(observations)
+	if targetKind == "" && specialInputTextMentionsHost(text) {
+		targetKind = specialinputmemory.FactKindHost
+	}
+	if specialInputContainsAny(text, "忘记", "清除", "清空", "不要再用", "别再用", "移除") {
+		return specialinputmemory.UserSpecialInputIntent{
+			Kind:         specialinputmemory.IntentForget,
+			TargetKind:   targetKind,
+			CanonicalKey: targetKey,
+			Reason:       "user_forget",
+		}
+	}
+	if specialInputContainsAny(text, "不对", "说错", "错了") ||
+		(len(observations) > 0 && specialInputContainsAny(text, "应该是", "改成", "换成")) {
+		return specialinputmemory.UserSpecialInputIntent{
+			Kind:         specialinputmemory.IntentCorrection,
+			TargetKind:   firstNonEmptyString(targetKind, specialinputmemory.FactKindHost),
+			CanonicalKey: "",
+			Reason:       "user_correction",
+		}
+	}
+	if specialInputContainsAny(text, "确认", "就用", "是的", "没错") && specialInputConfirmAllowed(metadata, targetKey, session) {
+		return specialinputmemory.UserSpecialInputIntent{
+			Kind:         specialinputmemory.IntentConfirm,
+			TargetKind:   firstNonEmptyString(targetKind, specialinputmemory.FactKindHost),
+			CanonicalKey: targetKey,
+			Reason:       "user_confirmation",
+		}
+	}
+	return specialinputmemory.UserSpecialInputIntent{}
+}
+
+func appendRawCorootCapabilityObservation(input string, structured parsedInputMentions, observations []specialinputmemory.MentionObservation) []specialinputmemory.MentionObservation {
+	if structured.Present || !hasExplicitCorootMention(input) || specialInputObservationsContainCapability(observations, "coroot") {
+		return observations
+	}
+	return append(observations, corootCapabilityObservation("@coroot", specialinputmemory.SourceSystem))
+}
+
+func corootCapabilityObservation(raw string, source string) specialinputmemory.MentionObservation {
+	return specialinputmemory.MentionObservation{
+		Kind:           specialinputmemory.FactKindCapability,
+		CanonicalKey:   "capability:coroot",
+		Display:        "Coroot",
+		RawText:        strings.TrimSpace(raw),
+		Path:           "capability://coroot",
+		Source:         source,
+		TrustLevel:     specialinputmemory.TrustLevelServerConfirmed,
+		ResourceKind:   specialinputmemory.ResourceKindCapability,
+		ResourceID:     "coroot",
+		AllowedActions: []string{specialinputmemory.ActionInspect, specialinputmemory.ActionRead},
+	}
+}
+
+func specialInputObservationsContainCapability(observations []specialinputmemory.MentionObservation, capability string) bool {
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	for _, observation := range observations {
+		if strings.TrimSpace(observation.ResourceKind) != specialinputmemory.ResourceKindCapability {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(observation.ResourceID), capability) || strings.EqualFold(strings.TrimSpace(observation.CanonicalKey), "capability:"+capability) {
+			return true
+		}
+	}
+	return false
+}
+
+func specialInputConfirmAllowed(metadata map[string]string, targetKey string, session *runtimekernel.SessionState) bool {
+	if strings.EqualFold(strings.TrimSpace(metadata["aiops.specialInput.command"]), "confirm") {
+		return true
+	}
+	if strings.TrimSpace(targetKey) != "" {
+		return true
+	}
+	if session == nil {
+		return false
+	}
+	for _, fact := range session.SpecialInputMemory.Facts {
+		if strings.TrimSpace(fact.Status) == specialinputmemory.FactStatusActive &&
+			strings.TrimSpace(fact.TrustLevel) == specialinputmemory.TrustLevelRawTyped {
+			return true
+		}
+	}
+	return false
+}
+
+func specialInputIntentTarget(observations []specialinputmemory.MentionObservation) (string, string) {
+	for _, observation := range observations {
+		kind := strings.TrimSpace(observation.Kind)
+		key := strings.TrimSpace(observation.CanonicalKey)
+		if kind != "" || key != "" {
+			return kind, key
+		}
+	}
+	return "", ""
+}
+
+func specialInputTextMentionsHost(text string) bool {
+	return strings.Contains(text, "主机") || strings.Contains(text, "host")
+}
+
+func specialInputContainsAny(text string, needles ...string) bool {
+	for _, needle := range needles {
+		if strings.Contains(text, strings.ToLower(strings.TrimSpace(needle))) {
+			return true
+		}
+	}
+	return false
+}
+
+func specialInputIntentConsumesTurn(intent specialinputmemory.UserSpecialInputIntent) bool {
+	switch strings.TrimSpace(intent.Kind) {
+	case specialinputmemory.IntentCorrection, specialinputmemory.IntentForget, specialinputmemory.IntentConfirm:
+		return true
+	default:
+		return false
+	}
+}
+
+func specialInputIntentOutput(intent specialinputmemory.UserSpecialInputIntent) string {
+	switch strings.TrimSpace(intent.Kind) {
+	case specialinputmemory.IntentCorrection:
+		return "已更新特殊输入短期记忆。"
+	case specialinputmemory.IntentForget:
+		return "已清除对应的特殊输入短期记忆。"
+	case specialinputmemory.IntentConfirm:
+		return "已确认特殊输入短期记忆。"
+	default:
+		return "已处理特殊输入短期记忆。"
+	}
+}
+
+type specialInputHostResolver struct {
+	hosts HostRepository
+}
+
+func (r specialInputHostResolver) RevalidateHost(_ context.Context, ref specialinputmemory.HostRef) (specialinputmemory.HostValidation, error) {
+	hostID := strings.TrimSpace(ref.ResourceID)
+	if hostID == "" {
+		hostID = strings.TrimPrefix(strings.TrimSpace(ref.CanonicalKey), "host:")
+	}
+	if hostID == "" || hostID == serverLocalHostID {
+		return specialinputmemory.HostValidation{ResourceID: hostID, Available: hostID != ""}, nil
+	}
+	if r.hosts == nil {
+		return specialinputmemory.HostValidation{ResourceID: hostID, Available: true}, nil
+	}
+	host, err := r.hosts.GetHost(hostID)
+	if err != nil || host == nil || strings.TrimSpace(host.ID) == "" {
+		return specialinputmemory.HostValidation{ResourceID: hostID, Available: false, Reason: "host_not_found"}, nil
+	}
+	available := strings.TrimSpace(host.Status) != "offline"
+	return specialinputmemory.HostValidation{
+		ResourceID:     strings.TrimSpace(host.ID),
+		Available:      available,
+		ValidationHash: firstNonEmptyString(strings.TrimSpace(host.AgentURL), strings.TrimSpace(host.Address), strings.TrimSpace(host.ID)),
+		Reason:         "",
+	}, nil
+}
+
+func specialInputReadPlanShouldUseHostBoundRoute(route ChatRuntimeRoute, plan *specialinputmemory.MemoryReadPlan) bool {
+	if plan == nil || plan.ActiveExecutionScope == nil {
+		return false
+	}
+	scope := plan.ActiveExecutionScope
+	if scope.ResourceKind != specialinputmemory.ResourceKindHost || strings.TrimSpace(scope.ResourceID) == "" {
+		return false
+	}
+	if route.Mode != ChatRouteAdvisory || route.UserProhibitedHostExec || strings.TrimSpace(route.EnvironmentReadOnlyReason) != "" {
+		return false
+	}
+	return scope.Allows(specialinputmemory.ActionInspect) || scope.Allows(specialinputmemory.ActionRead) || scope.Allows(specialinputmemory.ActionExecLowRisk)
+}
+
+func applySpecialInputCapabilityRouteHints(route *ChatRuntimeRoute, plan *specialinputmemory.MemoryReadPlan) {
+	if route == nil || !specialInputReadPlanHasCapability(plan, "coroot") {
+		return
+	}
+	applyCorootCapabilityRouteHint(route, "special input capability: coroot")
+}
+
+func applySessionCorootContextRouteHints(route *ChatRuntimeRoute, enabled bool) {
+	if route == nil || !enabled {
+		return
+	}
+	applyCorootCapabilityRouteHint(route, "session history capability: coroot")
+}
+
+func shouldActivatePriorCorootContextForInput(input string) bool {
+	text := strings.TrimSpace(input)
+	if text == "" {
+		return false
+	}
+	if hasExplicitCorootMention(text) {
+		return true
+	}
+	if isPlainConversationalTurn(text) {
+		return false
+	}
+	if looksLikeCorootEntityReference(text) {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, marker := range []string{
+		"异常", "告警", "报警", "事件", "问题", "错误", "报错", "失败", "不可用", "健康",
+		"重启", "根因", "排查", "分析", "监控", "指标", "日志", "链路", "拓扑", "依赖",
+		"服务", "应用", "实例", "节点", "继续", "incident", "alert", "warning", "error",
+		"failed", "failure", "restart", "unavailable", "unhealthy", "health", "service",
+		"application", "instance", "pod", "node", "metric", "log", "trace", "dependency",
+		"rca", "root cause",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	referential := containsAnyText(lower, "刚才", "上面", "前面", "这个", "那个", "它", "继续")
+	action := containsAnyText(lower, "看", "查", "分析", "排查", "为什么", "原因", "怎么", "如何", "what", "why", "check", "show", "analyze")
+	return referential && action
+}
+
+func isPlainConversationalTurn(input string) bool {
+	token := compactConversationalToken(input)
+	if token == "" {
+		return true
+	}
+	switch token {
+	case "你好", "您好", "哈喽", "嗨", "在吗", "谢谢", "感谢", "多谢", "好的", "好", "嗯", "嗯嗯", "ok", "okay", "hi", "hello", "thanks", "thankyou", "thx", "bye":
+		return true
+	default:
+		return false
+	}
+}
+
+func compactConversationalToken(input string) string {
+	input = strings.ToLower(strings.TrimSpace(input))
+	var b strings.Builder
+	for _, r := range input {
+		if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func looksLikeCorootEntityReference(input string) bool {
+	token := strings.TrimSpace(input)
+	if token == "" || strings.ContainsAny(token, " \t\r\n，。！？；;?") {
+		return false
+	}
+	token = strings.TrimFunc(token, func(r rune) bool {
+		return unicode.IsPunct(r) || unicode.IsSymbol(r)
+	})
+	if len([]rune(token)) < 3 || len([]rune(token)) > 96 {
+		return false
+	}
+	lower := strings.ToLower(token)
+	if containsAnyText(lower, "-", "_", ".", ":", "/") && containsASCIIAlnum(lower) {
+		return true
+	}
+	if containsASCIIAlpha(lower) && containsASCIIDigit(lower) {
+		return true
+	}
+	for _, marker := range []string{
+		"agent", "server", "service", "node", "pod", "gateway", "worker", "nginx", "redis",
+		"rabbitmq", "postgres", "mysql", "kafka", "web", "api", "mon",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsASCIIAlnum(input string) bool {
+	return containsASCIIAlpha(input) || containsASCIIDigit(input)
+}
+
+func containsASCIIAlpha(input string) bool {
+	for _, r := range input {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') {
+			return true
+		}
+	}
+	return false
+}
+
+func containsASCIIDigit(input string) bool {
+	for _, r := range input {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyText(input string, markers ...string) bool {
+	for _, marker := range markers {
+		if strings.Contains(input, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func specialInputReadPlanForCurrentTurn(plan *specialinputmemory.MemoryReadPlan, corootActive bool) *specialinputmemory.MemoryReadPlan {
+	if plan == nil || corootActive || !specialInputReadPlanHasCapability(plan, "coroot") {
+		return plan
+	}
+	filtered := *plan
+	if filtered.ActiveExecutionScope != nil && corootGrantMatchesCapability(*filtered.ActiveExecutionScope, "coroot") {
+		filtered.ActiveExecutionScope = nil
+		filtered.ModelSummary = ""
+	}
+	filtered.VisibleFacts = filterCorootCapabilityFacts(filtered.VisibleFacts)
+	filtered.CandidateFacts = filterCorootCapabilityFacts(filtered.CandidateFacts)
+	filtered.SuspendedGrants = filterCorootCapabilityGrants(filtered.SuspendedGrants)
+	filtered.CandidateRoleBindings = filterCorootCapabilityRoleBindings(filtered.CandidateRoleBindings)
+	if specialinputmemory.MemoryReadPlanTraceEmpty(filtered) {
+		return nil
+	}
+	return &filtered
+}
+
+func filterCorootCapabilityFacts(facts []specialinputmemory.MentionFact) []specialinputmemory.MentionFact {
+	out := make([]specialinputmemory.MentionFact, 0, len(facts))
+	for _, fact := range facts {
+		if corootFactMatchesCapability(fact, "coroot") {
+			continue
+		}
+		out = append(out, fact)
+	}
+	return out
+}
+
+func filterCorootCapabilityGrants(grants []specialinputmemory.ExecutionScopeGrant) []specialinputmemory.ExecutionScopeGrant {
+	out := make([]specialinputmemory.ExecutionScopeGrant, 0, len(grants))
+	for _, grant := range grants {
+		if corootGrantMatchesCapability(grant, "coroot") {
+			continue
+		}
+		out = append(out, grant)
+	}
+	return out
+}
+
+func filterCorootCapabilityRoleBindings(bindings []specialinputmemory.MentionRoleBinding) []specialinputmemory.MentionRoleBinding {
+	out := make([]specialinputmemory.MentionRoleBinding, 0, len(bindings))
+	for _, binding := range bindings {
+		if strings.TrimSpace(binding.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+			strings.EqualFold(strings.TrimSpace(binding.ResourceID), "coroot") {
+			continue
+		}
+		out = append(out, binding)
+	}
+	return out
+}
+
+func corootFactMatchesCapability(fact specialinputmemory.MentionFact, capability string) bool {
+	return strings.TrimSpace(fact.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		(strings.EqualFold(strings.TrimSpace(fact.ResourceID), capability) ||
+			strings.EqualFold(strings.TrimSpace(fact.CanonicalKey), "capability:"+capability))
+}
+
+func corootGrantMatchesCapability(grant specialinputmemory.ExecutionScopeGrant, capability string) bool {
+	return strings.TrimSpace(grant.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		(strings.EqualFold(strings.TrimSpace(grant.ResourceID), capability) ||
+			strings.EqualFold(strings.TrimSpace(grant.CanonicalKey), "capability:"+capability))
+}
+
+func specialInputReadPlanHasCapability(plan *specialinputmemory.MemoryReadPlan, capability string) bool {
+	if plan == nil {
+		return false
+	}
+	capability = strings.ToLower(strings.TrimSpace(capability))
+	if capability == "" {
+		return false
+	}
+	if grant := plan.ActiveExecutionScope; grant != nil &&
+		strings.TrimSpace(grant.ResourceKind) == specialinputmemory.ResourceKindCapability &&
+		strings.EqualFold(strings.TrimSpace(grant.ResourceID), capability) &&
+		(grant.Allows(specialinputmemory.ActionInspect) || grant.Allows(specialinputmemory.ActionRead)) {
+		return true
+	}
+	for _, fact := range plan.VisibleFacts {
+		if strings.TrimSpace(fact.ResourceKind) != specialinputmemory.ResourceKindCapability {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(fact.ResourceID), capability) || strings.EqualFold(strings.TrimSpace(fact.CanonicalKey), "capability:"+capability) {
+			return true
+		}
+	}
+	return false
+}
+
+func sessionHasPriorCorootContext(session *runtimekernel.SessionState) bool {
+	if session == nil {
+		return false
+	}
+	for i := len(session.Messages) - 1; i >= 0 && len(session.Messages)-i <= 80; i-- {
+		msg := session.Messages[i]
+		if strings.EqualFold(strings.TrimSpace(msg.Role), "user") && hasExplicitCorootMention(msg.Content) {
+			return true
+		}
+		if corootContextMetadataAllowed(msg.Metadata) {
+			return true
+		}
+	}
+	if session.CurrentTurn != nil && corootContextMetadataAllowed(session.CurrentTurn.Metadata) {
+		return true
+	}
+	for i := len(session.TurnHistory) - 1; i >= 0 && len(session.TurnHistory)-i <= 30; i-- {
+		if corootContextMetadataAllowed(session.TurnHistory[i].Metadata) {
+			return true
+		}
+	}
+	return false
+}
+
+func corootContextMetadataAllowed(metadata map[string]string) bool {
+	if len(metadata) == 0 {
+		return false
+	}
+	for _, key := range []string{
+		"aiops.tool.corootRCAAllowed",
+		"aiops.route.allowsCorootRCA",
+		metadataCorootExplicitRCA,
+	} {
+		if strings.EqualFold(strings.TrimSpace(metadata[key]), "true") {
+			return true
+		}
+	}
+	return false
+}
+
+func promoteSpecialInputGrantRoute(route ChatRuntimeRoute, hostID string) ChatRuntimeRoute {
+	route.Mode = ChatRouteHostBoundOps
+	route.RequiresHostBinding = true
+	route.AllowsExecCommand = true
+	route.Reasons = appendUniqueEvidenceString(route.Reasons, "special input grant: "+strings.TrimSpace(hostID))
+	if strings.TrimSpace(route.Confidence) == "" {
+		route.Confidence = "medium"
+	}
+	return route
+}
+
+func appendSpecialInputGrantMention(mentions []hostops.HostMention, grant *specialinputmemory.ExecutionScopeGrant) []hostops.HostMention {
+	if grant == nil {
+		return mentions
+	}
+	hostID := strings.TrimSpace(grant.ResourceID)
+	if hostID == "" {
+		return mentions
+	}
+	for _, mention := range mentions {
+		if strings.EqualFold(strings.TrimSpace(mention.HostID), hostID) {
+			return mentions
+		}
+	}
+	return append(mentions, hostops.HostMention{
+		TokenID:     "special-input-grant:" + strings.TrimSpace(grant.ID),
+		Raw:         "@" + hostID,
+		HostID:      hostID,
+		DisplayName: firstNonEmptyString(strings.TrimSpace(grant.Display), hostID),
+		Source:      hostops.HostMentionSourceInventory,
+		Resolved:    true,
+		Confidence:  1,
+		CreatedAt:   time.Now(),
+	})
+}
+
+func applySpecialInputReadPlanMetadata(req *runtimekernel.TurnRequest, plan *specialinputmemory.MemoryReadPlan) {
+	if req == nil || plan == nil {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	req.SpecialInputReadPlan = plan
+	if plan.ActiveExecutionScope != nil {
+		req.Metadata["aiops.specialInput.readPlan.activeGrantId"] = strings.TrimSpace(plan.ActiveExecutionScope.ID)
+		req.Metadata["aiops.specialInput.readPlan.activeResourceId"] = strings.TrimSpace(plan.ActiveExecutionScope.ResourceID)
+		req.Metadata["aiops.specialInput.readPlan.activeResourceKind"] = strings.TrimSpace(plan.ActiveExecutionScope.ResourceKind)
+		req.Metadata["aiops.specialInput.readPlan.source"] = "execution_scope_grant"
+	}
+	if len(plan.PendingConfirmations) > 0 {
+		req.Metadata["aiops.specialInput.readPlan.pendingConfirmation"] = "true"
+	}
+	if len(plan.SuspendedGrants) > 0 {
+		req.Metadata["aiops.specialInput.readPlan.suspended"] = "true"
+	}
+	if specialInputReadPlanHasCapability(plan, "coroot") {
+		req.Metadata["aiops.coroot.contextSource"] = "special_input_memory"
+		setMetadataIfEmpty(req.Metadata, metadataCorootRCADisplayAllowed, "true")
+		setMetadataIfEmpty(req.Metadata, metadataObservabilityProvider, "coroot")
+	}
+}
+
+func applySessionCorootContextMetadata(req *runtimekernel.TurnRequest, enabled bool, plan *specialinputmemory.MemoryReadPlan) {
+	if req == nil || !enabled || specialInputReadPlanHasCapability(plan, "coroot") {
+		return
+	}
+	if req.Metadata == nil {
+		req.Metadata = map[string]string{}
+	}
+	req.Metadata["aiops.coroot.contextSource"] = "session_history"
+	setMetadataIfEmpty(req.Metadata, metadataCorootRCADisplayAllowed, "true")
+	setMetadataIfEmpty(req.Metadata, metadataObservabilityProvider, "coroot")
+}
+
 func appendSelectedHostContextMention(mentions []hostops.HostMention, selectedHostID string) []hostops.HostMention {
 	selectedHostID = strings.TrimSpace(selectedHostID)
 	if selectedHostID == "" {
@@ -360,10 +1324,6 @@ func sessionHostID(session *runtimekernel.SessionState) string {
 		return ""
 	}
 	return strings.TrimSpace(session.HostID)
-}
-
-func applyInputMentionDiagnostics(req *runtimekernel.TurnRequest, mentions parsedInputMentions) {
-	applyInputMentionDiagnosticValues(req, mentions.Source, mentions.Validation)
 }
 
 func applyInputMentionDiagnosticValues(req *runtimekernel.TurnRequest, source, validation string) {
@@ -394,8 +1354,7 @@ func applyStructuredMentionRouteHints(route *ChatRuntimeRoute, mentions parsedIn
 		return
 	}
 	if mentions.HasCapability("coroot") {
-		route.AllowsCorootRCA = true
-		route.Reasons = appendUniqueEvidenceString(route.Reasons, "structured capability: coroot")
+		applyCorootCapabilityRouteHint(route, "structured capability: coroot")
 	}
 }
 
@@ -619,17 +1578,66 @@ func setMetadataIfEmpty(metadata map[string]string, key, value string) {
 }
 
 func applyFollowupPromptProfileMetadata(req *runtimekernel.TurnRequest, session *runtimekernel.SessionState, input string, evidence UserEvidenceExtraction) {
-	if req == nil || session == nil || !shortFollowupInput(input) || evidence.HasEvidence || !sessionHasExistingEvidenceContext(session) {
+	if req == nil {
 		return
 	}
 	if req.Metadata == nil {
 		req.Metadata = map[string]string{}
 	}
+	if isPlainConversationalTurn(input) {
+		setMetadataIfEmpty(req.Metadata, metadataAnswerSmalltalkOnly, "true")
+		setMetadataIfEmpty(req.Metadata, "reasoningEffort", "low")
+		setMetadataIfEmpty(req.Metadata, "answerStyle", "smalltalk")
+		return
+	}
+	if session == nil || !shortFollowupInput(input) || evidence.HasEvidence || !sessionHasExistingEvidenceContext(session) {
+		return
+	}
 	setMetadataIfEmpty(req.Metadata, metadataTurnFollowup, "true")
 	setMetadataIfEmpty(req.Metadata, metadataTurnHasExistingEvidence, "true")
 	setMetadataIfEmpty(req.Metadata, metadataTurnNoNewEvidence, "true")
+	if completeExplanationFollowupInput(input) {
+		setMetadataIfEmpty(req.Metadata, metadataAnswerRequireCompleteFollowup, "true")
+		setMetadataIfEmpty(req.Metadata, "reasoningEffort", "medium")
+		setMetadataIfEmpty(req.Metadata, "answerStyle", "complete_explanation")
+		return
+	}
 	setMetadataIfEmpty(req.Metadata, "reasoningEffort", "low")
 	setMetadataIfEmpty(req.Metadata, "answerStyle", "concise")
+}
+
+func completeExplanationFollowupInput(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+	for _, signal := range []string{
+		"完整答案",
+		"完整回答",
+		"完整写出来",
+		"写完整",
+		"展开讲",
+		"详细讲",
+		"详细解释",
+		"底层实现",
+		"实现原理",
+		"线程安全",
+		"阻塞原理",
+	} {
+		if strings.Contains(lower, signal) {
+			return true
+		}
+	}
+	goInternalsTerms := 0
+	for _, term := range []string{"channel", "map", "slice"} {
+		if strings.Contains(lower, term) {
+			goInternalsTerms++
+		}
+	}
+	if goInternalsTerms >= 2 && (strings.Contains(lower, "底层") || strings.Contains(lower, "阻塞") || strings.Contains(lower, "线程")) {
+		return true
+	}
+	return false
 }
 
 func shortFollowupInput(input string) bool {
