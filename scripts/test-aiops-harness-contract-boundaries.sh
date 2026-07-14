@@ -173,6 +173,7 @@ two_hop_ts_alias_root="${FIXTURE_ROOT}/two-hop-ts-final-control"
 template_three_hop_root="${FIXTURE_ROOT}/template-three-hop-final-control"
 go_closure_capture_root="${FIXTURE_ROOT}/go-closure-capture-final-control"
 ts_closure_capture_root="${FIXTURE_ROOT}/ts-closure-capture-final-control"
+ts_default_parameter_root="${FIXTURE_ROOT}/ts-default-parameter-final-control"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
@@ -201,6 +202,7 @@ create_fixture "${two_hop_ts_alias_root}"
 create_fixture "${template_three_hop_root}"
 create_fixture "${go_closure_capture_root}"
 create_fixture "${ts_closure_capture_root}"
+create_fixture "${ts_default_parameter_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -412,6 +414,16 @@ printf '%s\n' \
 	'}' >"${ts_closure_capture_root}/web/src/transport/closureControl.ts"
 
 printf '%s\n' \
+	'export function defaultParameterControl(markdown: string) {' \
+	'  const outerCandidate = normalizeForControl(markdown);' \
+	'  const predicate = (candidate = outerCandidate) => {' \
+	'    if (candidate.includes("failed")) return false;' \
+	'    return true;' \
+	'  };' \
+	'  return predicate();' \
+	'}' >"${ts_default_parameter_root}/web/src/transport/defaultParameterControl.ts"
+
+printf '%s\n' \
 	'package appui' \
 	'func closureDisplayOnly(finalText string) string {' \
 	'  candidate := normalizeForDisplay(finalText)' \
@@ -447,6 +459,30 @@ printf '%s\n' \
 	'  if (ordinaryTemplate.includes("failed")) return null;' \
 	'  return typedSibling() ? displayClosure() : null;' \
 	'}' >"${legal_root}/web/src/chat/closureDisplay.ts"
+
+printf '%s\n' \
+	'package appui' \
+	'func anonymousParameterShadow(finalText string) bool {' \
+	'  candidate := normalizeForDisplay(finalText)' \
+	'  return func(candidate string) bool {' \
+	'    if strings.Contains(candidate, "failed") { return false }' \
+	'    return true' \
+	'  }("typed safe value")' \
+	'}' >"${legal_root}/internal/appui/parameter_shadow.go"
+
+printf '%s\n' \
+	'export function arrowParameterShadow(markdown: string) {' \
+	'  const candidate = normalizeForDisplay(markdown);' \
+	'  const typedPredicate = (candidate: string) => {' \
+	'    if (candidate.includes("failed")) return false;' \
+	'    return true;' \
+	'  };' \
+	'  const safeDefaultPredicate = (candidate: string = "typed safe value") => {' \
+	'    if (candidate.includes("failed")) return false;' \
+	'    return true;' \
+	'  };' \
+	'  return typedPredicate("typed safe value") && safeDefaultPredicate();' \
+	'}' >"${legal_root}/web/src/transport/parameterShadow.ts"
 
 expect_allowed "typed runtime state with comment and display-only final text" "${legal_root}"
 expect_rejected \
@@ -577,6 +613,11 @@ expect_rejected \
 expect_rejected \
 	"TypeScript arrow closure captures tainted markdown" \
 	"${ts_closure_capture_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TypeScript default parameter captures tainted outer alias" \
+	"${ts_default_parameter_root}" \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts"
 

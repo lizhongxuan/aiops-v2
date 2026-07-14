@@ -280,6 +280,21 @@ def matching_delimiter(masked: str, start: int, opening: str, closing: str) -> i
     return None
 
 
+def matching_opening_delimiter(
+    masked: str, closing_index: int, opening: str, closing: str
+) -> int | None:
+    depth = 0
+    for index in range(closing_index, -1, -1):
+        char = masked[index]
+        if char == closing:
+            depth += 1
+        elif char == opening:
+            depth -= 1
+            if depth == 0:
+                return index
+    return None
+
+
 def function_scopes(masked: str) -> list[Scope]:
     stack: list[int] = []
     pairs: list[tuple[int, int]] = []
@@ -312,6 +327,119 @@ def scope_chain_for_offset(scopes: list[Scope], offset: int, source_len: int) ->
     if file_scope not in containing:
         containing.append(file_scope)
     return containing
+
+
+def function_parameter_span(masked: str, scope: Scope) -> tuple[int, int] | None:
+    """Return the source span inside the parameter list for a function scope."""
+    opening_brace = scope.start - 1
+    header_start = max(0, opening_brace - 2000)
+    header = masked[header_start:opening_brace]
+
+    arrow = header.rfind("=>")
+    if arrow != -1 and not header[arrow + 2 :].strip():
+        arrow_global = header_start + arrow
+        closing = masked.rfind(")", header_start, arrow_global)
+        if closing != -1:
+            opening = matching_opening_delimiter(masked, closing, "(", ")")
+            if opening is not None:
+                return opening + 1, closing
+        single = re.search(r"([A-Za-z_$][A-Za-z0-9_$]*)\s*$", header[:arrow])
+        if single:
+            return header_start + single.start(1), header_start + single.end(1)
+
+    keywords = list(re.finditer(r"\b(?:func|function)\b", header))
+    if keywords:
+        keyword = keywords[-1]
+        cursor = header_start + keyword.end()
+        while cursor < opening_brace and masked[cursor].isspace():
+            cursor += 1
+        if cursor < opening_brace and masked[cursor] == "(":
+            first_close = matching_delimiter(masked, cursor, "(", ")")
+            if first_close is None or first_close >= opening_brace:
+                return None
+            after = first_close + 1
+            while after < opening_brace and masked[after].isspace():
+                after += 1
+            receiver_name = re.match(r"[A-Za-z_$][A-Za-z0-9_$]*", masked[after:opening_brace])
+            if receiver_name:
+                after += receiver_name.end()
+                while after < opening_brace and masked[after].isspace():
+                    after += 1
+                if after < opening_brace and masked[after] == "(":
+                    params_close = matching_delimiter(masked, after, "(", ")")
+                    if params_close is not None and params_close < opening_brace:
+                        return after + 1, params_close
+            return cursor + 1, first_close
+
+        params_open = masked.find("(", cursor, opening_brace)
+        if params_open != -1:
+            params_close = matching_delimiter(masked, params_open, "(", ")")
+            if params_close is not None and params_close < opening_brace:
+                return params_open + 1, params_close
+
+    closing = masked.rfind(")", header_start, opening_brace)
+    if closing != -1:
+        opening = matching_opening_delimiter(masked, closing, "(", ")")
+        if opening is not None:
+            return opening + 1, closing
+    return None
+
+
+def split_top_level(text: str, masked: str, separator: str) -> list[tuple[str, str]]:
+    parts: list[tuple[str, str]] = []
+    start = 0
+    paren_depth = bracket_depth = brace_depth = 0
+    for index, char in enumerate(masked):
+        if char == "(":
+            paren_depth += 1
+        elif char == ")":
+            paren_depth -= 1
+        elif char == "[":
+            bracket_depth += 1
+        elif char == "]":
+            bracket_depth -= 1
+        elif char == "{":
+            brace_depth += 1
+        elif char == "}":
+            brace_depth -= 1
+        elif char == separator and paren_depth == bracket_depth == brace_depth == 0:
+            parts.append((text[start:index], masked[start:index]))
+            start = index + 1
+    parts.append((text[start:], masked[start:]))
+    return parts
+
+
+def parameter_definitions(
+    source: str,
+    masked: str,
+    scope: Scope,
+) -> list[tuple[str, str]]:
+    span = function_parameter_span(masked, scope)
+    if span is None:
+        return []
+    start, end = span
+    definitions: list[tuple[str, str]] = []
+    for raw_param, masked_param in split_top_level(
+        source[start:end], masked[start:end], ","
+    ):
+        raw_param = raw_param.strip()
+        masked_param = masked_param.strip()
+        if not raw_param or raw_param.startswith(("{", "[")):
+            continue
+        default_rhs = ""
+        for index, char in enumerate(masked_param):
+            if char == "=" and not masked_param[index : index + 2] in {"=>", "=="}:
+                default_rhs = raw_param[index + 1 :].strip()
+                raw_param = raw_param[:index].strip()
+                break
+        name_match = re.match(
+            r"(?:(?:public|private|protected|readonly)\s+)*(?:\.\.\.)?"
+            r"([A-Za-z_$][A-Za-z0-9_$]*)",
+            raw_param,
+        )
+        if name_match:
+            definitions.append((name_match.group(1), default_rhs))
+    return definitions
 
 
 def extract_if_conditions(source: str, masked: str) -> Iterator[Condition]:
@@ -402,6 +530,14 @@ def assignment_index(
     for lhs, assignment in assignment_records(source, masked, file_scope):
         owner = scope_for_offset(scopes, assignment.offset, source_len)
         indexed.setdefault(owner, {}).setdefault(lhs, []).append(assignment)
+    for scope in scopes:
+        for name, default_rhs in parameter_definitions(source, masked, scope):
+            indexed.setdefault(scope, {}).setdefault(name, []).append(
+                Assignment(scope.start - 1, default_rhs)
+            )
+    for assignments in indexed.values():
+        for definitions in assignments.values():
+            definitions.sort(key=lambda definition: definition.offset)
     return indexed
 
 
