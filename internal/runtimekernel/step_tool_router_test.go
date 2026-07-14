@@ -3,9 +3,13 @@ package runtimekernel
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/cloudwego/eino/schema"
+
+	"aiops-v2/internal/policyengine"
 	"aiops-v2/internal/tooling"
 )
 
@@ -103,6 +107,103 @@ func TestStepToolRouterProviderAndDispatcherShareFingerprint(t *testing.T) {
 	if result.DecisionTrace.ToolSurfaceFingerprint != router.Fingerprint || executor.calls != 1 {
 		t.Fatalf("dispatch result = %#v calls=%d", result, executor.calls)
 	}
+}
+
+func TestRunTurnProviderRequestAndDispatcherDecisionShareToolSurfaceFingerprint(t *testing.T) {
+	const (
+		toolName  = "write_file"
+		sessionID = "session-step-tool-router-contract"
+		turnID    = "turn-step-tool-router-contract"
+	)
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		schema.AssistantMessage("request controlled write", []schema.ToolCall{{
+			ID: "call-contract-write", Type: "function",
+			Function: schema.FunctionCall{Name: toolName, Arguments: `{"path":"/tmp/router-contract","content":"synthetic"}`},
+		}}),
+	}}
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name: toolName, Description: "Controlled write for router contract",
+			Mutating: true, RequiresApproval: true,
+			Discovery: tooling.ToolDiscoveryMetadata{PermissionScope: "argument_scoped"},
+			ResourceLocks: []tooling.ToolResourceLockKey{{
+				ResourceType: "synthetic_file", ResourceID: "/tmp/router-contract", OperationKind: "write",
+			}},
+			Idempotency: tooling.ToolIdempotencyMetadata{
+				Strategy: tooling.ToolIdempotencyStrategyArgumentsHash, PostCheckRefs: []string{"verify synthetic"},
+			},
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)}, Modes: []string{string(ModeExecute)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return false },
+		CheckPermissionsFunc: func(context.Context, json.RawMessage) tooling.PermissionDecision {
+			return tooling.PermissionDecision{
+				Action: tooling.PermissionActionNeedApproval, Reason: "contract write requires approval",
+				Approval: &tooling.PermissionApprovalPayload{
+					Risk: string(tooling.ToolRiskHigh), Source: "step_tool_router_contract_test",
+					ExpectedEffect: "write synthetic", Rollback: "remove synthetic", Validation: "verify synthetic",
+				},
+			}
+		},
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "unexpected execution before approval"}, nil
+		},
+	}
+
+	sink := &recordingReplayArtifactSink{}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, map[policyengine.Mode]policyengine.ModePolicy{})
+	kernel.replayArtifactSink = sink
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: sessionID, SessionType: SessionTypeHost, Mode: ModeExecute,
+		TurnID: turnID, Input: "perform the controlled write",
+		Metadata: map[string]string{
+			"aiops.userEvidence.present": "true", "aiops.userEvidence.kinds": "pre_change_snapshot",
+			"aiops.userEvidence.signals": "file_absent", "aiops.userEvidence.rawExcerpt": "/tmp/router-contract absent before write",
+		},
+	})
+	if err != nil || result.Status != "blocked" {
+		t.Fatalf("RunTurn() = %#v, %v; want approval-blocked turn", result, err)
+	}
+
+	providerFingerprint := ""
+	for _, artifact := range sink.artifacts {
+		if artifact.Kind != ReplayArtifactKindStepContext || artifact.StepContext == nil {
+			continue
+		}
+		for _, spec := range artifact.StepContext.ProviderRequest.Tools {
+			if spec.Name == toolName {
+				providerFingerprint = spec.Hash
+				break
+			}
+		}
+	}
+	if providerFingerprint == "" {
+		t.Fatalf("production RuntimeStepContext omitted provider fingerprint for %q: %#v", toolName, sink.artifacts)
+	}
+
+	session := kernel.sessions.Get(sessionID)
+	if session == nil || len(session.PendingApprovals) != 1 {
+		t.Fatalf("RunTurn pending approvals = %#v, want one dispatcher decision", session)
+	}
+	// markTurnBlocked copies this value directly from DispatchResult.DecisionTrace.ToolSurfaceFingerprint.
+	dispatcherFingerprint := session.PendingApprovals[0].ToolSurfaceFingerprint
+	if err := stepToolRouterFingerprintParityError(providerFingerprint, dispatcherFingerprint); err != nil {
+		t.Fatal(err)
+	}
+	if err := stepToolRouterFingerprintParityError(providerFingerprint, dispatcherFingerprint+"-deliberate-divergence"); err == nil {
+		t.Fatal("fingerprint parity assertion accepted a deliberate provider/dispatcher divergence")
+	}
+}
+
+func stepToolRouterFingerprintParityError(providerFingerprint, dispatcherFingerprint string) error {
+	if strings.TrimSpace(providerFingerprint) == "" || strings.TrimSpace(dispatcherFingerprint) == "" {
+		return fmt.Errorf("provider/dispatcher tool surface fingerprint is empty: provider=%q dispatcher=%q", providerFingerprint, dispatcherFingerprint)
+	}
+	if providerFingerprint != dispatcherFingerprint {
+		return fmt.Errorf("provider/dispatcher tool surface fingerprint diverged: provider=%q dispatcher=%q", providerFingerprint, dispatcherFingerprint)
+	}
+	return nil
 }
 
 func TestStepToolRouterHiddenModelToolHasStableFailure(t *testing.T) {

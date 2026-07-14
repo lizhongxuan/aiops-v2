@@ -157,7 +157,7 @@ check_absent \
 check_absent_multiline \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts" \
-	'(?msx)^\h*(?:const\h+|let\h+|var\h+)?(?<control_alias>[A-Za-z_][A-Za-z0-9_]*)\h*(?::=|=)\h*(?:strings\.TrimSpace\(\h*)?(?:finalText|assistantText|markdown|(?:[A-Za-z_][A-Za-z0-9_]*\.)*FinalOutput)\h*\)?\h*;?\h*$(?:(?:\R)(?!\h*(?://|/\*|\*)).*){0,20}?\R\h*if\h*(?:\(\h*)?(?:strings\.Contains\(\h*\k<control_alias>\h*,\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|\k<control_alias>\.(?:includes|match|test)\(\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
+	'(?msx)^\h*(?:const\h+|let\h+|var\h+)?(?<control_alias>[A-Za-z_][A-Za-z0-9_]*)\h*(?::=|=)\h*(?:strings\.(?:TrimSpace|ToLower|ToUpper)\(\h*)?(?:finalText|assistantText|markdown|FinalOutput|(?:[A-Za-z_][A-Za-z0-9_]*\.)+FinalOutput)\h*\)?(?:\h*\.\h*(?:trim|toLowerCase|toUpperCase)\(\h*\)){0,2}\h*;?\h*$(?:(?:\R)(?!\h*(?://|/\*|\*)).*){0,20}?\R\h*if\h*(?:\(\h*)?(?:strings\.Contains\(\h*\k<control_alias>\h*,\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running)|\k<control_alias>\.(?:includes|match|test)\(\h*"[^"]*(?:approved|approval|blocked|completed|failed|verified|pending|denied|success|error|running))' \
 	internal/runtimekernel internal/appui web/src
 
 check_required \
@@ -182,6 +182,12 @@ check_required \
 	"StepToolRouter dispatcher binding marker" \
 	"runtimekernel dispatcher" \
 	'(?m)^\s*WithStepToolRouter\(runtimeToolSurface\)\.\s*$' \
+	internal/runtimekernel/runtime_kernel.go
+
+check_required \
+	"runtime step context StepToolRouter binding" \
+	"runtimekernel step admission" \
+	'(?m)^\s*stepCtx,\s*promptBuild,\s*modelErr\s*:=\s*k\.buildRuntimeStepContext\(req,\s*session,\s*agentKind,\s*iteration,\s*contextState,\s*contextMessages,\s*compiled,\s*runtimeToolSurface,\s*RuntimeStepControlFacts\{' \
 	internal/runtimekernel/runtime_kernel.go
 
 check_required \

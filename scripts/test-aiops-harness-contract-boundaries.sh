@@ -28,6 +28,7 @@ create_fixture() {
 		'func runTurn() {' \
 		'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")' \
 		'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+		'  stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, RuntimeStepControlFacts{})' \
 		'  dispatcher = dispatcher.' \
 		'    WithStepToolRouter(runtimeToolSurface).' \
 		'    Done()' \
@@ -55,7 +56,14 @@ create_fixture() {
 		'/*' \
 		' * const candidate = markdown;' \
 		' * if (candidate.includes("approved")) return { status: "approved" };' \
+		' * const normalized = markdown.trim();' \
+		' * if (normalized.includes("completed")) return { status: "completed" };' \
 		' */' >"${root}/web/src/chat/control_comments.ts"
+	printf '%s\n' \
+		'package appui' \
+		'// candidate := strings.ToLower(finalText)' \
+		'// if strings.Contains(candidate, "approved") { return }' \
+		>"${root}/internal/appui/control_comments.go"
 }
 
 run_gate() {
@@ -117,6 +125,10 @@ prompt_last_root="${FIXTURE_ROOT}/prompt-last-validator-missing"
 provider_call_root="${FIXTURE_ROOT}/provider-router-call-missing"
 dispatcher_binding_root="${FIXTURE_ROOT}/dispatcher-router-binding-missing"
 alias_final_root="${FIXTURE_ROOT}/aliased-final-control"
+go_transform_alias_root="${FIXTURE_ROOT}/go-transformed-aliased-final-control"
+ts_transform_alias_root="${FIXTURE_ROOT}/ts-transformed-aliased-final-control"
+provider_adapter_root="${FIXTURE_ROOT}/provider-router-adapter-missing"
+step_call_surface_root="${FIXTURE_ROOT}/step-call-wrong-tool-surface"
 
 create_fixture "${legal_root}"
 create_fixture "${markdown_root}"
@@ -134,6 +146,10 @@ create_fixture "${prompt_last_root}"
 create_fixture "${provider_call_root}"
 create_fixture "${dispatcher_binding_root}"
 create_fixture "${alias_final_root}"
+create_fixture "${go_transform_alias_root}"
+create_fixture "${ts_transform_alias_root}"
+create_fixture "${provider_adapter_root}"
+create_fixture "${step_call_surface_root}"
 mkdir -p "${multi_missing_root}"
 
 printf '%s\n' \
@@ -189,6 +205,7 @@ printf '%s\n' \
 	'package runtimekernel' \
 	'func runTurn() {' \
 	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+	'  stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, RuntimeStepControlFacts{})' \
 	'  dispatcher = dispatcher.' \
 	'    WithStepToolRouter(runtimeToolSurface).' \
 	'    Done()' \
@@ -220,8 +237,9 @@ printf '%s\n' \
 printf '%s\n' \
 	'package runtimekernel' \
 	'func runTurn() {' \
-	'  observeRuntimeStage("turn_assembly_built")' \
-	'  observeRuntimeStage("prompt_compiled")' \
+	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")' \
+	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+	'  stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, runtimeToolSurface, RuntimeStepControlFacts{})' \
 	'  // WithStepToolRouter(runtimeToolSurface)' \
 	'}' >"${dispatcher_binding_root}/internal/runtimekernel/runtime_kernel.go"
 
@@ -239,6 +257,45 @@ printf '%s\n' \
 	'  if (candidate.includes("completed")) return { status: "completed" };' \
 	'  return { status: "running" };' \
 	'}' >"${alias_final_root}/web/src/chat/aliasControl.ts"
+
+printf '%s\n' \
+	'package appui' \
+	'func transformedAliasControl(finalText string) string {' \
+	'  candidate := strings.ToLower(finalText)' \
+	'  if strings.Contains(candidate, "approved") { return "approval_granted" }' \
+	'  return "pending"' \
+	'}' >"${go_transform_alias_root}/internal/appui/alias_control.go"
+
+printf '%s\n' \
+	'export function transformedAliasControl(markdown: string) {' \
+	'  const candidate = markdown.trim();' \
+	'  if (candidate.includes("completed")) return { status: "completed" };' \
+	'  return { status: "running" };' \
+	'}' >"${ts_transform_alias_root}/web/src/chat/aliasControl.ts"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func buildRuntimeStepContext() {' \
+	'  providerReq := ProviderRequestSnapshot{' \
+	'    Tools: providerToolSpecsFromRuntimeToolSurface(toolSurface),' \
+	'  }' \
+	'}' \
+	'func providerToolSpecsFromStepToolRouter(surface StepToolRouter) {}' \
+	'func providerToolSpecsFromRuntimeToolSurface(surface RuntimeToolRouterSnapshot) {' \
+	'  return providerToolSpecsFromDifferentRouter(surface)' \
+	'}' \
+	>"${provider_adapter_root}/internal/runtimekernel/step_builder.go"
+
+printf '%s\n' \
+	'package runtimekernel' \
+	'func runTurn() {' \
+	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "turn_assembly_built")' \
+	'  k.observeRuntimeStage(ctx, session.ID, turnID, iteration, "prompt_compiled")' \
+	'  stepCtx, promptBuild, modelErr := k.buildRuntimeStepContext(req, session, agentKind, iteration, contextState, contextMessages, compiled, otherToolSurface, RuntimeStepControlFacts{})' \
+	'  dispatcher = dispatcher.' \
+	'    WithStepToolRouter(runtimeToolSurface).' \
+	'    Done()' \
+	'}' >"${step_call_surface_root}/internal/runtimekernel/runtime_kernel.go"
 
 expect_allowed "typed runtime state" "${legal_root}"
 expect_rejected \
@@ -316,6 +373,26 @@ expect_rejected \
 	"${alias_final_root}" \
 	"control state derived from final text or markdown" \
 	"runtime/appui/web typed control facts"
+expect_rejected \
+	"Go transformed aliased final text controls state" \
+	"${go_transform_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"TypeScript transformed aliased markdown controls state" \
+	"${ts_transform_alias_root}" \
+	"control state derived from final text or markdown" \
+	"runtime/appui/web typed control facts"
+expect_rejected \
+	"provider StepToolRouter adapter missing" \
+	"${provider_adapter_root}" \
+	"StepToolRouter provider surface adapter" \
+	"runtimekernel step builder"
+expect_rejected \
+	"runtime step context receives a different tool surface" \
+	"${step_call_surface_root}" \
+	"runtime step context StepToolRouter binding" \
+	"runtimekernel step admission"
 
 if [[ "${fail}" -ne 0 ]]; then
 	exit 1
