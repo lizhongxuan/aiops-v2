@@ -17,7 +17,7 @@ go test ./internal/runtimekernel/toolfailure -count=1
 go test ./internal/runtimekernel/state -count=1
 go test ./internal/runtimekernel -run 'TestAIChatHarnessGoldenCases|Test.*HarnessContract|Test.*FinalContract|Test.*FinalEvidence|Test.*RollbackContract|TestRawToolCallsFromAssistantText|Test.*SessionTarget' -count=1
 go test ./internal/agentassembly ./internal/tooling -run 'Test.*ToolSurface.*|Test.*HiddenReason' -count=1
-go test ./internal/appui -run 'TestTransportProjector|TestApprovalService|TestAgentEventProjector' -count=1
+go test ./internal/appui -run 'TestAppUIRuntimeLifecycleHasUniqueWriter|TestTransportProjector|TestApprovalService|TestAgentEventProjector' -count=1
 go test ./internal/server -run 'TestAssistantTransport|TestAssistantTransportStories' -count=1
 go test ./internal/specialinputmemory -count=1
 go test ./internal/appui ./internal/runtimekernel ./internal/resourcebinding -run 'SpecialInput|MemoryReadPlan|ExecutionScope|RoleBinding|TransportCommandsSpecialInput|Correction|Forget|Confirm|Conflict' -count=1
@@ -46,7 +46,7 @@ go test ./internal/runtimekernel/state -count=1
 go test ./internal/runtimekernel -run 'Test.*ActiveTurnMigration|Test.*ToolAttempt|TestReadOnlyRetry|TestAIChatHarnessGoldenCases|TestToolDispatcher.*ActionToken|TestRecoverTurn|TestCancelTurn' -count=1
 go test ./internal/actionproposal -count=1
 go test ./internal/mcp/... -count=1
-go test ./internal/appui -run 'TestCapabilitySnapshot|TestAgentProfile.*Preview|TestTransportProjector|TestAgentEventProjector' -count=1
+go test ./internal/appui -run 'TestAppUIRuntimeLifecycleHasUniqueWriter|TestCapabilitySnapshot|TestAgentProfile.*Preview|TestTransportProjector|TestAgentEventProjector' -count=1
 go test ./internal/featureflag -count=1
 scripts/check-aiops-single-assistant-message.sh
 if [[ -d cmd/aiops-active-turn-migrate ]]; then
