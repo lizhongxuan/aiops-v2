@@ -141,6 +141,50 @@ func TestEinoProviderAdapterRejectsNonCanonicalInputBeforeModelCall(t *testing.T
 	}
 }
 
+func TestPromptCutoverMatrixProviderAdapterFailsClosedOnOrderAndCausality(t *testing.T) {
+	tests := []struct {
+		name string
+		make func() []promptinput.ModelInputItem
+		want string
+	}{
+		{
+			name: "logical layer order",
+			make: func() []promptinput.ModelInputItem {
+				items := canonicalAdapterModelInputItems()
+				items[2], items[3] = items[3], items[2]
+				return items
+			},
+			want: "logical",
+		},
+		{
+			name: "tool causal order",
+			make: func() []promptinput.ModelInputItem {
+				items := canonicalAdapterModelInputItems()
+				items[5], items[6] = items[6], items[5]
+				return items
+			},
+			want: "causal",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := &recordingProviderChatModel{}
+			adapter := NewEinoProviderAdapter(model)
+			_, err := adapter.Call(context.Background(), ProviderRequestSnapshot{
+				Provider: "synthetic-provider",
+				Model:    "synthetic-model",
+				Input:    test.make(),
+			}, nil, nil)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Call() error = %v, want fail-closed %s rejection", err, test.want)
+			}
+			if model.streamCalls != 0 || model.generateCalls != 0 || len(model.input) != 0 {
+				t.Fatalf("provider model called after %s rejection: stream=%d generate=%d input=%#v", test.want, model.streamCalls, model.generateCalls, model.input)
+			}
+		})
+	}
+}
+
 func TestEinoProviderAdapterProviderSelectionDoesNotChangeCanonicalMessages(t *testing.T) {
 	input := providerAdapterCanonicalInput("same request")
 	providerHashes := map[string]string{}

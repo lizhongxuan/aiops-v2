@@ -2906,6 +2906,23 @@ func TestRunTurn_BlockedToolCallCanResume(t *testing.T) {
 	if resumedReference.Transition.PreviousHash != firstStepReference.StepHash || resumedReference.Transition.NextHash != resumedReference.StepHash {
 		t.Fatalf("approval resume step chain = %#v, first=%#v", resumedReference.Transition, firstStepReference)
 	}
+	if len(session.CurrentTurn.Iterations) < 2 {
+		t.Fatalf("approval resume iterations = %d, want blocked and resumed provider steps", len(session.CurrentTurn.Iterations))
+	}
+	blockedIteration := session.CurrentTurn.Iterations[0]
+	resumedIteration := session.CurrentTurn.Iterations[len(session.CurrentTurn.Iterations)-1]
+	if blockedIteration.Checkpoint == nil || resumedIteration.Checkpoint == nil || blockedIteration.Checkpoint.ID == resumedIteration.Checkpoint.ID {
+		t.Fatalf("approval resume checkpoints = blocked:%#v resumed:%#v, want change", blockedIteration.Checkpoint, resumedIteration.Checkpoint)
+	}
+	assertPromptCutoverHashesChanged(t, blockedIteration.PromptFingerprint, resumedIteration.PromptFingerprint, "conversationHistoryHash", "currentUserInputHash", "modelInputHash")
+	assertPromptCutoverStableL0L3(t, blockedIteration.PromptFingerprint, resumedIteration.PromptFingerprint)
+	if len(model.inputs) < 2 || len(model.inputs[len(model.inputs)-1]) == 0 {
+		t.Fatalf("approval resume provider inputs = %d, want resumed model input", len(model.inputs))
+	}
+	resumedTail := model.inputs[len(model.inputs)-1][len(model.inputs[len(model.inputs)-1])-1]
+	if resumedTail.Extra["source_layer"] != string(promptcompiler.LayerCurrentUserInput) || resumedTail.Extra["semantic_role"] != "continuation_instruction" {
+		t.Fatalf("approval resume provider tail = %#v, want typed L6 continuation", resumedTail)
+	}
 	if !stepTransitionHasKind(resumedReference.Transition, StepRevisionKindApprovalResumed) {
 		t.Fatalf("approval resume revisions = %#v, want %q", resumedReference.Transition.Revisions, StepRevisionKindApprovalResumed)
 	}

@@ -68,6 +68,19 @@ func TestProgressiveDiscoverySearchSelectUseFlow(t *testing.T) {
 		t.Fatalf("missing progressive discovery turn state: %#v", session)
 	}
 	assemblyHash := session.CurrentTurn.TurnAssembly.Hash
+	if len(session.CurrentTurn.Iterations) < 3 {
+		t.Fatalf("iterations = %d, want select boundary plus activated-tool step", len(session.CurrentTurn.Iterations))
+	}
+	beforeSelect := session.CurrentTurn.Iterations[1]
+	afterSelect := session.CurrentTurn.Iterations[2]
+	if afterSelect.StepReference == nil || !stepTransitionHasKind(afterSelect.StepReference.Transition, StepRevisionKindToolSurfaceChanged) || !containsString(afterSelect.StepReference.Facts.LoadedToolRefs, "tool:synthetic.metrics.read") {
+		t.Fatalf("tool_search activated step revision = %#v, want selected tool surface change", afterSelect.StepReference)
+	}
+	if beforeSelect.ToolSurfaceFingerprint == "" || afterSelect.ToolSurfaceFingerprint == "" || beforeSelect.ToolSurfaceFingerprint == afterSelect.ToolSurfaceFingerprint {
+		t.Fatalf("tool_search activation router hashes = before:%q after:%q, want change", beforeSelect.ToolSurfaceFingerprint, afterSelect.ToolSurfaceFingerprint)
+	}
+	assertPromptCutoverHashesChanged(t, beforeSelect.PromptFingerprint, afterSelect.PromptFingerprint, "dynamicContextHash", "modelInputHash")
+	assertPromptCutoverStableL0L3(t, beforeSelect.PromptFingerprint, afterSelect.PromptFingerprint)
 	foundToolSurfaceRevision := false
 	for i := range session.CurrentTurn.Iterations {
 		ref := session.CurrentTurn.Iterations[i].StepReference
