@@ -69,7 +69,6 @@ type ParamCandidate = {
 const OPS_MANUAL_SKIP_ACTION = "skip_ops_manual";
 const OPS_MANUAL_USE_ACTION = "use_ops_manual";
 const OPS_MANUAL_REFERENCE_ACTION = "reference_ops_manual";
-const OPS_MANUAL_PREFLIGHT_ACTION = "run_ops_manual_preflight";
 
 const STATE_LABELS: Record<string, string> = {
   direct_execute: "可推荐使用",
@@ -356,7 +355,7 @@ export function OpsManualSearchResultArtifact({
   const primaryTitle =
     manualTitleFromHit(manuals[0]) || searchResultTitle(decision);
   const bodyText = decision === "no_match" ? summary : primaryTitle;
-  const actions = searchActionsForDecision(decision, manuals);
+  const actions = searchActionsForDecision(decision);
   const compact = decision === "need_info" || decision === "no_match";
   const visibleManuals = compact ? [] : limitItems(manuals, 1);
   const stage = searchStage(decision);
@@ -1081,10 +1080,6 @@ export function OpsManualPreflightResultArtifact({
   const reason = text(pick(data, "reason"));
   const manualId = text(pick(data, "manualId", "manual_id"));
   const workflowId = text(pick(data, "workflowId", "workflow_id"));
-  const operationFrame = asRecord(
-    pick(data, "operationFrame", "operation_frame"),
-  );
-  const flowId = text(pick(data, "opsManualFlowId", "ops_manual_flow_id"));
   const probeId = text(pick(data, "probeId", "probe_id"));
   const evidence = arrayRecords(pick(data, "evidence"));
   const missingPermissions = stringArray(
@@ -2892,10 +2887,7 @@ function searchResultTitle(decision: string) {
   return "未找到合适的运维手册";
 }
 
-function searchActionsForDecision(
-  decision: string,
-  manuals: LooseRecord[],
-): SearchResultAction[] {
+function searchActionsForDecision(decision: string): SearchResultAction[] {
   if (decision === "direct_execute") {
     return [];
   }
@@ -3096,15 +3088,6 @@ function useManualText(manualTitle: string, operationFrame?: LooseRecord) {
   return `使用运维手册/Workflow「${manualTitle}」。请先说明适用边界、已知风险和将要执行的步骤；高风险动作必须等待用户审批。${operationText}`;
 }
 
-function preflightManualText(
-  manualTitle: string,
-  operationFrame?: LooseRecord,
-) {
-  const operation = operationFrameLabel(operationFrame);
-  const operationText = operation ? `当前请求：${operation}；` : "";
-  return `使用运维手册「${manualTitle}」运行只读预检。${operationText}只做预检探针，通过后再等待用户确认或审批执行。`;
-}
-
 function opsManualActionMetadata(
   actionName: string,
   manualId: string,
@@ -3184,23 +3167,6 @@ function useManualMetadata(
 ): Record<string, string> {
   return opsManualActionMetadata(
     OPS_MANUAL_USE_ACTION,
-    manualId,
-    workflowId,
-    manualTitle,
-    operationFrame,
-    flowId,
-  );
-}
-
-function preflightManualMetadata(
-  manualId: string,
-  workflowId: string,
-  manualTitle: string,
-  operationFrame?: LooseRecord,
-  flowId = "",
-): Record<string, string> {
-  return opsManualActionMetadata(
-    OPS_MANUAL_PREFLIGHT_ACTION,
     manualId,
     workflowId,
     manualTitle,

@@ -93,15 +93,15 @@ describe("SessionContextBar", () => {
   it("does not bind an implicit local host for unselected single-host chat", () => {
     const options = buildTargetOptionsForTest([], "single_host");
 
-    expect(resolveHostTargetIdForTest("single_host", options, "none", [])).toBeUndefined();
-    expect(resolveHostTargetIdForTest("single_host", options, "host:missing", [])).toBeUndefined();
+    expect(resolveHostTargetIdForTest("single_host", options, "none")).toBeUndefined();
+    expect(resolveHostTargetIdForTest("single_host", options, "host:missing")).toBeUndefined();
   });
 
   it("binds a single-host chat only when the host target is explicit", () => {
     const hosts = [{ id: "redis-01", name: "redis-01", address: "10.0.0.11", labels: {} }];
     const options = buildTargetOptionsForTest(hosts, "single_host");
 
-    expect(resolveHostTargetIdForTest("single_host", options, "host:redis-01", hosts)).toBe("redis-01");
+    expect(resolveHostTargetIdForTest("single_host", options, "host:redis-01")).toBe("redis-01");
   });
 
   it("binds environment label groups to Coroot project for workspace chat", () => {

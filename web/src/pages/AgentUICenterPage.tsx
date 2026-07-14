@@ -3,7 +3,6 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchAgentUiArtifacts } from "@/api/agentUiArtifactsClient";
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Input } from "@/components/ui/input";
 import { SettingsPageFrame, ToneBadge } from "@/pages/settingsComponents";

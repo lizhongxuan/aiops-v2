@@ -129,7 +129,6 @@ export function SessionContextBar({
   kind,
   title,
   newSessionLabel,
-  description,
   activeThreadId,
   skipInitialLoad = false,
   terminalHref,
@@ -165,7 +164,7 @@ export function SessionContextBar({
   const targetContext = useMemo<SessionTargetContextValue>(
     () => ({
       targetValue: activeTarget?.value || fallbackTargetValue(kind),
-      targetKind: activeTarget?.kind || fallbackTargetKind(kind),
+      targetKind: activeTarget?.kind || fallbackTargetKind(),
       targetLabel: activeTarget?.label || fallbackTargetLabel(kind),
       targetDescription: activeTarget?.description || fallbackTargetDescription(kind),
       hostId: activeTarget?.hostId,
@@ -227,7 +226,7 @@ export function SessionContextBar({
       setSessions(nextSessions);
       setHosts(nextHosts);
       setLlm({ provider: "openai", model: "gpt-5.4", apiKeySet: true });
-      applySession(fixtureSessions.activeSessionId || nextSessions[0]?.id || activeThreadId, nextSessions, false, nextHosts);
+      applySession(fixtureSessions.activeSessionId || nextSessions[0]?.id || activeThreadId, nextSessions, nextHosts);
       return;
     }
     setActiveAction("refresh");
@@ -269,7 +268,7 @@ export function SessionContextBar({
         ) || "";
       if (!nextActive && sessionPayload) {
         try {
-          const hostIdToBind = resolveNewSessionHostTargetId(kind, buildTargetOptions(nextHosts, kind), target, nextHosts);
+          const hostIdToBind = resolveNewSessionHostTargetId(kind, buildTargetOptions(nextHosts, kind), target);
           const payload = await withSessionContextTimeout(
             createSessionMutation.mutateAsync({ sessionKind: kind, hostId: hostIdToBind }),
             SESSION_CONTEXT_TIMEOUT_MS,
@@ -279,7 +278,7 @@ export function SessionContextBar({
           const createdActive = payload.activeSessionId || createdSessions.find((session) => normalizeKind(session.kind) === kind)?.id || "";
           setSessions(createdSessions);
           if (createdActive) {
-            applySessionWithOverride(createdActive, createdSessions, true, nextHosts, hostIdToBind);
+            applySessionWithOverride(createdActive, createdSessions, nextHosts, hostIdToBind);
           } else {
             setSessionInitError("会话初始化失败，请刷新重试");
           }
@@ -290,7 +289,7 @@ export function SessionContextBar({
         return;
       }
       const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
-      applySession(nextActive, nextSessions, true, nextHosts, hydratedState);
+      applySession(nextActive, nextSessions, nextHosts, hydratedState);
     } finally {
       setBusy(false);
       setActiveAction(null);
@@ -302,12 +301,12 @@ export function SessionContextBar({
     setBusy(true);
     try {
       const nextHosts = hosts;
-      const hostIdToBind = resolveNewSessionHostTargetId(kind, targetOptions, target, nextHosts);
+      const hostIdToBind = resolveNewSessionHostTargetId(kind, targetOptions, target);
       const payload = await createSessionMutation.mutateAsync({ sessionKind: kind, hostId: hostIdToBind });
       const nextSessions = payload.sessions || payload.items || [];
       const nextActive = payload.activeSessionId || nextSessions[0]?.id || "";
       setSessions(nextSessions);
-      applySessionWithOverride(nextActive, nextSessions, true, nextHosts, hostIdToBind);
+      applySessionWithOverride(nextActive, nextSessions, nextHosts, hostIdToBind);
 
       if (hostIdToBind) {
         await selectHostMutation.mutateAsync(hostIdToBind);
@@ -337,7 +336,7 @@ export function SessionContextBar({
       setSessions(nextSessions);
       const nextActive = payload.activeSessionId || sessionId;
       const hydratedState = await hydrateTerminalSessionState(nextActive, nextSessions);
-      applySession(nextActive, nextSessions, true, hosts, hydratedState);
+      applySession(nextActive, nextSessions, hosts, hydratedState);
       setComposerFocusNonce((value) => value + 1);
     } catch (error) {
       console.error(error);
@@ -372,17 +371,15 @@ export function SessionContextBar({
   function applySession(
     sessionId: string,
     sourceSessions = sessions,
-    force = false,
     sourceHosts = hosts,
     hydratedInitialState?: AiopsTransportState | null,
   ) {
-    return applySessionWithOverride(sessionId, sourceSessions, force, sourceHosts, undefined, hydratedInitialState);
+    return applySessionWithOverride(sessionId, sourceSessions, sourceHosts, undefined, hydratedInitialState);
   }
 
   function applySessionWithOverride(
     sessionId: string,
     sourceSessions = sessions,
-    force = false,
     sourceHosts = hosts,
     hostIdOverride?: string,
     hydratedInitialState?: AiopsTransportState | null,
@@ -637,8 +634,8 @@ export function buildTargetOptionsForTest(hosts: HostRecord[], kind: SessionKind
   return buildTargetOptions(hosts, kind);
 }
 
-export function resolveHostTargetIdForTest(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
-  return resolveHostTargetId(kind, options, targetValue, hosts);
+export function resolveHostTargetIdForTest(kind: SessionKind, options: TargetOption[], targetValue: string) {
+  return resolveHostTargetId(kind, options, targetValue);
 }
 
 function buildTargetOptions(hosts: HostRecord[], kind: SessionKind): TargetOption[] {
@@ -845,11 +842,11 @@ function targetValueFromSession(
   return hostExists ? `host:${selectedHostId}` : "all";
 }
 
-function resolveNewSessionHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+function resolveNewSessionHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string) {
   if (kind === "single_host") {
     return undefined;
   }
-  return resolveHostTargetId(kind, options, targetValue, hosts);
+  return resolveHostTargetId(kind, options, targetValue);
 }
 
 export function formatTargetButtonLabel(kind: SessionKind, label?: string) {
@@ -907,7 +904,7 @@ function fallbackTargetValue(kind: SessionKind) {
   return kind === "single_host" ? "none" : "all";
 }
 
-function fallbackTargetKind(kind: SessionKind): SessionTargetContextValue["targetKind"] {
+function fallbackTargetKind(): SessionTargetContextValue["targetKind"] {
   return "all";
 }
 
@@ -929,7 +926,7 @@ function fallbackTargetMetadata(kind: SessionKind) {
   };
 }
 
-function resolveHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string, hosts: HostRecord[]) {
+function resolveHostTargetId(kind: SessionKind, options: TargetOption[], targetValue: string) {
   if (kind !== "single_host") {
     return undefined;
   }
