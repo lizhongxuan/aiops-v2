@@ -188,3 +188,48 @@
 - 修复方式：Prompt event 直接记录 StepReference transition 的 `stepRevisionKind(s)`；stale reissue 通过专用 recorder helper把 server-owned mismatch fields写入同一个 approval_requested event。Prompt Trace API 仅 allowlist 投影这些字段，UI 禁止从 outcome/errorClass/status 推断 divergence。
 - 验证结果：RED 先证明首个 Prompt 缺 initial revision、nil-token reissue 缺 mismatchFields；GREEN 后 focused Runtime 测试重复 10 次通过，真实 approval/tool-not-found replay baseline 按新增 typed facts更新并恢复稳定通过。
 - 风险与后续：新增 Prompt payload 会有意改变 canonical event hash；所有持久 replay baseline 必须随 schema 内事实扩充显式审查更新，不能由测试运行时自基线覆盖。
+
+## 2026-07-14 11:20 - Deprecated Prompt shadow 参与生产控制与哈希
+
+- 修复时间：2026-07-14 11:20
+- Bug 现象：Prompt v2 已切为生产输入后，deprecated shadow parity 仍可能影响 provider 前校验，并把 legacy 对比结果混入 Step control hash；旧路径的漂移会让真实执行被阻断或导致同一 v2 输入得到不同控制身份。
+- 根因：观测用 shadow trace 与生产 Prompt/Step 控制边界没有彻底隔离，parity 结果既被消费为 gate，也参与持久控制哈希。
+- 修复方式：shadow 只保留为只读诊断 trace；provider、dispatcher、StepReference 和 replay 控制身份只消费 PromptEnvelope v2 及其 typed facts，禁止 shadow 决定运行结果。
+- 验证结果：新增 cutover/hash 矩阵覆盖 shadow 开关与内容变化，确认 provider request、Step hash 和工具面不变；`go test ./internal/promptcompiler ./internal/promptinput ./internal/runtimekernel -count=1` 通过。
+- 风险与后续：shadow 字段仍可用于迁移审计，但不得重新出现在 production gate、provider request 或 hash 输入中。
+
+## 2026-07-14 11:20 - AppUI 复制 Turn loop 并直接提交终态
+
+- 修复时间：2026-07-14 11:20
+- Bug 现象：RuntimeKernel 之外存在 `RunTurnWithRecorder/executeAgent` 复制循环，AppUI 的 migration、repair 与 workflow generation 分支还会自行构造 terminal `TurnSnapshot`；修复一个路径时容易让另一路径的 lifecycle、rollout、final facts 或 transport 不一致。
+- 根因：缺少“RuntimeKernel 是唯一 lifecycle writer”的可执行边界，确定性系统回复没有正式 runtime gateway，调用层只能复制 turn commit 逻辑。
+- 修复方式：删除复制 turn loop；新增 `CommitSystemTurn`，由 RuntimeKernel 统一提交 user/assistant、checkpoint、final facts、canonical transport 与 owner trace；三个 AppUI 分支全部改走该入口，并以 AST boundary test 禁止生产 AppUI 构造或写入 `TurnSnapshot/CurrentTurn/TurnHistory`。
+- 验证结果：`go test ./internal/runtimekernel ./internal/appui -count=1` 通过；hardening gate 固定执行 `TestAppUIRuntimeLifecycleHasUniqueWriter`，重复引入第二 writer 会直接失败。
+- 风险与后续：SystemTurn 只接受 partial/blocked/needs_evidence 与有限 domain facts，不能借此伪造 verified、approval_denied、tool_unavailable、model 或 tool 执行事实。
+
+## 2026-07-14 11:20 - Mutation 工具可在缺少声明式回滚时进入 Provider
+
+- 修复时间：2026-07-14 11:20
+- Bug 现象：工具注册了 mutation/approval 元数据但未声明可验证回滚能力时，模型仍能看到并选择该工具，直到执行阶段才暴露回滚问题。
+- 根因：ToolSurface 指纹与 TurnAssembly admission 没有把 rollback readiness 作为生产控制事实，回滚校验发生得过晚。
+- 修复方式：Tool metadata 增加声明式 rollback strategy/reference；ToolSurface fingerprint 纳入 readiness；TurnAssembly 在 provider sampling 前 fail closed，缺少声明的 mutation 不进入模型输入、审批或 dispatcher。
+- 验证结果：公开 `mutation_missing_rollback` AssistantTransport story 断言 providerCallCount=0、无 visible/actual tools、turn failed，并保留 canonical `system/failed` 错误块；Runtime golden 与完整 story corpus 均通过。
+- 风险与后续：声明式 ready 只证明存在回滚契约，不证明回滚执行成功；真实 mutation 仍必须经过 ActionToken、permission、approval 和 post-check。
+
+## 2026-07-14 11:20 - AssistantTransport 同时暴露 process/final 与 blocks 双协议
+
+- 修复时间：2026-07-14 11:20
+- Bug 现象：Go wire、流式 delta、converter metadata 和 React 同时消费 `process/final` 与 `blockOrder/blocksById`，同一回答存在两套顺序与终态来源；更新 A 路径会让 B 路径出现错序、重复或 FinalContract 不同步。
+- 根因：canonical transcript 没有贯穿 `TurnItem -> TransportProjector -> AssistantTransport -> React`，前端还依赖 `metadata.unstable_state` 作为第二状态通道。
+- 修复方式：生产 wire 仅输出 ordered blocks；server append-text 只更新 final block text，并保证完整 FinalContract 的 text/answerText 同步；converter 只在边界一次性迁移旧缓存，React 仅消费 typed data parts，Protocol 页面复用同一 block 顺序。
+- 验证结果：Go JSON 测试断言 wire 不含 legacy `process/final`；Server delta、Web converter/runtime/render tests 和 124 files/905 tests 全部通过；Playwright snapshot fixture 已切为 native canonical blocks。
+- 风险与后续：TypeScript 类型暂保留 legacy 字段作为旧缓存输入，兼容投影只能存在于 converter 边界，任何生产 writer 或 React consumer 重新读取它们都应由门禁拒绝。
+
+## 2026-07-14 11:20 - AssistantTransport 审批故事在异步恢复完成前断言
+
+- 修复时间：2026-07-14 11:20
+- Bug 现象：approval decision HTTP 先返回 accepted、Runtime 随后异步执行 ResumeTurn；故事 runner 立即断言旧 projection，造成 approval resume/denied 偶发失败或错误刷新。
+- 根因：测试 harness 把 command ack 当作 runtime terminal，把传输层接收语义和执行完成语义混为一谈。
+- 修复方式：审批命令后轮询 published session snapshot 直到 canonical turn terminal，再通过空 command 请求刷新 transport projection；所有故事断言统一从 blocks 中读取消息、过程和 FinalContract。
+- 验证结果：`go test ./internal/server -run '^TestAssistantTransportStories$' -count=1` 与 semantic shell corpus 通过，approval resume/denied、partial mutation、missing rollback 等场景稳定使用真实 runtime/transport 链。
+- 风险与后续：轮询只用于测试 harness，不改变生产 ack 语义；UI 仍应依据后续 AssistantTransport state/delta 展示执行进度与终态。
