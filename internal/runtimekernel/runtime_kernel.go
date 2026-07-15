@@ -1761,6 +1761,8 @@ func contextArtifactToolsEnabled(metadata map[string]string) bool {
 	return metadataListContains(metadata["enableTool"], "read_context_artifact")
 }
 
+const defaultContextArtifactInlineResultBytes = defaultContextArtifactReadBytes * 2
+
 func (k *RuntimeKernel) contextArtifactTools() []promptcompiler.Tool {
 	if k == nil || (k.artifactRepo == nil && k.spillRepo == nil) {
 		return nil
@@ -1787,7 +1789,7 @@ func (k *RuntimeKernel) contextArtifactTools() []promptcompiler.Tool {
 				SchemaBudgetClass: "compact",
 			},
 			ResultBudget: tooling.ResultBudget{
-				MaxInlineResultBytes: 4096,
+				MaxInlineResultBytes: defaultContextArtifactInlineResultBytes,
 				SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
 				SummarizeLargeResult: true,
 			},
@@ -1825,7 +1827,7 @@ func (k *RuntimeKernel) contextArtifactTools() []promptcompiler.Tool {
 					Range:       result.Range,
 				}},
 				ResultBudget: tooling.ResultBudget{
-					MaxInlineResultBytes: 4096,
+					MaxInlineResultBytes: defaultContextArtifactInlineResultBytes,
 					SpillPolicy:          tooling.ResultSpillPolicySummaryInline,
 					SummarizeLargeResult: true,
 				},
@@ -3069,6 +3071,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 					return nil, fmt.Errorf("tool %q failed: %s", tc.Name, dispatchResult.Error)
 				}
 				dispatchResult.Result = failedToolResultForModel(tc, dispatchResult)
+				if decision := repeatedToolFailureSignatureDecision(snapshot, dispatchTools, tc, dispatchResult.Result); decision.Action == "switch_path" {
+					dispatchResult.Result = withFailureSignatureDecision(dispatchResult.Result, decision)
+					dispatchResult.HiddenTools = mergeStringSets(dispatchResult.HiddenTools, []string{canonicalRuntimeToolName(dispatchTools, tc)})
+				}
 				if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
 					dispatchResult.Metadata.Name = tc.Name
 				}
@@ -4422,6 +4428,55 @@ func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolRe
 			Title: toolName,
 		},
 	}
+}
+
+func repeatedToolFailureSignatureDecision(snapshot *TurnSnapshot, tools []promptcompiler.Tool, current ToolCall, currentResult tooling.ToolResult) FailureSignatureDecision {
+	toolName := canonicalRuntimeToolName(tools, current)
+	signature := BuildFailureSignature(toolName, current.Arguments, ToolResult{
+		ToolCallID: currentResult.ToolCallID,
+		Content:    currentResult.Content,
+		Error:      currentResult.Error,
+	})
+	seenCount := 1
+	if snapshot != nil {
+		for _, iteration := range snapshot.Iterations {
+			callsByID := make(map[string]ToolCall, len(iteration.ToolCalls))
+			for _, call := range iteration.ToolCalls {
+				callsByID[strings.TrimSpace(call.ID)] = call
+			}
+			for _, result := range iteration.ToolResults {
+				if strings.TrimSpace(result.Error) == "" {
+					continue
+				}
+				call, ok := callsByID[strings.TrimSpace(result.ToolCallID)]
+				if !ok {
+					continue
+				}
+				if BuildFailureSignature(canonicalRuntimeToolName(tools, call), call.Arguments, result) == signature {
+					seenCount++
+				}
+			}
+		}
+	}
+	return EvaluateFailureSignatureDecision(signature, seenCount)
+}
+
+func withFailureSignatureDecision(result tooling.ToolResult, decision FailureSignatureDecision) tooling.ToolResult {
+	if decision.Action != "switch_path" {
+		return result
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		payload["message"] = strings.TrimSpace(result.Content)
+	}
+	payload["failureSignature"] = decision.Signature
+	payload["failureSignatureSeenCount"] = decision.SeenCount
+	payload["failureSignatureAction"] = decision.Action
+	payload["modelGuidance"] = decision.SwitchPathReason
+	if content, err := json.Marshal(payload); err == nil {
+		result.Content = string(content)
+	}
+	return result
 }
 
 func enrichCompileContext(

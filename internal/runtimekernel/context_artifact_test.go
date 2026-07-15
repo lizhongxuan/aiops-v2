@@ -218,6 +218,31 @@ func TestReadContextArtifactToolReturnsRangeReference(t *testing.T) {
 	}
 }
 
+func TestContextArtifactToolKeepsMaximumBoundedReadInline(t *testing.T) {
+	store := NewMemoryContextArtifactRepository()
+	artifact, err := store.SaveContextArtifact(ContextArtifactWrite{
+		ID:          "artifact-inline-bound",
+		Kind:        "tool_result",
+		ContentType: "text/plain",
+		Content:     []byte(strings.Repeat("x", defaultContextArtifactReadBytes)),
+	})
+	if err != nil {
+		t.Fatalf("SaveContextArtifact failed: %v", err)
+	}
+	tools := (&RuntimeKernel{artifactRepo: store}).contextArtifactTools()
+	if len(tools) != 1 {
+		t.Fatalf("context artifact tools = %d, want 1", len(tools))
+	}
+
+	result, err := tools[0].Execute(context.Background(), json.RawMessage(`{"id":"`+artifact.ID+`"}`))
+	if err != nil {
+		t.Fatalf("Execute failed: %v", err)
+	}
+	if result.ResultBudget.MaxInlineResultBytes < len(result.Content) {
+		t.Fatalf("inline budget = %d, serialized bounded read = %d; read_context_artifact would recursively spill its own bounded result", result.ResultBudget.MaxInlineResultBytes, len(result.Content))
+	}
+}
+
 func TestCompileContextAddsReadContextArtifactOnlyWhenContextArtifactEnabled(t *testing.T) {
 	store := NewMemoryContextArtifactRepository()
 	registry := tooling.NewRegistry()

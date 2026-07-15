@@ -1059,6 +1059,7 @@ test("running assistant text keeps the process header before tool blocks arrive"
   const transcript = page.getByTestId("aiops-process-transcript");
   await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
   await expect(page.getByTestId("aiops-answer-document")).toContainText(runningPreludeText);
+  await expect(page.getByText(runningPreludeText, { exact: true })).toHaveCount(1);
   await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
   await expect(transcript.locator("..")).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
 });

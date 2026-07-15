@@ -57,7 +57,7 @@ export type SpecialAiMentionCandidate = {
 
 const HOST_TOKEN_PATTERN = /@([A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?)/g;
 const SPECIAL_AI_TOKEN_PATTERN =
-  /(^|[^\p{L}\p{N}_])@(coroot|ops_graph|ops_manus|ops_manuals)(?=$|[^\p{L}\p{N}_])/giu;
+  /(^|[^A-Za-z0-9_])@(coroot|ops_graph|ops_manus|ops_manuals)(?=$|[^A-Za-z0-9_])/giu;
 const IPV4_PATTERN = /^(?:25[0-5]|2[0-4]\d|1?\d?\d)(?:\.(?:25[0-5]|2[0-4]\d|1?\d?\d)){3}$/;
 const SPECIAL_AI_TRIGGER_MENTIONS = new Set(["coroot", "ops_graph", "ops_manus", "ops_manuals"]);
 

@@ -51,6 +51,7 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	projectedTurn.AgentItemsRef = agentItems.Ref
 	projectionItems := redactTransportProjectionTurnItems(turn.AgentItems)
 	projectedTurn.Process = nil
+	projectedTurn.Final = nil
 	projectedTurn.Timeline = projectTurnTimeline(projectionItems)
 	projectedTurn.ContextGovernance = projectContextGovernanceEvents(turn.ContextGovernanceEvents)
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))

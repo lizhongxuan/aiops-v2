@@ -16,11 +16,11 @@ export type OpsManualParamFormSubmit = {
 };
 
 const EXPLICIT_COROOT_MENTION_PATTERN =
-  /(^|[^\p{L}\p{N}_])@coroot([^\p{L}\p{N}_]|$)/iu;
+  /(^|[^A-Za-z0-9_])@coroot([^A-Za-z0-9_]|$)/iu;
 const EXPLICIT_OPS_GRAPH_MENTION_PATTERN =
-  /(^|[^\p{L}\p{N}_])@ops_graph([^\p{L}\p{N}_]|$)/iu;
+  /(^|[^A-Za-z0-9_])@ops_graph([^A-Za-z0-9_]|$)/iu;
 const EXPLICIT_OPS_MANUAL_MENTION_PATTERN =
-  /(^|[^\p{L}\p{N}_])@(ops_manuals|ops_manus)([^\p{L}\p{N}_]|$)/iu;
+  /(^|[^A-Za-z0-9_])@(ops_manuals|ops_manus)([^A-Za-z0-9_]|$)/iu;
 
 export function resolveStopDispatchTarget(
   state: AiopsTransportState,

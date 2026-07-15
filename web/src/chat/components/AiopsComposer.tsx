@@ -947,6 +947,7 @@ function ComposerBody({
   const workspace = useSessionWorkspaceContext();
   const composer = useComposerRuntime();
   const composerState = useComposer((snapshot) => snapshot);
+  const sendCommand = useAssistantTransportSendCommand();
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [hosts, setHosts] = useState<HostInventoryItem[]>([]);
   const [hostInventoryFailed, setHostInventoryFailed] = useState(false);
@@ -1056,7 +1057,7 @@ function ComposerBody({
     () => uniqueDisplayHostMentions(inlineHostMentions),
     [inlineHostMentions],
   );
-  const reconciledMentionBindings = useMemo(
+  const selectedMentionBindings = useMemo(
     () =>
       reconcileMentionBindings(
         currentComposerText,
@@ -1064,6 +1065,29 @@ function ComposerBody({
       ),
     [currentComposerText],
   );
+  const reconciledMentionBindings = useMemo(() => {
+    const selectedRanges = new Set(
+      selectedMentionBindings.map(
+        (binding) => `${binding.range.start}:${binding.range.end}`,
+      ),
+    );
+    const typedCapabilities = inlineSpecialMentions
+      .filter(
+        (mention) => !selectedRanges.has(`${mention.start}:${mention.end}`),
+      )
+      .map((mention) =>
+        buildCapabilityMentionBinding({
+          tokenId: mention.tokenId,
+          rawText: currentComposerText.slice(mention.start, mention.end),
+          range: { start: mention.start, end: mention.end },
+          capability:
+            mention.value === "ops_manus"
+              ? "ops_manuals"
+              : mention.value,
+        }),
+      );
+    return [...selectedMentionBindings, ...typedCapabilities];
+  }, [currentComposerText, inlineSpecialMentions, selectedMentionBindings]);
   const inlineResourceMentions = useMemo(
     () => displayResourceMentions(reconciledMentionBindings),
     [reconciledMentionBindings],
@@ -1231,6 +1255,40 @@ function ComposerBody({
     window.setTimeout(clear, 0);
   }, [composer]);
 
+  const submitComposerMessage = useCallback(() => {
+    if (isRunning) return;
+    const text = composer.getState().text.trim();
+    if (!text) return;
+    composer.setText("");
+    clearComposerInput(text);
+    sendCommand({
+      type: "add-message",
+      message: {
+        role: "user",
+        metadata: {
+          ...buildInputMentionMetadata(reconciledMentionBindings),
+          ...hostMentionMetadataForSubmit(
+            reconciledMentionBindings,
+            selectedHostMentions,
+          ),
+          ...capabilityMetadataForSubmit(reconciledMentionBindings, text),
+        },
+        ...hostIdMessageFieldForSubmit(
+          reconciledMentionBindings,
+          selectedHostMentions,
+        ),
+        parts: [{ type: "text", text }],
+      },
+    } as Parameters<typeof sendCommand>[0]);
+  }, [
+    clearComposerInput,
+    composer,
+    isRunning,
+    reconciledMentionBindings,
+    selectedHostMentions,
+    sendCommand,
+  ]);
+
   useEffect(() => {
     if (!isRunning) {
       return;
@@ -1245,6 +1303,10 @@ function ComposerBody({
 
   return (
     <ComposerPrimitive.Root
+      onSubmit={(event) => {
+        event.preventDefault();
+        submitComposerMessage();
+      }}
       className={
         variant === "chat"
           ? "relative z-10 flex flex-col gap-2 rounded-[1.5rem] border border-slate-200 bg-white p-2 shadow-[0_10px_28px_rgba(15,23,42,0.10)] transition-shadow focus-within:border-slate-300 focus-within:shadow-[0_12px_36px_rgba(15,23,42,0.14)]"
@@ -1271,7 +1333,7 @@ function ComposerBody({
           caretIndex={hasInlineMentions ? composerCaretIndex : null}
           variant={variant}
         />
-        <ComposerPrimitive.Input asChild submitOnEnter>
+        <ComposerPrimitive.Input asChild submitOnEnter={false}>
           <Textarea
             ref={inputRef}
             data-testid="omnibar-input"
@@ -1297,34 +1359,44 @@ function ComposerBody({
               refreshActiveToken();
             }}
             onKeyDown={(event) => {
-              if (!suggestionOpen) return;
-              if (event.key === "Escape") {
-                event.preventDefault();
-                setActiveToken(null);
-                return;
-              }
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                setHighlightedIndex((index) =>
-                  suggestions.length ? (index + 1) % suggestions.length : 0,
-                );
-                return;
-              }
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                setHighlightedIndex((index) =>
-                  suggestions.length
-                    ? (index - 1 + suggestions.length) % suggestions.length
-                    : 0,
-                );
+              if (suggestionOpen) {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setActiveToken(null);
+                  return;
+                }
+                if (event.key === "ArrowDown") {
+                  event.preventDefault();
+                  setHighlightedIndex((index) =>
+                    suggestions.length ? (index + 1) % suggestions.length : 0,
+                  );
+                  return;
+                }
+                if (event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setHighlightedIndex((index) =>
+                    suggestions.length
+                      ? (index - 1 + suggestions.length) % suggestions.length
+                      : 0,
+                  );
+                  return;
+                }
+                if (
+                  (event.key === "Enter" || event.key === "Tab") &&
+                  suggestions[highlightedIndex]
+                ) {
+                  event.preventDefault();
+                  applySuggestion(suggestions[highlightedIndex]);
+                }
                 return;
               }
               if (
-                (event.key === "Enter" || event.key === "Tab") &&
-                suggestions[highlightedIndex]
+                event.key === "Enter" &&
+                !event.shiftKey &&
+                !event.nativeEvent.isComposing
               ) {
                 event.preventDefault();
-                applySuggestion(suggestions[highlightedIndex]);
+                submitComposerMessage();
               }
             }}
             className={cn(
@@ -1353,9 +1425,7 @@ function ComposerBody({
           isRunning={isRunning}
           state={state}
           threadIsRunning={threadIsRunning}
-          hostMentions={selectedHostMentions}
-          mentionBindings={reconciledMentionBindings}
-          onComposerCleared={clearComposerInput}
+          onSubmit={submitComposerMessage}
         />
       </div>
     </ComposerPrimitive.Root>
@@ -1567,22 +1637,16 @@ function TargetAwareSendButton({
   isRunning,
   state,
   threadIsRunning,
-  hostMentions,
-  mentionBindings,
-  onComposerCleared,
+  onSubmit,
 }: {
   variant: "default" | "chat";
   isRunning: boolean;
   state: AiopsTransportState;
   threadIsRunning: boolean;
-  hostMentions: DisplayHostMention[];
-  mentionBindings: AiopsMentionBinding[];
-  onComposerCleared: (submittedText: string) => void;
+  onSubmit: () => void;
 }) {
   const api = useAssistantApi();
-  const composer = useComposerRuntime();
   const composerState = useComposer((snapshot) => snapshot);
-  const sendCommand = useAssistantTransportSendCommand();
   const commands = useAiopsTransportCommands();
   const workspace = useSessionWorkspaceContext();
   const [stopping, setStopping] = useState(false);
@@ -1659,24 +1723,7 @@ function TargetAwareSendButton({
           void stopRun("user requested stop");
           return;
         }
-        const text = composer.getState().text.trim();
-        if (!text) return;
-        composer.setText("");
-        onComposerCleared(text);
-        const command = {
-          type: "add-message",
-          message: {
-            role: "user",
-            metadata: {
-              ...buildInputMentionMetadata(mentionBindings),
-              ...hostMentionMetadataForSubmit(mentionBindings, hostMentions),
-              ...capabilityMetadataForSubmit(mentionBindings, text),
-            },
-            ...hostIdMessageFieldForSubmit(mentionBindings, hostMentions),
-            parts: [{ type: "text", text }],
-          },
-        } as Parameters<typeof sendCommand>[0];
-        sendCommand(command);
+        onSubmit();
       }}
     >
       {forceStopVisible ? (

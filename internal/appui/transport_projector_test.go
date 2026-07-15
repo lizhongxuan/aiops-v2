@@ -101,6 +101,64 @@ func TestTransportProjectorPreservesCanonicalTurnFactsLosslessly(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorClearsStaleRunningFinalWhenCanonicalSnapshotOnlyContainsCommentary(t *testing.T) {
+	now := time.Date(2026, 7, 14, 9, 30, 0, 0, time.UTC)
+	turnID := "turn-stale-running-final"
+	state := NewAiopsTransportState("session-stale-running-final", "thread-stale-running-final")
+	state.TurnOrder = []string{turnID}
+	state.Turns[turnID] = AiopsTransportTurn{
+		ID:     turnID,
+		Status: AiopsTransportTurnStatusWorking,
+		Final: &AiopsTransportFinal{
+			ID:     "stale-final",
+			Status: AiopsTransportFinalStatusRunning,
+			Text:   "让我先查看是否有 Coroot 相关的上下文数据。",
+		},
+	}
+	commentaryData, err := json.Marshal(map[string]any{
+		"phase":       "commentary",
+		"streamState": "complete",
+	})
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        turnID,
+		SessionID: state.SessionID,
+		Lifecycle: runtimekernel.TurnLifecycleRunning,
+		StartedAt: now,
+		UpdatedAt: now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{{
+			ID:     "commentary-1",
+			Type:   agentstate.TurnItemTypeAssistantMessage,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Kind:    "assistant_message",
+				Summary: "让我先查看是否有 Coroot 相关的上下文数据。",
+				Data:    commentaryData,
+			},
+			CreatedAt: now,
+			UpdatedAt: now.Add(time.Second),
+		}},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turnID]
+	if got.Final != nil {
+		t.Fatalf("Final = %#v, want stale running final cleared", got.Final)
+	}
+	if len(got.BlockOrder) != 1 {
+		t.Fatalf("block order = %#v, want one canonical commentary block", got.BlockOrder)
+	}
+	block := got.BlocksByID[got.BlockOrder[0]]
+	if block.Type != AiopsTransportBlockTypeCommentary || block.Text != "让我先查看是否有 Coroot 相关的上下文数据。" {
+		t.Fatalf("canonical block = %#v, want only commentary", block)
+	}
+}
+
 func assertTransportAgentItemsMatchCanonical(t *testing.T, got []AiopsTransportAgentItem, want []agentstate.TurnItem) {
 	t.Helper()
 	if len(got) != len(want) {

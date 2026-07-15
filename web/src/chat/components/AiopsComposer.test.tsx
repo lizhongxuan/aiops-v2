@@ -248,6 +248,32 @@ describe("AiopsComposer host mention fuzzy search", () => {
     });
 
     const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(JSON.parse(command.message.metadata["aiops.input.mentions.v1"])).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "capability",
+          path: "capability://coroot",
+          rawText: "@coroot",
+          source: "selection",
+          range: { start: 0, end: 7 },
+        }),
+        expect.objectContaining({
+          kind: "capability",
+          path: "capability://ops_graph",
+          rawText: "@ops_graph",
+          source: "selection",
+          range: { start: 8, end: 18 },
+        }),
+        expect.objectContaining({
+          kind: "capability",
+          path: "capability://ops_manuals",
+          rawText: "@ops_manus",
+          source: "selection",
+          range: { start: 19, end: 29 },
+        }),
+      ],
+    });
     expect(command).toEqual(
       expect.objectContaining({
         type: "add-message",
@@ -264,6 +290,44 @@ describe("AiopsComposer host mention fuzzy search", () => {
     );
     expect(command.message.metadata).not.toEqual(
       expect.objectContaining({ "aiops.hostops.mentions": expect.any(String) }),
+    );
+  });
+
+  it("submits typed special mentions through the same metadata path when Enter is pressed", async () => {
+    await renderComposer(root);
+    const input = container.querySelector('[data-testid="omnibar-input"]') as HTMLTextAreaElement;
+
+    await typeInComposer(input, "帮我看下@Coroot 情况");
+    expect(container.querySelector('[data-testid="composer-inline-special-mention"]')?.textContent).toBe("Coroot");
+
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+
+    const command = mockState.sendCommand.mock.calls.at(-1)?.[0];
+    expect(JSON.parse(command.message.metadata["aiops.input.mentions.v1"])).toEqual({
+      version: 1,
+      mentions: [
+        expect.objectContaining({
+          kind: "capability",
+          path: "capability://coroot",
+          rawText: "@Coroot",
+          source: "selection",
+          range: { start: 4, end: 11 },
+        }),
+      ],
+    });
+    expect(command).toEqual(
+      expect.objectContaining({
+        type: "add-message",
+        message: expect.objectContaining({
+          parts: [{ type: "text", text: "帮我看下@Coroot 情况" }],
+          metadata: expect.objectContaining({
+            "aiops.coroot.explicitRCA": "true",
+            "aiops.coroot.rcaDisplayAllowed": "true",
+          }),
+        }),
+      }),
     );
   });
 

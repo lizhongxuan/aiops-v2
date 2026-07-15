@@ -21,13 +21,15 @@ test("filters @host suggestions by name/ip and sends selected mention metadata",
   await expect(input).toBeVisible();
   await input.fill("@");
   await expect(page.getByTestId("host-mention-suggestion-popover")).toBeVisible();
-  await expect(page.getByTestId("host-mention-suggestion-item")).toHaveCount(10);
+  await expect(page.getByTestId("host-mention-suggestion-item")).toHaveCount(4);
+  await page.getByTestId("host-mention-suggestion-item").first().click();
+  await expect(input).toHaveValue("@host-");
 
-  await input.fill("@pg");
+  await input.fill("@host-pg");
   await expect(page.getByTestId("host-mention-suggestion-item")).toHaveCount(2);
-  await expect(page.getByTestId("host-mention-suggestion-popover")).toContainText("@pg-primary");
+  await expect(page.getByTestId("host-mention-suggestion-popover")).toContainText("pg-primary");
   await expect(page.getByTestId("host-mention-suggestion-popover")).toContainText("120.77.239.90");
-  await expect(page.getByTestId("host-mention-suggestion-popover")).not.toContainText("@redis");
+  await expect(page.getByTestId("host-mention-suggestion-popover")).not.toContainText("redis");
 
   await page.getByTestId("host-mention-suggestion-item").first().click();
   await expect(input).toHaveValue("@120.77.239.90 ");
@@ -70,6 +72,45 @@ test("highlights special AI mentions and sends explicit tool metadata without ho
     "aiops.opsManuals.explicitMention": "true",
     enableTool: "search_ops_manuals",
     enableToolPack: "opsgraph,ops_manual_flow",
+  });
+});
+
+test("recognizes Chinese-adjacent @Coroot and preserves special metadata on Enter submit", async ({ page }) => {
+  const transportRequests = [];
+  await mockHostInventory(page);
+  await installAssistantTransportRoute(page, transportRequests);
+  await installUiFixture(page, createIdleFixture());
+
+  await page.goto("/", { waitUntil: "networkidle" });
+  await waitForFixtureStable(page);
+
+  const input = page.getByTestId("omnibar-input");
+  await expect(input).toBeVisible();
+  await input.fill("帮我看下@Coroot 情况");
+  await expect(page.getByTestId("composer-inline-special-mention")).toHaveText("Coroot");
+
+  await input.press("Enter");
+
+  await expect.poll(() => transportRequests.length, { timeout: 5000 }).toBe(1);
+  expect(transportRequests[0]?.commands).toHaveLength(1);
+  const command = transportRequests[0]?.commands?.[0];
+  expect(command?.type).toBe("add-message");
+  expect(command?.message?.parts).toEqual([{ type: "text", text: "帮我看下@Coroot 情况" }]);
+  expect(command?.message?.metadata).toMatchObject({
+    "aiops.coroot.explicitRCA": "true",
+    "aiops.coroot.rcaDisplayAllowed": "true",
+  });
+  expect(JSON.parse(command?.message?.metadata?.["aiops.input.mentions.v1"] || "{}")).toEqual({
+    version: 1,
+    mentions: [
+      expect.objectContaining({
+        kind: "capability",
+        path: "capability://coroot",
+        rawText: "@Coroot",
+        source: "selection",
+        range: { start: 4, end: 11 },
+      }),
+    ],
   });
 });
 
