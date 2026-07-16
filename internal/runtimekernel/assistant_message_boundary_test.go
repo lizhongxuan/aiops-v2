@@ -13,7 +13,7 @@ func TestConstrainFinalMessageRemovesRawToolCallMarkup(t *testing.T) {
 
 <｜｜DSML｜｜tool_calls>
 <｜｜DSML｜｜invoke name="web_search">
-<｜｜DSML｜｜parameter name="query" string="true">postgres timeline</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="query" string="true">official configuration guide</｜｜DSML｜｜parameter>
 </｜｜DSML｜｜invoke>
 </｜｜DSML｜｜tool_calls>`
 
@@ -46,7 +46,7 @@ func TestSanitizeFinalAssistantContentBlocksRawToolCallMarkupEvenWhenEvidenceAll
 		Action:     FinalEvidenceActionAllow,
 		Confidence: FinalEvidenceConfidenceHigh,
 		State: FinalEvidenceState{
-			Checked: []CheckedEvidence{{ToolName: "web_search", Summary: "已读取 pg_auto_failover 官方文档。"}},
+			Checked: []CheckedEvidence{{ToolName: "web_search", Summary: "已读取官方配置文档。"}},
 		},
 	})
 
@@ -58,78 +58,109 @@ func TestSanitizeFinalAssistantContentBlocksRawToolCallMarkupEvenWhenEvidenceAll
 			t.Fatalf("sanitized final leaked raw tool markup %q:\n%s", forbidden, got)
 		}
 	}
-	if !strings.Contains(got, "已读取 pg_auto_failover 官方文档") {
+	if !strings.Contains(got, "已读取官方配置文档") {
 		t.Fatalf("sanitized final = %q, want checked evidence summary preserved", got)
 	}
 }
 
-func TestFinalMessageHasProcessIntentBlocksLeakedContextArtifactChatter(t *testing.T) {
-	raw := `让我直接读取证据引用： greaseardereread_context_artifact with the evidence IDs:So let me try reading the evidence refs directly. I'll also try one more level of the spill chain. theringatherread_context_artifact with evidence IDs:Let me try reading the evidence refs directly. I can see from the initial summaries that there's some useful data already. Let me try one more level. theevidenceThere's useful summary data already. Let me also try to get the incidents more directly. read_context_artifact`
-
-	if !finalMessageHasProcessIntent(raw) {
-		t.Fatalf("finalMessageHasProcessIntent=false, want leaked context-artifact chatter blocked")
+func TestAssistantMessageBoundaryUsesTypedPendingIntentInsteadOfWording(t *testing.T) {
+	texts := []string{
+		"我会继续解释这个概念，并在下一段给出例子。",
+		"我先说明文件布局，结论是配置应放在项目根目录。",
+		"Let me summarize the web documentation and its evidence.",
+	}
+	for _, text := range texts {
+		decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
+			Text:                text,
+			FinishReason:        "stop",
+			PendingToolIntent:   false,
+			FinalEvidenceAction: string(FinalEvidenceActionAllow),
+		})
+		if decision.Action != FinalMessageBoundaryAllow {
+			t.Fatalf("text %q action=%q, want wording-neutral allow: %#v", text, decision.Action, decision)
+		}
 	}
 
 	decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
-		Text:                raw,
+		Text:                "这里是一段完整且不含过程词的回答。",
 		FinishReason:        "stop",
-		PendingToolIntent:   finalMessageHasProcessIntent(raw),
+		PendingToolIntent:   true,
 		FinalEvidenceAction: string(FinalEvidenceActionAllow),
 	})
-	if decision.Action != FinalMessageBoundaryBlock {
-		t.Fatalf("boundary action=%q, want block: %#v", decision.Action, decision)
-	}
-	if !containsString(decision.Reasons, "pending_tool_or_process_intent") {
-		t.Fatalf("boundary reasons=%v, want pending_tool_or_process_intent", decision.Reasons)
+	if decision.Action != FinalMessageBoundaryBlock || !containsString(decision.Reasons, "pending_tool_or_process_intent") {
+		t.Fatalf("typed pending intent decision = %#v, want block", decision)
 	}
 }
 
-func TestFinalMessageHasProcessIntentBlocksRepeatedCorootRCAChatter(t *testing.T) {
-	raw := strings.Repeat("SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。", 8)
-
-	if !finalMessageHasProcessIntent(raw) {
-		t.Fatalf("finalMessageHasProcessIntent=false, want repeated Coroot RCA chatter blocked")
-	}
-
-	decision := evaluateFinalMessageBoundary(finalMessageBoundaryInput{
-		Text:                raw,
-		FinishReason:        "stop",
-		PendingToolIntent:   finalMessageHasProcessIntent(raw),
-		FinalEvidenceAction: string(FinalEvidenceActionAllow),
+func TestConstrainedFinalDoesNotInferProcessLeakFromToolVocabulary(t *testing.T) {
+	raw := `文档说明 read_context_artifact 会返回 store://tool-spills 引用；示例 {"content":"ok"}，并解释 final contract、kinds= 与 signals= 字段。`
+	got := constrainFinalMessageForEvidenceBoundary(raw, FinalEvidenceVerification{
+		Action:     FinalEvidenceActionDowngrade,
+		Confidence: FinalEvidenceConfidenceLow,
 	})
-	if decision.Action != FinalMessageBoundaryBlock {
-		t.Fatalf("boundary action=%q, want block: %#v", decision.Action, decision)
-	}
-	if !containsString(decision.Reasons, "pending_tool_or_process_intent") {
-		t.Fatalf("boundary reasons=%v, want pending_tool_or_process_intent", decision.Reasons)
+
+	if !strings.Contains(got, raw) {
+		t.Fatalf("constrained final = %q, want legitimate tool vocabulary preserved", got)
 	}
 }
 
-func TestSanitizeIncompleteFinalUserLineHidesLeakedContextArtifactChatter(t *testing.T) {
-	raw := `让我直接读取证据引用： read_context_artifact with the evidence IDs: Let me try reading the evidence refs directly.`
+func TestAssistantMessageBoundaryDoesNotTreatDomainWordingAsProtocolLeak(t *testing.T) {
+	raw := "SERVICE_NAME=message-worker。让我获取运行状态并继续说明原因。"
 	got := sanitizeIncompleteFinalUserLine(raw)
 
-	for _, forbidden := range []string{"read_context_artifact", "evidence IDs", "Let me try", "try reading"} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("sanitized line leaked %q: %s", forbidden, got)
-		}
-	}
-	if !strings.Contains(got, "工具读取过程") {
-		t.Fatalf("sanitized line = %q, want user-visible tool-process fallback", got)
+	if got != raw {
+		t.Fatalf("sanitized line = %q, want domain wording preserved without protocol marker", got)
 	}
 }
 
-func TestSanitizeIncompleteFinalUserLineHidesRepeatedCorootRCAChatter(t *testing.T) {
-	raw := strings.Repeat("SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。", 4)
-	got := sanitizeIncompleteFinalUserLine(raw)
-
-	for _, forbidden := range []string{"SERVICE_NAME", "ERVICE_NAME", "rabbitmq-server。让我获取RCA上下文"} {
-		if strings.Contains(got, forbidden) {
-			t.Fatalf("sanitized line leaked %q: %s", forbidden, got)
-		}
+func TestAssistantMessageBoundaryConstrainedFinalUsesStructuredActionAcrossDomains(t *testing.T) {
+	tests := []struct {
+		name string
+		text string
+	}{
+		{name: "consultation", text: "接口隔离能降低调用方与实现之间的耦合。"},
+		{name: "file", text: "配置文件已经写入 workspace，并通过格式校验。"},
+		{name: "host", text: "主机负载处于预期范围，当前无需变更。"},
+		{name: "web", text: "官方网页说明该选项从当前版本开始可用。"},
+		{name: "database", text: "数据库连接池已恢复稳定，未观察到新的超时。"},
+		{name: "legacy vocabulary", text: "根因、证据和下一步只是本段讨论的术语，不是消息边界。"},
+		{name: "process wording", text: "I will explain the result now; this is a complete final response, not pending tool intent."},
 	}
-	if !strings.Contains(got, "工具读取过程") {
-		t.Fatalf("sanitized line = %q, want user-visible tool-process fallback", got)
+	decision := FinalEvidenceVerification{Action: FinalEvidenceActionDowngrade, Confidence: FinalEvidenceConfidenceLow}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := constrainFinalMessageForEvidenceBoundary(tt.text, decision)
+			if !strings.Contains(got, tt.text) {
+				t.Fatalf("constrained final = %q, want original text preserved", got)
+			}
+			if !strings.Contains(got, "证据边界") {
+				t.Fatalf("constrained final = %q, want structured limitation prefix", got)
+			}
+		})
+	}
+}
+
+func TestAssistantMessageBoundaryStructuredBlockOverridesDomainWording(t *testing.T) {
+	text := "这是一条完整的通用咨询答复。"
+	got := constrainFinalMessageForEvidenceBoundary(text, FinalEvidenceVerification{
+		Action:     FinalEvidenceActionBlock,
+		Confidence: FinalEvidenceConfidenceLow,
+	})
+	if strings.Contains(got, text) || !strings.Contains(got, "还不能给最终结论") {
+		t.Fatalf("blocked final = %q, want deterministic structured fallback", got)
+	}
+}
+
+func TestAssistantMessageBoundaryKeepsDelimiterAndCodeFenceGuards(t *testing.T) {
+	decision := FinalEvidenceVerification{Action: FinalEvidenceActionDowngrade, Confidence: FinalEvidenceConfidenceLow}
+	for _, text := range []string{
+		"配置位于（workspace/config.yaml",
+		"检查命令如下：\n```sh\nstatus --json",
+	} {
+		got := constrainFinalMessageForEvidenceBoundary(text, decision)
+		if strings.Contains(got, text) || !strings.Contains(got, "还不能给最终结论") {
+			t.Fatalf("machine-incomplete final = %q, want deterministic fallback for %q", got, text)
+		}
 	}
 }
 

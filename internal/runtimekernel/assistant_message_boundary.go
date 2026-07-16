@@ -20,103 +20,16 @@ func isAssistantProgressContentAllowed(text string) bool {
 	if trimmed == "" {
 		return false
 	}
-	runeCount := len([]rune(trimmed))
-	if runeCount > 180 {
+	if len([]rune(trimmed)) > 180 || strings.Count(trimmed, "\n") > 1 {
 		return false
 	}
-	if strings.Count(trimmed, "\n") > 1 {
+	if containsRawToolCallMarkup(strings.ToLower(trimmed)) {
 		return false
 	}
-	lower := strings.ToLower(trimmed)
-	if runeCount > 100 && containsAnyAssistantFinalMarker(lower) {
+	if hasUnclosedFinalDelimiter(trimmed) || hasUnclosedMarkdownFence(trimmed) {
 		return false
 	}
 	return true
-}
-
-func containsAnyAssistantFinalMarker(lower string) bool {
-	for _, marker := range []string{
-		"根因", "结论", "证据", "影响面", "下一步", "机制链路",
-		"root cause", "conclusion", "evidence", "impact", "next step",
-	} {
-		if strings.Contains(lower, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
-}
-
-const leakedToolProcessTextUserMessage = "已读取工具证据，但模型返回的是工具读取过程，未形成可直接展示的中文结论。"
-
-func containsLeakedToolProcessText(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
-	}
-	if strings.Contains(lower, "service_name=") || strings.Contains(lower, "ervice_name=") {
-		if strings.Contains(lower, "rca上下文") || strings.Contains(lower, "让我获取") || strings.Contains(lower, "let me get") {
-			return true
-		}
-	}
-	if strings.Count(lower, "让我获取rca上下文") >= 2 || strings.Count(lower, "rca上下文") >= 5 {
-		return true
-	}
-	if strings.Contains(lower, "read_context_artifact") {
-		for _, marker := range []string{
-			"evidence ids",
-			"evidence id",
-			"evidence refs",
-			"evidence ref",
-			"证据引用",
-			"let me",
-			"try reading",
-			"reading the evidence",
-			"spill chain",
-			"store://tool-spills",
-		} {
-			if strings.Contains(lower, marker) {
-				return true
-			}
-		}
-	}
-	matches := 0
-	for _, marker := range []string{
-		"let me try reading",
-		"try reading the evidence",
-		"reading the evidence refs",
-		"evidence ids",
-		"evidence refs",
-		"one more level of the spill chain",
-		"store://tool-spills",
-	} {
-		if strings.Contains(lower, marker) {
-			matches++
-		}
-	}
-	return matches >= 2
-}
-
-func finalMessageHasProcessIntent(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return false
-	}
-	lower := strings.ToLower(trimmed)
-	if containsLeakedToolProcessText(lower) {
-		return true
-	}
-	if len([]rune(trimmed)) > 260 || containsAnyAssistantFinalMarker(lower) {
-		return false
-	}
-	for _, marker := range []string{
-		"let me ", "i will ", "i'll ", "try browsing", "browse ", "search ", "look up ",
-		"我先", "让我", "我会继续", "我将继续", "现在我会", "接下来我", "继续查阅", "继续搜索", "继续查看",
-	} {
-		if strings.Contains(lower, strings.ToLower(marker)) {
-			return true
-		}
-	}
-	return false
 }
 
 func buildDeterministicIncompleteFinal(input incompleteFinalInput) string {
@@ -206,34 +119,13 @@ func recordRawToolCallMarkupFinalSanitized(snapshot *TurnSnapshot, turnID string
 
 func constrainedFinalShouldBecomeIncomplete(text string, decision FinalEvidenceVerification) bool {
 	trimmed := strings.TrimSpace(text)
-	if trimmed == "" || finalMessageHasProcessIntent(trimmed) || containsInternalFinalFallbackText(trimmed) {
+	if trimmed == "" || containsRawToolCallMarkup(strings.ToLower(trimmed)) {
 		return true
 	}
-	if decision.Action == FinalEvidenceActionAllow {
-		return false
-	}
-	if !containsConcreteFinalContent(trimmed) {
+	if hasUnclosedFinalDelimiter(trimmed) || hasUnclosedMarkdownFence(trimmed) {
 		return true
 	}
-	return false
-}
-
-func containsConcreteFinalContent(text string) bool {
-	lower := strings.ToLower(strings.TrimSpace(text))
-	if lower == "" {
-		return false
-	}
-	matches := 0
-	for _, marker := range []string{
-		"根因", "原因", "证据：", "可能原因", "下一步", "timeline", "pgbackrest", "postgres", "wal",
-		"recovery_target", "restore_command", "$pgdata", "pg_auto", "primary_conninfo", ".history",
-		"root cause", "evidence:", "next step",
-	} {
-		if strings.Contains(lower, strings.ToLower(marker)) {
-			matches++
-		}
-	}
-	return matches >= 1
+	return strings.EqualFold(strings.TrimSpace(decision.Action), FinalEvidenceActionBlock)
 }
 
 func incompleteFinalFromEvidenceDecision(decision FinalEvidenceVerification) string {
@@ -325,16 +217,11 @@ func sanitizeUserVisibleConfidenceLabels(text string) string {
 	return strings.TrimSpace(out)
 }
 
+// containsInternalFinalFallbackText is retained only as the shared raw
+// provider-protocol safety boundary used by evidence fallback cleanup. It must
+// not classify business vocabulary or ordinary JSON as an assistant phase.
 func containsInternalFinalFallbackText(text string) bool {
-	lower := strings.ToLower(text)
-	return strings.Contains(lower, "final contract") ||
-		strings.Contains(lower, "non_substantive_final_answer") ||
-		strings.Contains(lower, "official-domain fallback results") ||
-		strings.Contains(lower, `{"content"`) ||
-		containsRawToolCallMarkup(lower) ||
-		containsLeakedToolProcessText(lower) ||
-		strings.Contains(lower, "kinds=") ||
-		strings.Contains(lower, "signals=")
+	return containsRawToolCallMarkup(strings.ToLower(text))
 }
 
 func containsRawToolCallMarkup(lower string) bool {
@@ -382,12 +269,6 @@ func sanitizeIncompleteFinalUserLine(line string) string {
 	}
 	if summary := structuredEvidenceSummaryForUser("", line); summary != "" {
 		return summary
-	}
-	if containsLeakedToolProcessText(line) {
-		return leakedToolProcessTextUserMessage
-	}
-	if containsInternalFinalFallbackText(line) {
-		return "已存在内部证据或检索结果，但本轮没有形成可直接展示的结构化最终结论。"
 	}
 	line = strings.ReplaceAll(line, "kinds=", "证据类型：")
 	line = strings.ReplaceAll(line, "signals=", "识别信号：")

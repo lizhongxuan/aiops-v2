@@ -825,6 +825,9 @@ func projectTurnItem(
 			ExternalReferences:  projectExternalReferences(tool.ExternalReferences),
 			UpdatedAt:           transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 		}
+		if item.Type == agentstate.TurnItemTypeToolResult {
+			block.ID = existingToolLifecycleBlockID(turn.Process, block.ToolCallID, block.ID)
+		}
 		switch blockKind {
 		case AiopsTransportProcessKindSearch:
 			query := firstNonEmptyString(tool.InputSummary, strings.TrimSpace(item.Payload.Summary))
@@ -873,6 +876,11 @@ func projectTurnItem(
 		}
 		turn.Process = upsertTransportProcessBlock(turn.Process, block)
 	case agentstate.TurnItemTypeEvidence:
+		if isVerificationCompletionGateItem(item) {
+			// Verification completion gates are runtime control facts. They stay in
+			// AgentItems/Timeline and must not become user-visible evidence blocks.
+			return turn
+		}
 		var payload struct {
 			ID         string `json:"id"`
 			Kind       string `json:"kind"`
@@ -1004,6 +1012,43 @@ func projectTurnItem(
 	}
 
 	return turn
+}
+
+func isVerificationCompletionGateItem(item agentstate.TurnItem) bool {
+	if item.Payload.Kind == runtimekernel.VerificationCompletionGateItemKind {
+		return true
+	}
+	if strings.TrimSpace(item.Payload.Kind) != "" ||
+		!strings.Contains(item.ID, "-verification-completion-gate-") {
+		return false
+	}
+	// Compatibility boundary for persisted items written before Payload.Kind
+	// existed. The runtime-owned ID plus typed decision payload is required;
+	// user-visible summary text is never inspected.
+	var decision runtimekernel.VerificationCompletionDecision
+	return json.Unmarshal(item.Payload.Data, &decision) == nil && strings.TrimSpace(decision.Action) != ""
+}
+
+func existingToolLifecycleBlockID(blocks []AiopsProcessBlock, toolCallID, fallbackID string) string {
+	toolCallID = strings.TrimSpace(toolCallID)
+	if toolCallID == "" {
+		return fallbackID
+	}
+	for _, block := range blocks {
+		if strings.TrimSpace(block.ToolCallID) != toolCallID {
+			continue
+		}
+		switch block.Kind {
+		case AiopsTransportProcessKindTool,
+			AiopsTransportProcessKindSearch,
+			AiopsTransportProcessKindCommand,
+			AiopsTransportProcessKindFile,
+			AiopsTransportProcessKindMCP,
+			AiopsTransportProcessKindSubagent:
+			return block.ID
+		}
+	}
+	return fallbackID
 }
 
 func transportFinalFromAgentItem(id string, text string, fallbackStatus AiopsTransportFinalStatus, durationMs int64, contract runtimekernel.FinalContract) *AiopsTransportFinal {
@@ -3137,22 +3182,7 @@ func sanitizeOutputPreview(content string) string {
 }
 
 func sanitizeUserVisibleProcessText(content string) string {
-	text := strings.TrimSpace(content)
-	if text == "" {
-		return ""
-	}
-	lower := strings.ToLower(text)
-	for _, marker := range []string{
-		"verification completion gate",
-		"block_success_final",
-		"missing_verification_report",
-		"execution_required,missing_verification_report",
-	} {
-		if strings.Contains(lower, marker) {
-			return ""
-		}
-	}
-	return text
+	return strings.TrimSpace(content)
 }
 
 const modelConnectionTimeoutUserVisibleText = "模型服务连接超时，未能建立连接。上下文较大或模型服务繁忙时可能需要更长时间，请稍后重试。"

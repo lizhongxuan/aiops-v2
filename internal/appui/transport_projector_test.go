@@ -1134,7 +1134,7 @@ func TestTransportProjectorDoesNotExposeRouteSummaryBeforeModelFinal(t *testing.
 	}
 }
 
-func TestTransportProjectorHidesRuntimeInternalGateText(t *testing.T) {
+func TestTransportProjectorHidesTypedRuntimeInternalGateItem(t *testing.T) {
 	now := time.Date(2026, 6, 23, 16, 30, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-gate", "thread-gate")
@@ -1149,10 +1149,14 @@ func TestTransportProjectorHidesRuntimeInternalGateText(t *testing.T) {
 		UpdatedAt:   now,
 		AgentItems: []agentstate.TurnItem{
 			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "启动容器"}, CreatedAt: now},
-			{ID: "gate-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: gate}, CreatedAt: now.Add(time.Second)},
+			{ID: "gate-1", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: runtimekernel.VerificationCompletionGateItemKind, Summary: gate}, CreatedAt: now.Add(time.Second)},
+			{ID: "turn-gate-verification-completion-gate-0", Type: agentstate.TurnItemTypeEvidence, Status: agentstate.ItemStatusBlocked, Payload: agentstate.PayloadEnvelope{
+				Summary: gate,
+				Data:    json.RawMessage(`{"action":"block_success_final","reasons":["missing_verification_report"],"requirement":"execution_required"}`),
+			}, CreatedAt: now.Add(time.Second)},
 			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
 				Summary: gate,
-				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"unclassified","streamState":"incomplete","boundaryAction":"retry_once"}`),
 			}, CreatedAt: now.Add(2 * time.Second)},
 		},
 	}
@@ -1168,7 +1172,39 @@ func TestTransportProjectorHidesRuntimeInternalGateText(t *testing.T) {
 		}
 	}
 	if projected.Turns["turn-gate"].Final != nil {
-		t.Fatalf("Final = %+v, want internal gate final hidden", projected.Turns["turn-gate"].Final)
+		t.Fatalf("Final = %+v, want typed retry candidate hidden", projected.Turns["turn-gate"].Final)
+	}
+}
+
+func TestTransportProjectorDoesNotHideFinalByGateVocabulary(t *testing.T) {
+	now := time.Date(2026, 6, 23, 16, 35, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-gate-vocabulary", "thread-gate-vocabulary")
+	answer := "配置字段 block_success_final 只用于说明内部协议，不代表这段答案应被隐藏。"
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-gate-vocabulary",
+		SessionID:   "session-gate-vocabulary",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now,
+		AgentItems: []agentstate.TurnItem{
+			{ID: "user-1", Type: agentstate.TurnItemTypeUserMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Summary: "解释该配置字段"}, CreatedAt: now},
+			{ID: "final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: answer,
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	final := projected.Turns["turn-gate-vocabulary"].Final
+	if final == nil || final.Text != answer {
+		t.Fatalf("Final = %+v, want vocabulary preserved as user-visible text", final)
 	}
 }
 

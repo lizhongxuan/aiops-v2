@@ -43,7 +43,7 @@ func commitAssistantOutputForIteration(snapshot *TurnSnapshot, input assistantOu
 		return assistantOutputCommitResult{}
 	}
 	itemID := assistantMessageItemID(turnID, input.Iteration)
-	if len(input.ToolCalls) == 0 {
+	if !hasTypedAssistantToolCalls(input.ToolCalls) {
 		return assistantOutputCommitResult{
 			ItemID:    itemID,
 			Phase:     AssistantMessagePhaseUnclassified,
@@ -89,6 +89,17 @@ func commitFinalAssistantOutput(snapshot *TurnSnapshot, input assistantOutputCom
 		return assistantOutputCommitResult{}
 	}
 	itemID := firstNonEmptyString(strings.TrimSpace(input.ItemID), assistantMessageItemID(turnID, input.Iteration))
+	if hasTypedAssistantToolCalls(input.ToolCalls) ||
+		EvaluateFinalCompleteness(text, input.FinishReason).Action != "allow" ||
+		containsRawToolCallMarkup(strings.ToLower(text)) ||
+		!hasStructuredFinalCommitBoundary(input) {
+		return assistantOutputCommitResult{
+			ItemID:    itemID,
+			Phase:     AssistantMessagePhaseUnclassified,
+			Text:      text,
+			Committed: false,
+		}
+	}
 	data := assistantMessageData{
 		MessageID:        input.MessageID,
 		Iteration:        input.Iteration,
@@ -119,11 +130,39 @@ func commitFinalAssistantOutput(snapshot *TurnSnapshot, input assistantOutputCom
 
 func commentaryTextForToolCalls(input assistantOutputCommitInput) (string, string, bool) {
 	raw := strings.TrimSpace(input.AssistantText)
-	if isAssistantProgressContentAllowed(raw) {
+	if hasTypedAssistantToolCalls(input.ToolCalls) &&
+		assistantToolCallFinishReasonAllowsCommentary(input.FinishReason) &&
+		isAssistantProgressContentAllowed(raw) {
 		return raw, assistantCommentarySourceModelPrelude, false
 	}
 	intent := toolIntentPrelude(input.UserInput, Message{ToolCalls: input.ToolCalls})
 	return strings.TrimSpace(intent), assistantCommentarySourceRuntimeToolIntent, raw != ""
+}
+
+func hasTypedAssistantToolCalls(calls []ToolCall) bool {
+	return len(calls) > 0
+}
+
+func assistantToolCallFinishReasonAllowsCommentary(value string) bool {
+	switch finalCompletenessFinishReason(value) {
+	case "", "tool_calls", "function_call", "tool_use", "stop", "end_turn", "complete", "completed":
+		return true
+	default:
+		return false
+	}
+}
+
+func hasStructuredFinalCommitBoundary(input assistantOutputCommitInput) bool {
+	if input.FinalContract != nil {
+		return input.FinalContract.SchemaVersion == FinalContractSchemaVersion && input.FinalContract.Validate() == nil
+	}
+	action := FinalMessageBoundaryAction(strings.ToLower(strings.TrimSpace(string(input.BoundaryAction))))
+	switch action {
+	case FinalMessageBoundaryAllow, FinalMessageBoundaryConstrain, FinalMessageBoundaryBlock:
+		return strings.TrimSpace(input.EvidenceBoundary) != ""
+	default:
+		return false
+	}
 }
 
 func toolCallIDsForAssistantCommentary(calls []ToolCall) []string {

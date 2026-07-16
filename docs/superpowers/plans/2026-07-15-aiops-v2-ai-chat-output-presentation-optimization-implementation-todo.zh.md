@@ -263,7 +263,7 @@ final-message
 
 每一阶段由一个或多个可独立审查的 commit 完成；预算 gate 会逐 commit 核算，而不是只看 Phase 汇总。不得在同一个 patch 中同时修改 runtime phase、transport ordering 和 UI 样式。
 
-## 7. Phase 0：建立行为基线与失败测试（红测完成，截图 spec 补齐中）
+## 7. Phase 0：建立行为基线与失败测试（已完成：2026-07-16）
 
 ### Task 0.1：记录当前生产链路基线
 
@@ -280,7 +280,7 @@ final-message
 ### TODO
 
 - [x] 记录修改前 git commit、工作树状态和相关测试结果；首个实施分支必须从 `2d37eb1` 或经重新复核的新基线开始。
-- [ ] 保存一份 fixture-driven 当前行为截图，只作为 red 基线，不直接覆盖已批准 snapshot。
+- [x] 保存一份 fixture-driven 当前行为截图，只作为 red 基线，不直接覆盖已批准 snapshot。
 - [x] 记录以下当前事实：运行中的 assistant delta 被投影为 final、model_call 被投影为 reasoning、artifact 位于 final 后、成功 FinalContract 单独显示。
 - [x] 如果任何事实无法稳定复现，先补 trace/fixture，不直接修改生产语义。
 - [x] 记录 runtime payload 与 debug fields 对同一流式 item 的 phase/streamState 不一致事实。
@@ -315,7 +315,7 @@ final-message
 - [x] 反转 ProcessTranscript 中 `renders streaming final...`、`renders model wait status...` 等将旧行为视为正确的断言。
 - [x] `AiopsThread` 正常 verified final 不显示独立 contract 卡。
 - [x] `ProcessTranscript` 使用 typed tool identity 归组，不按文案相等去重。
-- [ ] 新增运行中、完成、retry、artifact ordering 四张 fixture snapshot。
+- [x] 新增运行中、完成、retry、artifact ordering 四张 fixture snapshot。
 - [x] 运行测试并确认新增断言在修复前失败；记录失败输出摘要。
 
 ### Phase 0 验收
@@ -324,7 +324,7 @@ final-message
 - [x] 没有修改生产代码。
 - [x] 没有更新 golden/snapshot 来掩盖失败。
 - [x] 现有锁定旧行为的测试已显式反转或重命名，没有与新契约互相矛盾的“绿测试”。
-- [ ] 新增的 Playwright spec 包含 `toHaveScreenshot(...)`；生成 baseline 前已逐张审查，且未提交工作树不会被误报为 gate 通过。
+- [x] 新增的 Playwright spec 包含 `toHaveScreenshot(...)`；baseline 已逐张审查，并通过带 baseline trailer 的独立提交 `2874acd` 纳入版本控制。
 
 ## 8. Phase 1：修复 runtime 流式阶段分类（已完成：2026-07-16）
 
@@ -545,7 +545,7 @@ scripts/check-aiops-change-budget.sh
 
 ## 12. Phase 5：收敛 final UI 与删除文本修复式逻辑
 
-> 状态：🚧 进行中（2026-07-16）。FinalContract UI 和 React/converter 文本修复器已完成清理；runtime 内容启发式正在独立提交中。
+> 状态：✅ 已完成（2026-07-16）。FinalContract UI、React/converter 文本修复器和 runtime 内容启发式均已按 typed boundary 收敛。
 
 ### Task 5.1：FinalContract 只展示异常和可行动信息
 
@@ -607,23 +607,23 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] commentary 是否接纳只依据 phase、tool calls 和通用展示预算，不依据业务关键词。
-- [ ] pending tool/process intent 由 provider tool calls、finish reason、checkpoint 或 structured boundary fact 表达。
-- [ ] 删除 PostgreSQL、WAL、pgBackRest 等产品词对 final 完整性的决定权。
-- [ ] 删除“包含根因/证据/下一步即可认为 concrete final”的通用核心规则。
-- [ ] 删除 projector `sanitizeUserVisibleProcessText` 对 internal gate marker 的 substring 隐藏；上游 typed visibility policy 必须阻止 internal-only item 进入 Chat。
-- [ ] 明确业务词法主要位于 commentary 与 evidence-constrained/fallback 清理路径，不误删 `final_completeness_gate.go` 的 finish reason、delimiter、code fence 等通用语法完整性校验。
-- [ ] raw tool-call markup、危险操作和 secret 检测继续作为机器/安全边界保留。
-- [ ] 为通用咨询、文件分析、主机运维、Web 搜索、数据库 RCA 各加正反例，证明没有单一领域偏置。
+- [x] commentary 是否接纳只依据 phase、tool calls 和通用展示预算，不依据业务关键词。
+- [x] pending tool/process intent 由 provider tool calls、finish reason、checkpoint 或 structured boundary fact 表达。
+- [x] 删除 PostgreSQL、WAL、pgBackRest 等产品词对 final 完整性的决定权。
+- [x] 删除“包含根因/证据/下一步即可认为 concrete final”的通用核心规则。
+- [x] 删除 projector `sanitizeUserVisibleProcessText` 对 internal gate marker 的 substring 隐藏；上游 typed visibility policy 必须阻止 internal-only item 进入 Chat。
+- [x] 明确业务词法主要位于 commentary 与 evidence-constrained/fallback 清理路径，不误删 `final_completeness_gate.go` 的 finish reason、delimiter、code fence 等通用语法完整性校验。
+- [x] raw tool-call markup、危险操作和 secret 检测继续作为机器/安全边界保留。
+- [x] 为通用咨询、文件分析、主机运维、Web 搜索、数据库 RCA 各加正反例，证明没有单一领域偏置。
 
 ### Phase 5 验收
 
-- [ ] 正常回答视觉上只有 final 正文，不再先显示“已验证/置信度高/已采集 N 条证据”卡片。
-- [ ] 异常和受限回答仍清晰说明缺失证据、失败工具和限制。
-- [ ] React 不再修补泄漏的工具过程文本；上游测试保证该文本不能成为 final。
-- [ ] 核心 runtime 不使用业务关键词判断 commentary/final。
-- [ ] Phase 5 的 UI 与 runtime 清理分成至少两个独立提交，不混在同一个 patch。
-- [ ] 每个 UI commit 都修改包含 `toHaveScreenshot(...)` 的 Playwright spec；backend runtime commit 修改包含 `RunTurn(` 或 `AssistantTransport` 的 story/integration test。
+- [x] 正常回答视觉上只有 final 正文，不再先显示“已验证/置信度高/已采集 N 条证据”卡片。
+- [x] 异常和受限回答仍清晰说明缺失证据、失败工具和限制。
+- [x] React 不再修补泄漏的工具过程文本；上游测试保证该文本不能成为 final。
+- [x] 核心 runtime 不使用业务关键词判断 commentary/final。
+- [x] Phase 5 的 UI 与 runtime 清理分成至少两个独立提交，不混在同一个 patch。
+- [x] 每个 UI commit 都修改包含 `toHaveScreenshot(...)` 的 Playwright spec；backend runtime commit 修改包含 `RunTurn(` 或 `AssistantTransport` 的 story/integration test。
 
 ### Phase 5 验证命令
 
