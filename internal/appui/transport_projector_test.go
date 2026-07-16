@@ -543,13 +543,16 @@ func TestTransportProjectorProjectsStructuredTurnItems(t *testing.T) {
 	if transportTurn.Final == nil || transportTurn.Final.Text != "等待审批完成后执行回滚" {
 		t.Fatalf("turn.Final = %+v, want final text", transportTurn.Final)
 	}
-	if len(transportTurn.Process) != 6 {
-		t.Fatalf("len(turn.Process) = %d, want 6", len(transportTurn.Process))
+	if len(transportTurn.Process) != 5 {
+		t.Fatalf("len(turn.Process) = %d, want 5 trace-free Chat blocks", len(transportTurn.Process))
 	}
-
-	reasoningBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindReasoning)
-	if reasoningBlock.Text != "analyzing rollout telemetry" {
-		t.Fatalf("reasoning block = %+v, want model call summary", reasoningBlock)
+	for _, block := range transportTurn.Process {
+		if block.Kind == AiopsTransportProcessKindReasoning {
+			t.Fatalf("model call leaked into Chat process blocks: %#v", block)
+		}
+	}
+	if len(transportTurn.AgentItems) < 2 || transportTurn.AgentItems[1].Type != string(agentstate.TurnItemTypeModelCall) {
+		t.Fatalf("model call missing from trace AgentItems: %#v", transportTurn.AgentItems)
 	}
 
 	planBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindPlan)
@@ -1062,8 +1065,13 @@ func TestTransportProjectorProjectsOpsRunFromTurnMetadata(t *testing.T) {
 	if projected.OpsRun.ToolSurfaceSummary != "无主机执行 / WebLearn / HostOps" {
 		t.Fatalf("OpsRun.ToolSurfaceSummary = %q", projected.OpsRun.ToolSurfaceSummary)
 	}
-	if projected.OpsRun.CurrentStep != "正在只读采集 PG 同步证据" {
+	if projected.OpsRun.CurrentStep != "处理中" {
 		t.Fatalf("OpsRun.CurrentStep = %q", projected.OpsRun.CurrentStep)
+	}
+	for _, block := range projected.Turns[turn.ID].Process {
+		if block.Kind == AiopsTransportProcessKindReasoning {
+			t.Fatalf("model wait leaked into OpsRun Chat process: %#v", block)
+		}
 	}
 	if projected.OpsRun.EvidenceCount != 2 {
 		t.Fatalf("OpsRun.EvidenceCount = %d, want 2", projected.OpsRun.EvidenceCount)
@@ -1614,7 +1622,6 @@ func TestTransportProjectorDoesNotExposeFallbackRetryManualStates(t *testing.T) 
 	}
 
 	assertTransportProjectionHasProcessStatuses(t, projected, []AiopsTransportProcessStatus{
-		AiopsTransportProcessStatusRunning,
 		AiopsTransportProcessStatusCompleted,
 		AiopsTransportProcessStatusFailed,
 		AiopsTransportProcessStatusBlocked,
@@ -2964,8 +2971,13 @@ func TestTransportProjectorProjectsIncompleteAssistantMessageFinalAndStreamError
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
 	transportTurn := projected.Turns["turn-incomplete-answer"]
-	if transportTurn.Final == nil || transportTurn.Final.Text != answer || transportTurn.Final.Status != AiopsTransportFinalStatusFailed {
-		t.Fatalf("turn.Final = %+v, want failed incomplete assistant_message final", transportTurn.Final)
+	if transportTurn.Final != nil {
+		t.Fatalf("turn.Final = %+v, want incomplete assistant draft to remain trace-only", transportTurn.Final)
+	}
+	for _, block := range transportTurn.Process {
+		if block.Kind == AiopsTransportProcessKindAssistant {
+			t.Fatalf("incomplete assistant draft entered Chat process: %#v", block)
+		}
 	}
 	errorBlock := findTransportProcessBlock(t, transportTurn.Process, AiopsTransportProcessKindSystem)
 	if errorBlock.DisplayKind != "runtime.error" || errorBlock.Text != "模型流中断，已保留已生成内容" || errorBlock.Status != AiopsTransportProcessStatusFailed {

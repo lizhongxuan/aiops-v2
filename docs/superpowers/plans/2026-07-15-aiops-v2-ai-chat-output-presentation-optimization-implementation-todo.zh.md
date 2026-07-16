@@ -408,7 +408,7 @@ scripts/check-aiops-change-budget.sh
 - [x] `phase=commentary` 只投影为 commentary process block。
 - [x] `phase=final_answer + completed` 是生产 transcript 的唯一 final 正文来源。
 - [x] `final_response` 继续保留为 runtime/agent-run 完成事实，但当同一 turn 已有 final assistant message 时，不再覆盖 transcript final id/text。
-- [x] 仅对缺少 assistant final 的历史/system turn保留结构化 fallback；fallback 必须由 item 类型和缺失事实判断，不能按文本猜测。
+- [x] 仅对缺少 assistant final 的历史/system turn 保留结构化 fallback；fallback 必须由 item 类型和缺失事实判断，不能按文本猜测。
 - [x] 删除或停止使用 `modelCallProcessText` 生成“正在等待模型返回”Chat block 的路径。
 - [x] 忙碌状态继续由 turn status 和 runtimeLiveness 驱动。
 - [x] 反转现有 running final/model wait projector 测试，不能在新增测试变绿后继续保留旧契约断言。
@@ -433,6 +433,8 @@ scripts/check-aiops-change-budget.sh
 
 ## 10. Phase 3：让 `blockOrder` 成为真实首次可见顺序
 
+> 状态：✅ 已完成（2026-07-16）。首次可见顺序累加器、collision 稳定修正、审批恢复与 10 次 replay 回归均已通过。
+
 ### Task 3.1：增量构建 canonical block order
 
 **Production files:**
@@ -448,18 +450,18 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] 新增 `upsertCanonicalTransportBlock`：新 id append order，已有 id 只更新 map。
-- [ ] 每次投影出用户可见 process/commentary/approval/final/artifact 时立即登记 block，而不是 turn 结束后按类型拼接。
-- [ ] tool call 首次创建位置固定；tool result 更新同一个 block。
-- [ ] 在处理当前 tool result 时，通过 typed source/toolCall identity 生成并登记 artifact；不能在 turn 末尾事后遍历 `AgentUIArtifacts` 猜来源位置。
-- [ ] 一个 tool result 生成多个 artifact 时，按 renderer 产出顺序紧跟对应 tool block。
-- [ ] final 只在 committed final assistant message 处登记。
-- [ ] 保留 artifact id collision 处理，但 collision 修正不能改变跨类型顺序。
-- [ ] `projectCanonicalTransportBlocks` 改为一致性收尾：补齐遗漏 block、校验 map，不再重新排序。
-- [ ] replay 同一 snapshot 多次必须得到完全相同的 order。
-- [ ] artifact 已持久化、刷新后重投影和 approval resume 三种路径保持相同 source binding 与 order。
-- [ ] 不使用 `UpdatedAt` 排序，避免 running block 更新后跳到末尾。
-- [ ] 不使用文案、tool name 或 renderer title 推断顺序。
+- [x] 新增 `upsertCanonicalTransportBlock`：新 id append order，已有 id 只更新 map。
+- [x] 每次投影出用户可见 process/commentary/approval/final/artifact 时立即登记 block，而不是 turn 结束后按类型拼接。
+- [x] tool call 首次创建位置固定；tool result 更新同一个 block。
+- [x] 在处理当前 tool result 时，通过 typed source/toolCall identity 生成并登记 artifact；不能在 turn 末尾事后遍历 `AgentUIArtifacts` 猜来源位置。
+- [x] 一个 tool result 生成多个 artifact 时，按 renderer 产出顺序紧跟对应 tool block。
+- [x] final 只在 committed final assistant message 处登记。
+- [x] 保留 artifact id collision 处理，但 collision 修正不能改变跨类型顺序。
+- [x] `projectCanonicalTransportBlocks` 改为一致性收尾：补齐遗漏 block、校验 map，不再重新排序。
+- [x] replay 同一 snapshot 多次必须得到完全相同的 order。
+- [x] artifact 已持久化、刷新后重投影和 approval resume 三种路径保持相同 source binding 与 order。
+- [x] 不使用 `UpdatedAt` 排序，避免 running block 更新后跳到末尾。
+- [x] 不使用文案、tool name 或 renderer title 推断顺序。
 
 ### 必测顺序
 
@@ -470,13 +472,13 @@ commentary -> command call -> command result(update same id)
 
 ### Phase 3 验收
 
-- [ ] artifact 不再统一出现在 final 后面。
-- [ ] tool completion 不改变 tool block 的位置。
-- [ ] approval blocked/resume 后顺序稳定。
-- [ ] 相同 snapshot 连续投影 10 次的 `blockOrder` 一致。
-- [ ] 新鲜投影与持久化 state 重投影得到相同 `blockOrder`。
-- [ ] 旧 persisted transport state 在 compatibility boundary 读取时不崩溃。
-- [ ] Phase 3 不修改 runtime 和 React。
+- [x] artifact 不再统一出现在 final 后面。
+- [x] tool completion 不改变 tool block 的位置。
+- [x] approval blocked/resume 后顺序稳定。
+- [x] 相同 snapshot 连续投影 10 次的 `blockOrder` 一致。
+- [x] 新鲜投影与持久化 state 重投影得到相同 `blockOrder`。
+- [x] 旧 persisted transport state 在 compatibility boundary 读取时不崩溃。
+- [x] Phase 3 不修改 runtime 和 React。
 
 ### Phase 3 验证命令
 

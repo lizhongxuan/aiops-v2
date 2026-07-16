@@ -52,6 +52,10 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	projectionItems := redactTransportProjectionTurnItems(turn.AgentItems)
 	projectedTurn.Process = nil
 	projectedTurn.Final = nil
+	projectedTurn.AgentUIArtifacts = nil
+	projectedTurn.BlockOrder = nil
+	projectedTurn.BlocksByID = nil
+	canonicalBlocks := newCanonicalTransportBlockAccumulator()
 	projectedTurn.Timeline = projectTurnTimeline(projectionItems)
 	projectedTurn.ContextGovernance = projectContextGovernanceEvents(turn.ContextGovernanceEvents)
 	projectedTurn.StartedAt = firstNonEmptyString(projectedTurn.StartedAt, transportTimestamp(turn.StartedAt))
@@ -70,15 +74,17 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	resultPreviews, resultPayloads := transportToolResultFacts(turn)
 	for _, item := range projectionItems {
 		projectedTurn = projectTurnItem(projectedTurn, &next, turnID, item, resultPreviews, resultPayloads, turn.Metadata)
+		canonicalBlocks.observeTurn(projectedTurn)
 	}
 	if turn.Lifecycle.IsTerminal() {
-		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, projectedTurn.Final)
+		projectedTurn.Process = normalizeTerminalProcessBlocks(projectedTurn.Process, turn.Lifecycle, terminalControlFinal(projectionItems, projectedTurn.Final))
 		pruneTransportPendingApprovalsForTurn(&next, turnID, map[string]bool{})
 	} else {
 		projectedTurn = projectSnapshotPendingApprovals(projectedTurn, &next, turnID, turn.PendingApprovals)
 		projectedTurn = projectSnapshotPendingEvidence(projectedTurn, &next, turnID, turn.PendingEvidence)
 	}
 	projectedTurn = projectCheckpointProcessBlocks(projectedTurn, turnID, turn)
+	canonicalBlocks.observeTurn(projectedTurn)
 
 	if isHostOpsTurnMetadata(turn.Metadata) {
 		next = projectHostOpsMissionFromTurn(next, turnID, projectedTurn, turn)
@@ -94,7 +100,8 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	if projectedTurn.Final != nil && projectedTurn.Final.Status == "" {
 		projectedTurn.Final.Status = mapTurnStatusToFinalStatus(projectedTurn.Status)
 	}
-	projectedTurn.BlockOrder, projectedTurn.BlocksByID = projectCanonicalTransportBlocks(projectedTurn)
+	canonicalBlocks.reconcileTurn(projectedTurn)
+	projectedTurn.BlockOrder, projectedTurn.BlocksByID = canonicalBlocks.order, canonicalBlocks.blocks
 	next.Turns[turnID] = projectedTurn
 	if opsRun := projectOpsRunFromTurn(turn, projectedTurn); opsRun != nil {
 		next.OpsRun = opsRun
@@ -111,63 +118,22 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	return next, nil
 }
 
-func projectCanonicalTransportBlocks(turn AiopsTransportTurn) ([]string, map[string]AiopsTransportBlock) {
-	order := make([]string, 0, len(turn.Process)+len(turn.AgentUIArtifacts)+1)
-	blocks := make(map[string]AiopsTransportBlock, cap(order))
-	appendBlock := func(block AiopsTransportBlock) {
-		id := strings.TrimSpace(block.ID)
-		if id == "" {
-			return
-		}
-		if _, exists := blocks[id]; !exists {
-			order = append(order, id)
-		}
-		blocks[id] = block
+func terminalControlFinal(items []agentstate.TurnItem, visibleFinal *AiopsTransportFinal) *AiopsTransportFinal {
+	if visibleFinal != nil {
+		return visibleFinal
 	}
-	for _, process := range turn.Process {
-		blockType := AiopsTransportBlockType(process.Kind)
-		if process.Kind == AiopsTransportProcessKindAssistant && process.Phase == "commentary" {
-			blockType = AiopsTransportBlockTypeCommentary
+	for idx := len(items) - 1; idx >= 0; idx-- {
+		item := items[idx]
+		if item.Type != agentstate.TurnItemTypeAssistantMessage {
+			continue
 		}
-		appendBlock(AiopsTransportBlock{Type: blockType, AiopsProcessBlock: process})
-	}
-	if turn.Final != nil && strings.TrimSpace(turn.Final.ID) != "" {
-		final := *turn.Final
-		appendBlock(AiopsTransportBlock{
-			Type: AiopsTransportBlockTypeFinalAnswer,
-			AiopsProcessBlock: AiopsProcessBlock{
-				ID:          final.ID,
-				Kind:        AiopsTransportProcessKindAssistant,
-				DisplayKind: "assistant.message",
-				Phase:       "final_answer",
-				StreamState: finalStreamState(final.Status),
-				Status:      mapFinalStatusToTransportProcessStatus(final.Status),
-				Text:        final.Text,
-				DurationMs:  final.DurationMs,
-				UpdatedAt:   firstNonEmptyString(turn.CompletedAt, turn.UpdatedAt),
-			},
-			FinalContract: &final,
-		})
-	}
-	for idx := range turn.AgentUIArtifacts {
-		artifact := turn.AgentUIArtifacts[idx]
-		id := strings.TrimSpace(artifact.ID)
-		if _, collision := blocks[id]; collision {
-			id = "artifact:" + id
+		message := assistantMessageProjectionData(item)
+		if !strings.EqualFold(message.Phase, "final_answer") || strings.TrimSpace(message.FinalContract.SchemaVersion) == "" {
+			continue
 		}
-		appendBlock(AiopsTransportBlock{
-			Type: AiopsTransportBlockTypeArtifact,
-			AiopsProcessBlock: AiopsProcessBlock{
-				ID:        id,
-				Kind:      AiopsTransportProcessKindTool,
-				Status:    mapArtifactStatusToTransportProcessStatus(artifact.Status),
-				Text:      firstNonEmptyString(artifact.SummaryZh, artifact.Summary, artifact.TitleZh, artifact.Title),
-				UpdatedAt: artifact.UpdatedAt,
-			},
-			Artifact: &artifact,
-		})
+		return transportFinalFromAgentItem(item.ID, "", mapItemStatusToTransportFinalStatus(item.Status), message.DurationMs, message.FinalContract)
 	}
-	return order, blocks
+	return nil
 }
 
 func mapArtifactStatusToTransportProcessStatus(status string) AiopsTransportProcessStatus {
