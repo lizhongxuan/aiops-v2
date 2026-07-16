@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -929,6 +930,80 @@ func TestRunTurn_FeedsToolFailureBackToModelInsteadOfFailingTurn(t *testing.T) {
 	}
 	if got := session.CurrentTurn.Iterations[0].ToolResults[0].Error; !strings.Contains(got, "date: illegal option") {
 		t.Fatalf("recorded tool error = %q, want original tool error", got)
+	}
+}
+
+func TestRunTurn_HidesToolAfterRepeatedNormalizedFailureRequiresPathSwitch(t *testing.T) {
+	toolCall := func(id, artifactID string) *schema.Message {
+		return schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   id,
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "read_context_artifact",
+				Arguments: fmt.Sprintf(`{"id":%q,"format":"metadata"}`, artifactID),
+			},
+		}})
+	}
+	model := &sequentialLoopModel{responses: []*schema.Message{
+		toolCall("call-artifact-1", "coroot"),
+		toolCall("call-artifact-2", "coroot_incidents"),
+		toolCall("call-artifact-3", "coroot_overview"),
+		schema.AssistantMessage("没有可用上下文证据，停止重复读取并说明限制。", nil),
+	}}
+
+	executed := 0
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_context_artifact",
+			Description: "Read an externalized context artifact",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			executed++
+			return tooling.ToolResult{}, errors.New("context artifact not found")
+		},
+	}
+	compiler := newRecordingCompiler()
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+	kernel.compiler = compiler
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID:   "sess-repeat-failure-switch",
+		SessionType: SessionTypeHost,
+		Mode:        ModeInspect,
+		TurnID:      "turn-repeat-failure-switch",
+		Input:       "读取可用的上下文证据",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn failed: %v", err)
+	}
+	if result.Status != "completed" || executed != 3 {
+		t.Fatalf("result/executions = %q/%d, want completed/3", result.Status, executed)
+	}
+	if len(compiler.contexts) != 4 {
+		t.Fatalf("compiler contexts = %d, want 4", len(compiler.contexts))
+	}
+	last := compiler.contexts[3]
+	if containsString(toolNames(last.AssembledTools), "read_context_artifact") {
+		t.Fatalf("fourth iteration tools = %v, repeated failing tool should be hidden", toolNames(last.AssembledTools))
+	}
+	if !containsString(last.ToolDelta.TemporarilyUnavailable, "read_context_artifact") {
+		t.Fatalf("fourth iteration tool delta = %#v, want repeated failing tool unavailable", last.ToolDelta)
+	}
+	thirdInput := model.inputs[3]
+	foundSwitchGuidance := false
+	for _, message := range thirdInput {
+		if message.Role == schema.Tool && message.ToolCallID == "call-artifact-3" {
+			foundSwitchGuidance = strings.Contains(message.Content, `"failureSignatureAction":"switch_path"`)
+			break
+		}
+	}
+	if !foundSwitchGuidance {
+		t.Fatalf("fourth model input missing switch-path guidance: %#v", thirdInput)
 	}
 }
 

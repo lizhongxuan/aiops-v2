@@ -251,3 +251,13 @@
 - 修复方式：canonical final block 保留 `finalContract.status=unknown` 作为事实分类，同时将 block process status 映射为 completed；eval 将 unknown 视为合法终态，但仍要求 turn completed/failed/canceled/blocked、transport state、pending、liveness、active tool 全部一致，不能靠 unknown 单独宣告完成。
 - 验证结果：两个 RED 分别稳定观察到 `running/complete` 矛盾和 typed terminal error；修复后 focused AppUI/Eval 测试与 `go test ./internal/appui ./internal/eval -count=1` 通过。真实 GLM 最终基线冒烟在重建二进制后复验。
 - 风险与后续：empty/missing finalContract、running turn、active tool、pending approval/evidence 和非空 liveness 仍 fail closed；unknown 仅表示最终回答未被验证，不再承担流式生命周期语义。
+
+## 2026-07-14 17:51 - Coroot 特殊输入丢失、过程文案重复和失败工具循环
+
+- 修复时间：2026-07-14 17:51
+- Bug 现象：用户输入“帮我看下@Coroot 情况”并按 Enter 后，特殊标签和 Coroot route metadata 丢失；工具前说明同时出现在过程区与输入框上方的可变底部区域，运行结束后底部副本消失；`read_context_artifact` 在同一类 `context artifact not found` 失败下连续换 ID 重试四次。
+- 根因：Composer 的自定义发送按钮是唯一 metadata 组装入口，但 `ComposerPrimitive.Input submitOnEnter` 走了框架默认提交；特殊 mention 正则又把中文字符当作禁止边界。即使只补 legacy Coroot flags，服务端 typed admission 仍会因为缺少可信的 `aiops.input.mentions.v1` capability binding 而覆盖路由。TransportProjector 每次重放完整 canonical snapshot 时只清空 Process，未清空旧的 running Final，造成上一帧草稿残留。failure signature 的 seen count 只在单个 tool call 内统计，新的 call ID 会重新从 1 开始；此外 `read_context_artifact` 的 4096 字节 inline budget 小于其最大 bounded read 加结构化包装后的 4900 字节，工具结果会递归 spill 成新的 artifact，诱发模型用不同格式反复读取。
+- 修复方式：把按钮与 Enter 统一到同一个 `submitComposerMessage`，由它一次性组装 typed mention/host/capability metadata，并为直接输入的 allowlisted `@Coroot` 生成可信的 `aiops.input.mentions.v1` capability binding；Shift+Enter 保留换行、输入法 composing 不提交，并允许中文紧邻特殊 mention，同时继续拒绝 ASCII 单词/邮箱内误触发。TransportProjector 在重放 snapshot 前同时清空 Process 与 Final，只由当前 canonical AgentItems 重建。RuntimeKernel 在 turn 范围统计规范化 failure signature；第三次同类失败触发既有 `switch_path` 规则，把 guidance 写入 tool result 并从下一 Step 工具面隐藏该工具；context artifact inline result budget 调整为 8192 字节，确保最大 bounded read 连同结构化包装仍可直接返回。
+- 验证结果：三项 RED 分别复现 Enter 无 command、旧 running Final 残留、第三次失败后工具仍可见；context artifact 额外 RED 证明 4096 字节预算会把 4900 字节的 bounded result 再次 spill。GREEN 后 `go test ./internal/runtimekernel ./internal/appui -count=1`、Web typecheck 和 124 个 Vitest 文件/908 tests 全部通过；Playwright 用中文紧邻的 `@Coroot`、真实 Enter 操作验证特殊标签与 typed metadata，focused browser suite 3/3 通过。最新生产二进制的全新真实回合中，服务端确认 `mentionValidation=confirmed`、Coroot route/tool allowed 均为 true；Coroot 登录超时后只调用一次 `coroot_list_services` 即输出受限终态。内置浏览器展开 completed process 后过程文案计数 1、失败工具计数 1、`read_context_artifact` 计数 0，console error/warn 为 0。
+- 风险与后续：
+入第二套 timeline 或 route 事实源。

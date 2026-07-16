@@ -37,6 +37,7 @@ docs/superpowers/plans/*
 !/docs/superpowers/plans/2026-06-26-aiops-v2-agent-runtime-layering-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-06-27-aiops-v2-host-mention-hidden-metadata-runtime-binding-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-06-29-aiops-v2-web-search-firecrawl-optimization-implementation-todo.zh.md
+!/docs/superpowers/plans/2026-07-15-aiops-v2-ai-chat-output-presentation-optimization-implementation-todo.zh.md
 
 # Local isolated development worktrees.
 .worktrees/
