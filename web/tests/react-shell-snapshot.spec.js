@@ -1246,6 +1246,43 @@ function phase4TypedActionGroupFixture() {
   });
 }
 
+function phase5LimitedFinalFixture() {
+  const finalText = "当前证据只能确认应用可访问；主机侧检查因连接失败尚未完成。";
+  return phase0OutputFixture({
+    name: "limited-final-contract",
+    userText: "说明当前能确认的结论和仍缺少的检查。",
+    blocks: [
+      {
+        id: "final-limited-contract",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "blocked",
+        text: finalText,
+        finalContract: {
+          id: "final-limited-contract",
+          text: finalText,
+          status: "needs_evidence",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+          checkedEvidenceRefs: ["evidence-http"],
+          uncheckedRequirements: ["主机进程状态"],
+          failedToolImpacts: [
+            {
+              toolName: "exec_command",
+              failureClass: "needs_host_agent",
+              impact: "目标主机连接不可用",
+            },
+          ],
+          limitations: ["尚未完成主机侧只读检查"],
+        },
+      },
+    ],
+  });
+}
+
 async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
     await route.fulfill({ json: sessionsPayload });
@@ -1556,4 +1593,18 @@ test("typed action group uses commentary as one title and keeps approval outside
   await expect(page.getByTestId("aiops-tool-row-mcp-typed-action")).toBeVisible();
   const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
   await expect(assistantTurn).toHaveScreenshot("phase4-typed-action-group.png");
+});
+
+test("limited final keeps only actionable contract details beside the answer", async ({ page }) => {
+  await openFixturePage(page, "/", phase5LimitedFinalFixture());
+
+  const answer = page.getByTestId("aiops-answer-document");
+  await expect(answer).toContainText("当前证据只能确认应用可访问");
+  const summary = page.getByTestId("aiops-final-contract-summary");
+  await expect(summary).toContainText("证据不足");
+  await expect(summary).toContainText("主机进程状态");
+  await expect(summary).toContainText("目标主机连接不可用");
+  await expect(summary).toContainText("尚未完成主机侧只读检查");
+  await expect(summary).not.toContainText("已验证");
+  await expect(answer.locator("..")).toHaveScreenshot("phase5-limited-final-contract.png");
 });

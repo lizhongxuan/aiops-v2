@@ -169,9 +169,8 @@ describe("assistant message final text", () => {
     expect(text).toBe("");
   });
 
-  it("renders old raw structured evidence as readable evidence names", () => {
-    const text = assistantMessageRenderedFinalText([], {
-      finalText: [
+  it("does not infer evidence or artifacts from final text lines", () => {
+    const finalText = [
         "已确认：",
         '- {"categoryCounts":{"application":25,"control-plane":14,"monitoring":10},"evidenceRefs":["ev-services"]}',
         '- {"evidenceRefs":["ev-incidents"],"incidents":[{"application":"rabbitmq-server"}]}',
@@ -182,39 +181,31 @@ describe("assistant message final text", () => {
         "",
         "下一步只读检查：",
         "1. 重新读取或替代核对 read_mcp_resource 对应的只读证据。",
-      ].join("\n"),
+      ].join("\n");
+    const text = assistantMessageRenderedFinalText([], {
+      finalText,
     });
 
-    expect(text).toContain("Coroot 服务概览已返回结构化证据。");
-    expect(text).toContain("Coroot 异常事件已返回结构化证据。");
-    expect(text).toContain("读取 MCP 资源 未成功返回证据；不能当作已检查结果。");
-    expect(text).toContain("重新读取或替代核对 读取 MCP 资源 对应的只读证据。");
-    expect(text).not.toContain('{"categoryCounts"');
-    expect(text).not.toContain("read_mcp_resource");
-    expect(text.match(/读取 MCP 资源 未成功返回证据/g)).toHaveLength(1);
+    expect(text).toBe(finalText);
+    expect(text.match(/read_mcp_resource 未成功返回证据/g)).toHaveLength(2);
   });
 
-  it("hides leaked tool-reading process chatter from old final text", () => {
+  it("does not classify final visibility from tool-process vocabulary", () => {
+    const finalText = "让我直接读取证据引用： read_context_artifact with the evidence IDs: Let me try reading the evidence refs directly.";
     const text = assistantMessageRenderedFinalText([], {
-      finalText:
-        "让我直接读取证据引用： greaseardereread_context_artifact with the evidence IDs:So let me try reading the evidence refs directly. I'll also try one more level of the spill chain. theringatherread_context_artifact with evidence IDs:Let me try reading the evidence refs directly. I can see from the initial summaries that there's some useful data already. Let me try one more level. theevidenceThere's useful summary data already. Let me also try to get the incidents more directly. read_context_artifact",
+      finalText,
     });
 
-    expect(text).toContain("工具读取过程");
-    expect(text).not.toContain("read_context_artifact");
-    expect(text).not.toContain("evidence IDs");
-    expect(text).not.toContain("Let me try");
-    expect(text).not.toContain("try reading");
+    expect(text).toBe(finalText);
   });
 
-  it("hides repeated Coroot RCA parameter chatter from old final text", () => {
+  it("does not classify final visibility from product-specific vocabulary", () => {
+    const finalText = "SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。".repeat(8);
     const text = assistantMessageRenderedFinalText([], {
-      finalText: "SERVICE_NAME=rabbitmq-server。让我获取RCA上下文。".repeat(8),
+      finalText,
     });
 
-    expect(text).toContain("工具读取过程");
-    expect(text).not.toContain("SERVICE_NAME");
-    expect(text).not.toContain("rabbitmq-server。让我获取RCA上下文");
+    expect(text).toBe(finalText);
   });
 });
 

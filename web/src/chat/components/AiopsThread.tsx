@@ -548,7 +548,6 @@ export function finalContractSummaryView(meta: FinalContractSummaryInput): Final
   const normalizedStatus = status || "unknown";
   const evidenceCount = checkedEvidenceRefs.length;
   const hasUserActionableDetails =
-    evidenceCount > 0 ||
     uncheckedRequirements.length > 0 ||
     failedToolImpacts.length > 0 ||
     limitations.length > 0;
@@ -556,6 +555,12 @@ export function finalContractSummaryView(meta: FinalContractSummaryInput): Final
     Boolean(confidence) ||
     hasUserActionableDetails;
   if (normalizedStatus === "unknown" && !hasUserActionableDetails) {
+    return null;
+  }
+  if (
+    (normalizedStatus === "verified" || normalizedStatus === "completed") &&
+    !hasUserActionableDetails
+  ) {
     return null;
   }
   if (
@@ -678,110 +683,8 @@ const knownDiagnosticReplacements = [
   { old: "tool_business_error", value: "工具执行失败" },
 ] as const;
 
-const leakedToolProcessTextMessage = "已读取工具证据，但模型返回的是工具读取过程，未形成可直接展示的中文结论。";
-
 function sanitizeAssistantDisplayText(text: string) {
-  if (!text) {
-    return text;
-  }
-  if (looksLikeLeakedToolProcessText(text)) {
-    return leakedToolProcessTextMessage;
-  }
-  const seenLines = new Set<string>();
-  let inFence = false;
-  const lines = text.split(/\r?\n/).flatMap((line) => {
-    if (line.trimStart().startsWith("```")) {
-      inFence = !inFence;
-      return [line];
-    }
-    if (inFence) {
-      return [line];
-    }
-    const structuredLine = readableStructuredEvidenceLine(line);
-    const nextLine = structuredLine || humanizeUserVisibleDiagnostic(line);
-    if (!nextLine.trim()) {
-      return [nextLine];
-    }
-    const duplicateKey = nextLine.trim();
-    if (seenLines.has(duplicateKey)) {
-      return [];
-    }
-    seenLines.add(duplicateKey);
-    return [nextLine];
-  });
-  return lines.join("\n").trim();
-}
-
-function looksLikeLeakedToolProcessText(text: string) {
-  const lower = text.trim().toLowerCase();
-  if (!lower) {
-    return false;
-  }
-  if ((lower.includes("service_name=") || lower.includes("ervice_name=")) && (lower.includes("rca上下文") || lower.includes("让我获取") || lower.includes("let me get"))) {
-    return true;
-  }
-  if ((lower.match(/让我获取rca上下文/g) ?? []).length >= 2 || (lower.match(/rca上下文/g) ?? []).length >= 5) {
-    return true;
-  }
-  if (lower.includes("read_context_artifact")) {
-    const linkedMarkers = [
-      "evidence ids",
-      "evidence id",
-      "evidence refs",
-      "evidence ref",
-      "证据引用",
-      "let me",
-      "try reading",
-      "reading the evidence",
-      "spill chain",
-      "store://tool-spills",
-    ];
-    if (linkedMarkers.some((marker) => lower.includes(marker))) {
-      return true;
-    }
-  }
-  const processMarkers = [
-    "let me try reading",
-    "try reading the evidence",
-    "reading the evidence refs",
-    "evidence ids",
-    "evidence refs",
-    "one more level of the spill chain",
-    "store://tool-spills",
-  ];
-  return processMarkers.filter((marker) => lower.includes(marker)).length >= 2;
-}
-
-function readableStructuredEvidenceLine(line: string) {
-  const match = line.match(/^(\s*(?:(?:[-*•])|\d+\.)\s*)([{[].*)$/);
-  if (!match) {
-    return null;
-  }
-  const label = structuredEvidenceLabel(match[2]);
-  if (!label) {
-    return null;
-  }
-  return `${match[1]}${label}已返回结构化证据。`;
-}
-
-function structuredEvidenceLabel(raw: string) {
-  const text = raw.trim();
-  if (!text.startsWith("{") && !text.startsWith("[")) {
-    return null;
-  }
-  if (text.includes('"categoryCounts"')) {
-    return "Coroot 服务概览";
-  }
-  if (text.includes('"incidents"')) {
-    return "Coroot 异常事件";
-  }
-  if (text.includes('"abnormalServices"') || text.includes('"service"')) {
-    return "Coroot 服务证据";
-  }
-  if (text.includes('"evidenceRefs"')) {
-    return "结构化证据";
-  }
-  return null;
+  return text.trim();
 }
 
 function humanizeKnownToolName(value: string) {

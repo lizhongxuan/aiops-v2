@@ -545,6 +545,8 @@ scripts/check-aiops-change-budget.sh
 
 ## 12. Phase 5：收敛 final UI 与删除文本修复式逻辑
 
+> 状态：🚧 进行中（2026-07-16）。FinalContract UI 和 React/converter 文本修复器已完成清理；runtime 内容启发式正在独立提交中。
+
 ### Task 5.1：FinalContract 只展示异常和可行动信息
 
 **Production files:**
@@ -558,13 +560,13 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] verified/completed 且无异常详情时，`finalContractSummaryView` 返回 `null`。
-- [ ] partial、blocked、needs_evidence、approval_denied、tool_unavailable、failed、cancelled 保持可见。
-- [ ] unknown 只有存在可行动详情时显示；只有 schema/confidence 的 unknown 不占独立卡片。
-- [ ] failedToolImpacts、uncheckedRequirements、limitations 有内容时保持可见。
-- [ ] 不把 checked evidence count 和 confidence 复制成成功态大卡片。
-- [ ] final answer 正文仍由 typed final block 渲染。
-- [ ] artifact 仍由 typed artifact renderer 渲染，不拼进 final Markdown。
+- [x] verified/completed 且无异常详情时，`finalContractSummaryView` 返回 `null`。
+- [x] partial、blocked、needs_evidence、approval_denied、tool_unavailable、failed、cancelled 保持可见。
+- [x] unknown 只有存在可行动详情时显示；只有 schema/confidence 的 unknown 不占独立卡片。
+- [x] failedToolImpacts、uncheckedRequirements、limitations 有内容时保持可见。
+- [x] 不把 checked evidence count 和 confidence 复制成成功态大卡片。
+- [x] final answer 正文仍由 typed final block 渲染。
+- [x] artifact 仍由 typed artifact renderer 渲染，不拼进 final Markdown。
 
 ### Task 5.2：删除前端 final 文本修复器
 
@@ -584,15 +586,15 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] 删除通过“let me、evidence refs、RCA 上下文”等业务文本判断工具过程泄漏的逻辑。
-- [ ] 删除从 final 文本中的 JSON 行猜测 evidence/artifact 类型的逻辑。
-- [ ] 删除按最终可见行文本做 Set 去重的逻辑。
-- [ ] 删除 converter 的 `isDuplicateRunningFinalDraft` 文本相等去重和 `latestSubstantialAssistantProcessText` 长度/段落阈值回退；partial/retry/error 可见性改由 typed phase、streamState、boundary facts 决定。
-- [ ] converter 的 raw stream error 字符串识别必须改为 typed normalized error；若历史兼容暂不能删除，只能留在明确的 compatibility boundary，并添加退出条件和旧 fixture 测试。
-- [ ] 删除或 typed 化 `ProcessTranscript` 的 `isCorootInternalReuseBlock`、`isRuntimeInternalGateText`、`isRiskyOperationalAdviceText`、`isSearchLikeBlock` 文本/正则分流。
-- [ ] 危险操作提示和 secret/redaction 安全语义必须迁移到 typed policy/metadata 后再删除文本判断，不能用“清理启发式”为由削弱安全边界。
-- [ ] 保留 Markdown 渲染、链接安全、通用 secret redaction 等机器边界能力。
-- [ ] 如果清理后暴露脏 final，回到 Phase 1/2 修 runtime/projection，不在 React 增加新补丁。
+- [x] 删除通过“let me、evidence refs、RCA 上下文”等业务文本判断工具过程泄漏的逻辑。
+- [x] 删除从 final 文本中的 JSON 行猜测 evidence/artifact 类型的逻辑。
+- [x] 删除按最终可见行文本做 Set 去重的逻辑。
+- [x] 删除 converter 的 `isDuplicateRunningFinalDraft` 文本相等去重和 `latestSubstantialAssistantProcessText` 长度/段落阈值回退；partial/retry/error 可见性改由 typed phase、streamState、boundary facts 决定。
+- [x] converter 的 raw stream error 字符串识别必须改为 typed normalized error；若历史兼容暂不能删除，只能留在明确的 compatibility boundary，并添加退出条件和旧 fixture 测试。
+- [x] 删除或 typed 化 `ProcessTranscript` 的 `isCorootInternalReuseBlock`、`isRuntimeInternalGateText`、`isRiskyOperationalAdviceText`、`isSearchLikeBlock` 文本/正则分流。
+- [x] 危险操作提示和 secret/redaction 安全语义必须迁移到 typed policy/metadata 后再删除文本判断，不能用“清理启发式”为由削弱安全边界。
+- [x] 保留 Markdown 渲染、链接安全、通用 secret redaction 等机器边界能力。
+- [x] 如果清理后暴露脏 final，回到 Phase 1/2 修 runtime/projection，不在 React 增加新补丁。
 
 ### Task 5.3：清理相关 backend 内容启发式
 

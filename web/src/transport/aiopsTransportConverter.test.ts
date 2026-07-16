@@ -504,7 +504,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
+  it("uses the typed normalized error instead of promoting commentary after a stream failure", () => {
     const state = createState();
     const preservedAnswer = [
       "Now I have enough context from the PostgreSQL PITR documentation and pg_auto_failover operations guide.",
@@ -514,16 +514,12 @@ describe("aiopsTransportConverter", () => {
       "下一步：先核对主机 A 和主机 B 的 pg_controldata timeline，再检查恢复残留配置和归档 timeline history。",
     ].join("\n");
     state.status = "failed";
-    state.lastError = "failed to receive stream chunk: context deadline exceeded";
+    state.lastError = "模型流中断，已保留已生成内容";
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
       status: "failed",
       completedAt: "2026-05-06T00:05:25Z",
-      final: {
-        id: "final-stream-error",
-        status: "failed",
-        text: "failed to receive stream chunk: context deadline exceeded",
-      },
+      final: undefined,
       process: [
         {
           id: "assistant-analysis",
@@ -534,21 +530,27 @@ describe("aiopsTransportConverter", () => {
           streamState: "complete",
           text: preservedAnswer,
         },
+        {
+          id: "runtime-error",
+          kind: "system",
+          displayKind: "runtime.error",
+          status: "failed",
+          text: "模型流中断，已保留已生成内容",
+        },
       ],
     };
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: preservedAnswer }]);
-    expect(result.messages[1]?.content).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
-      ]),
-    );
+    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: "模型流中断，已保留已生成内容" }]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "assistant-analysis", phase: "commentary" }),
+      expect.objectContaining({ id: "runtime-error", displayKind: "runtime.error" }),
+    ]));
   });
 
-  it("keeps streamed assistant progress visible when a turn is canceled after partial output", () => {
+  it("keeps canceled assistant progress traceable without promoting it to final text", () => {
     const state = createState();
     state.status = "canceled";
     state.lastError = "user stop";
@@ -573,9 +575,10 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([
-      { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
-    ]);
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "assistant-progress-canceled", phase: "commentary", streamState: "incomplete" }),
+    ]));
   });
 
   it("drops incomplete stream states instead of migrating old transport data", () => {
