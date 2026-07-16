@@ -456,7 +456,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("does not duplicate a running final draft when it is already shown as assistant commentary", () => {
+  it("does not expose a running final draft even when it matches visible commentary", () => {
     const state = createState();
     const duplicateText = "前两个命令因 agent 端口 7072 拒绝连接且 SSH 回退失败，但 DNS 查询成功了。";
     state.status = "working";
@@ -493,7 +493,7 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state, metadata());
 
     expect(textContent(result.messages[1]?.content)).toEqual([]);
-    expect(resultFinalBlock(result)?.text).toBe(duplicateText);
+    expect(resultFinalBlock(result)).toBeUndefined();
     expect(resultBlocks(result)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -635,7 +635,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("keeps assistant message id stable while final text streams in", () => {
+  it("keeps the assistant message empty until the terminal final commit", () => {
     const state = createState();
     const converter = createAiopsTransportConverter();
     const runningState: AiopsTransportState = {
@@ -660,15 +660,33 @@ describe("aiopsTransportConverter", () => {
         },
       },
     };
+    const completedState: AiopsTransportState = {
+      ...streamingState,
+      status: "idle",
+      turns: {
+        ...streamingState.turns,
+        "turn-1": {
+          ...streamingState.turns["turn-1"],
+          status: "completed",
+          completedAt: "2026-05-06T00:00:05Z",
+          final: { id: "final-1", text: "complete", status: "completed" },
+        },
+      },
+    };
 
     const before = converter(runningState, metadata());
     const after = converter(streamingState, metadata());
+    const completed = converter(completedState, metadata());
 
     expect(before.messages[1]?.id).toBe("turn-1:assistant");
     expect(after.messages[1]?.id).toBe("turn-1:assistant");
-    expect(textContent(after.messages[1]?.content)).toEqual([
-      { type: "text", text: "partial" },
+    expect(textContent(after.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(after)).toBeUndefined();
+    expect(completed.messages[1]?.id).toBe("turn-1:assistant");
+    expect(textContent(completed.messages[1]?.content)).toEqual([
+      { type: "text", text: "complete" },
     ]);
+    expect(resultFinalBlock(completed)?.text).toBe("complete");
   });
 
   it("adds optimistic pending add-message commands without mutating source state", () => {

@@ -2309,6 +2309,51 @@ func TestTransportProjectorUsesAssistantMessageFinalWhenSnapshotFinalOutputIsMis
 	}
 }
 
+func TestTransportProjectorUsesAssistantMessageAsOnlyTranscriptFinalSource(t *testing.T) {
+	now := time.Date(2026, 7, 16, 9, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-single-assistant-final",
+		SessionID:   "session-single-assistant-final",
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(2 * time.Second),
+		CompletedAt: ptrTransportProjectorTime(now.Add(2 * time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "assistant-final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "来自 committed assistant message 的最终回答。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "final-response-1", Type: agentstate.TurnItemTypeFinalResponse, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "legacy final_response 不得覆盖 transcript final。",
+			}, CreatedAt: now.Add(2 * time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-single-assistant-final"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if got.Final == nil || got.Final.ID != "assistant-final-1" || got.Final.Text != "来自 committed assistant message 的最终回答。" {
+		t.Fatalf("turn.Final = %#v, want committed assistant_message as the only transcript final", got.Final)
+	}
+	var finalBlockIDs []string
+	for _, id := range got.BlockOrder {
+		if got.BlocksByID[id].Type == AiopsTransportBlockTypeFinalAnswer {
+			finalBlockIDs = append(finalBlockIDs, id)
+		}
+	}
+	if !reflect.DeepEqual(finalBlockIDs, []string{"assistant-final-1"}) {
+		t.Fatalf("final block ids = %#v, want only assistant-final-1; blockOrder=%#v", finalBlockIDs, got.BlockOrder)
+	}
+	if _, exists := got.BlocksByID["final-response-1"]; exists {
+		t.Fatalf("legacy final_response entered transcript blocks: %#v", got.BlocksByID["final-response-1"])
+	}
+}
+
 func TestTransportProjectorProjectsFinalGenerationDuration(t *testing.T) {
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
@@ -2342,7 +2387,7 @@ func TestTransportProjectorProjectsFinalGenerationDuration(t *testing.T) {
 	}
 }
 
-func TestTransportProjectorProjectsStreamingAssistantMessageFinal(t *testing.T) {
+func TestTransportProjectorDoesNotProjectRunningAssistantMessageAsFinal(t *testing.T) {
 	now := time.Date(2026, 5, 7, 15, 0, 0, 0, time.UTC)
 	finalText := "第一段第二段完整流式输出"
 	turn := &runtimekernel.TurnSnapshot{
@@ -2366,17 +2411,75 @@ func TestTransportProjectorProjectsStreamingAssistantMessageFinal(t *testing.T) 
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
 	transportTurn := projected.Turns["turn-streaming-final"]
-	final := transportTurn.Final
-	if final == nil || final.Text != finalText || final.DurationMs != 456 {
-		t.Fatalf("turn.Final = %+v, want streaming assistant_message final", final)
+	if transportTurn.Final != nil {
+		t.Fatalf("turn.Final = %+v, want running assistant_message excluded until terminal commit", transportTurn.Final)
 	}
-	if final.Status != AiopsTransportFinalStatusRunning {
-		t.Fatalf("final status = %q, want running", final.Status)
+	if len(transportTurn.Process) != 0 || len(transportTurn.BlockOrder) != 0 || len(transportTurn.BlocksByID) != 0 {
+		t.Fatalf("running assistant_message entered transcript: process=%#v blockOrder=%#v blocksById=%#v", transportTurn.Process, transportTurn.BlockOrder, transportTurn.BlocksByID)
 	}
-	for _, block := range transportTurn.Process {
-		if block.Kind == AiopsTransportProcessKindAssistant {
-			t.Fatalf("final assistant_message must not duplicate into process: %#v", transportTurn.Process)
-		}
+	if len(transportTurn.AgentItems) != 1 || transportTurn.AgentItems[0].ID != "final-running" {
+		t.Fatalf("AgentItems = %#v, want running draft retained as canonical trace fact", transportTurn.AgentItems)
+	}
+}
+
+func TestTransportProjectorHidesUnclassifiedAndReplacedAssistantMessages(t *testing.T) {
+	now := time.Date(2026, 7, 16, 9, 30, 0, 0, time.UTC)
+	tests := []struct {
+		name    string
+		itemID  string
+		status  agentstate.ItemStatus
+		payload json.RawMessage
+	}{
+		{
+			name:    "unclassified streaming draft",
+			itemID:  "assistant-unclassified-1",
+			status:  agentstate.ItemStatusRunning,
+			payload: json.RawMessage(`{"displayKind":"assistant.message","phase":"unclassified","streamState":"streaming"}`),
+		},
+		{
+			name:    "replaced retry draft",
+			itemID:  "assistant-replaced-1",
+			status:  agentstate.ItemStatusFailed,
+			payload: json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"incomplete","boundaryAction":"retry_once","replacedByMessageId":"assistant-final-2"}`),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			turn := &runtimekernel.TurnSnapshot{
+				ID:        "turn-" + test.itemID,
+				SessionID: "session-hidden-assistant-drafts",
+				Lifecycle: runtimekernel.TurnLifecycleRunning,
+				StartedAt: now,
+				UpdatedAt: now.Add(time.Second),
+				AgentItems: []agentstate.TurnItem{{
+					ID:     test.itemID,
+					Type:   agentstate.TurnItemTypeAssistantMessage,
+					Status: test.status,
+					Payload: agentstate.PayloadEnvelope{
+						Summary: "尚未确认的 assistant 草稿。",
+						Data:    test.payload,
+					},
+					CreatedAt: now,
+					UpdatedAt: now.Add(time.Second),
+				}},
+			}
+
+			projected, err := NewTransportProjector().ProjectTurnSnapshot(
+				NewAiopsTransportState(turn.SessionID, "thread-hidden-assistant-drafts"),
+				turn,
+			)
+			if err != nil {
+				t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+			}
+			got := projected.Turns[turn.ID]
+			if got.Final != nil || len(got.Process) != 0 || len(got.BlockOrder) != 0 || len(got.BlocksByID) != 0 {
+				t.Fatalf("draft entered Chat transcript: final=%#v process=%#v blockOrder=%#v blocksById=%#v", got.Final, got.Process, got.BlockOrder, got.BlocksByID)
+			}
+			if len(got.AgentItems) != 1 || got.AgentItems[0].ID != test.itemID {
+				t.Fatalf("AgentItems = %#v, want hidden draft retained for trace/replay", got.AgentItems)
+			}
+		})
 	}
 }
 
@@ -3071,7 +3174,70 @@ func TestTransportProjectorPreservesLedgerInterleavingWithApprovalAndFinalRespon
 	}
 }
 
-func TestTransportProjectorShowsRunningModelCallPlaceholder(t *testing.T) {
+func TestTransportProjectorPreservesCommentaryToolArtifactFinalOrder(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:        "turn-commentary-tool-artifact-final",
+		SessionID: "session-commentary-tool-artifact-final",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted,
+		StartedAt: now,
+		UpdatedAt: now.Add(4 * time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "commentary-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "先检查执行前置条件。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"commentary","streamState":"complete"}`),
+			}, CreatedAt: now.Add(time.Second)},
+			{ID: "tool-call-preflight-1", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusRunning, Payload: agentstate.PayloadEnvelope{
+				Kind:    "tool",
+				Summary: "运行预检",
+				Data:    json.RawMessage(`{"toolCallId":"call-preflight-1","toolName":"run_ops_manual_preflight","displayKind":"ops_manual_preflight_result","inputSummary":"检查执行前置条件"}`),
+			}, CreatedAt: now.Add(2 * time.Second)},
+			{ID: "tool-result-preflight-1", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Kind:    "tool",
+				Summary: "预检通过",
+				Data:    json.RawMessage(`{"toolCallId":"call-preflight-1","toolName":"run_ops_manual_preflight","displayKind":"ops_manual_preflight_result","inputSummary":"检查执行前置条件","outputPreview":{"status":"passed","next_action":"confirm_execution"}}`),
+			}, CreatedAt: now.Add(3 * time.Second)},
+			{ID: "assistant-final-1", Type: agentstate.TurnItemTypeAssistantMessage, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{
+				Summary: "预检已通过。",
+				Data:    json.RawMessage(`{"displayKind":"assistant.message","phase":"final_answer","streamState":"complete"}`),
+			}, CreatedAt: now.Add(4 * time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(
+		NewAiopsTransportState(turn.SessionID, "thread-commentary-tool-artifact-final"),
+		turn,
+	)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	got := projected.Turns[turn.ID]
+	if len(got.AgentUIArtifacts) != 1 || got.AgentUIArtifacts[0].Type != "ops_manual_preflight_result" {
+		t.Fatalf("AgentUIArtifacts = %#v, want one preflight artifact", got.AgentUIArtifacts)
+	}
+	wantOrder := []string{
+		TransportProcessBlockStableID(turn.ID, string(AiopsTransportProcessKindAssistant), "commentary-1"),
+		TransportProcessBlockStableID(turn.ID, string(AiopsTransportProcessKindTool), "call-preflight-1"),
+		"ops-manual-preflight:" + turn.ID + ":tool-result-preflight-1",
+		"assistant-final-1",
+	}
+	if !reflect.DeepEqual(got.BlockOrder, wantOrder) {
+		t.Fatalf("BlockOrder = %#v, want commentary -> tool -> artifact -> final %#v", got.BlockOrder, wantOrder)
+	}
+	wantTypes := []AiopsTransportBlockType{
+		AiopsTransportBlockTypeCommentary,
+		AiopsTransportBlockType(AiopsTransportProcessKindTool),
+		AiopsTransportBlockTypeArtifact,
+		AiopsTransportBlockTypeFinalAnswer,
+	}
+	for index, id := range wantOrder {
+		if got.BlocksByID[id].Type != wantTypes[index] {
+			t.Fatalf("BlocksByID[%q].Type = %q, want %q", id, got.BlocksByID[id].Type, wantTypes[index])
+		}
+	}
+}
+
+func TestTransportProjectorRunningModelCallDoesNotEnterChatBlocks(t *testing.T) {
 	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-1", "thread-1")
@@ -3090,12 +3256,12 @@ func TestTransportProjectorShowsRunningModelCallPlaceholder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
-	process := projected.Turns["turn-model-waiting"].Process
-	if len(process) != 1 {
-		t.Fatalf("process = %#v, want one model waiting block", process)
+	got := projected.Turns["turn-model-waiting"]
+	if len(got.Process) != 0 || len(got.BlockOrder) != 0 || len(got.BlocksByID) != 0 {
+		t.Fatalf("model_call entered Chat blocks: process=%#v blockOrder=%#v blocksById=%#v", got.Process, got.BlockOrder, got.BlocksByID)
 	}
-	if process[0].Text != "正在等待模型返回" {
-		t.Fatalf("model call text = %q, want user-visible waiting text", process[0].Text)
+	if len(got.AgentItems) != 1 || got.AgentItems[0].ID != "model-1" || got.AgentItems[0].Type != string(agentstate.TurnItemTypeModelCall) {
+		t.Fatalf("AgentItems = %#v, want model_call retained outside Chat transcript", got.AgentItems)
 	}
 }
 
@@ -3123,7 +3289,7 @@ func TestTransportProjectorHidesCompletedModelCallPlaceholder(t *testing.T) {
 	}
 }
 
-func TestTransportProjectorRewritesCanceledModelWaitText(t *testing.T) {
+func TestTransportProjectorCanceledModelCallDoesNotEnterChatBlocks(t *testing.T) {
 	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-1", "thread-1")
@@ -3143,15 +3309,15 @@ func TestTransportProjectorRewritesCanceledModelWaitText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
 	}
-	process := projected.Turns["turn-model-canceled"].Process
-	if len(process) != 1 {
-		t.Fatalf("process = %#v, want one canceled model block", process)
+	got := projected.Turns["turn-model-canceled"]
+	if len(got.Process) != 0 || len(got.BlockOrder) != 0 || len(got.BlocksByID) != 0 {
+		t.Fatalf("canceled model_call entered Chat blocks: process=%#v blockOrder=%#v blocksById=%#v", got.Process, got.BlockOrder, got.BlocksByID)
 	}
-	if process[0].Text != "模型调用已取消" {
-		t.Fatalf("model call text = %q, want cancellation text", process[0].Text)
+	if got.Status != AiopsTransportTurnStatusCanceled {
+		t.Fatalf("turn status = %q, want canceled without a model wait transcript block", got.Status)
 	}
-	if process[0].Status != AiopsTransportProcessStatusRejected {
-		t.Fatalf("model call status = %q, want rejected", process[0].Status)
+	if len(got.AgentItems) != 1 || got.AgentItems[0].ID != "model-1" || got.AgentItems[0].Type != string(agentstate.TurnItemTypeModelCall) {
+		t.Fatalf("AgentItems = %#v, want canceled model_call retained outside Chat transcript", got.AgentItems)
 	}
 }
 

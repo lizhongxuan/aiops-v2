@@ -39,7 +39,7 @@ describe("ProcessTranscript", () => {
     });
   }
 
-  it("renders streaming final answer markdown immediately and keeps completed markup stable", async () => {
+  it("does not render final answer markdown before terminal completion", async () => {
     const markdown = "检查结果如下：\n\n1. **Nginx 正常**\n2. **CPU 负载稳定**";
 
     await act(async () => {
@@ -49,17 +49,17 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
     expect(container.textContent).toContain("处理中");
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
-    expect(container.querySelectorAll("ol li")).toHaveLength(2);
-    expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
-    expect(container.textContent).not.toContain("**Nginx 正常**");
-    const streamingFinalMarkup = container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML;
+    expect(container.querySelector('[data-testid="aiops-final-text"]')).toBeNull();
+    expect(container.textContent).not.toContain("Nginx 正常");
 
     await act(async () => {
       root.render(<ProcessTranscript process={[]} turnStatus="completed" finalText={markdown} />);
     });
 
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeNull();
-    expect(container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML).toBe(streamingFinalMarkup);
+    expect(container.querySelectorAll("ol li")).toHaveLength(2);
+    expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
+    expect(container.textContent).not.toContain("**Nginx 正常**");
   });
 
   it("can hide final text when another renderer owns the answer document", async () => {
@@ -427,7 +427,7 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-command-row-cmd-font-baseline"]')?.className).toContain("leading-6");
   });
 
-  it("keeps the running process header visible when assistant text streams before tool blocks", async () => {
+  it("keeps the running process header without exposing an uncommitted final draft", async () => {
     await act(async () => {
       root.render(
         <ProcessTranscript
@@ -441,7 +441,8 @@ describe("ProcessTranscript", () => {
 
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
     expect(container.textContent).toContain("处理中");
-    expect(container.textContent).toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
+    expect(container.textContent).not.toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
+    expect(container.querySelector('[data-testid="aiops-final-text"]')).toBeNull();
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
@@ -854,7 +855,7 @@ describe("ProcessTranscript", () => {
     expect(searchToggle?.firstElementChild).toBe(searchIcon);
   });
 
-  it("renders model wait status as a compact pill instead of a large transcript line", async () => {
+  it("keeps model wait reasoning trace-only", async () => {
     await act(async () => {
       root.render(
         <ProcessTranscript
@@ -871,16 +872,12 @@ describe("ProcessTranscript", () => {
       );
     });
 
-    const pill = container.querySelector('[data-testid="aiops-model-wait-pill"]');
-    expect(pill).toBeTruthy();
-    expect(pill?.textContent).toContain("正在等待模型返回");
-    expect(pill?.className).toContain("text-[12px]");
-    expect(pill?.className).toContain("rounded-full");
-    expect(container.querySelector('[data-testid="aiops-model-wait-icon"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-model-wait-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-model-wait-icon"]')).toBeNull();
     expect(container.querySelector('[data-testid="aiops-inline-status-indicator"]')).toBeNull();
-    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent).not.toContain(
-      "正在等待模型返回正在等待模型返回",
-    );
+    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
+    expect(container.textContent).not.toContain("正在等待模型返回");
   });
 
   it("wraps long searched urls instead of truncating them", async () => {
@@ -2399,6 +2396,53 @@ describe("ProcessTranscript", () => {
 describe("groupConsecutiveBlocks", () => {
   it("returns empty array for empty input", () => {
     expect(groupConsecutiveBlocks([])).toEqual([]);
+  });
+
+  it("uses typed fold identity instead of visible text to group tool blocks", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({
+        id: "tool-a",
+        kind: "tool",
+        foldGroupId: "action-a",
+        foldGroupKind: "tool",
+        toolCallId: "call-a",
+        text: "相同的可见说明",
+      }),
+      makeBlock({
+        id: "tool-b-1",
+        kind: "tool",
+        foldGroupId: "action-b",
+        foldGroupKind: "tool",
+        toolCallId: "call-b-1",
+        text: "相同的可见说明",
+      }),
+      makeBlock({
+        id: "tool-b-2",
+        kind: "mcp",
+        foldGroupId: "action-b",
+        foldGroupKind: "tool",
+        toolCallId: "call-b-2",
+        text: "不同的可见说明",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({ kind: "single", block: { id: "tool-a" } });
+    expect(groups[1]).toMatchObject({
+      kind: "merged",
+      mergedKind: "tool",
+      blocks: [{ id: "tool-b-1" }, { id: "tool-b-2" }],
+    });
+  });
+
+  it("does not merge adjacent same-kind tools when their typed fold ids differ", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({ id: "search-a", kind: "tool", foldGroupId: "lookup-a", foldGroupKind: "web_lookup" }),
+      makeBlock({ id: "search-b", kind: "tool", foldGroupId: "lookup-b", foldGroupKind: "web_lookup" }),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.kind === "single")).toBe(true);
   });
 
   it("keeps a single reasoning block as a single group", () => {

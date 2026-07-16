@@ -102,7 +102,7 @@ func TestCommitAssistantOutputReplacesLongFinalLikeToolPrelude(t *testing.T) {
 	}
 }
 
-func TestCommitAssistantOutputReturnsFinalCandidateWithoutCommitting(t *testing.T) {
+func TestCommitAssistantOutputReturnsUnclassifiedCandidateWithoutCommitting(t *testing.T) {
 	snapshot := &TurnSnapshot{SessionID: "sess-final", ID: "turn-final"}
 	result := commitAssistantOutputForIteration(snapshot, assistantOutputCommitInput{
 		TurnID:        snapshot.ID,
@@ -112,8 +112,8 @@ func TestCommitAssistantOutputReturnsFinalCandidateWithoutCommitting(t *testing.
 		Duration:      500 * time.Millisecond,
 	})
 
-	if result.Committed || result.Phase != AssistantMessagePhaseFinalAnswer || result.Text != "最终回答。" {
-		t.Fatalf("result = %+v, want uncommitted final candidate", result)
+	if result.Committed || result.Phase != AssistantMessagePhaseUnclassified || result.Text != "最终回答。" {
+		t.Fatalf("result = %+v, want uncommitted unclassified candidate", result)
 	}
 	if len(snapshot.AgentItems) != 0 {
 		t.Fatalf("agent items = %#v, want no final write before final gates", snapshot.AgentItems)

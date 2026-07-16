@@ -544,16 +544,14 @@ func TestToolResultAgentItemDataKeepsCorootDisplayDataOutOfRuntimePreview(t *tes
 	}
 }
 
-func TestAssistantMessageAgentItemDataContract(t *testing.T) {
+func TestAssistantMessageAgentItemDataRepresentsUnclassifiedStreamingDraft(t *testing.T) {
 	data := assistantMessageAgentItemData(assistantMessageData{
-		MessageID:        "msg-1",
-		Iteration:        2,
-		Phase:            AssistantMessagePhaseFinalAnswer,
-		StreamState:      AssistantMessageStreamStateStreaming,
-		EvidenceBoundary: "limited",
-		BoundaryAction:   FinalMessageBoundaryConstrain,
-		TextHash:         "hash-1",
-		Duration:         1500 * time.Millisecond,
+		MessageID:   "msg-1",
+		Iteration:   2,
+		Phase:       AssistantMessagePhaseUnclassified,
+		StreamState: AssistantMessageStreamStateStreaming,
+		TextHash:    "hash-1",
+		Duration:    1500 * time.Millisecond,
 	})
 	raw, err := json.Marshal(data)
 	if err != nil {
@@ -564,13 +562,11 @@ func TestAssistantMessageAgentItemDataContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]any{
-		"displayKind":      "assistant.message",
-		"messageId":        "msg-1",
-		"phase":            "final_answer",
-		"streamState":      "streaming",
-		"evidenceBoundary": "limited",
-		"boundaryAction":   "constrain",
-		"textHash":         "hash-1",
+		"displayKind": "assistant.message",
+		"messageId":   "msg-1",
+		"phase":       "unclassified",
+		"streamState": "streaming",
+		"textHash":    "hash-1",
 	}
 	for key, value := range want {
 		if got[key] != value {
@@ -613,9 +609,12 @@ func TestUpsertAssistantMessageItemUsesSingleAssistantMessageType(t *testing.T) 
 	upsertAssistantMessageItem(snapshot, itemID, agentstate.ItemStatusRunning, "第一段", assistantMessageData{
 		MessageID:   "msg-1",
 		Iteration:   0,
-		Phase:       AssistantMessagePhaseFinalAnswer,
+		Phase:       AssistantMessagePhaseUnclassified,
 		StreamState: AssistantMessageStreamStateStreaming,
 	})
+	if got := agentItemPayloadMap(snapshot.AgentItems[0])["phase"]; got != "unclassified" {
+		t.Fatalf("running assistant phase = %#v, want unclassified", got)
+	}
 	upsertAssistantMessageItem(snapshot, itemID, agentstate.ItemStatusCompleted, "第一段第二段", assistantMessageData{
 		MessageID:   "msg-1",
 		Iteration:   0,
@@ -638,7 +637,7 @@ func TestUpsertAssistantMessageItemUsesSingleAssistantMessageType(t *testing.T) 
 	}
 }
 
-func TestAssistantMessageItemHelpersPreserveRetryLifecycle(t *testing.T) {
+func TestAssistantMessageItemHelpersKeepRetryDraftUnclassified(t *testing.T) {
 	snapshot := &TurnSnapshot{
 		SessionID: "sess-message-helper",
 		ID:        "turn-message-helper",
@@ -647,14 +646,14 @@ func TestAssistantMessageItemHelpersPreserveRetryLifecycle(t *testing.T) {
 	upsertAssistantMessageItem(snapshot, firstID, agentstate.ItemStatusRunning, "第一段", assistantMessageData{
 		MessageID:   "msg-0",
 		Iteration:   0,
-		Phase:       AssistantMessagePhaseFinalAnswer,
+		Phase:       AssistantMessagePhaseUnclassified,
 		StreamState: AssistantMessageStreamStateStreaming,
 		TextHash:    "hash-0",
 	})
 	upsertAssistantMessageItem(snapshot, firstID, agentstate.ItemStatusRunning, "第一段第二段", assistantMessageData{
 		MessageID:   "msg-0",
 		Iteration:   0,
-		Phase:       AssistantMessagePhaseFinalAnswer,
+		Phase:       AssistantMessagePhaseUnclassified,
 		StreamState: AssistantMessageStreamStateStreaming,
 		TextHash:    "hash-0b",
 	})
@@ -680,8 +679,8 @@ func TestAssistantMessageItemHelpersPreserveRetryLifecycle(t *testing.T) {
 	if err := json.Unmarshal(snapshot.AgentItems[0].Payload.Data, &replaced); err != nil {
 		t.Fatalf("unmarshal replaced message data: %v", err)
 	}
-	if replaced["phase"] != "final_answer" || replaced["streamState"] != "incomplete" || replaced["boundaryAction"] != "retry_once" || replaced["evidenceBoundary"] != "limited" {
-		t.Fatalf("replaced payload = %#v, want final_answer incomplete retry_once limited", replaced)
+	if replaced["phase"] != "unclassified" || replaced["streamState"] != "incomplete" || replaced["boundaryAction"] != "retry_once" || replaced["evidenceBoundary"] != "limited" {
+		t.Fatalf("replaced payload = %#v, want unclassified incomplete retry_once limited", replaced)
 	}
 	if replaced["replacedByMessageId"] != assistantMessageItemID(snapshot.ID, 1) {
 		t.Fatalf("replacedByMessageId = %#v, want next message id", replaced["replacedByMessageId"])

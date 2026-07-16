@@ -69,7 +69,7 @@ describe("AiopsThread canonical transcript", () => {
     expect(transcript.blocks.map((block) => block.id)).toEqual(["commentary-1", "final-1"]);
   });
 
-  it("keeps consecutive process blocks in one transcript before final and artifact blocks", () => {
+  it("preserves visible process, artifact, later commentary, and final order", () => {
     const groups = groupAssistantTranscriptBlocks([
       {
         id: "reasoning-1",
@@ -86,33 +86,45 @@ describe("AiopsThread canonical transcript", () => {
         text: "检查",
       },
       {
-        id: "final-1",
-        type: "final_answer",
-        kind: "assistant",
-        status: "completed",
-        text: "结论",
-      },
-      {
         id: "artifact-1",
         type: "artifact",
         kind: "tool",
         status: "completed",
         text: "图表",
       },
+      {
+        id: "commentary-2",
+        type: "commentary",
+        kind: "assistant",
+        phase: "commentary",
+        status: "completed",
+        text: "图表之后继续检查",
+      },
+      {
+        id: "final-1",
+        type: "final_answer",
+        kind: "assistant",
+        status: "completed",
+        text: "结论",
+      },
     ] as AiopsTransportBlock[]);
 
-    expect(groups).toHaveLength(3);
+    expect(groups).toHaveLength(4);
     expect(groups[0]).toMatchObject({
       type: "process",
       blocks: [{ id: "reasoning-1" }, { id: "tool-1" }],
     });
     expect(groups[1]).toMatchObject({
       type: "block",
-      block: { id: "final-1" },
+      block: { id: "artifact-1" },
     });
     expect(groups[2]).toMatchObject({
+      type: "process",
+      blocks: [{ id: "commentary-2" }],
+    });
+    expect(groups[3]).toMatchObject({
       type: "block",
-      block: { id: "artifact-1" },
+      block: { id: "final-1" },
     });
   });
 
@@ -261,7 +273,7 @@ describe("assistant message final contract summary", () => {
     });
   });
 
-  it("summarizes evidence without exposing internal evidence refs", () => {
+  it("does not render a separate success card for a clean verified final", () => {
     const summary = finalContractSummaryView({
       finalText: "已完成只读检查。",
       finalStatus: "verified",
@@ -274,14 +286,27 @@ describe("assistant message final contract summary", () => {
       },
     });
 
-    expect(summary).toMatchObject({
+    expect(summary).toBeNull();
+  });
+
+  it("keeps a verified final summary visible when it has actionable limitations", () => {
+    expect(
+      finalContractSummaryView({
+        finalText: "已完成可执行范围内的检查。",
+        finalStatus: "verified",
+        finalConfidence: "high",
+        finalContract: {
+          schemaVersion: "aiops.harness.final.v1",
+          status: "verified",
+          confidence: "high",
+          checkedEvidenceRefs: ["call_secret_1"],
+          limitations: ["仍需由值班人员确认变更窗口"],
+        },
+      }),
+    ).toMatchObject({
       status: "verified",
-      statusLabel: "已验证",
-      confidenceLabel: "置信度高",
-      evidenceLabel: "已采集 2 条证据",
+      limitations: ["仍需由值班人员确认变更窗口"],
     });
-    expect(summary).not.toHaveProperty("checkedEvidenceRefs");
-    expect(JSON.stringify(summary)).not.toContain("call_secret_1");
   });
 
   it("translates known tool diagnostics and removes duplicate limitations", () => {

@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+import {
+  createChatFixtureSessions,
+  createChatFixtureState,
+  openFixturePage,
+} from "./helpers/uiFixtureHarness.js";
+
 function canonicalTranscript(process, final, artifacts = []) {
   const blocks = process.map((block) => ({
     ...block,
@@ -945,6 +951,233 @@ function completeTransportFixtureState(state) {
   };
 }
 
+function phase0OutputFixture({ name, userText, status = "idle", turnStatus = "completed", blocks, timeline = [] }) {
+  const turnId = `turn-${name}`;
+  const startedAt = "2026-07-16T06:00:00.000Z";
+  const completedAt = turnStatus === "completed" ? "2026-07-16T06:00:08.000Z" : undefined;
+  const active = turnStatus === "working";
+  const state = createChatFixtureState({
+    sessionId: name,
+    threadId: name,
+    status,
+    currentTurnId: turnId,
+    cards: [
+      {
+        id: `user-${name}`,
+        type: "UserMessageCard",
+        role: "user",
+        text: userText,
+        createdAt: startedAt,
+        updatedAt: startedAt,
+      },
+    ],
+    runtime: {
+      turn: { active, phase: active ? "thinking" : "completed" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    finalText: "",
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: turnStatus,
+        startedAt,
+        completedAt,
+        updatedAt: completedAt || "2026-07-16T06:00:03.000Z",
+        user: {
+          id: `user-${name}`,
+          text: userText,
+          createdAt: startedAt,
+        },
+        blockOrder: blocks.map((block) => block.id),
+        blocksById: Object.fromEntries(blocks.map((block) => [block.id, block])),
+        timeline,
+      },
+    },
+    turnOrder: [turnId],
+    runtimeLiveness: {
+      activeTurns: active ? { [turnId]: true } : {},
+      activeAgents: active ? { "agent-main": true } : {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    updatedAt: completedAt || "2026-07-16T06:00:03.000Z",
+  });
+  return {
+    name,
+    state,
+    sessions: createChatFixtureSessions({
+      activeSessionId: name,
+      sessions: [
+        {
+          id: name,
+          kind: "single_host",
+          title: `Phase 0 ${name}`,
+          status: active ? "running" : "completed",
+          messageCount: 1,
+          preview: userText,
+          selectedHostId: "server-local",
+          lastActivityAt: completedAt || "2026-07-16T06:00:03.000Z",
+        },
+      ],
+    }),
+  };
+}
+
+function phase0RunningFixture() {
+  return phase0OutputFixture({
+    name: "output-contract-running",
+    userText: "检查当前运行状态，但不要提前显示最终结论。",
+    status: "working",
+    turnStatus: "working",
+    blocks: [],
+    timeline: [
+      {
+        id: "draft-running-trace",
+        type: "assistant_message",
+        status: "running",
+        text: "这段未分类草稿只能留在 trace 中。",
+        payloadKind: "unclassified",
+      },
+    ],
+  });
+}
+
+function phase0CompletedFixture() {
+  const finalText = "检查完成：服务状态稳定，最终答案只提交一次。";
+  return phase0OutputFixture({
+    name: "output-contract-completed",
+    userText: "完成检查后再给我最终结论。",
+    blocks: [
+      {
+        id: "final-output-contract-completed",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: finalText,
+        finalContract: {
+          id: "final-output-contract-completed",
+          text: finalText,
+          status: "verified",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "high",
+          checkedEvidenceRefs: ["evidence-output-contract"],
+        },
+      },
+    ],
+  });
+}
+
+function phase0RetryFixture() {
+  const supersededDraft = "旧的 retry 草稿不应进入普通聊天。";
+  return phase0OutputFixture({
+    name: "output-contract-retry",
+    userText: "如果模型重试，只显示最终提交的答案。",
+    blocks: [
+      {
+        id: "commentary-output-contract-retry",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "重试后重新校验只读证据。",
+      },
+      {
+        id: "final-output-contract-retry",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "重试完成：只保留这一次最终提交。",
+      },
+    ],
+    timeline: [
+      {
+        id: "draft-output-contract-retry",
+        type: "assistant_message",
+        status: "rejected",
+        text: supersededDraft,
+        payloadKind: "unclassified",
+      },
+    ],
+  });
+}
+
+function phase0ArtifactOrderingFixture() {
+  return phase0OutputFixture({
+    name: "output-contract-artifact-ordering",
+    userText: "按真实发生顺序展示检查、证据卡和最终结论。",
+    blocks: [
+      {
+        id: "commentary-before-artifact",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "先执行只读检查。",
+      },
+      {
+        id: "command-before-artifact",
+        type: "command",
+        kind: "command",
+        status: "completed",
+        text: "printf artifact-order-source",
+        command: "printf artifact-order-source",
+        outputPreview: "artifact-order-source",
+        toolCallId: "call-artifact-order",
+        foldGroupId: "action-artifact-order",
+        foldGroupKind: "command",
+      },
+      {
+        id: "artifact-ordering-evidence",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        text: "顺序验证证据卡",
+        artifact: {
+          id: "artifact-ordering-evidence",
+          type: "verification_result",
+          titleZh: "顺序验证证据卡",
+          summaryZh: "该证据卡紧跟来源工具出现。",
+          status: "ok",
+          source: "fixture",
+          inlineData: { check: "artifact-order-source", result: "passed" },
+        },
+      },
+      {
+        id: "commentary-after-artifact",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "证据卡生成后继续整理结论。",
+      },
+      {
+        id: "final-after-artifact",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "最终结论：工具、证据卡和回答顺序正确。",
+      },
+    ],
+  });
+}
+
 async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
     await route.fulfill({ json: sessionsPayload });
@@ -1180,4 +1413,62 @@ test("ops manual search and parameter confirmation merge into one card", async (
   await expect(card.getByText("server-local")).toBeVisible();
   await expect(card.getByText("docker:aiops-mysql")).toBeVisible();
   await expect(card).toHaveScreenshot("ops-manual-merged-param-confirmation.png");
+});
+
+test.describe("phase 0 output contract snapshots", () => {
+  test("running turn keeps unclassified draft out of chat", async ({ page }) => {
+    await page.clock.setFixedTime("2026-07-16T06:00:02.000Z");
+    await openFixturePage(page, "/", phase0RunningFixture());
+
+    await expect(page.getByText("这段未分类草稿只能留在 trace 中。", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    const transcript = page.getByTestId("aiops-process-transcript");
+    await expect(transcript).toContainText("处理中 2s");
+    await expect(transcript).toHaveScreenshot("phase0-running-no-final-draft.png");
+  });
+
+  test("completed turn shows one final without a success contract card", async ({ page }) => {
+    await openFixturePage(page, "/", phase0CompletedFixture());
+
+    await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+    const answer = page.getByTestId("aiops-answer-document");
+    await expect(answer).toContainText("检查完成：服务状态稳定，最终答案只提交一次。");
+    await expect(page.getByText("检查完成：服务状态稳定，最终答案只提交一次。", { exact: true })).toHaveCount(1);
+    await expect(answer).toHaveScreenshot("phase0-completed-single-final.png");
+  });
+
+  test("retry keeps superseded draft trace-only", async ({ page }) => {
+    await openFixturePage(page, "/", phase0RetryFixture());
+
+    await expect(page.getByText("旧的 retry 草稿不应进入普通聊天。", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("重试完成：只保留这一次最终提交。", { exact: true })).toHaveCount(1);
+    await page.getByTestId("aiops-process-header").click();
+    const assistantTurn = page.getByTestId("aiops-process-transcript").locator("..");
+    await expect(assistantTurn).toContainText("重试后重新校验只读证据。");
+    await expect(assistantTurn).toHaveScreenshot("phase0-retry-superseded-draft-hidden.png");
+  });
+
+  test("artifact stays between its source tool and later final", async ({ page }) => {
+    await openFixturePage(page, "/", phase0ArtifactOrderingFixture());
+
+    const processHeaders = page.getByTestId("aiops-process-header");
+    await expect(processHeaders).toHaveCount(2);
+    await processHeaders.nth(0).click();
+    await processHeaders.nth(1).click();
+
+    const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
+    const visibleText = await assistantTurn.innerText();
+    const commentaryBefore = visibleText.indexOf("先执行只读检查。");
+    const sourceTool = visibleText.indexOf("printf artifact-order-source");
+    const artifact = visibleText.indexOf("顺序验证证据卡");
+    const commentaryAfter = visibleText.indexOf("证据卡生成后继续整理结论。");
+    const final = visibleText.indexOf("最终结论：工具、证据卡和回答顺序正确。");
+
+    expect(commentaryBefore).toBeGreaterThanOrEqual(0);
+    expect(sourceTool).toBeGreaterThan(commentaryBefore);
+    expect(artifact).toBeGreaterThan(sourceTool);
+    expect(commentaryAfter).toBeGreaterThan(artifact);
+    expect(final).toBeGreaterThan(commentaryAfter);
+    await expect(assistantTurn).toHaveScreenshot("phase0-artifact-visible-ordering.png");
+  });
 });

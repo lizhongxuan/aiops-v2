@@ -343,6 +343,46 @@ func (m *gatedStreamingFinalLoopModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
+type gatedStreamingToolPreludeLoopModel struct {
+	firstSent chan struct{}
+	release   chan struct{}
+	calls     int
+}
+
+func (m *gatedStreamingToolPreludeLoopModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, errors.New("generate should not be called for gated streaming tool prelude")
+}
+
+func (m *gatedStreamingToolPreludeLoopModel) Stream(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	m.calls++
+	if m.calls > 1 {
+		return schema.StreamReaderFromArray([]*schema.Message{
+			schema.AssistantMessage("状态读取完成。", nil),
+		}), nil
+	}
+
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(schema.AssistantMessage("我先读取当前状态。", nil), nil)
+		close(m.firstSent)
+		<-m.release
+		sw.Send(schema.AssistantMessage("", []schema.ToolCall{{
+			ID:   "call-read-status",
+			Type: "function",
+			Function: schema.FunctionCall{
+				Name:      "read_status",
+				Arguments: `{}`,
+			},
+		}}), nil)
+	}()
+	return sr, nil
+}
+
+func (m *gatedStreamingToolPreludeLoopModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
 type memoryToolResultSpillRepo struct {
 	spills map[string]*tooling.ResultSpill
 }
@@ -2350,7 +2390,7 @@ func TestRunTurn_CommitsStreamedFinalTextWithoutFinalDeltaEvents(t *testing.T) {
 	}
 }
 
-func TestRunTurn_PersistsRunningFinalAssistantItemDuringStreaming(t *testing.T) {
+func TestRunTurn_DoesNotPersistRunningFinalAssistantItemDuringStreaming(t *testing.T) {
 	model := &gatedStreamingFinalLoopModel{
 		firstSent: make(chan struct{}),
 		release:   make(chan struct{}),
@@ -2382,32 +2422,27 @@ func TestRunTurn_PersistsRunningFinalAssistantItemDuringStreaming(t *testing.T) 
 		t.Fatal("timed out waiting for first streaming chunk")
 	}
 
-	var finalItem agentstate.TurnItem
+	var draftItem agentstate.TurnItem
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		session := kernel.sessions.Get("sess-streaming-final-running")
 		if session != nil && session.CurrentTurn != nil {
 			if item, ok := findAgentItemByID(session.CurrentTurn.AgentItems, assistantMessageItemID("turn-streaming-final-running", 0)); ok {
-				finalItem = item
+				draftItem = item
 				break
 			}
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if finalItem.ID == "" {
+	if draftItem.ID == "" {
 		session := kernel.sessions.Get("sess-streaming-final-running")
 		var items []agentstate.TurnItem
 		if session != nil && session.CurrentTurn != nil {
 			items = session.CurrentTurn.AgentItems
 		}
-		t.Fatalf("running final assistant item was not persisted before stream completion; items = %#v", items)
+		t.Fatalf("unclassified assistant draft was not persisted before stream completion; items = %#v", items)
 	}
-	if finalItem.Status != agentstate.ItemStatusRunning || assistantMessagePhaseForTest(finalItem) != string(AssistantMessagePhaseFinalAnswer) {
-		t.Fatalf("running final item = %#v, want running final_answer", finalItem)
-	}
-	if got := finalItem.Payload.Summary; got != "第一段" {
-		t.Fatalf("running final item summary = %q, want first streamed chunk", got)
-	}
+	draftPayload := agentItemPayloadMap(draftItem)
 
 	release()
 	result := <-done
@@ -2416,6 +2451,108 @@ func TestRunTurn_PersistsRunningFinalAssistantItemDuringStreaming(t *testing.T) 
 	}
 	if result.result.Output != "第一段第二段" {
 		t.Fatalf("RunTurn output = %q, want complete streamed output", result.result.Output)
+	}
+	if draftItem.Status != agentstate.ItemStatusRunning || draftPayload["phase"] != "unclassified" || draftPayload["streamState"] != "streaming" {
+		t.Fatalf("streaming assistant status=%q phase=%q streamState=%q, want running/unclassified/streaming and no running final", draftItem.Status, draftPayload["phase"], draftPayload["streamState"])
+	}
+	if got := draftItem.Payload.Summary; got != "第一段" {
+		t.Fatalf("running draft summary = %q, want first streamed chunk", got)
+	}
+}
+
+func TestRunTurn_ToolPreludeNeverAppearsAsRunningFinal(t *testing.T) {
+	model := &gatedStreamingToolPreludeLoopModel{
+		firstSent: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(model.release) }) }
+	defer release()
+
+	toolDef := &tooling.StaticTool{
+		Meta: tooling.ToolMetadata{
+			Name:        "read_status",
+			Description: "Read current status",
+		},
+		Visibility: tooling.Visibility{
+			SessionTypes: []string{string(SessionTypeHost)},
+			Modes:        []string{string(ModeInspect)},
+		},
+		ReadOnlyFunc: func(json.RawMessage) bool { return true },
+		ExecuteFunc: func(context.Context, json.RawMessage) (tooling.ToolResult, error) {
+			return tooling.ToolResult{Content: "status: ok"}, nil
+		},
+	}
+	kernel := newLoopKernel(t, model, []tooling.Tool{toolDef}, nil, nil)
+
+	type runResult struct {
+		result TurnResult
+		err    error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		result, err := kernel.RunTurn(context.Background(), TurnRequest{
+			SessionID:   "sess-streaming-tool-prelude",
+			SessionType: SessionTypeHost,
+			Mode:        ModeInspect,
+			TurnID:      "turn-streaming-tool-prelude",
+			Input:       "读取当前状态",
+		})
+		done <- runResult{result: result, err: err}
+	}()
+
+	select {
+	case <-model.firstSent:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for streamed tool prelude")
+	}
+
+	var observedDraft agentstate.TurnItem
+	var observedFinalOutput string
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		session := kernel.sessions.Get("sess-streaming-tool-prelude")
+		if session != nil && session.CurrentTurn != nil {
+			observedFinalOutput = session.CurrentTurn.FinalOutput
+			if item, ok := findAgentItemByID(session.CurrentTurn.AgentItems, assistantMessageItemID("turn-streaming-tool-prelude", 0)); ok {
+				observedDraft = item
+				break
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	release()
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("RunTurn failed: %v", outcome.err)
+		}
+		if outcome.result.Output != "状态读取完成。" {
+			t.Fatalf("RunTurn output = %q, want completed answer", outcome.result.Output)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for tool turn to complete")
+	}
+
+	if observedDraft.ID == "" {
+		t.Fatal("streamed tool prelude was not persisted before tool calls arrived")
+	}
+	payload := agentItemPayloadMap(observedDraft)
+	if observedDraft.Status != agentstate.ItemStatusRunning || payload["phase"] != "unclassified" || payload["streamState"] != "streaming" {
+		t.Fatalf("tool prelude during provider streaming status=%q phase=%q streamState=%q, want running/unclassified/streaming and never running final_answer", observedDraft.Status, payload["phase"], payload["streamState"])
+	}
+	if observedFinalOutput != "" {
+		t.Fatalf("FinalOutput = %q while tool prelude was streaming, want empty", observedFinalOutput)
+	}
+
+	session := kernel.sessions.Get("sess-streaming-tool-prelude")
+	if session == nil || session.CurrentTurn == nil {
+		t.Fatal("missing completed tool turn")
+	}
+	committedPrelude, ok := findAgentItemByID(session.CurrentTurn.AgentItems, observedDraft.ID)
+	if !ok || assistantMessagePhaseForTest(committedPrelude) != string(AssistantMessagePhaseCommentary) {
+		t.Fatalf("committed tool prelude = %#v, want same item completed as commentary", committedPrelude)
 	}
 }
 
@@ -2582,7 +2719,7 @@ func TestRunTurn_FailsLengthStoppedFinalAfterRetry(t *testing.T) {
 	}
 }
 
-func TestRunTurn_AccumulatesAssistantTextBeforeFinalCommit(t *testing.T) {
+func TestRunTurn_AccumulatesAssistantTextAsUnclassifiedBeforeFinalCommit(t *testing.T) {
 	model := &gatedStreamingFinalLoopModel{
 		firstSent: make(chan struct{}),
 		release:   make(chan struct{}),
@@ -2631,9 +2768,10 @@ func TestRunTurn_AccumulatesAssistantTextBeforeFinalCommit(t *testing.T) {
 		close(model.release)
 		t.Fatalf("assistant_message running draft must be written before final commit, got %+v", session.CurrentTurn.AgentItems)
 	}
-	if answerItem.Status != agentstate.ItemStatusRunning || assistantMessagePhaseForTest(answerItem) != string(AssistantMessagePhaseFinalAnswer) {
+	answerPayload := agentItemPayloadMap(answerItem)
+	if answerItem.Status != agentstate.ItemStatusRunning || answerPayload["phase"] != "unclassified" || answerPayload["streamState"] != "streaming" {
 		close(model.release)
-		t.Fatalf("assistant_message running draft = %+v, want running final_answer", answerItem)
+		t.Fatalf("assistant_message before final commit status=%q phase=%q streamState=%q, want running/unclassified/streaming", answerItem.Status, answerPayload["phase"], answerPayload["streamState"])
 	}
 	if got := answerItem.Payload.Summary; got != "第一段" {
 		close(model.release)
@@ -2666,7 +2804,7 @@ func TestRunTurn_AccumulatesAssistantTextBeforeFinalCommit(t *testing.T) {
 	}
 }
 
-func TestRunTurn_StreamingModelErrorPreservesIncompleteAssistantMessage(t *testing.T) {
+func TestRunTurn_StreamingModelErrorPreservesUnclassifiedIncompleteAssistantMessage(t *testing.T) {
 	streamErr := context.DeadlineExceeded
 	model := &partialStreamErrorLoopModel{
 		chunks: []*schema.Message{
@@ -2712,8 +2850,8 @@ func TestRunTurn_StreamingModelErrorPreservesIncompleteAssistantMessage(t *testi
 	if err := json.Unmarshal(answerItem.Payload.Data, &answerData); err != nil {
 		t.Fatalf("decode answer data: %v; raw=%s", err, string(answerItem.Payload.Data))
 	}
-	if answerData.Phase != "final_answer" || answerData.StreamState != "incomplete" || answerData.DisplayKind != "assistant.message" {
-		t.Fatalf("answer data = %+v, want incomplete assistant_message", answerData)
+	if answerData.Phase != "unclassified" || answerData.StreamState != "incomplete" || answerData.DisplayKind != "assistant.message" {
+		t.Fatalf("answer data = %+v, want unclassified incomplete assistant_message", answerData)
 	}
 	errorItem := findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeError)
 	if errorItem.ID == "" || errorItem.Status != agentstate.ItemStatusFailed {
@@ -2740,7 +2878,7 @@ func TestRunTurn_ModelFailureEmitsTurnErrorEvent(t *testing.T) {
 	}
 }
 
-func TestRunTurn_PreservesRetriedAssistantTextAsAnswerDraft(t *testing.T) {
+func TestRunTurn_RetriedAssistantTextRemainsUnclassifiedDraft(t *testing.T) {
 	incomplete := "结论：数据库连接失败，下一步需要补充"
 	complete := "结论：数据库连接失败。下一步先检查 Service Endpoints、NetworkPolicy 和凭证挂载。"
 	first := schema.AssistantMessage(incomplete, nil)
@@ -2786,8 +2924,8 @@ func TestRunTurn_PreservesRetriedAssistantTextAsAnswerDraft(t *testing.T) {
 		if err := json.Unmarshal(item.Payload.Data, &draftData); err != nil {
 			t.Fatalf("decode retried assistant_message data: %v; raw=%s", err, string(item.Payload.Data))
 		}
-		if draftData.Phase != "final_answer" || draftData.StreamState != "incomplete" || draftData.BoundaryAction != "retry_once" || draftData.ReplacedByMessageID == "" || draftData.DisplayKind != "assistant.message" {
-			t.Fatalf("retried assistant_message data = %+v, want incomplete retry_once draft", draftData)
+		if draftData.Phase != "unclassified" || draftData.StreamState != "incomplete" || draftData.BoundaryAction != "retry_once" || draftData.ReplacedByMessageID == "" || draftData.DisplayKind != "assistant.message" {
+			t.Fatalf("retried assistant_message data = %+v, want unclassified incomplete retry_once draft", draftData)
 		}
 	}
 	assertNoLegacyAssistantItems(t, session.CurrentTurn.AgentItems)
