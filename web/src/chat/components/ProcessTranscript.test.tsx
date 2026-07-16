@@ -2709,6 +2709,51 @@ describe("MergedToolSummary", () => {
     container.remove();
   });
 
+  it("uses typed model prelude commentary as the action title instead of a tool row", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "model-prelude-action",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-file"],
+              foldGroupId: "action-file",
+              foldGroupKind: "tool",
+              text: "先读取配置文件，再核对字段。",
+            }),
+            makeBlock({
+              id: "file-action",
+              kind: "file",
+              toolCallId: "call-file",
+              foldGroupId: "action-file",
+              foldGroupKind: "tool",
+              text: "读取 config.yaml",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect((container.textContent?.match(/先读取配置文件，再核对字段。/g) || [])).toHaveLength(1);
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(container.querySelectorAll('[data-testid^="aiops-tool-row-"]')).toHaveLength(1);
+    expect(container.textContent).toContain("读取 config.yaml");
+  });
+
   it("shows merged tool call details by default", async () => {
     await act(async () => {
       root.render(

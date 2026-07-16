@@ -594,7 +594,7 @@ function MergedToolSummary({
   group: Extract<ProcessGroup, { kind: "merged" }>;
 }) {
   const actionTitle = group.blocks.find(
-    (block) => block.kind === "assistant" && block.commentarySource === "runtime_tool_intent",
+    (block) => block.kind === "assistant" && block.phase === "commentary",
   );
   const actionBlocks = actionTitle ? group.blocks.filter((block) => block.id !== actionTitle.id) : group.blocks;
   const text = actionTitle?.text?.trim() || getMergedGroupSummaryText(group, actionBlocks);

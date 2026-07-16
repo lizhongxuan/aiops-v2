@@ -44,12 +44,15 @@ export function canonicalizeTransportTranscript(state: AiopsTransportState): Aio
   return {
     ...state,
     turns: Object.fromEntries(
-      Object.entries(state.turns || {}).map(([turnId, turn]) => [turnId, canonicalizeTransportTurn(turn)]),
+      Object.entries(state.turns || {}).map(([turnId, turn]) => [
+        turnId,
+        canonicalizeTransportTurn(turn, turnId === state.currentTurnId ? state.lastError : undefined),
+      ]),
     ),
   };
 }
 
-function canonicalizeTransportTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
+function canonicalizeTransportTurn(turn: AiopsTransportTurn, currentTurnError?: string): AiopsTransportTurn {
   const existingOrder = Array.isArray(turn.blockOrder) ? turn.blockOrder : [];
   const existingBlocks = turn.blocksById && typeof turn.blocksById === "object" ? turn.blocksById : {};
   const canonicalOrder = existingOrder.filter((id) => {
@@ -101,6 +104,27 @@ function canonicalizeTransportTurn(turn: AiopsTransportTurn): AiopsTransportTurn
     }
     blockOrder = legacyBlocks.map((block) => block.id);
     blocksById = Object.fromEntries(legacyBlocks.map((block) => [block.id, block]));
+  }
+
+  const visibleBlocks = blockOrder.flatMap((id) => (blocksById[id] ? [blocksById[id]] : []));
+  const normalizedError = currentTurnError?.trim() || "";
+  if (
+    turn.status === "failed" &&
+    normalizedError &&
+    !visibleBlocks.some((block) => block.type === "final_answer") &&
+    !visibleBlocks.some((block) => block.displayKind === "runtime.error")
+  ) {
+    const errorId = uniqueBlockId(`block:${turn.id}:system:state-last-error`, visibleBlocks);
+    const errorBlock: AiopsTransportBlock = {
+      id: errorId,
+      type: "system",
+      kind: "system",
+      displayKind: "runtime.error",
+      status: "failed",
+      text: normalizedError,
+    };
+    blockOrder = [...blockOrder, errorId];
+    blocksById = { ...blocksById, [errorId]: errorBlock };
   }
 
   const { process: _legacyProcess, final: _legacyFinal, ...canonicalTurn } = turn;
@@ -181,7 +205,7 @@ function orderedTurnMessages(state: AiopsTransportState) {
     if (userMessage) {
       messages.push(userMessage);
     }
-    const assistantMessage = toAssistantThreadMessage(state, turn);
+    const assistantMessage = toAssistantThreadMessage(turn);
     if (assistantMessage) {
       messages.push(assistantMessage);
     }
@@ -234,11 +258,11 @@ function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   };
 }
 
-function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTransportTurn): ThreadMessage | null {
+function toAssistantThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
-  const displayText = assistantDisplayText(state, turn);
+  const displayText = assistantDisplayText(turn);
   const content: ThreadMessage["content"] = [
     { type: "data", name: AIOPS_TURN_DATA_PART, data: assistantTurnEnvelope(turn) },
     ...orderedTurnBlocks(turn).map((block) => ({
@@ -277,16 +301,9 @@ function assistantTurnEnvelope(turn: AiopsTransportTurn) {
   };
 }
 
-function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTurn) {
+function assistantDisplayText(turn: AiopsTransportTurn) {
   const final = finalAnswerBlock(turn);
-  const finalText = final?.text?.trim() || "";
-  if (finalText) {
-    return finalText;
-  }
-  if (turn.status === "failed" && state.lastError) {
-    return state.lastError;
-  }
-  return "";
+  return final?.text?.trim() || "";
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {

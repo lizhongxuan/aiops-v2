@@ -1283,6 +1283,223 @@ function phase5LimitedFinalFixture() {
   });
 }
 
+function phase6SingleToolFixture() {
+  return phase0OutputFixture({
+    name: "phase6-single-tool",
+    userText: "读取一个配置文件后给出结论。",
+    blocks: [
+      {
+        id: "phase6-single-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        toolCallIds: ["call-phase6-single-tool"],
+        foldGroupId: "phase6-single-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "先读取配置文件，再核对关键字段。",
+      },
+      {
+        id: "phase6-single-tool-row",
+        type: "file",
+        kind: "file",
+        displayKind: "file.read",
+        toolCallId: "call-phase6-single-tool",
+        foldGroupId: "phase6-single-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取 config.yaml",
+        inputSummary: "/srv/app/config.yaml",
+        outputPreview: "port: 8080",
+      },
+      {
+        id: "phase6-single-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "配置读取完成：服务监听端口为 8080。",
+      },
+    ],
+  });
+}
+
+function phase6StreamErrorFixture() {
+  const fixture = phase0OutputFixture({
+    name: "phase6-stream-error",
+    userText: "分析当前服务状态。",
+    status: "failed",
+    turnStatus: "failed",
+    blocks: [
+      {
+        id: "phase6-stream-error-draft",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "unclassified",
+        streamState: "incomplete",
+        status: "failed",
+        text: "这段流中断草稿不能作为最终结论。",
+      },
+    ],
+  });
+  fixture.state.lastError = "模型流中断，已保留可追踪状态；本轮没有已验证结论。";
+  return fixture;
+}
+
+function phase6CanceledFixture() {
+  return phase0OutputFixture({
+    name: "phase6-canceled",
+    userText: "停止当前检查。",
+    status: "canceled",
+    turnStatus: "canceled",
+    blocks: [
+      {
+        id: "phase6-canceled-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "停止前完成的只读步骤仍可追踪。",
+      },
+      {
+        id: "phase6-canceled-draft",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "unclassified",
+        streamState: "incomplete",
+        status: "failed",
+        text: "正在等待模型返回",
+      },
+    ],
+  });
+}
+
+function phase6FailedToolFixture() {
+  const finalText = "当前只能确认应用入口可访问；主机侧读取失败，结论保持受限。";
+  return phase0OutputFixture({
+    name: "phase6-failed-tool",
+    userText: "检查应用和主机进程状态。",
+    blocks: [
+      {
+        id: "phase6-failed-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-phase6-failed-tool"],
+        foldGroupId: "phase6-failed-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取主机进程状态。",
+      },
+      {
+        id: "phase6-failed-tool-row",
+        type: "tool",
+        kind: "tool",
+        displayKind: "tool_error",
+        toolCallId: "call-phase6-failed-tool",
+        foldGroupId: "phase6-failed-tool-action",
+        foldGroupKind: "tool",
+        status: "failed",
+        text: "主机只读检查失败",
+        inputSummary: "读取进程状态",
+        outputPreview: "连接被拒绝",
+      },
+      {
+        id: "phase6-failed-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "blocked",
+        text: finalText,
+        finalContract: {
+          id: "phase6-failed-tool-final",
+          text: finalText,
+          status: "needs_evidence",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+          uncheckedRequirements: ["主机进程状态"],
+          failedToolImpacts: [{
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+            impact: "主机进程证据未采集",
+          }],
+          limitations: ["主机侧读取失败"],
+        },
+      },
+    ],
+  });
+}
+
+function phase6ArtifactDurationFixture() {
+  return phase0OutputFixture({
+    name: "phase6-artifact-duration",
+    userText: "生成证据卡后继续分析，并只显示一次最终生成耗时。",
+    blocks: [
+      {
+        id: "phase6-duration-before",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "先采集第一段证据。",
+      },
+      {
+        id: "phase6-duration-artifact",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        text: "耗时验证证据卡",
+        artifact: {
+          id: "phase6-duration-artifact",
+          type: "verification_result",
+          titleZh: "耗时验证证据卡",
+          summaryZh: "证据卡将过程分成两段。",
+          status: "ok",
+          source: "fixture",
+          inlineData: { result: "passed" },
+        },
+      },
+      {
+        id: "phase6-duration-after",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "证据卡后继续整理。",
+      },
+      {
+        id: "phase6-duration-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        durationMs: 2400,
+        text: "最终回答只关联最后一段生成耗时。",
+      },
+    ],
+  });
+}
+
 async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
     await route.fulfill({ json: sessionsPayload });
@@ -1453,7 +1670,9 @@ test("chat shows context compaction and externalized evidence states", async ({ 
   });
 
   await page.goto("/");
-  await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+  await expect(page.getByText("上下文过长，已使用本地摘要继续", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-process-transcript")).not.toContainText("上下文过长，已使用本地摘要继续");
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
   await expect(page.getByText("正在重试压缩")).toHaveCount(0);
   await expect(page.getByText("已外溢")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /查看原始证据/ })).toHaveCount(0);
@@ -1607,4 +1826,64 @@ test("limited final keeps only actionable contract details beside the answer", a
   await expect(summary).toContainText("尚未完成主机侧只读检查");
   await expect(summary).not.toContainText("已验证");
   await expect(answer.locator("..")).toHaveScreenshot("phase5-limited-final-contract.png");
+});
+
+test.describe("phase 6 output story snapshots", () => {
+  test("single typed tool action has one title, one lifecycle row, and one final", async ({ page }) => {
+    await openFixturePage(page, "/", phase6SingleToolFixture());
+
+    await page.getByTestId("aiops-process-header").click();
+    const action = page.getByTestId("aiops-merged-tool-toggle");
+    await expect(action).toContainText("先读取配置文件，再核对关键字段。");
+    await action.click();
+    await expect(page.getByTestId("aiops-tool-row-phase6-single-tool-row")).toHaveCount(1);
+    await expect(page.getByText("先读取配置文件，再核对关键字段。", { exact: true })).toHaveCount(1);
+    await expect(page.getByText("配置读取完成：服务监听端口为 8080。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-single-tool-story.png");
+  });
+
+  test("stream error hides incomplete draft and renders one typed error", async ({ page }) => {
+    await openFixturePage(page, "/", phase6StreamErrorFixture());
+
+    await expect(page.getByText("这段流中断草稿不能作为最终结论。", { exact: true })).toHaveCount(0);
+    await page.getByTestId("aiops-process-header").click();
+    await expect(page.getByText("模型流中断，已保留可追踪状态；本轮没有已验证结论。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    await expect(page.getByTestId("aiops-process-transcript").locator("..")).toHaveScreenshot("phase6-stream-error-story.png");
+  });
+
+  test("canceled turn removes model wait and final placeholders", async ({ page }) => {
+    await openFixturePage(page, "/", phase6CanceledFixture());
+
+    await expect(page.getByText("正在等待模型返回", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/处理中/)).toHaveCount(0);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    await page.getByTestId("aiops-process-header").click();
+    await expect(page.getByTestId("aiops-process-transcript")).toContainText("停止前完成的只读步骤仍可追踪。");
+    await expect(page.getByTestId("aiops-process-transcript").locator("..")).toHaveScreenshot("phase6-canceled-story.png");
+  });
+
+  test("failed tool, impact, and limited final remain traceable without duplication", async ({ page }) => {
+    await openFixturePage(page, "/", phase6FailedToolFixture());
+
+    const body = page.getByTestId("aiops-process-transcript-body");
+    if ((await body.count()) === 0) {
+      await page.getByTestId("aiops-process-header").click();
+    }
+    await expect(page.getByTestId("aiops-tool-row-phase6-failed-tool-row")).toHaveCount(1);
+    await expect(page.getByText("主机进程证据未采集", { exact: false })).toHaveCount(1);
+    await expect(page.getByText("当前只能确认应用入口可访问；主机侧读取失败，结论保持受限。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-failed-tool-story.png");
+  });
+
+  test("artifact-split process renders final duration once", async ({ page }) => {
+    await openFixturePage(page, "/", phase6ArtifactDurationFixture());
+
+    const headers = page.getByTestId("aiops-process-header");
+    await expect(headers).toHaveCount(2);
+    await headers.nth(0).click();
+    await headers.nth(1).click();
+    await expect(page.getByText(/整理最终回答/)).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-artifact-duration-once.png");
+  });
 });

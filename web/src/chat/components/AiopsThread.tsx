@@ -279,13 +279,17 @@ function AssistantMessage() {
   const finalDurationMs = blocks.find((block) => block.type === "final_answer")?.durationMs;
   const renderGroups = groupAssistantTranscriptBlocks(blocks);
   const hasProcessGroup = renderGroups.some((group) => group.type === "process");
+  const lastProcessGroupIndex = renderGroups.reduce(
+    (lastIndex, group, index) => (group.type === "process" ? index : lastIndex),
+    -1,
+  );
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
       <div className="w-full space-y-3">
         <ContextStatusNotice event={contextStatusEvent} />
         {!hasProcessGroup && isPendingAssistantTurn(turn?.status) ? <ProcessTranscript process={[]} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} renderFinalText={false} /> : null}
-        {renderGroups.map((group) => (group.type === "process" ? <ProcessTranscript key={group.id} process={group.blocks} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} finalDurationMs={finalDurationMs} renderFinalText={false} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} /> : <AssistantTranscriptBlock key={group.block.id} block={group.block} turn={turn!} corootArtifacts={corootArtifacts} hasFinalBlock={hasFinalBlock} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} />))}
+        {renderGroups.map((group, index) => (group.type === "process" ? <ProcessTranscript key={group.id} process={group.blocks} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} finalDurationMs={index === lastProcessGroupIndex ? finalDurationMs : undefined} renderFinalText={false} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} /> : <AssistantTranscriptBlock key={group.block.id} block={group.block} turn={turn!} corootArtifacts={corootArtifacts} hasFinalBlock={hasFinalBlock} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} />))}
       </div>
     </MessagePrimitive.Root>
   );
@@ -331,7 +335,6 @@ export function mergeAssistantArtifactRuns(blocks: AiopsTransportBlock[]): Aiops
       const base = run[Math.min(artifactIndex, run.length - 1)];
       merged.push({
         ...base,
-        id: artifact.id,
         text: artifact.summaryZh || artifact.summary || artifact.titleZh || artifact.title || base.text,
         artifact,
       });

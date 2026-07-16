@@ -149,13 +149,29 @@ describe("AiopsThread canonical transcript", () => {
 
     expect(blocks).toHaveLength(1);
     expect(blocks[0]).toMatchObject({
-      id: "params-1",
+      id: "search-1",
       artifact: {
         id: "params-1",
         type: "ops_manual_search_result",
         inlineData: { original_search_artifact_id: "search-1" },
       },
     });
+  });
+
+  it("preserves the canonical collision-safe block id when artifact ids overlap", () => {
+    const blocks = mergeAssistantArtifactRuns([
+      {
+        id: "artifact:shared-id",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        artifact: { id: "shared-id", type: "verification_result" },
+      },
+    ] as AiopsTransportBlock[]);
+
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.id).toBe("artifact:shared-id");
+    expect(blocks[0]?.artifact?.id).toBe("shared-id");
   });
 });
 

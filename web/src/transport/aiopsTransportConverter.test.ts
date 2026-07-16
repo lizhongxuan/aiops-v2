@@ -400,12 +400,14 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([
-      {
-        type: "text",
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        displayKind: "runtime.error",
+        status: "failed",
         text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
-      },
-    ]);
+      }),
+    ]));
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。" }),
@@ -543,7 +545,7 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: "模型流中断，已保留已生成内容" }]);
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
     expect(resultBlocks(result)).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "assistant-analysis", phase: "commentary" }),
       expect.objectContaining({ id: "runtime-error", displayKind: "runtime.error" }),
