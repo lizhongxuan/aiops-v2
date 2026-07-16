@@ -15,6 +15,7 @@ const (
 type assistantOutputCommitInput struct {
 	TurnID           string
 	Iteration        int
+	ItemID           string
 	MessageID        string
 	UserInput        string
 	AssistantText    string
@@ -45,7 +46,7 @@ func commitAssistantOutputForIteration(snapshot *TurnSnapshot, input assistantOu
 	if len(input.ToolCalls) == 0 {
 		return assistantOutputCommitResult{
 			ItemID:    itemID,
-			Phase:     AssistantMessagePhaseFinalAnswer,
+			Phase:     AssistantMessagePhaseUnclassified,
 			Text:      strings.TrimSpace(input.AssistantText),
 			Committed: false,
 		}
@@ -87,7 +88,7 @@ func commitFinalAssistantOutput(snapshot *TurnSnapshot, input assistantOutputCom
 	if snapshot == nil || turnID == "" || text == "" {
 		return assistantOutputCommitResult{}
 	}
-	itemID := assistantMessageItemID(turnID, input.Iteration)
+	itemID := firstNonEmptyString(strings.TrimSpace(input.ItemID), assistantMessageItemID(turnID, input.Iteration))
 	data := assistantMessageData{
 		MessageID:        input.MessageID,
 		Iteration:        input.Iteration,

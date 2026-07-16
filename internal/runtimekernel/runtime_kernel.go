@@ -1396,24 +1396,17 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session 
 	recordSession.PendingEvidence = nil
 	finalRuntimeFacts := BuildFinalRuntimeFactsWithContext(ctx, &recordSnapshot, &recordSession, k.finalCompletionEvaluator())
 	finalContract := BuildFinalContract(finalText, finalRuntimeFacts)
-	finalData := assistantMessageData{
-		MessageID:        message.ID,
+	finalCommit := assistantOutputCommitInput{
+		TurnID:           snapshot.ID,
 		Iteration:        snapshot.Iteration,
-		Phase:            AssistantMessagePhaseFinalAnswer,
-		StreamState:      AssistantMessageStreamStateComplete,
+		ItemID:           itemID,
+		MessageID:        message.ID,
+		AssistantText:    finalText,
 		EvidenceBoundary: "blocked",
 		BoundaryAction:   FinalMessageBoundaryBlock,
-		TextHash:         debugTextHash(finalText),
 		FinalContract:    &finalContract,
 	}
-	completeAssistantMessageItem(&recordSnapshot, itemID, finalText, finalData)
-	appendAgentItem(&recordSnapshot, newAgentItem(
-		finalResponseItemID(snapshot.ID, snapshot.Iteration),
-		agentstate.TurnItemTypeFinalResponse,
-		agentstate.ItemStatusCompleted,
-		finalText,
-		assistantMessageAgentItemData(finalData),
-	))
+	commitFinalAssistantOutput(&recordSnapshot, finalCommit)
 	if err := k.recordCanonicalCheckpoint(ctx, &recordSnapshot, checkpoint); err != nil {
 		snapshot.CanonicalRolloutHead = recordSnapshot.CanonicalRolloutHead
 		return TurnResult{}, err
@@ -1448,14 +1441,7 @@ func (k *RuntimeKernel) completeDeniedApprovalTurn(ctx context.Context, session 
 		last.CompletedAt = &at
 	}
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteTurnLifecycle, OwnerRuntimeKernel)
-	completeAssistantMessageItem(snapshot, itemID, finalText, finalData)
-	appendAgentItem(snapshot, newAgentItem(
-		finalResponseItemID(snapshot.ID, snapshot.Iteration),
-		agentstate.TurnItemTypeFinalResponse,
-		agentstate.ItemStatusCompleted,
-		finalText,
-		assistantMessageAgentItemData(finalData),
-	))
+	commitFinalAssistantOutput(snapshot, finalCommit)
 	snapshot.FinalOutput = FinalTextFromAssistantMessage(snapshot)
 	appendAcceptedOwnerWriteTrace(session, snapshot, OwnerWriteAssistantMessage, OwnerRuntimeKernel)
 	syncActiveTurnState(session, snapshot)
@@ -2497,19 +2483,17 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				streamStats.DeltaCount++
 				streamStats.OutputChars += utf8.RuneCountInString(delta)
 				iterationAssistantOutput += delta
-				upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusRunning, iterationAssistantOutput, assistantMessageData{
+				upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusRunning, iterationAssistantOutput, unclassifiedAssistantMessageData(assistantMessageData{
 					Iteration:          iteration,
-					Phase:              AssistantMessagePhaseFinalAnswer,
-					StreamState:        AssistantMessageStreamStateStreaming,
 					TextHash:           debugTextHash(iterationAssistantOutput),
 					GenerationDuration: time.Since(modelCallStartedAt),
-				})
+				}, AssistantMessageStreamStateStreaming))
 				if streamStats.DeltaCount == 1 || streamStats.DeltaCount%500 == 0 {
 					fields := debugTextFacts(iterationAssistantOutput)
 					fields["assistantMessageID"] = assistantMessageID
 					fields["deltaCount"] = streamStats.DeltaCount
-					fields["phase"] = "unclassified"
-					fields["streamState"] = "accumulating"
+					fields["phase"] = string(AssistantMessagePhaseUnclassified)
+					fields["streamState"] = string(AssistantMessageStreamStateStreaming)
 					debugFinalStateLog(debugConfig, session.ID, turnID, iteration, "assistant_output_accumulating", snapshot, fields)
 				}
 				snapshot.UpdatedAt = time.Now()
@@ -2598,6 +2582,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if errors.Is(genErr, context.Canceled) || snapshot.Lifecycle == TurnLifecycleCanceled {
 				finishObservedSpan(modelSpan, "cancelled", genErr.Error(), map[string]any{"error": genErr.Error()})
 				updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusCancelled, "模型调用已取消")
+				if hasAssistantMessageDraft {
+					upsertAssistantMessageItem(snapshot, assistantMessageID, agentstate.ItemStatusCancelled, iterationAssistantOutput, unclassifiedAssistantMessageData(assistantMessageData{
+						Iteration:        iteration,
+						EvidenceBoundary: "blocked",
+						BoundaryAction:   FinalMessageBoundaryBlock,
+						Duration:         modelCallDuration,
+					}, AssistantMessageStreamStateIncomplete))
+				}
 				if snapshot.Lifecycle != TurnLifecycleCanceled {
 					if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, "user stop"); cancelErr != nil {
 						return "", nil, cancelErr
@@ -2624,14 +2616,12 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			finishObservedSpan(modelSpan, "failed", genErr.Error(), map[string]any{"error": genErr.Error()})
 			updateAgentItem(snapshot, modelItemID, agentstate.ItemStatusFailed, genErr.Error())
 			if hasAssistantMessageDraft {
-				failAssistantMessageItem(snapshot, assistantMessageID, firstNonEmptyString(iterationAssistantOutput, genErr.Error()), assistantMessageData{
+				failAssistantMessageItem(snapshot, assistantMessageID, firstNonEmptyString(iterationAssistantOutput, genErr.Error()), unclassifiedAssistantMessageData(assistantMessageData{
 					Iteration:        iteration,
-					Phase:            AssistantMessagePhaseFinalAnswer,
-					StreamState:      AssistantMessageStreamStateIncomplete,
 					EvidenceBoundary: "blocked",
 					BoundaryAction:   FinalMessageBoundaryBlock,
 					Duration:         modelCallDuration,
-				})
+				}, AssistantMessageStreamStateIncomplete))
 			}
 			appendAgentItem(snapshot, newAgentItem(errorItemID(turnID, iteration), agentstate.TurnItemTypeError, agentstate.ItemStatusFailed, genErr.Error(), nil))
 			k.persistTurnSnapshot(session, snapshot)
@@ -2866,16 +2856,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if finalCompletenessDecision.Action == "retry_complete_final" {
 				incompleteErr := finalCompletenessFailureError(finalCompletenessDecision)
 				snapshot.FinalOutput = ""
-				failAssistantMessageItem(snapshot, assistantMessageID, assistantContent, assistantMessageData{
+				failAssistantMessageItem(snapshot, assistantMessageID, assistantContent, unclassifiedAssistantMessageData(assistantMessageData{
 					MessageID:        assistantMsg.ID,
 					Iteration:        iteration,
-					Phase:            AssistantMessagePhaseFinalAnswer,
-					StreamState:      AssistantMessageStreamStateIncomplete,
 					EvidenceBoundary: "blocked",
 					BoundaryAction:   FinalMessageBoundaryBlock,
 					TextHash:         debugTextHash(assistantContent),
 					Duration:         modelCallDuration,
-				})
+				}, AssistantMessageStreamStateIncomplete))
 				if !assistantMessageCommitted {
 					assistantMsg.Content = assistantContent
 					session.Messages = append(session.Messages, assistantMsg)

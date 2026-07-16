@@ -8,8 +8,9 @@ import (
 type AssistantMessagePhase string
 
 const (
-	AssistantMessagePhaseCommentary  AssistantMessagePhase = "commentary"
-	AssistantMessagePhaseFinalAnswer AssistantMessagePhase = "final_answer"
+	AssistantMessagePhaseUnclassified AssistantMessagePhase = "unclassified"
+	AssistantMessagePhaseCommentary   AssistantMessagePhase = "commentary"
+	AssistantMessagePhaseFinalAnswer  AssistantMessagePhase = "final_answer"
 )
 
 type AssistantMessageStreamState string
