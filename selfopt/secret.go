@@ -19,7 +19,7 @@ type secretPattern struct {
 
 func NewSecretScanner() SecretScanner {
 	return SecretScanner{patterns: []secretPattern{
-		{"api_key", regexp.MustCompile(`sk-[A-Za-z0-9_-]{12,}`)},
+		{"api_key", regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{12,}`)},
 		{"authorization", regexp.MustCompile(`(?i)Authorization:\s*Bearer\s+[A-Za-z0-9._-]+`)},
 		{"password", regexp.MustCompile(`(?i)password\s*=\s*[^,\s"']+`)},
 		{"token", regexp.MustCompile(`(?i)token\s*=\s*[^,\s"']+`)},
