@@ -122,12 +122,13 @@ describe("HostsPage cache behavior", () => {
     const rendered = renderHostsPage(queryClient);
     root = rendered.root;
 
-    await act(async () => {
-      await flushMicrotasks();
-    });
-
     expect(rendered.container.textContent).toContain("10.0.0.9 / root");
-    expect(rendered.container.textContent).toContain("hosts unavailable");
+    await act(async () => {
+      await vi.waitFor(() => {
+        expect(rendered.container.textContent).toContain("hosts unavailable");
+      });
+    });
+    expect(rendered.container.textContent).toContain("10.0.0.9 / root");
     expect(rendered.container.textContent).not.toContain("加载主机列表");
   });
 

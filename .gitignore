@@ -41,3 +41,6 @@ docs/superpowers/plans/*
 
 # Local isolated development worktrees.
 .worktrees/
+
+# Generated JavaScript dependency trees.
+node_modules/

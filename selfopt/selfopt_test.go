@@ -74,6 +74,17 @@ func TestSelfOptimizationLabRequiresExplicitRealLLMForSuggestions(t *testing.T) 
 }
 
 func TestSelfOptimizationLabStandaloneCanRunRealAIOpsTests(t *testing.T) {
+	// CI runners do not inherit a developer's global Git excludes. Keep this
+	// test representative so large untracked dependency trees are collapsed.
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	untrackedDir, err := os.MkdirTemp("..", ".selfopt-untracked-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(untrackedDir) })
+	writeFile(t, filepath.Join(untrackedDir, "nested", "a.txt"), "a")
+	writeFile(t, filepath.Join(untrackedDir, "nested", "b.txt"), "b")
+
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "cases")
 	outDir := filepath.Join(root, "out")
@@ -109,6 +120,11 @@ func TestSelfOptimizationLabStandaloneCanRunRealAIOpsTests(t *testing.T) {
 	scorecard := readFile(t, filepath.Join(latest, "scorecard.json"))
 	if !strings.Contains(scorecard, `"aiopsTests"`) {
 		t.Fatalf("expected scorecard to include aiopsTests: %s", scorecard)
+	}
+	impact := readFile(t, filepath.Join(latest, "impact-matrix.json"))
+	untrackedEntry := filepath.Base(untrackedDir) + "/"
+	if !strings.Contains(impact, untrackedEntry) || strings.Contains(impact, untrackedEntry+"nested/a.txt") {
+		t.Fatalf("expected untracked directory to be collapsed as %q, got %s", untrackedEntry, impact)
 	}
 }
 

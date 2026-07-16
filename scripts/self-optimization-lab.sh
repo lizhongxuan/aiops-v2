@@ -136,7 +136,9 @@ standalone_changed_files() {
     {
       git diff --name-only --no-ext-diff
       git diff --cached --name-only --no-ext-diff
-      git ls-files --others --exclude-standard
+      # Collapse wholly untracked directories (for example web/node_modules/)
+      # so the comma-separated --changed argument cannot exceed ARG_MAX.
+      git ls-files --others --exclude-standard --directory --no-empty-directory
     } 2>/dev/null | awk 'NF' | sort -u | paste -sd, -
   fi
 }

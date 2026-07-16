@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+require_command() {
+  local command_name="$1"
+  local install_hint="$2"
+  if ! command -v "${command_name}" >/dev/null 2>&1; then
+    echo "ERROR: required command '${command_name}' is not available in PATH; install ${install_hint} before running this script." >&2
+    exit 2
+  fi
+}
+
+require_command rg ripgrep
+require_command python3 "Python 3"
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_ROOT}"

@@ -304,6 +304,8 @@ if bootstrap_output="$(
 	AIOPS_CHANGE_REPO_ROOT="${bootstrap_root}" \
 	AIOPS_HARNESS_BASE_REF="${bootstrap_base}" \
 	AIOPS_HARNESS_REQUIRE_BASELINE_ACK=1 \
+	AIOPS_CHANGE_BASELINE_ACK= \
+	AIOPS_CHANGE_BASELINE_REASON= \
 		bash "${CHECKER}" 2>&1
 )"; then
 	echo "ERROR: pre-policy history passed without explicit acknowledgement" >&2
