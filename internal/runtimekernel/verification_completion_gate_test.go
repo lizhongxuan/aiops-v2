@@ -19,7 +19,8 @@ import (
 func TestAppendVerificationCompletionGateItemBackfillsTypedKind(t *testing.T) {
 	itemID := "turn-gate-kind-verification-completion-gate-0"
 	snapshot := &TurnSnapshot{
-		ID: "turn-gate-kind",
+		ID:        "turn-gate-kind",
+		SessionID: "session-gate-kind",
 		AgentItems: []agentstate.TurnItem{{
 			ID:     itemID,
 			Type:   agentstate.TurnItemTypeEvidence,

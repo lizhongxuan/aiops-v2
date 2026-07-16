@@ -129,7 +129,7 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain(
       "Investigate payment-api saturation",
     );
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "payment-api is waiting for rollout approval.",
     );
     expect(container.textContent).not.toContain("Hello there");
@@ -335,7 +335,7 @@ describe("ChatPage", () => {
     expect(container.textContent).toContain(
       "kubectl rollout status deploy/payment-api",
     );
-    expect(container.textContent).toContain(
+    expect(container.textContent).not.toContain(
       "payment-api is waiting for rollout approval.",
     );
 	    expect(container.textContent).toContain("等待审批");
@@ -600,7 +600,7 @@ describe("ChatPage", () => {
       root.render(<ChatPage initialState={state} />);
     });
 
-    expect(container.textContent).toContain("我先读取 Coroot 指标并继续分析。");
+    expect(container.textContent).not.toContain("我先读取 Coroot 指标并继续分析。");
     expect(container.textContent).toContain(
       "已生成 Coroot 图表，分析完成后展开",
     );

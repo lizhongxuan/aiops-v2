@@ -1544,12 +1544,13 @@ test("process transcript keeps narration and expanded search details aligned", a
   await page.goto("/");
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
   await page.getByTestId("aiops-process-header").click();
-  await page.getByTestId("aiops-search-toggle").click();
+  await page.getByTestId("aiops-search-toggle").last().click();
   await page.getByTestId("aiops-search-detail-row-toggle").first().click();
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页搜索 2 次 · 找到 1 个来源");
+  await expect(page.getByTestId("aiops-search-toggle")).toHaveCount(2);
+  await expect(transcript).toContainText("网页搜索 1 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
@@ -1565,14 +1566,12 @@ test("codex-like process transcript interleaves commentary and tools", async ({ 
   await expect(transcript).toHaveScreenshot("codex-like-process-transcript.png");
 });
 
-test("assistant final markdown keeps the same layout while running and after completion", async ({ page }) => {
+test("assistant final markdown appears only after terminal completion", async ({ page }) => {
   let resumeState = finalMarkdownState("working");
   await routeShellApis(page, () => resumeState);
 
   await page.goto("/");
-  const runningFinal = page.getByTestId("aiops-answer-document");
-  await expect(runningFinal).toBeVisible();
-  await expect(runningFinal).toHaveScreenshot("assistant-final-markdown-running.png");
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
 
   resumeState = finalMarkdownState("completed");
   await page.reload();
@@ -1581,18 +1580,17 @@ test("assistant final markdown keeps the same layout while running and after com
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });
 
-test("final contract summary hides raw evidence refs", async ({ page }) => {
+test("clean verified final hides the contract summary and raw evidence refs", async ({ page }) => {
   await routeShellApis(page, finalContractSummaryState());
   await page.goto("/");
 
   const summary = page.getByTestId("aiops-final-contract-summary");
-  await expect(summary).toBeVisible();
-  await expect(summary).toContainText("已验证");
-  await expect(summary).toContainText("置信度高");
-  await expect(summary).toContainText("已采集 2 条证据");
-  await expect(summary).not.toContainText("call_secret_1");
-  await expect(summary).not.toContainText("call_secret_2");
-  await expect(summary).toHaveScreenshot("final-contract-summary-redacted-evidence.png");
+  await expect(summary).toHaveCount(0);
+  await expect(page.getByTestId("aiops-answer-document")).toContainText(
+    "以下是只读巡检结果：系统负载稳定，未执行任何修改。",
+  );
+  await expect(page.getByText("call_secret_1", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("call_secret_2", { exact: false })).toHaveCount(0);
 });
 
 test("final contract summary hides internal low confidence calibration", async ({ page }) => {
@@ -1606,17 +1604,17 @@ test("final contract summary hides internal low confidence calibration", async (
   await expect(answer).toHaveScreenshot("final-contract-internal-calibration-hidden.png");
 });
 
-test("running assistant text keeps the process header before tool blocks arrive", async ({ page }) => {
+test("unclassified running assistant text stays hidden before tool blocks arrive", async ({ page }) => {
   await page.clock.setFixedTime(runningPreludeRenderedAt);
   await routeShellApis(page, runningPreludeBeforeToolsState());
 
   await page.goto("/");
   const transcript = page.getByTestId("aiops-process-transcript");
   await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
-  await expect(page.getByTestId("aiops-answer-document")).toContainText(runningPreludeText);
-  await expect(page.getByText(runningPreludeText, { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+  await expect(page.getByText(runningPreludeText, { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
-  await expect(transcript.locator("..")).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
+  await expect(transcript).toBeVisible();
 });
 
 test("long terminal output stays inside a scrollable output box", async ({ page }) => {
