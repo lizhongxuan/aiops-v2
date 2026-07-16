@@ -790,7 +790,7 @@ func TestTransportProjectorProjectsAssistantMessageByPhase(t *testing.T) {
 	}
 }
 
-func TestTransportProjectorAddsFoldGroupOnlyForWebLookupAndCommands(t *testing.T) {
+func TestTransportProjectorAddsTypedPerActionFoldGroups(t *testing.T) {
 	now := time.Date(2026, 6, 26, 11, 0, 0, 0, time.UTC)
 	toolPayload := func(callID, toolName, displayKind, input string) json.RawMessage {
 		return json.RawMessage(`{
@@ -829,10 +829,14 @@ func TestTransportProjectorAddsFoldGroupOnlyForWebLookupAndCommands(t *testing.T
 			t.Fatalf("block %q = %#v, want web_lookup search fold metadata", callID, byCallID[callID])
 		}
 	}
-	for _, callID := range []string{"mcp", "skill"} {
-		if byCallID[callID].FoldGroupKind != "" || byCallID[callID].FoldGroupID != "" {
-			t.Fatalf("block %q = %#v, should not have fold metadata", callID, byCallID[callID])
-		}
+	if byCallID["browse"].FoldGroupID == byCallID["find"].FoldGroupID {
+		t.Fatalf("distinct lookup actions shared fold id %q", byCallID["browse"].FoldGroupID)
+	}
+	if block := byCallID["mcp"]; block.Kind != AiopsTransportProcessKindMCP || block.FoldGroupKind != "mcp" || block.FoldGroupID == "" {
+		t.Fatalf("MCP block = %#v, want typed MCP fold metadata", block)
+	}
+	if block := byCallID["skill"]; block.Kind != AiopsTransportProcessKindTool || block.FoldGroupKind != "tool" || block.FoldGroupID == "" {
+		t.Fatalf("generic tool block = %#v, want typed tool fold metadata", block)
 	}
 	if byCallID["cmd"].FoldGroupKind != "command" || byCallID["cmd"].FoldGroupID == "" {
 		t.Fatalf("command block = %#v, want command fold metadata", byCallID["cmd"])
@@ -2022,6 +2026,7 @@ func TestTransportProjectorProjectsSnapshotPendingEvidenceAsInlineApproval(t *te
 	toolCallData := json.RawMessage(`{
 		"toolCallId":"call-ifconfig-down",
 		"toolName":"exec_command",
+		"displayKind":"terminal.command",
 		"inputSummary":"ifconfig en0 down"
 	}`)
 	turn := &runtimekernel.TurnSnapshot{
@@ -3106,8 +3111,14 @@ func TestTransportProjectorProjectsAssistantCommentaryMetadataBeforeTool(t *test
 	if len(process[0].ToolCallIDs) != 1 || process[0].ToolCallIDs[0] != "call-cpu" {
 		t.Fatalf("toolCallIDs = %#v, want call-cpu", process[0].ToolCallIDs)
 	}
+	if process[0].FoldGroupID == "" || process[0].FoldGroupKind != "tool" {
+		t.Fatalf("commentary fold group = %q/%q, want typed action group", process[0].FoldGroupKind, process[0].FoldGroupID)
+	}
 	if process[1].Kind == AiopsTransportProcessKindAssistant {
 		t.Fatalf("process = %#v, final/tool order broken", process)
+	}
+	if process[1].FoldGroupID != process[0].FoldGroupID || process[1].FoldGroupKind != process[0].FoldGroupKind {
+		t.Fatalf("commentary/tool fold identity mismatch: commentary=%q/%q tool=%q/%q", process[0].FoldGroupKind, process[0].FoldGroupID, process[1].FoldGroupKind, process[1].FoldGroupID)
 	}
 }
 
@@ -3338,11 +3349,13 @@ func TestTransportProjectorDedupesProviderNativeWebSearchBlocks(t *testing.T) {
 	projector := NewTransportProjector()
 	state := NewAiopsTransportState("session-1", "thread-1")
 	searchCallData := json.RawMessage(`{
+		"toolCallId":"search-1",
 		"toolName":"web_search",
 		"displayKind":"browser.search",
 		"inputSummary":"2026-05-07 A股 行情"
 	}`)
 	searchResultData := json.RawMessage(`{
+		"toolCallId":"search-1",
 		"toolName":"web_search",
 		"displayKind":"browser.search",
 		"inputSummary":"2026-05-07 A股 行情",
@@ -3483,11 +3496,13 @@ func TestTransportProjectorSummarizesWebSearchOpenByURL(t *testing.T) {
 	callData := json.RawMessage(`{
 		"id":"call-open-1",
 		"name":"web_search",
+		"displayKind":"browser.open",
 		"arguments":{"operation":"open","url":"https://www.postgresql.org/docs/current/"}
 	}`)
 	resultData := json.RawMessage(`{
 		"toolCallId":"call-open-1",
 		"toolName":"web_search",
+		"displayKind":"browser.open",
 		"outputPreview":` + strconv.Quote(openResult) + `
 	}`)
 	turn := &runtimekernel.TurnSnapshot{

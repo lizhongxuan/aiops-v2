@@ -491,6 +491,8 @@ scripts/check-aiops-change-budget.sh
 
 ## 11. Phase 4：typed commentary/tool 归组与过程降噪
 
+> 状态：🚧 进行中（2026-07-16）。后端 typed 分类与 action identity 已完成并通过 Go 全包；React 分组和视觉回归正在集成。
+
 ### Task 4.1：扩展 process fold 语义
 
 **Production files:**
@@ -508,13 +510,13 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] 先锁定现状：`groupAssistantTranscriptBlocks` 只按 artifact/final 分段；`groupConsecutiveBlocks` 不使用 `foldGroupId`，只合并连续 search/command。不能把现状误记为已有通用 fold 支持。
-- [ ] search、command、file、tool、MCP 使用 typed `kind/foldGroupKind/foldGroupId` 归组。
+- [x] 先锁定现状：`groupAssistantTranscriptBlocks` 只按 artifact/final 分段；`groupConsecutiveBlocks` 不使用 `foldGroupId`，只合并连续 search/command。不能把现状误记为已有通用 fold 支持。
+- [x] search、command、file、tool、MCP 使用 typed `kind/foldGroupKind/foldGroupId` 归组。
 - [ ] `groupConsecutiveBlocks` 优先按相同 `foldGroupId` 建组，并校验 `foldGroupKind`；相邻但 group id 不同的 block 不得误合并。
-- [ ] 迁移 `detectTransportToolBlockKind` 和 `isSearchLikeBlock` 对 tool name/`contains(file)`/search regex 的猜测，改用上游 typed `displayKind`/capability metadata。
-- [ ] 不根据 tool name 包含 `file/search/coroot` 等字符串判断分组；如果上游没有足够 typed metadata，停止本 Phase 并先拆出 transport contract 任务，不能在 React 补猜测。
-- [ ] 使用 `commentary.toolCallIds` 关联后续 tool blocks。
-- [ ] commentary 的 `toolCallIds[]` 与工具块的 `toolCallId` 形成稳定 action group；同一 commentary 关联多个工具时保留数组顺序。
+- [x] 迁移 `detectTransportToolBlockKind` 和 `isSearchLikeBlock` 对 tool name/`contains(file)`/search regex 的猜测，改用上游 typed `displayKind`/capability metadata。
+- [x] 不根据 tool name 包含 `file/search/coroot` 等字符串判断分组；如果上游没有足够 typed metadata，停止本 Phase 并先拆出 transport contract 任务，不能在 React 补猜测。
+- [x] 使用 `commentary.toolCallIds` 关联后续 tool blocks。
+- [x] commentary 的 `toolCallIds[]` 与工具块的 `toolCallId` 形成稳定 action group；同一 commentary 关联多个工具时保留数组顺序。
 - [ ] `commentarySource=runtime_tool_intent` 且关联 tool 已存在时，将 commentary 作为 action group 标题，而不是独立大段正文。
 - [ ] `commentarySource=model_prelude` 可保留为短说明，但同一 iteration 只显示一次。
 - [ ] commentary 与 tool 的归组只看 typed identity，不比较两段可见文本是否相同。

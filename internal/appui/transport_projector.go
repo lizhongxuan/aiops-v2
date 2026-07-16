@@ -783,8 +783,8 @@ func projectTurnItem(
 			}
 			projectHostOpsToolPayload(state, turnID, tool, firstNonZeroTime(item.UpdatedAt, item.CreatedAt))
 		}
-		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind, tool.ToolName)
-		sourceID := firstNonEmptyString(tool.ToolCallID, normalizeTransportToolSourceID(tool.ToolName, tool.InputSummary), item.ID)
+		blockKind := detectTransportToolBlockKind(item.Payload.Kind, tool.DisplayKind)
+		sourceID := firstNonEmptyString(tool.ToolCallID, item.ID)
 
 		// For search blocks, Text is a query string (not HTML) — skip sanitization.
 		// For other tool blocks, sanitize both Text and OutputPreview to strip HTML/truncate.
@@ -863,7 +863,7 @@ func projectTurnItem(
 				block.Text = firstNonEmptyString(tool.OutputSummary, tool.InputSummary, "host subagent update")
 			}
 		}
-		applyTransportFoldGroup(turnID, &block)
+		applyTransportFoldGroup(turnID, turn, &block)
 		if sourceID != "" {
 			if item.Status == agentstate.ItemStatusRunning {
 				state.RuntimeLiveness.ActiveCommandStreams[sourceID] = true
@@ -974,6 +974,8 @@ func projectTurnItem(
 				DurationMs:       durationMs,
 				UpdatedAt:        transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 			}
+			applyTransportCommentaryFoldGroup(turnID, &block)
+			turn.Process = bindExistingToolsToCommentaryGroup(turn.Process, block)
 			turn.Process = upsertTransportProcessBlock(turn.Process, block)
 		default:
 			return turn
@@ -2832,71 +2834,8 @@ func decodeTransportToolPayload(envelope agentstate.PayloadEnvelope) transportTo
 	return payload
 }
 
-func detectTransportToolBlockKind(envelopeKind, displayKind, toolName string) AiopsTransportProcessKind {
-	kind := strings.ToLower(firstNonEmptyString(displayKind, envelopeKind))
-	name := strings.ToLower(strings.TrimSpace(toolName))
-	switch {
-	case strings.HasPrefix(kind, "hostops."), name == "spawn_host_agent", name == "send_host_agent_message", name == "wait_host_agents", name == "stop_host_agent":
-		return AiopsTransportProcessKindSubagent
-	case strings.Contains(kind, "browser.search"), transportWebLookupToolName(name):
-		return AiopsTransportProcessKindSearch
-	case kind == "command", name == "exec_command":
-		return AiopsTransportProcessKindCommand
-	case strings.HasPrefix(kind, "file"), strings.Contains(name, "file"):
-		return AiopsTransportProcessKindFile
-	default:
-		return AiopsTransportProcessKindTool
-	}
-}
-
-func applyTransportFoldGroup(turnID string, block *AiopsProcessBlock) {
-	if block == nil {
-		return
-	}
-	switch transportFoldGroupKind(*block) {
-	case "web_lookup":
-		block.FoldGroupKind = "web_lookup"
-		block.FoldGroupID = TransportProcessBlockStableID(turnID, "fold", "web_lookup")
-	case "command":
-		block.FoldGroupKind = "command"
-		block.FoldGroupID = TransportProcessBlockStableID(turnID, "fold", "command")
-	}
-}
-
-func transportFoldGroupKind(block AiopsProcessBlock) string {
-	switch block.Kind {
-	case AiopsTransportProcessKindSearch:
-		return "web_lookup"
-	case AiopsTransportProcessKindCommand:
-		return "command"
-	default:
-		return ""
-	}
-}
-
-func transportWebLookupToolName(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "web_search", "browse_url", "browser.open", "browser.find", "web.open", "web.find":
-		return true
-	default:
-		return false
-	}
-}
-
 func isTransportSearchTool(tool transportToolPayload) bool {
-	return detectTransportToolBlockKind(tool.DisplayKind, tool.DisplayKind, tool.ToolName) == AiopsTransportProcessKindSearch
-}
-
-func normalizeTransportToolSourceID(toolName, inputSummary string) string {
-	toolName = strings.ToLower(strings.TrimSpace(toolName))
-	inputSummary = strings.TrimSpace(inputSummary)
-	if toolName == "" || inputSummary == "" {
-		return ""
-	}
-	if toolName == "web_search" {
-		return toolName + ":" + inputSummary
-	}
-	return ""
+	return detectTransportToolBlockKind(tool.DisplayKind, tool.DisplayKind) == AiopsTransportProcessKindSearch
 }
 
 func displayKindForTransportToolBlock(blockKind AiopsTransportProcessKind, values ...string) string {
