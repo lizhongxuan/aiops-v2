@@ -94,12 +94,6 @@ describe("ProcessTranscript", () => {
         command: "docker run -d --name nginx -p 1234:80 nginx:latest",
         outputPreview: "container-id",
       }),
-      makeBlock({
-        id: "verification-gate",
-        kind: "evidence",
-        status: "completed",
-        text: "verification completion gate: block_success_final: execution_required,missing_verification_report",
-      }),
     ];
 
     await act(async () => {
@@ -259,6 +253,39 @@ describe("ProcessTranscript", () => {
     expect(processText).toContain("正在等待模型返回");
   });
 
+  it("shows at most one typed model prelude per iteration", async () => {
+    const process = [
+      makeBlock({
+        id: "model-prelude-first",
+        kind: "assistant",
+        status: "completed",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        iteration: 2,
+        text: "本轮先采集只读证据。",
+      }),
+      makeBlock({
+        id: "model-prelude-duplicate",
+        kind: "assistant",
+        status: "completed",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        iteration: 2,
+        text: "同一轮重复说明不应出现。",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    expect(bodyText).toContain("本轮先采集只读证据。");
+    expect(bodyText).not.toContain("同一轮重复说明不应出现。");
+  });
+
   it("keeps final output stable when assistant_message final becomes completed", async () => {
     const running = [
       makeBlock({
@@ -324,14 +351,15 @@ describe("ProcessTranscript", () => {
     expect(processText).toContain("我会基于新证据重新整理结论");
   });
 
-  it("shows raw stream failures as compact status without replacing preserved answer", async () => {
+  it("renders the typed normalized stream error without inspecting raw error strings", async () => {
     const answer = "根因：已生成的分析内容应该保留。";
     const process = [
       makeBlock({
         id: "stream-error",
         kind: "system",
+        displayKind: "runtime.error",
         status: "failed",
-        text: "failed to receive stream chunk: context deadline exceeded",
+        text: "模型流中断，已保留已生成内容",
       }),
     ];
 
@@ -368,35 +396,25 @@ describe("ProcessTranscript", () => {
     expect(text).toContain("优先检索官方资料");
   });
 
-  it("does not render risky assistant final advice", async () => {
-    const risky = "可以执行 rm -rf $PG_DATA/recovery/repos/archive/paf/15-1/* 清理 archive。";
+  it("renders the upstream typed safety decision without rescanning final prose", async () => {
+    const safeDecision = "安全策略已阻止该高风险操作。";
     const process = [
-      makeBlock({
-        id: "assistant-risky",
-        kind: "assistant",
-        status: "completed",
-        displayKind: "assistant.message",
-        phase: "commentary",
-        streamState: "complete",
-        text: risky,
-      }),
       makeBlock({
         id: "visible-system",
         kind: "system",
         status: "completed",
-        text: "已识别为证据分析",
+        displayKind: "safety.decision",
+        text: safeDecision,
       }),
     ];
 
     await act(async () => {
-      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText={risky} />);
+      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText={safeDecision} />);
     });
     await expandProcessTranscript();
 
     const text = container.textContent || "";
-    expect(text).not.toContain("rm -rf $PG_DATA");
-    expect(text).not.toContain("archive/paf");
-    expect(text).toContain("已识别为证据分析");
+    expect(text).toContain(safeDecision);
   });
 
   it("renders final answer text one step smaller without changing tool transcript text", async () => {
@@ -583,6 +601,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "BTC price today USD",
         outputPreview:
           'failed: Post "http://127.0.0.1:8317/v1/responses": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
@@ -592,6 +612,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browse_url",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
         outputPreview:
           '{"contentType":"application/json; charset=utf-8","text":"{\\"bitcoin\\":{\\"usd\\":80978}}","url":"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"}',
@@ -601,6 +623,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "Searching the web",
         outputPreview: '{"contentType":"application/json; charset=utf-8","text":"raw response body"}',
       }),
@@ -609,6 +633,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browser.open",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary:
           '{"contentType":"application/json; charset=utf-8","text":"{\\"bitcoin\\":{\\"usd\\":80978}}","url":"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin\\u0026vs_currencies=usd"}',
         outputPreview:
@@ -618,6 +644,8 @@ describe("ProcessTranscript", () => {
         id: "search-7",
         kind: "search",
         status: "completed",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         text: "BTC price today USD",
         queries: ["BTC price today USD"],
         results: [
@@ -667,6 +695,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-compact",
+        foldGroupKind: "web_lookup",
         inputSummary: "pg_auto_failover standby timeline higher than primary",
         queries: ["pg_auto_failover standby timeline higher than primary"],
         results: [
@@ -680,6 +710,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-compact",
+        foldGroupKind: "web_lookup",
         inputSummary: "pgBackRest restore timeline recovery_target_timeline latest",
         queries: ["pgBackRest restore timeline recovery_target_timeline latest"],
         results: [
@@ -1048,7 +1080,7 @@ describe("ProcessTranscript", () => {
     const searchIndex = bodyText.indexOf("正在搜索网页：BTC current price USD 24h change");
     expect(preludeIndex).toBeGreaterThanOrEqual(0);
     expect(searchIndex).toBeGreaterThan(preludeIndex);
-    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(0);
   });
 
   it("renders assistant commentary between folded tool groups without pulling final text into process", async () => {
@@ -1192,6 +1224,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-1",
         kind: "command",
+        foldGroupId: "commands-1",
+        foldGroupKind: "command",
         command: "kubectl get pods -n prod",
         text: "kubectl get pods",
       }),
@@ -1199,6 +1233,8 @@ describe("ProcessTranscript", () => {
         id: "cmd-2",
         kind: "command",
         status: "blocked",
+        foldGroupId: "commands-1",
+        foldGroupKind: "command",
         command: "kubectl rollout restart deployment/api -n prod",
         text: "kubectl rollout restart deployment/api",
       }),
@@ -1280,6 +1316,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-grow-1",
         kind: "command",
+        foldGroupId: "commands-grow",
+        foldGroupKind: "command",
         status: "completed",
         command: "ifconfig en0",
         text: "ifconfig en0",
@@ -1294,6 +1332,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-grow-2",
         kind: "command",
+        foldGroupId: "commands-grow",
+        foldGroupKind: "command",
         status: "failed",
         command: "ifconfig en0 down",
         text: "ifconfig en0 down",
@@ -1472,7 +1512,7 @@ describe("ProcessTranscript", () => {
     expect(container.textContent).not.toContain("整理最终回答");
   });
 
-  it("hides internal Coroot reuse tool results from the transcript", async () => {
+  it("renders only Coroot blocks admitted by the upstream presentation policy", async () => {
     const process = [
       makeBlock({
         id: "tool-coroot-broad",
@@ -1480,15 +1520,6 @@ describe("ProcessTranscript", () => {
         status: "completed",
         source: "coroot_list_services",
         text: "coroot_list_services",
-      }),
-      makeBlock({
-        id: "tool-coroot-reused",
-        kind: "tool",
-        status: "completed",
-        source: "coroot_list_services",
-        text: "coroot_list_services",
-        inputSummary: '{"status":"warning"}',
-        outputPreview: '{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"reused","skipReason":"covered_by_prior_broad_query"}',
       }),
       makeBlock({
         id: "tool-coroot-incidents",
@@ -1615,6 +1646,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-chevron-1",
         kind: "command",
+        foldGroupId: "commands-chevron",
+        foldGroupKind: "command",
         status: "completed",
         command: "pwd",
         outputPreview: "/tmp",
@@ -1622,6 +1655,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-chevron-2",
         kind: "command",
+        foldGroupId: "commands-chevron",
+        foldGroupKind: "command",
         status: "completed",
         command: "date",
         outputPreview: "Fri May 8",
@@ -1635,6 +1670,11 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-header-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
     await expandProcessTranscript();
     expect(container.querySelector('[data-testid="aiops-merged-command-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-command-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
     expect(container.querySelector('[data-testid="aiops-command-chevron-cmd-chevron-1"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
   });
 
@@ -2199,6 +2239,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-order-1",
         kind: "command",
+        foldGroupId: "commands-order",
+        foldGroupKind: "command",
         status: "completed",
         command: "pwd",
         outputPreview: "/Users/lizhongxuan/Desktop/aiops-v2",
@@ -2206,6 +2248,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-order-2",
         kind: "command",
+        foldGroupId: "commands-order",
+        foldGroupKind: "command",
         status: "completed",
         command: "git status --short",
         outputPreview: "",
@@ -2221,6 +2265,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-order",
+        foldGroupKind: "web_lookup",
         inputSummary: "aiops-v2 AssistantTransport 顺序",
         queries: ["aiops-v2 AssistantTransport 顺序"],
       }),
@@ -2229,6 +2275,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browse_url",
+        foldGroupId: "lookup-order",
+        foldGroupKind: "web_lookup",
         inputSummary: "https://example.com/aiops-v2-order",
       }),
       makeBlock({
@@ -2251,6 +2299,11 @@ describe("ProcessTranscript", () => {
     expect(mergedCommandIcon?.parentElement?.firstElementChild).toBe(mergedCommandIcon);
     expect(searchIcon).toBeTruthy();
     expect(searchIcon?.parentElement?.firstElementChild).toBe(searchIcon);
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-command-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
     const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
     const next = bodyText.indexOf("接下来我要检查运行环境和最近任务状态。");
     const commandSummary = bodyText.indexOf("已运行 2 条命令");
@@ -2435,6 +2488,44 @@ describe("groupConsecutiveBlocks", () => {
     });
   });
 
+  it("groups runtime tool intent commentary with every explicitly linked tool", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({
+        id: "commentary-action",
+        kind: "assistant",
+        phase: "commentary",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-file", "call-mcp"],
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "采集两类只读证据。",
+      }),
+      makeBlock({
+        id: "file-action",
+        kind: "file",
+        toolCallId: "call-file",
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "读取配置",
+      }),
+      makeBlock({
+        id: "mcp-action",
+        kind: "mcp",
+        toolCallId: "call-mcp",
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "读取 MCP 资源",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      kind: "merged",
+      mergedKind: "tool",
+      blocks: [{ id: "commentary-action" }, { id: "file-action" }, { id: "mcp-action" }],
+    });
+  });
+
   it("does not merge adjacent same-kind tools when their typed fold ids differ", () => {
     const groups = groupConsecutiveBlocks([
       makeBlock({ id: "search-a", kind: "tool", foldGroupId: "lookup-a", foldGroupKind: "web_lookup" }),
@@ -2487,9 +2578,9 @@ describe("groupConsecutiveBlocks", () => {
     const blocks = [
       makeBlock({ id: "f1", kind: "file", text: "read a.ts" }),
       makeBlock({ id: "f2", kind: "file", text: "read b.ts" }),
-      makeBlock({ id: "c1", kind: "command", text: "npm test" }),
-      makeBlock({ id: "c2", kind: "command", text: "npm build" }),
-      makeBlock({ id: "c3", kind: "command", text: "npm lint" }),
+      makeBlock({ id: "c1", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm test" }),
+      makeBlock({ id: "c2", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm build" }),
+      makeBlock({ id: "c3", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm lint" }),
     ];
     const groups = groupConsecutiveBlocks(blocks);
     expect(groups).toHaveLength(3);
@@ -2524,8 +2615,8 @@ describe("groupConsecutiveBlocks", () => {
 
   it("merges only consecutive search blocks and keeps separated searches apart", () => {
     const blocks = [
-      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", text: "search a" }),
-      makeBlock({ id: "s2", kind: "tool", displayKind: "web_search", text: "search b" }),
+      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search a" }),
+      makeBlock({ id: "s2", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search b" }),
       makeBlock({ id: "r1", kind: "reasoning", text: "middle" }),
       makeBlock({ id: "s3", kind: "tool", displayKind: "web_search", text: "search c" }),
     ];
@@ -2554,11 +2645,11 @@ describe("groupConsecutiveBlocks", () => {
 
   it("uses explicit backend foldGroupKind without merging unrelated MCP blocks", () => {
     const blocks = [
-      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupKind: "web_lookup", text: "search a" }),
-      makeBlock({ id: "s2", kind: "tool", displayKind: "browse_url", foldGroupKind: "web_lookup", text: "open a" }),
+      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search a" }),
+      makeBlock({ id: "s2", kind: "tool", displayKind: "browse_url", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "open a" }),
       makeBlock({ id: "mcp", kind: "mcp", displayKind: "read_mcp_resource", text: "read resource" }),
-      makeBlock({ id: "c1", kind: "command", foldGroupKind: "command", text: "pwd" }),
-      makeBlock({ id: "c2", kind: "command", foldGroupKind: "command", text: "uptime" }),
+      makeBlock({ id: "c1", kind: "command", foldGroupId: "commands-a", foldGroupKind: "command", text: "pwd" }),
+      makeBlock({ id: "c2", kind: "command", foldGroupId: "commands-a", foldGroupKind: "command", text: "uptime" }),
     ];
 
     const groups = groupConsecutiveBlocks(blocks);

@@ -1178,6 +1178,74 @@ function phase0ArtifactOrderingFixture() {
   });
 }
 
+function phase4TypedActionGroupFixture() {
+  return phase0OutputFixture({
+    name: "typed-action-group",
+    userText: "用一组关联动作采集配置和 MCP 证据。",
+    blocks: [
+      {
+        id: "commentary-typed-action",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-file-action", "call-mcp-action"],
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "采集配置文件和 MCP 资源两类只读证据。",
+      },
+      {
+        id: "file-typed-action",
+        type: "file",
+        kind: "file",
+        displayKind: "file.read",
+        toolCallId: "call-file-action",
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取服务配置",
+        inputSummary: "/etc/payment-api/config.yaml",
+        outputPreview: "port: 8080",
+      },
+      {
+        id: "mcp-typed-action",
+        type: "mcp",
+        kind: "mcp",
+        displayKind: "mcp.action",
+        toolCallId: "call-mcp-action",
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取 MCP 运维资源",
+        inputSummary: "ops://payment-api",
+        outputPreview: "resource available",
+      },
+      {
+        id: "approval-typed-action",
+        type: "approval",
+        kind: "approval",
+        displayKind: "approval",
+        status: "rejected",
+        text: "用户拒绝后续变更操作，审批记录保持独立可见。",
+        approvalId: "approval-typed-action",
+      },
+      {
+        id: "final-typed-action",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "只读证据采集完成；未执行被拒绝的变更。",
+      },
+    ],
+  });
+}
+
 async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
     await route.fulfill({ json: sessionsPayload });
@@ -1471,4 +1539,21 @@ test.describe("phase 0 output contract snapshots", () => {
     expect(final).toBeGreaterThan(commentaryAfter);
     await expect(assistantTurn).toHaveScreenshot("phase0-artifact-visible-ordering.png");
   });
+});
+
+test("typed action group uses commentary as one title and keeps approval outside the fold", async ({ page }) => {
+  await openFixturePage(page, "/", phase4TypedActionGroupFixture());
+
+  await page.getByTestId("aiops-process-header").click();
+  const actionToggle = page.getByTestId("aiops-merged-tool-toggle");
+  await expect(actionToggle).toContainText("采集配置文件和 MCP 资源两类只读证据。");
+  await expect(actionToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("采集配置文件和 MCP 资源两类只读证据。", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-process-transcript")).toContainText("用户拒绝后续变更操作，审批记录保持独立可见。");
+
+  await actionToggle.click();
+  await expect(page.getByTestId("aiops-tool-row-file-typed-action")).toBeVisible();
+  await expect(page.getByTestId("aiops-tool-row-mcp-typed-action")).toBeVisible();
+  const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
+  await expect(assistantTurn).toHaveScreenshot("phase4-typed-action-group.png");
 });

@@ -788,6 +788,9 @@ func TestTransportProjectorProjectsAssistantMessageByPhase(t *testing.T) {
 	if block.Text != "我先查公开来源。" || block.DisplayKind != "assistant.message" || block.Phase != "commentary" {
 		t.Fatalf("commentary block=%#v, want assistant_message commentary", block)
 	}
+	if block.Iteration == nil || *block.Iteration != 0 {
+		t.Fatalf("commentary iteration=%v, want typed iteration 0", block.Iteration)
+	}
 }
 
 func TestTransportProjectorAddsTypedPerActionFoldGroups(t *testing.T) {

@@ -352,6 +352,7 @@ export type AiopsProcessBlock = {
   phase?: AiopsAssistantMessagePhase;
   streamState?: AiopsAssistantMessageStreamState;
   commentarySource?: "model_prelude" | "runtime_tool_intent" | string;
+  iteration?: number;
   toolCallIds?: string[];
   evidenceBoundary?: "sufficient" | "limited" | "blocked" | string;
   status: AiopsTransportProcessStatus;

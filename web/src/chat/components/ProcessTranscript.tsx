@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
+import { ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -90,6 +90,22 @@ const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
 const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
 type TranscriptGroupKind = "search" | "command" | "tool" | "mcp" | "file" | "";
 
+const SEARCH_DISPLAY_KINDS = new Set([
+  "web_search",
+  "web.search",
+  "search_web",
+  "browse_url",
+  "browser",
+  "browser.open",
+]);
+
+const TRACE_ONLY_DISPLAY_KINDS = new Set([
+  "model_call",
+  "model.call",
+  "model_wait",
+  "model.wait",
+]);
+
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
  * of consecutive same-kind tool blocks.
@@ -111,15 +127,18 @@ export function ProcessTranscript({
 }: ProcessTranscriptProps) {
   const projectedAgentProcess = useMemo(() => agentStepsToProcessBlocks(agentSteps || []), [agentSteps]);
   const sourceProcess = process.length ? process : projectedAgentProcess;
-  const visibleProcess = useMemo(() => sourceProcess.filter(shouldShowInTranscript), [sourceProcess]);
+  const visibleProcess = useMemo(
+    () => dedupeTypedModelPreludes(sourceProcess).filter(shouldShowInTranscript),
+    [sourceProcess],
+  );
   const running = isProcessRunning(visibleProcess, turnStatus);
   const waiting = isProcessWaiting(visibleProcess, turnStatus);
-  const explicitFinalText = sanitizeFinalTranscriptText(finalText?.trim() || "");
+  const live = running || waiting;
+  const explicitFinalText = finalText?.trim() || "";
   const processBlocks = visibleProcess;
-  const renderedFinalText = explicitFinalText.trim();
+  const renderedFinalText = shouldRenderFinalTranscriptText(turnStatus) ? explicitFinalText : "";
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const live = running || waiting;
   const finalGenerationLabel = live ? "" : formatFinalGenerationDuration(finalDurationMs);
   const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
   const fallbackStartRef = useRef(Date.now());
@@ -205,7 +224,7 @@ export function ProcessTranscript({
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
           </button>
 
-          {open && (processGroups.length || finalGenerationLabel || (running && hasMeaningful)) ? (
+          {open && (hasMeaningful || finalGenerationLabel) ? (
             <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
               {processGroups.length ? (
                 <div className="space-y-2">
@@ -306,19 +325,6 @@ function processStatusForAgentStep(status?: AgentStepView["status"]): AiopsTrans
   }
 }
 
-function isRawRuntimeFailureText(text: string) {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.includes("failed to receive stream chunk") ||
-    normalized.includes("context deadline exceeded") ||
-    normalized.includes("stream chunk") ||
-    normalized.includes("upstream request timeout")
-  );
-}
-
 function processHeaderLabel({ running, waiting }: { running: boolean; waiting: boolean }) {
   if (running) {
     return "处理中";
@@ -330,65 +336,48 @@ function processHeaderLabel({ running, waiting }: { running: boolean; waiting: b
 }
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
-  const text = (block.text || block.command || block.outputPreview || "").trim().toLowerCase();
+  const text = (block.text || block.command || block.outputPreview || "").trim();
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  if (block.kind === "assistant" && block.phase === "final_answer") {
+    return false;
+  }
+  if (block.kind === "reasoning" && TRACE_ONLY_DISPLAY_KINDS.has(displayKind)) {
+    return false;
+  }
   if (block.kind === "approval") {
     return Boolean(text || block.approvalId || block.targetSummary || block.riskSummary || block.expectedEffect);
   }
-  if (isCorootInternalReuseBlock(block)) {
-    return false;
-  }
-  if (isRuntimeInternalGateText(text)) {
-    return false;
-  }
-  if (block.kind === "assistant" && isRiskyOperationalAdviceText(text)) {
-    return false;
-  }
   if (!text && !block.steps?.length && !block.queries?.length && !block.results?.length) {
-    return false;
-  }
-  if (block.kind === "reasoning" && text === "model response received") {
     return false;
   }
   return true;
 }
 
-function isCorootInternalReuseBlock(block: AiopsProcessBlock) {
-  const source = (block.source || block.displayKind || "").toLowerCase();
-  if (!source.includes("coroot")) {
-    return false;
-  }
-  return [block.text, block.outputPreview, block.inputSummary, block.displayKind]
-    .some((value) => (value || "").toLowerCase().includes("covered_by_prior_broad_query"));
-}
-
-function isRuntimeInternalGateText(text: string) {
-  return [
-    "verification completion gate",
-    "block_success_final",
-    "missing_verification_report",
-    "execution_required,missing_verification_report",
-  ].some((marker) => text.includes(marker));
-}
-
-function sanitizeFinalTranscriptText(text: string) {
-  if (!text) {
-    return "";
-  }
-  return isRiskyOperationalAdviceText(text.toLowerCase()) ? "" : text;
-}
-
-function isRiskyOperationalAdviceText(text: string) {
-  return /(rm\s+-rf|删除|清理).{0,120}(archive|wal|pgdata|数据目录|归档)/i.test(text);
+function dedupeTypedModelPreludes(blocks: AiopsProcessBlock[]) {
+  const seenIterations = new Set<number>();
+  return blocks.filter((block) => {
+    if (block.commentarySource !== "model_prelude" || typeof block.iteration !== "number") {
+      return true;
+    }
+    if (seenIterations.has(block.iteration)) {
+      return false;
+    }
+    seenIterations.add(block.iteration);
+    return true;
+  });
 }
 
 function isSearchLikeBlock(block: AiopsProcessBlock) {
-  if (block.kind === "search") {
-    return true;
-  }
-  const candidates = [block.displayKind, block.source, block.command].map((value) => (value || "").toLowerCase().trim());
-  return candidates.some((value) =>
-    /^(web_search|web[._-]search|search_web|browse_url|browser(?:[._-]|$))/.test(value),
-  );
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  return block.foldGroupKind === "web_lookup" || block.kind === "search" || SEARCH_DISPLAY_KINDS.has(displayKind);
+}
+
+function isTerminalTurnStatus(turnStatus?: string) {
+  return turnStatus === "completed" || turnStatus === "failed" || turnStatus === "canceled";
+}
+
+function shouldRenderFinalTranscriptText(turnStatus: string | undefined) {
+  return !turnStatus || isTerminalTurnStatus(turnStatus);
 }
 
 function isProcessRunning(process: AiopsProcessBlock[], turnStatus?: string) {
@@ -414,6 +403,9 @@ function isProcessWaiting(process: AiopsProcessBlock[], turnStatus?: string) {
 function hasMeaningfulContent(blocks: AiopsProcessBlock[]): boolean {
   return blocks.some((block) => {
     if (block.kind === "reasoning") {
+      if (isBlockActive(block)) {
+        return false;
+      }
       const text = (block.text || "").trim().toLowerCase();
       return text !== "" && text !== "calling model";
     }
@@ -440,7 +432,11 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
     const consecutive: AiopsProcessBlock[] = [block];
     let j = i + 1;
-    while (j < blocks.length && groupingKindForBlock(blocks[j]) === groupKind) {
+    while (
+      j < blocks.length &&
+      groupingKindForBlock(blocks[j]) === groupKind &&
+      hasSameFoldIdentity(block, blocks[j])
+    ) {
       consecutive.push(blocks[j]);
       j += 1;
     }
@@ -456,19 +452,32 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
   return groups;
 }
 
+function hasSameFoldIdentity(left: AiopsProcessBlock, right: AiopsProcessBlock) {
+  const leftFoldGroupId = (left.foldGroupId || "").trim();
+  const rightFoldGroupId = (right.foldGroupId || "").trim();
+  const leftFoldGroupKind = (left.foldGroupKind || "").trim().toLowerCase();
+  const rightFoldGroupKind = (right.foldGroupKind || "").trim().toLowerCase();
+  return Boolean(
+    leftFoldGroupId &&
+    rightFoldGroupId &&
+    leftFoldGroupId === rightFoldGroupId &&
+    leftFoldGroupKind &&
+    leftFoldGroupKind === rightFoldGroupKind
+  );
+}
+
 function groupingKindForBlock(block: AiopsProcessBlock): TranscriptGroupKind {
-  const explicitKind = (block.foldGroupKind || "").trim();
+  const explicitKind = (block.foldGroupKind || "").trim().toLowerCase();
   if (explicitKind === "web_lookup") {
     return "search";
   }
-  if (explicitKind === "command") {
-    return "command";
-  }
-  if (isSearchLikeBlock(block)) {
-    return "search";
-  }
-  if (block.kind === "command") {
-    return "command";
+  if (
+    explicitKind === "command" ||
+    explicitKind === "tool" ||
+    explicitKind === "mcp" ||
+    explicitKind === "file"
+  ) {
+    return explicitKind;
   }
   return "";
 }
@@ -584,13 +593,15 @@ function MergedToolSummary({
 }: {
   group: Extract<ProcessGroup, { kind: "merged" }>;
 }) {
-  const text = getMergedGroupSummaryText(group);
-  const details = group.blocks.map(mergedBlockDetail).filter((detail) => detail.text);
-  const toolLike = group.blocks.some((block) => {
-    const kind = groupingKindForBlock(block);
-    return kind === "tool" || kind === "mcp";
-  });
-  const [open, setOpen] = useState(group.mergedKind === "command" || toolLike || group.blocks.some(isBlockActive));
+  const actionTitle = group.blocks.find(
+    (block) => block.kind === "assistant" && block.commentarySource === "runtime_tool_intent",
+  );
+  const actionBlocks = actionTitle ? group.blocks.filter((block) => block.id !== actionTitle.id) : group.blocks;
+  const text = actionTitle?.text?.trim() || getMergedGroupSummaryText(group, actionBlocks);
+  const details = actionBlocks.map(mergedBlockDetail).filter((detail) => detail.text);
+  const [open, setOpen] = useState(
+    actionBlocks.some((block) => isBlockActive(block) || block.status === "failed" || block.status === "rejected" || block.status === "blocked"),
+  );
   if (!details.length) {
     return (
       <div className={cn("flex min-w-0 items-center gap-1.5 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}>
@@ -610,6 +621,7 @@ function MergedToolSummary({
         )}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
+        data-testid={`aiops-merged-${group.mergedKind}-toggle`}
       >
         <ToolSummaryIcon kind={group.mergedKind} testId={`aiops-merged-${group.mergedKind}-icon`} />
         <span className="min-w-0 truncate">{text}</span>
@@ -623,11 +635,11 @@ function MergedToolSummary({
           )}
           data-testid={`aiops-merged-${group.mergedKind}-details`}
         >
-          {details.map((detail, index) =>
+          {details.map((detail) =>
             detail.kind === "command" ? (
-              <CommandDetailRow key={`${detail.id}:${index}`} detail={detail} />
+              <CommandDetailRow key={detail.id} detail={detail} />
             ) : (
-              <ToolDetailRow key={`${detail.id}:${index}`} detail={detail} />
+              <ToolDetailRow key={detail.id} detail={detail} />
             ),
           )}
         </div>
@@ -780,14 +792,14 @@ function terminalCardStatusLabel(status?: AiopsProcessBlock["status"]) {
   return terminalStatusLabel(status);
 }
 
-function getMergedGroupSummaryText(group: Extract<ProcessGroup, { kind: "merged" }>) {
+function getMergedGroupSummaryText(
+  group: Extract<ProcessGroup, { kind: "merged" }>,
+  blocks: AiopsProcessBlock[] = group.blocks,
+) {
   if (group.mergedKind === "mixed") {
-    return getMixedMergedSummaryText(group.blocks);
+    return getMixedMergedSummaryText(blocks);
   }
-  if (group.mergedKind === "command") {
-    return getMergedSummaryText(group.mergedKind, group.blocks.length);
-  }
-  return getMergedSummaryText(group.mergedKind, group.blocks.length);
+  return getMergedSummaryText(group.mergedKind, blocks.length);
 }
 
 function getMixedMergedSummaryText(blocks: AiopsProcessBlock[]) {
@@ -1064,13 +1076,7 @@ function NativeProcessText({
   if (block.kind === "assistant") {
     return <AssistantProgressText text={block.text} />;
   }
-  if (block.kind === "system" && isRawRuntimeFailureText(stripHtml(block.text || ""))) {
-    return <RuntimeStreamInterruptedPill />;
-  }
   if (block.kind === "reasoning") {
-    if (isModelWaitReasoningBlock(block)) {
-      return <ModelWaitPill text={stripHtml(block.text || "")} />;
-    }
     return <ThinkingText block={block} />;
   }
   if (block.kind === "plan") {
@@ -1091,37 +1097,6 @@ function NativeProcessText({
       {text}
     </div>
   );
-}
-
-function RuntimeStreamInterruptedPill() {
-  return (
-    <div className="inline-flex w-fit items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-amber-700">
-      模型流中断，已保留已生成内容
-    </div>
-  );
-}
-
-function ModelWaitPill({ text }: { text: string }) {
-  return (
-    <div
-      className="inline-flex w-fit items-center gap-1.5 rounded-full border border-sky-100 bg-sky-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-sky-700"
-      data-testid="aiops-model-wait-pill"
-    >
-      <span
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-100 text-sky-600"
-        data-testid="aiops-model-wait-icon"
-        aria-hidden="true"
-      >
-        <Bot className="h-2.5 w-2.5" />
-      </span>
-      <span>{text.trim() || "正在等待模型返回"}</span>
-    </div>
-  );
-}
-
-function isModelWaitReasoningBlock(block: AiopsProcessBlock) {
-  const text = stripHtml(block.text || "").trim();
-  return text === "正在等待模型返回" || text === "排队等待模型返回";
 }
 
 function PlanSteps({ block }: { block: AiopsProcessBlock }) {
@@ -1194,18 +1169,7 @@ function ThinkingText({ block }: { block: AiopsProcessBlock }) {
 }
 
 function transformThinkingText(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed.toLowerCase() === "calling model") {
-    return "";
-  }
-  const prefixPattern = /^calling model\s*/i;
-  if (prefixPattern.test(trimmed)) {
-    return trimmed.replace(prefixPattern, "");
-  }
-  return trimmed;
+  return raw.trim();
 }
 
 /**
@@ -1559,16 +1523,12 @@ function browseUrlForBlock(block: AiopsProcessBlock) {
 }
 
 function isSearchActionBlock(block: AiopsProcessBlock) {
-  if (block.kind === "search") {
-    return true;
-  }
-  const display = `${block.displayKind || ""} ${block.command || ""}`.toLowerCase();
-  return /\b(web_search|search_web|browser\.search|search)\b/.test(display);
+  return block.kind === "search" || block.foldGroupKind === "web_lookup" || SEARCH_DISPLAY_KINDS.has((block.displayKind || "").trim().toLowerCase());
 }
 
 function isBrowseActionBlock(block: AiopsProcessBlock) {
-  const display = `${block.displayKind || ""} ${block.command || ""}`.toLowerCase();
-  return /\b(browse_url|browser\.open|open_url|open_page|fetch_url|browser)\b/.test(display);
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  return block.operation === "open" || displayKind === "browse_url" || displayKind === "browser.open";
 }
 
 function hasUrlLikeSummary(block: AiopsProcessBlock) {

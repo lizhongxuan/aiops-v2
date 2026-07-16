@@ -491,7 +491,7 @@ scripts/check-aiops-change-budget.sh
 
 ## 11. Phase 4：typed commentary/tool 归组与过程降噪
 
-> 状态：🚧 进行中（2026-07-16）。后端 typed 分类与 action identity 已完成并通过 Go 全包；React 分组和视觉回归正在集成。
+> 状态：✅ 已完成（2026-07-16）。typed action identity、commentary/tool 归组、iteration 去重和视觉回归用例均已落地。
 
 ### Task 4.1：扩展 process fold 语义
 
@@ -512,27 +512,27 @@ scripts/check-aiops-change-budget.sh
 
 - [x] 先锁定现状：`groupAssistantTranscriptBlocks` 只按 artifact/final 分段；`groupConsecutiveBlocks` 不使用 `foldGroupId`，只合并连续 search/command。不能把现状误记为已有通用 fold 支持。
 - [x] search、command、file、tool、MCP 使用 typed `kind/foldGroupKind/foldGroupId` 归组。
-- [ ] `groupConsecutiveBlocks` 优先按相同 `foldGroupId` 建组，并校验 `foldGroupKind`；相邻但 group id 不同的 block 不得误合并。
+- [x] `groupConsecutiveBlocks` 优先按相同 `foldGroupId` 建组，并校验 `foldGroupKind`；相邻但 group id 不同的 block 不得误合并。
 - [x] 迁移 `detectTransportToolBlockKind` 和 `isSearchLikeBlock` 对 tool name/`contains(file)`/search regex 的猜测，改用上游 typed `displayKind`/capability metadata。
 - [x] 不根据 tool name 包含 `file/search/coroot` 等字符串判断分组；如果上游没有足够 typed metadata，停止本 Phase 并先拆出 transport contract 任务，不能在 React 补猜测。
 - [x] 使用 `commentary.toolCallIds` 关联后续 tool blocks。
 - [x] commentary 的 `toolCallIds[]` 与工具块的 `toolCallId` 形成稳定 action group；同一 commentary 关联多个工具时保留数组顺序。
-- [ ] `commentarySource=runtime_tool_intent` 且关联 tool 已存在时，将 commentary 作为 action group 标题，而不是独立大段正文。
-- [ ] `commentarySource=model_prelude` 可保留为短说明，但同一 iteration 只显示一次。
-- [ ] commentary 与 tool 的归组只看 typed identity，不比较两段可见文本是否相同。
-- [ ] 同组多个命令/搜索/工具显示一行摘要和可展开详情。
-- [ ] running group 默认展开当前 active row；完成后的旧组默认折叠。
-- [ ] approval、失败、用户输入请求不能被普通 tool group 折叠掉。
-- [ ] tool output preview 继续遵守 materialization/redaction 边界。
+- [x] `commentarySource=runtime_tool_intent` 且关联 tool 已存在时，将 commentary 作为 action group 标题，而不是独立大段正文。
+- [x] `commentarySource=model_prelude` 可保留为短说明，但同一 iteration 只显示一次。
+- [x] commentary 与 tool 的归组只看 typed identity，不比较两段可见文本是否相同。
+- [x] 同组多个命令/搜索/工具显示一行摘要和可展开详情。
+- [x] running group 默认展开当前 active row；完成后的旧组默认折叠。
+- [x] approval、失败、用户输入请求不能被普通 tool group 折叠掉。
+- [x] tool output preview 继续遵守 materialization/redaction 边界。
 
 ### Phase 4 验收
 
-- [ ] 一轮单工具调用最多显示“一条 action 说明 + 一个稳定工具块”，不会重复两段相同意图。
-- [ ] 连续多工具默认显示摘要，展开后仍能按原顺序查看每个动作。
-- [ ] 失败工具和 approval 始终可见。
-- [ ] completed turn 的过程总区继续默认折叠。
-- [ ] Phase 4 不改变 runtime phase、tool dispatch 或 final contract。
-- [ ] file/tool/MCP 的分组测试只使用 typed metadata；修改可见 UI 的同一 review range 已更新包含 `toHaveScreenshot(...)` 的 Playwright spec。
+- [x] 一轮单工具调用最多显示“一条 action 说明 + 一个稳定工具块”，不会重复两段相同意图。
+- [x] 连续多工具默认显示摘要，展开后仍能按原顺序查看每个动作。
+- [x] 失败工具和 approval 始终可见。
+- [x] completed turn 的过程总区继续默认折叠。
+- [x] Phase 4 不改变 runtime phase、tool dispatch 或 final contract。
+- [x] file/tool/MCP 的分组测试只使用 typed metadata；修改可见 UI 的同一 review range 已更新包含 `toHaveScreenshot(...)` 的 Playwright spec。
 
 ### Phase 4 验证命令
 

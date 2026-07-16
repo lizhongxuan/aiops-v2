@@ -967,6 +967,7 @@ func projectTurnItem(
 				Phase:            firstNonEmptyString(message.Phase, "commentary"),
 				StreamState:      strings.TrimSpace(message.StreamState),
 				CommentarySource: strings.TrimSpace(message.CommentarySource),
+				Iteration:        message.Iteration,
 				ToolCallIDs:      append([]string(nil), message.ToolCallIDs...),
 				EvidenceBoundary: strings.TrimSpace(message.EvidenceBoundary),
 				Status:           mapItemStatusToTransportProcessStatus(item.Status),
@@ -1060,6 +1061,7 @@ type assistantMessageProjectionPayload struct {
 	ReplacedByMessageID string                      `json:"replacedByMessageId"`
 	DurationMs          int64                       `json:"durationMs"`
 	CommentarySource    string                      `json:"commentarySource"`
+	Iteration           *int                        `json:"iteration"`
 	ToolCallIDs         []string                    `json:"toolCallIds"`
 	FinalContract       runtimekernel.FinalContract `json:"finalContract"`
 }
