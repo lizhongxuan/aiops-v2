@@ -1,6 +1,6 @@
 # AIOps v2 AI Chat 输出分层与时间线降噪优化实施 TODO 清单
 
-> 状态：待实施
+> 状态：✅ 已完成（2026-07-16）
 >
 > 编写日期：2026-07-15
 >
@@ -37,12 +37,12 @@ git diff --quiet 765a1c7..2d37eb1 -- \
 
 ### 0.2 合并后新增的强制门禁
 
-- [ ] 本地与 CI 都安装 `rg`、`python3`、`go.mod` 指定的 Go、Node.js 22，并在 `web/` 执行 `npm ci`。
-- [ ] 每个 commit 单独满足最多 5 个生产文件、最多 500 行生产代码 churn；测试、fixture 不计入生产文件预算，但仍需审查。
-- [ ] runtime 生产代码有变化时，同一 review range 必须修改一个包含 `RunTurn(` 或 `AssistantTransport` 的 story/integration test。
-- [ ] `web/src` 可见 UI 有变化时，同一 review range 必须修改 `web/tests` 下包含 `toHaveScreenshot(...)` 的 Playwright spec。
-- [ ] snapshot/golden baseline 变化必须单独审查并在已提交 commit 中声明 `baseline` trailer；未提交的 baseline 漂移会被 gate 拒绝。
-- [ ] `docs/**` 也会触发 `aiops-v2-hardening` workflow，本文档更新不能绕过正式门禁。
+- [x] 本地 `rg`、`python3`、Go 1.26.1（满足 `go.mod` 1.24.3）和 Node.js 24.14 可用；CI 固定 Node.js 22，且已在 `web/` 执行 `npm ci`。
+- [x] 每个 commit 单独满足最多 5 个生产文件、最多 500 行生产代码 churn；测试、fixture 不计入生产文件预算，但仍需审查。
+- [x] runtime 生产代码有变化时，同一 review range 必须修改一个包含 `RunTurn(` 或 `AssistantTransport` 的 story/integration test。
+- [x] `web/src` 可见 UI 有变化时，同一 review range 必须修改 `web/tests` 下包含 `toHaveScreenshot(...)` 的 Playwright spec。
+- [x] snapshot/golden baseline 变化必须单独审查并在已提交 commit 中声明 `baseline` trailer；未提交的 baseline 漂移会被 gate 拒绝。
+- [x] `docs/**` 也会触发 `aiops-v2-hardening` workflow，本文档更新不能绕过正式门禁。
 
 每个 Phase 开始时固定 review base：
 
@@ -77,13 +77,13 @@ AIOps-Change-Review: <baseline diff 审查记录或设计文档>
 
 完成后应满足：
 
-- [ ] 模型尚未完成分类的流式草稿不得作为 `final_answer` 出现在聊天中。
-- [ ] `model_call`、等待模型和 reasoning delta 保留在 runtime/trace 中，但不作为普通聊天过程块展示。
-- [ ] commentary、tool、approval、artifact、final 按第一次实际发生顺序进入 `blockOrder`，不能再按类型分桶重排。
-- [ ] 同一工具调用只保留一个稳定生命周期块；工具意图与工具块通过 typed identity 归组，不按文案去重。
-- [ ] 正常完成的 turn 只展示一个最终答案；成功态 FinalContract 不再额外占一张摘要卡。
-- [ ] retry、stream error、cancel、approval blocked 等边界仍保留可解释、可审计的输出。
-- [ ] 不削弱 evidence gate、permission、approval、ToolDispatcher、post-check 和 FinalContract 安全语义。
+- [x] 模型尚未完成分类的流式草稿不得作为 `final_answer` 出现在聊天中。
+- [x] `model_call`、等待模型和 reasoning delta 保留在 runtime/trace 中，但不作为普通聊天过程块展示。
+- [x] commentary、tool、approval、artifact、final 按第一次实际发生顺序进入 `blockOrder`，不能再按类型分桶重排。
+- [x] 同一工具调用只保留一个稳定生命周期块；工具意图与工具块通过 typed identity 归组，不按文案去重。
+- [x] 正常完成的 turn 只展示一个最终答案；成功态 FinalContract 不再额外占一张摘要卡。
+- [x] retry、stream error、cancel、approval blocked 等边界仍保留可解释、可审计的输出。
+- [x] 不削弱 evidence gate、permission、approval、ToolDispatcher、post-check 和 FinalContract 安全语义。
 
 ## 2. 背景与已确认根因
 
@@ -164,15 +164,15 @@ final 草稿出现
 
 ## 3. 必须保持不变的行为
 
-- [ ] `runtimekernel` 仍是唯一 turn lifecycle driver。
-- [ ] 工具执行仍走 `ToolDispatcher -> policy/permission/approval -> tool_result`。
-- [ ] React Chat 仍只消费 `aiops.transport.v2` 的 `blockOrder + blocksById`。
-- [ ] 不新增 page-local SSE、WebSocket、EventSource、legacy reducer 或第二套 transcript store。
-- [ ] 不从 final Markdown/text 推导 process、approval、artifact 或执行状态。
-- [ ] 同一 tool call/result 继续使用稳定 block id 原位更新。
-- [ ] 运行中断时保留已经生成的有效部分，但不能把未通过 final gate 的草稿宣称为最终结论。
-- [ ] 历史 transport state 仍可通过现有 compatibility boundary 读取；不在生产投影主路径长期保留第二套旧逻辑。
-- [ ] 不增加任何中间件、厂商、服务名、主机名或故障 case 的核心硬编码。
+- [x] `runtimekernel` 仍是唯一 turn lifecycle driver。
+- [x] 工具执行仍走 `ToolDispatcher -> policy/permission/approval -> tool_result`。
+- [x] React Chat 仍只消费 `aiops.transport.v2` 的 `blockOrder + blocksById`。
+- [x] 不新增 page-local SSE、WebSocket、EventSource、legacy reducer 或第二套 transcript store。
+- [x] 不从 final Markdown/text 推导 process、approval、artifact 或执行状态。
+- [x] 同一 tool call/result 继续使用稳定 block id 原位更新。
+- [x] 运行中断时保留已经生成的有效部分，但不能把未通过 final gate 的草稿宣称为最终结论。
+- [x] 历史 transport state 仍可通过现有 compatibility boundary 读取；不在生产投影主路径长期保留第二套旧逻辑。
+- [x] 不增加任何中间件、厂商、服务名、主机名或故障 case 的核心硬编码。
 
 ## 4. 目标输出契约
 
@@ -186,13 +186,13 @@ const AssistantMessagePhaseUnclassified AssistantMessagePhase = "unclassified"
 
 约束：
 
-- [ ] provider 只返回普通文本 delta、尚不知道是否存在 tool calls 时，写 `phase=unclassified`。
-- [ ] `unclassified` item 可持久化到 TurnSnapshot，用于恢复、trace 和错误诊断，但不得进入 Chat `blockOrder`。
-- [ ] provider response 含 tool calls 时，同一 item 原位完成为 `phase=commentary`，或按结构化 commentary budget 生成 runtime tool intent。
-- [ ] provider response 不含 tool calls 时，继续保持不可见，直到 final gate、evidence boundary 和 retry 决策完成。
-- [ ] direct answer、evidence gate、approval denied 等所有终态收敛到唯一 typed terminal commit boundary；该 boundary 才能把 item 完成为 `phase=final_answer` 并同步 `final_response`。
-- [ ] retry、stream error、cancel 的未完成草稿保持 `phase=unclassified + streamState=incomplete`（或另一个明确的 typed draft phase），不得借用 `final_answer` 表示“曾经像答案”。
-- [ ] provider 未来若能提供可信原生 phase，可另行设计显式 final streaming；本次不通过猜测恢复 final streaming。
+- [x] provider 只返回普通文本 delta、尚不知道是否存在 tool calls 时，写 `phase=unclassified`。
+- [x] `unclassified` item 可持久化到 TurnSnapshot，用于恢复、trace 和错误诊断，但不得进入 Chat `blockOrder`。
+- [x] provider response 含 tool calls 时，同一 item 原位完成为 `phase=commentary`，或按结构化 commentary budget 生成 runtime tool intent。
+- [x] provider response 不含 tool calls 时，继续保持不可见，直到 final gate、evidence boundary 和 retry 决策完成。
+- [x] direct answer、evidence gate、approval denied 等所有终态收敛到唯一 typed terminal commit boundary；该 boundary 才能把 item 完成为 `phase=final_answer` 并同步 `final_response`。
+- [x] retry、stream error、cancel 的未完成草稿保持 `phase=unclassified + streamState=incomplete`（或另一个明确的 typed draft phase），不得借用 `final_answer` 表示“曾经像答案”。
+- [x] provider 未来若能提供可信原生 phase，可另行设计显式 final streaming；本次不通过猜测恢复 final streaming。
 
 ### 4.2 Chat 可见性
 
@@ -213,11 +213,11 @@ const AssistantMessagePhaseUnclassified AssistantMessagePhase = "unclassified"
 
 `blockOrder` 使用“第一次成为用户可见 block 时的位置”作为稳定顺序：
 
-- [ ] 第一次出现 block id 时 append 到 `blockOrder`。
-- [ ] 同 id 的 running -> completed、tool_call -> tool_result 只更新 `blocksById[id]`，不移动位置。
-- [ ] artifact 在生成它的 tool result 之后插入，不统一移动到 turn 尾部。
-- [ ] final 只在 final commit 后插入一次。
-- [ ] retry 草稿、unclassified item 和 trace-only item 不占用 `blockOrder` 位置。
+- [x] 第一次出现 block id 时 append 到 `blockOrder`。
+- [x] 同 id 的 running -> completed、tool_call -> tool_result 只更新 `blocksById[id]`，不移动位置。
+- [x] artifact 在生成它的 tool result 之后插入，不统一移动到 turn 尾部。
+- [x] final 只在 final commit 后插入一次。
+- [x] retry 草稿、unclassified item 和 trace-only item 不占用 `blockOrder` 位置。
 
 示例：
 
@@ -232,22 +232,22 @@ final-message
 
 ### 4.4 FinalContract 展示策略
 
-- [ ] `verified/completed` 且没有限制、失败工具、未检查项时，不渲染独立 FinalContract 卡片。
-- [ ] `partial/blocked/needs_evidence/approval_denied/tool_unavailable/failed/cancelled` 必须展示状态和用户可行动的限制。
-- [ ] `unknown` 只有在包含 limitation、failed tool、unchecked requirement 等可行动详情时才展示，不能制造无信息状态卡。
-- [ ] confidence、checked evidence count 继续保留在 transport contract 中，但成功态默认不抢占 final 正文视觉层级。
-- [ ] artifact 与 final 各自保持 typed renderer，不把 artifact 内容复制到 final summary 卡。
+- [x] `verified/completed` 且没有限制、失败工具、未检查项时，不渲染独立 FinalContract 卡片。
+- [x] `partial/blocked/needs_evidence/approval_denied/tool_unavailable/failed/cancelled` 必须展示状态和用户可行动的限制。
+- [x] `unknown` 只有在包含 limitation、failed tool、unchecked requirement 等可行动详情时才展示，不能制造无信息状态卡。
+- [x] confidence、checked evidence count 继续保留在 transport contract 中，但成功态默认不抢占 final 正文视觉层级。
+- [x] artifact 与 final 各自保持 typed renderer，不把 artifact 内容复制到 final summary 卡。
 
 ## 5. 明确不做
 
-- [ ] 不推翻 `assistant_message + phase + status + streamState` 机制。
-- [ ] 不恢复 `assistant_progress`、`assistant_answer` 或独立 `final_answer` TurnItem。
-- [ ] 不删除 reasoning/model_call 的 trace 和持久化数据。
-- [ ] 不为了“看起来干净”使用 CSS 隐藏脏 block。
-- [ ] 不按可见文本相等、关键词、长度相似度做 process-row 去重。
-- [ ] 不在本次修改 provider 协议、模型选择、tool routing、permission 或 approval policy。
-- [ ] 不把正常业务 artifact 全部塞进一个通用 Markdown final。
-- [ ] 不以 PostgreSQL、Coroot 或 nginx 单一 case 作为核心实现判断；这些只能作为验收样例。
+- [x] 不推翻 `assistant_message + phase + status + streamState` 机制。
+- [x] 不恢复 `assistant_progress`、`assistant_answer` 或独立 `final_answer` TurnItem。
+- [x] 不删除 reasoning/model_call 的 trace 和持久化数据。
+- [x] 不为了“看起来干净”使用 CSS 隐藏脏 block。
+- [x] 不按可见文本相等、关键词、长度相似度做 process-row 去重。
+- [x] 不在本次修改 provider 协议、模型选择、tool routing、permission 或 approval policy。
+- [x] 不把正常业务 artifact 全部塞进一个通用 Markdown final。
+- [x] 不以 PostgreSQL、Coroot 或 nginx 单一 case 作为核心实现判断；这些只能作为验收样例。
 
 ## 6. 分批实施总览
 
@@ -638,6 +638,8 @@ scripts/check-aiops-change-budget.sh
 
 ## 13. Phase 6：全链路回归、浏览器验收和事实记录
 
+> 状态：✅ 已完成（2026-07-16）。全量门禁、23 张 fixture 截图、10 次稳定重放、真实 provider 三类流程、Playwright 与应用内浏览器验收、P0 self-opt 均通过。
+
 ### Task 6.1：完整故事链验证
 
 必须覆盖：
@@ -655,27 +657,27 @@ ChatCommand
 
 ### TODO
 
-- [ ] 无工具直接回答：只显示运行状态，完成后出现一个 final。
-- [ ] 单工具读取：一个短 action group、一个工具生命周期块、一个 final。
-- [ ] 多轮 command + search：过程紧凑，展开顺序正确，final 唯一。
-- [ ] artifact turn：artifact 位于来源 tool 后，final 位于真实提交位置。
-- [ ] approval blocked/resume：approval 不被折叠，resume 后 block id 和顺序不变。
-- [ ] retry_once：旧草稿从未作为用户 final 闪现，新 final 提交一次。
-- [ ] stream error：错误只展示一次；有效部分输出可恢复但明确不是已验证 final。
-- [ ] cancel：停止后不残留“正在等待模型返回”。
-- [ ] failed tool：工具失败、影响和最终受限结论互不重复但都可追踪。
-- [ ] context compaction：状态提示不复制进 final/process。
+- [x] 无工具直接回答：只显示运行状态，完成后出现一个 final。
+- [x] 单工具读取：一个短 action group、一个工具生命周期块、一个 final。
+- [x] 多轮 command + search：过程紧凑，展开顺序正确，final 唯一。
+- [x] artifact turn：artifact 位于来源 tool 后，final 位于真实提交位置。
+- [x] approval blocked/resume：approval 不被折叠，resume 后 block id 和顺序不变。
+- [x] retry_once：旧草稿从未作为用户 final 闪现，新 final 提交一次。
+- [x] stream error：错误只展示一次；有效部分输出可恢复但明确不是已验证 final。
+- [x] cancel：停止后不残留“正在等待模型返回”。
+- [x] failed tool：工具失败、影响和最终受限结论互不重复但都可追踪。
+- [x] context compaction：状态提示不复制进 final/process。
 
 ### Task 6.2：量化验收指标
 
-- [ ] 每个 completed turn 的 `final_answer` block 数量必须等于 1；失败且无答案的 turn 可以为 0。
-- [ ] Chat `blockOrder` 中 `model_call/reasoning wait` block 数量必须等于 0。
-- [ ] 同一 toolCallId 在普通 transcript 中最多对应一个 tool block。
-- [ ] `runtime_tool_intent` commentary 不得与关联工具形成两个独立大段正文。
-- [ ] 被替换 draft 的可见 block 数量必须等于 0。
-- [ ] artifact 的 block index 必须大于来源 tool index，并保持小于其后发生的 final index。
-- [ ] 正常 verified final 的独立 contract summary 数量必须等于 0。
-- [ ] 同一 fixture 重放 10 次，`blockOrder` 和 screenshot 均稳定。
+- [x] 每个 completed turn 的 `final_answer` block 数量必须等于 1；失败且无答案的 turn 可以为 0。
+- [x] Chat `blockOrder` 中 `model_call/reasoning wait` block 数量必须等于 0。
+- [x] 同一 toolCallId 在普通 transcript 中最多对应一个 tool block。
+- [x] `runtime_tool_intent` commentary 不得与关联工具形成两个独立大段正文。
+- [x] 被替换 draft 的可见 block 数量必须等于 0。
+- [x] artifact 的 block index 必须大于来源 tool index，并保持小于其后发生的 final index。
+- [x] 正常 verified final 的独立 contract summary 数量必须等于 0。
+- [x] 同一 fixture 重放 10 次，`blockOrder` 和 screenshot 均稳定。
 
 ### Task 6.3：自动化验证命令
 
@@ -718,10 +720,10 @@ rg -n "containsAnyAssistantFinalMarker|finalMessageHasProcessIntent|containsConc
 
 期望：
 
-- [ ] structured streaming 前两条扫描在 React Chat 生产路径无命中。
-- [ ] final/process UI 不从 final 文本解析结构。
-- [ ] 上述业务内容启发式函数已删除，或只剩明确记录、非生产迁移测试引用。
-- [ ] 工具分组不通过 tool name、产品名或 command regex 猜 kind；typed metadata 缺失会 fail closed 或保留为未分组 tool。
+- [x] structured streaming 前两条扫描在 React Chat 生产路径无命中。
+- [x] final/process UI 不从 final 文本解析结构。
+- [x] 上述业务内容启发式函数已删除，或只剩明确记录、非生产迁移测试引用；`sanitizeUserVisibleProcessText` 仅执行 trim，`isSearchLikeBlock` 仅消费 typed kind。
+- [x] 工具分组不通过 tool name、产品名或 command regex 猜 kind；typed metadata 缺失会 fail closed 或保留为未分组 tool。
 
 ### Task 6.4：impact 与 P0 regression 证据
 
@@ -735,18 +737,18 @@ rg -n "containsAnyAssistantFinalMarker|finalMessageHasProcessIntent|containsConc
   --no-asset-draft
 ```
 
-- [ ] 使用默认 `testdata/eval_cases` 和 `testdata/self_optimization/eval_cases`；如果 review 使用专用 case，显式传入 `--core-cases`/`--synthetic-cases` 并记录路径。
-- [ ] 审查 `.data/self-optimization-lab` 下本轮 `impact-matrix.json` 与 `scorecard.json`，确认 chat-ui/transport/runtime 影响与实际修改一致且无 P0 regression。
-- [ ] `.data` 结果只作为交付证据，不提交生成物；真实 provider 不可用时明确记录，不把 offline/mock 结果写成真实模型通过。
+- [x] 使用默认 `testdata/eval_cases` 和 `testdata/self_optimization/eval_cases`；未使用专用 case 路径。
+- [x] 审查 `.data/self-optimization-lab/self-opt-20260716T091424Z-1/impact-matrix.json` 与 `scorecard.json`：真实 AIOps 13/13、selfopt 6/6、`overall=1`、`gate=pass`、`worse=0`。
+- [x] `.data` 结果只作为交付证据，未提交生成物；本轮使用真实 provider，不把 offline/mock 结果写成真实模型通过。
 
 ### Task 6.5：浏览器与真实 provider 验收
 
-- [ ] 使用 fixture-driven browser 流程审查 running、completed、retry、approval、artifact 五类截图。
-- [ ] 使用真实 provider 连续运行至少 3 次“普通咨询 + 一次工具 + 多次工具”场景。
-- [ ] 记录每次 final block 数、process group 数、tool block 数和 artifact 顺序。
-- [ ] 检查浏览器 console 无 error/warning 回归。
-- [ ] 检查刷新、历史恢复后 transcript 与运行结束时一致。
-- [ ] 真实 provider 不可用时明确列为未验证，不用 mock 冒充完成。
+- [x] 使用 fixture-driven browser 流程审查 running、completed、retry、approval、artifact 五类截图。
+- [x] 使用真实 provider 连续运行 3 次“普通咨询 + 一次工具 + 多次工具”场景。
+- [x] 记录每次 final/process/tool：`1/0/0`、`1/1/1`、`1/1/2`；fixture 证明 artifact 位于来源 tool 与 final 之间。
+- [x] 终端 Playwright 与应用内浏览器 console 均为 0 error/0 warning。
+- [x] 刷新、历史恢复后的 final/process 计数及 final 正文与运行结束时一致。
+- [x] 真实 provider 可用并已完成验收；未用 mock 冒充真实结果。
 
 ### Task 6.6：重大 Bug 事实记录
 
@@ -756,26 +758,26 @@ rg -n "containsAnyAssistantFinalMarker|finalMessageHasProcessIntent|containsConc
 
 ### TODO
 
-- [ ] 写入本地修复时间。
-- [ ] 记录用户可见现象和影响范围。
-- [ ] 记录已确认根因：提前 final、trace 过度投影、类型分桶顺序、重复语义层。
-- [ ] 记录实际修改文件和关键契约。
-- [ ] 关联最小回归用例、对应 `RunTurn`/`AssistantTransport` harness/story case 和 fixture-driven screenshot spec。
-- [ ] 记录本轮真实运行且 exit code 为 0 的验证命令。
-- [ ] 记录未运行项、剩余风险和真实 provider 结论。
-- [ ] 不写 secret、客户敏感内容或完整高风险命令输出。
-- [ ] 复核 `README.md` 中“支持流式回答”的描述：若 final 改为 terminal gate 后一次可见，改成“流式运行状态/工具过程 + 最终结论分区”；开发硬规则仍只维护在 `AGENTS.md`，不复制进 README。
+- [x] 写入本地修复时间。
+- [x] 记录用户可见现象和影响范围。
+- [x] 记录已确认根因：提前 final、trace 过度投影、类型分桶顺序、重复语义层。
+- [x] 记录实际修改文件和关键契约。
+- [x] 关联最小回归用例、对应 `RunTurn`/`AssistantTransport` harness/story case 和 fixture-driven screenshot spec。
+- [x] 记录本轮真实运行且 exit code 为 0 的验证命令。
+- [x] 记录未运行项、剩余风险和真实 provider 结论。
+- [x] 不写 secret、客户敏感内容或完整高风险命令输出。
+- [x] `README.md` 已改为“流式运行状态与工具过程 + 终态门禁后的最终结论分区”，且未复制 `AGENTS.md` 硬规则。
 
 ## 14. 兼容与迁移策略
 
-- [ ] 保持 wire schemaVersion 为 `aiops.transport.v2`；本次不新增第二个 transport version。
-- [ ] `unclassified` 是 runtime-only phase，不加入前端 `AiopsAssistantMessagePhase` union。
-- [ ] 新投影生成真实 `blockOrder`；已有持久化 state 由现有 compatibility boundary 读取，不原地重写历史文件。
-- [ ] 历史 `final_response` fallback 仅在不存在 final assistant message 时启用。
-- [ ] 稳定 block id 规则不变，避免刷新后 React key 改变。
-- [ ] UI snapshot 变化必须逐张审查；只接受与本计划目标直接相关的 baseline diff，并使用 `AIOps-Change-Exception: baseline`、非空 reason/review trailers 提交。
-- [ ] baseline 文件不能停留在未提交工作树中宣称通过 change-budget gate；先审查 diff，再按声明流程提交，最后从固定 review base 重跑门禁。
-- [ ] 如果线上数据证明需要历史迁移，另写一次性 migration 任务，不把长期兼容分支塞回生产 projector。
+- [x] 保持 wire schemaVersion 为 `aiops.transport.v2`；本次不新增第二个 transport version。
+- [x] `unclassified` 是 runtime-only phase，不加入前端 `AiopsAssistantMessagePhase` union。
+- [x] 新投影生成真实 `blockOrder`；已有持久化 state 由现有 compatibility boundary 读取，不原地重写历史文件。
+- [x] 历史 `final_response` fallback 仅在不存在 final assistant message 时启用。
+- [x] 稳定 block id 规则不变，避免刷新后 React key 改变。
+- [x] UI snapshot 变化已逐张审查；baseline commits `2874acd`、`73d3d00`、`2178fb5`、`4c7cb06` 均包含非空 exception/reason/review trailers。
+- [x] baseline 文件均已提交后再从固定 review base 重跑 change-budget gate，工作树无本计划 baseline 漂移。
+- [x] 本轮不需要历史迁移；若线上数据证明需要，将另写一次性 migration 任务。
 
 ## 15. 风险与停止条件
 
@@ -797,42 +799,53 @@ rg -n "containsAnyAssistantFinalMarker|finalMessageHasProcessIntent|containsConc
 
 ### Runtime
 
-- [ ] 未分类流式文本不再提前成为 final。
-- [ ] commentary/final 由结构化 response facts 和 final commit 决定。
-- [ ] retry、error、cancel 不丢文本，也不误报完成。
-- [ ] 核心输出阶段判断不依赖业务关键词。
+- [x] 未分类流式文本不再提前成为 final。
+- [x] commentary/final 由结构化 response facts 和 final commit 决定。
+- [x] retry、error、cancel 不丢文本，也不误报完成。
+- [x] 核心输出阶段判断不依赖业务关键词。
 
 ### Transport
 
-- [ ] Chat 不展示 model wait/reasoning trace item。
-- [ ] assistant_message 是唯一 transcript final 正文来源。
-- [ ] replaced/incomplete retry draft 不进入普通 transcript。
-- [ ] `blockOrder` 是首次可见顺序，并可稳定重放。
-- [ ] tool call/result 原位更新；artifact 保持来源位置。
+- [x] Chat 不展示 model wait/reasoning trace item。
+- [x] assistant_message 是唯一 transcript final 正文来源。
+- [x] replaced/incomplete retry draft 不进入普通 transcript。
+- [x] `blockOrder` 是首次可见顺序，并可稳定重放。
+- [x] tool call/result 原位更新；artifact 保持来源位置。
 
 ### Frontend
 
-- [ ] running turn 过程简洁、当前动作清楚。
-- [ ] completed turn 过程默认折叠。
-- [ ] commentary 与工具按 typed identity 归组。
-- [ ] 正常 final 不重复显示 contract 状态卡。
-- [ ] 异常 final 的限制、失败工具和未检查项仍清楚。
-- [ ] 不从 final 文本猜测结构化 UI。
+- [x] running turn 过程简洁、当前动作清楚。
+- [x] completed turn 过程默认折叠。
+- [x] commentary 与工具按 typed identity 归组。
+- [x] 正常 final 不重复显示 contract 状态卡。
+- [x] 异常 final 的限制、失败工具和未检查项仍清楚。
+- [x] 不从 final 文本猜测结构化 UI。
 
 ### 验证与交付
 
-- [ ] 新增测试经历 red -> green。
-- [ ] Go 定向测试、Go 全量测试通过。
-- [ ] Vitest、build、Playwright snapshot 通过。
-- [ ] boundary self-test/scan、change-budget self-test/gate 和 `aichat-harness-hardening-gate.sh` 全部通过。
-- [ ] 每个 commit 均在 5 个生产文件/500 行预算内；baseline commit 的 exception/reason/review trailers 已审查。
-- [ ] browser 完整故事链通过。
-- [ ] self-opt P0 regression 无回归，并审查 `impact-matrix.json`、`scorecard.json`。
-- [ ] 真实 provider 验收完成或明确标记未验证。
-- [ ] `fixbug.md` 已追加事实记录。
-- [ ] `README.md` 的流式能力描述与最终可见行为一致，且未复制 `AGENTS.md` 的硬规则。
-- [ ] 报告实际修改文件、变更行数、测试命令、未运行项和剩余风险。
-- [ ] `git diff` 只包含本计划当前阶段的必要修改。
+- [x] 新增测试经历 red -> green。
+- [x] Go 定向测试、Go 全量测试通过。
+- [x] Vitest、build、Playwright snapshot 通过。
+- [x] boundary self-test/scan、change-budget self-test/gate 和 `aichat-harness-hardening-gate.sh` 全部通过。
+- [x] 每个 commit 均在 5 个生产文件/500 行预算内；baseline commit 的 exception/reason/review trailers 已审查。
+- [x] browser 完整故事链通过。
+- [x] self-opt P0 regression 无回归，并审查 `impact-matrix.json`、`scorecard.json`。
+- [x] 真实 provider 验收完成。
+- [x] `fixbug.md` 已追加事实记录。
+- [x] `README.md` 的流式能力描述与最终可见行为一致，且未复制 `AGENTS.md` 的硬规则。
+- [x] 本节下方已报告实际修改文件、变更行数、测试命令、未运行项和剩余风险。
+- [x] 本计划产生的工作树 diff 只包含 Phase 6 文档收尾；用户原有 `.kiro/.vscode` 删除保持未触碰。
+
+### Phase 6 实施证据
+
+- review range：`2d37eb1..HEAD`（含本文档收尾），本计划 53 files changed、3416 insertions、1220 deletions；行为修改按 Phase 拆为小提交，固定基线 change-budget gate 通过。
+- Go：`go test ./internal/runtimekernel ./internal/appui ./internal/server -count=1` 与 `go test ./... -count=1` 通过；最终完整 Go 复验 72.57s。
+- Web：Vitest 124 files/915 tests、typecheck、build 通过；build 仅保留既有的大 chunk warning。
+- Playwright：`react-shell-snapshot.spec.js` 23/23；artifact 顺序 fixture `--repeat-each=10 --workers=1` 为 10/10。
+- 门禁：boundary/change-budget self-tests、固定 `AIOPS_HARNESS_BASE_REF=2d37eb1...` 两项 gate 与 `scripts/aichat-harness-hardening-gate.sh` 均 exit 0。
+- P0：`.data/self-optimization-lab/self-opt-20260716T091424Z-1`，真实 AIOps core 8/8、synthetic 5/5，selfopt 6/6，`overall=1`、`gate=pass`、`worse=0`；生成物未提交。
+- 真实页面：Playwright 与应用内浏览器均验证普通咨询 `final/process/tool=1/0/0`、单工具 `1/1/1`、双工具 `1/1/2`；完成过程默认折叠，刷新/历史恢复一致，console 0 error/0 warning。
+- 未运行项：无。剩余风险为既有 bundle chunk warning、`npm ci` 报告的 16 个既有依赖审计项（4 high），以及缺少 VerificationReport 时按设计保留的 actionable `needs_evidence` 卡片；依赖升级不属于本计划范围。
 
 ## 17. 参考资料
 

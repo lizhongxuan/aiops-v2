@@ -11,7 +11,7 @@
 
 ## 核心功能
 
-- **AI 运维对话**：支持流式回答、工具调用过程、`@主机` 作用域、多轮上下文和最终结论分区展示。
+- **AI 运维对话**：支持流式运行状态与工具过程、`@主机` 作用域和多轮上下文；最终结论在终态门禁后分区展示。
 - **可控 Agent Harness**：统一组装 Prompt、工具面和运行时上下文；由 `runtimekernel` 管理模型调用、工具循环、checkpoint、approval 和 resume。
 - **安全工具执行**：工具统一受 Tool Surface、Policy 和 Permission 治理；变更或高风险操作还必须经过 ActionToken 和 Approval，不能只凭模型文本直接执行。
 - **Runner Workflow**：支持 YAML/Graph Workflow、预检、执行、验证、运行状态、Run Record 和可视化 Runner Studio。
