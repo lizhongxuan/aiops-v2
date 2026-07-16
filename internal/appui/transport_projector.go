@@ -967,6 +967,9 @@ func projectTurnItem(
 			delete(state.RuntimeLiveness.PendingApprovals, approvalID)
 		}
 	case agentstate.TurnItemTypeFinalResponse:
+		if !shouldProjectLegacyFinalResponse(turn, item) {
+			return turn
+		}
 		text := sanitizeUserVisibleFinalAnswerText(item.Payload.Summary)
 		if text == "" {
 			return turn
@@ -976,15 +979,15 @@ func projectTurnItem(
 		turn.Final = transportFinalFromAgentItem(item.ID, text, mapItemStatusToTransportFinalStatus(item.Status), durationMs, message.FinalContract)
 	case agentstate.TurnItemTypeAssistantMessage:
 		message := assistantMessageProjectionData(item)
-		switch message.Phase {
-		case "final_answer":
+		switch assistantMessageChatPresentation(item, message) {
+		case assistantChatPresentationFinal:
 			text := sanitizeUserVisibleFinalAnswerText(item.Payload.Summary)
 			if text == "" {
 				return turn
 			}
 			durationMs := firstNonZeroInt64(message.DurationMs, finalDurationMsFromAgentItem(item))
 			turn.Final = transportFinalFromAgentItem(item.ID, text, mapItemStatusToTransportFinalStatus(item.Status), durationMs, message.FinalContract)
-		default:
+		case assistantChatPresentationCommentary:
 			text := sanitizeUserVisibleProcessText(item.Payload.Summary)
 			if text == "" {
 				return turn
@@ -1006,21 +1009,13 @@ func projectTurnItem(
 				UpdatedAt:        transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
 			}
 			turn.Process = upsertTransportProcessBlock(turn.Process, block)
-		}
-	case agentstate.TurnItemTypeModelCall:
-		text := modelCallProcessText(item.Status, strings.TrimSpace(item.Payload.Summary))
-		if strings.TrimSpace(text) == "" {
+		default:
 			return turn
 		}
-		block := AiopsProcessBlock{
-			ID:          TransportProcessBlockStableID(turnID, string(AiopsTransportProcessKindReasoning), item.ID),
-			Kind:        AiopsTransportProcessKindReasoning,
-			DisplayKind: "reasoning",
-			Status:      mapItemStatusToTransportProcessStatus(item.Status),
-			Text:        text,
-			UpdatedAt:   transportTimestamp(firstNonZeroTime(item.UpdatedAt, item.CreatedAt)),
-		}
-		turn.Process = upsertTransportProcessBlock(turn.Process, block)
+	case agentstate.TurnItemTypeModelCall:
+		// Model-call and reasoning summaries remain available in AgentItems and
+		// Timeline, but are trace-only and never enter the Chat transcript.
+		return turn
 	case agentstate.TurnItemTypeError:
 		text := strings.TrimSpace(item.Payload.Summary)
 		if text == "" {
@@ -1089,14 +1084,16 @@ func transportFailedToolImpacts(items []runtimekernel.FailedToolImpact) []AiopsT
 }
 
 type assistantMessageProjectionPayload struct {
-	DisplayKind      string                      `json:"displayKind"`
-	Phase            string                      `json:"phase"`
-	StreamState      string                      `json:"streamState"`
-	EvidenceBoundary string                      `json:"evidenceBoundary"`
-	DurationMs       int64                       `json:"durationMs"`
-	CommentarySource string                      `json:"commentarySource"`
-	ToolCallIDs      []string                    `json:"toolCallIds"`
-	FinalContract    runtimekernel.FinalContract `json:"finalContract"`
+	DisplayKind         string                      `json:"displayKind"`
+	Phase               string                      `json:"phase"`
+	StreamState         string                      `json:"streamState"`
+	EvidenceBoundary    string                      `json:"evidenceBoundary"`
+	BoundaryAction      string                      `json:"boundaryAction"`
+	ReplacedByMessageID string                      `json:"replacedByMessageId"`
+	DurationMs          int64                       `json:"durationMs"`
+	CommentarySource    string                      `json:"commentarySource"`
+	ToolCallIDs         []string                    `json:"toolCallIds"`
+	FinalContract       runtimekernel.FinalContract `json:"finalContract"`
 }
 
 func assistantMessageProjectionData(item agentstate.TurnItem) assistantMessageProjectionPayload {
@@ -1111,6 +1108,8 @@ func assistantMessageProjectionData(item agentstate.TurnItem) assistantMessagePr
 	payload.Phase = strings.TrimSpace(payload.Phase)
 	payload.StreamState = strings.TrimSpace(payload.StreamState)
 	payload.EvidenceBoundary = strings.TrimSpace(payload.EvidenceBoundary)
+	payload.BoundaryAction = strings.TrimSpace(payload.BoundaryAction)
+	payload.ReplacedByMessageID = strings.TrimSpace(payload.ReplacedByMessageID)
 	payload.CommentarySource = strings.TrimSpace(payload.CommentarySource)
 	payload.ToolCallIDs = compactStrings(payload.ToolCallIDs)
 	return payload

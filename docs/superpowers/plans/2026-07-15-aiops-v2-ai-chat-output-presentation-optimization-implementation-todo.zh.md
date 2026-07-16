@@ -383,6 +383,8 @@ scripts/check-aiops-change-budget.sh
 
 ## 9. Phase 2：建立 transport 可见性策略与唯一 final 来源
 
+> 状态：✅ 已完成（2026-07-16）。集中式 presentation policy 已落地，目标回归测试与 Phase 独立变更预算门禁通过。
+
 ### Task 2.1：集中 typed presentation policy
 
 **Production files:**
@@ -397,28 +399,28 @@ scripts/check-aiops-change-budget.sh
 
 ### TODO
 
-- [ ] 定义集中式、typed 的 Chat 投影判断，不在多个 switch 分支散落可见性规则。
-- [ ] `model_call running/completed` 不投影为 process block；AgentItems、Timeline、Prompt Trace 继续保留。
-- [ ] `model_call failed` 不额外制造第二条错误；用户错误只来自规范化 error item。
-- [ ] `assistant_message phase=unclassified` 不进入 `Process`、`Final` 或 `blockOrder`。
-- [ ] 扩展 `assistantMessageProjectionPayload`，typed 解析 `boundaryAction`、`replacedByMessageId` 和必要的 stream/boundary facts；当前 projector 不能依赖尚未解析的字段做过滤。
-- [ ] `replacedByMessageId != ""` 或 `boundaryAction=retry_once` 的 incomplete message 不进入普通 Chat transcript。
-- [ ] `phase=commentary` 只投影为 commentary process block。
-- [ ] `phase=final_answer + completed` 是生产 transcript 的唯一 final 正文来源。
-- [ ] `final_response` 继续保留为 runtime/agent-run 完成事实，但当同一 turn 已有 final assistant message 时，不再覆盖 transcript final id/text。
-- [ ] 仅对缺少 assistant final 的历史/system turn 保留结构化 fallback；fallback 必须由 item 类型和缺失事实判断，不能按文本猜测。
-- [ ] 删除或停止使用 `modelCallProcessText` 生成“正在等待模型返回”Chat block 的路径。
-- [ ] 忙碌状态继续由 turn status 和 runtimeLiveness 驱动。
-- [ ] 反转现有 running final/model wait projector 测试，不能在新增测试变绿后继续保留旧契约断言。
+- [x] 定义集中式、typed 的 Chat 投影判断，不在多个 switch 分支散落可见性规则。
+- [x] `model_call running/completed` 不投影为 process block；AgentItems、Timeline、Prompt Trace 继续保留。
+- [x] `model_call failed` 不额外制造第二条错误；用户错误只来自规范化 error item。
+- [x] `assistant_message phase=unclassified` 不进入 `Process`、`Final` 或 `blockOrder`。
+- [x] 扩展 `assistantMessageProjectionPayload`，typed 解析 `boundaryAction`、`replacedByMessageId` 和必要的 stream/boundary facts；当前 projector 不能依赖尚未解析的字段做过滤。
+- [x] `replacedByMessageId != ""` 或 `boundaryAction=retry_once` 的 incomplete message 不进入普通 Chat transcript。
+- [x] `phase=commentary` 只投影为 commentary process block。
+- [x] `phase=final_answer + completed` 是生产 transcript 的唯一 final 正文来源。
+- [x] `final_response` 继续保留为 runtime/agent-run 完成事实，但当同一 turn 已有 final assistant message 时，不再覆盖 transcript final id/text。
+- [x] 仅对缺少 assistant final 的历史/system turn保留结构化 fallback；fallback 必须由 item 类型和缺失事实判断，不能按文本猜测。
+- [x] 删除或停止使用 `modelCallProcessText` 生成“正在等待模型返回”Chat block 的路径。
+- [x] 忙碌状态继续由 turn status 和 runtimeLiveness 驱动。
+- [x] 反转现有 running final/model wait projector 测试，不能在新增测试变绿后继续保留旧契约断言。
 
 ### Phase 2 验收
 
-- [ ] Chat `blocksById` 中不存在 `kind=reasoning` 的 model wait block。
-- [ ] AgentItems/Prompt Trace 仍能看到 model call 和 reasoning summary。
-- [ ] 正常 turn 只有一个 transcript final block，id 来自 committed assistant message。
-- [ ] retry 草稿不会在两轮之间短暂成为 final。
-- [ ] system turn、历史 turn、失败 turn 的兼容测试仍通过。
-- [ ] Phase 2 不修改 runtime 和 React。
+- [x] Chat `blocksById` 中不存在 `kind=reasoning` 的 model wait block。
+- [x] AgentItems/Prompt Trace 仍能看到 model call 和 reasoning summary。
+- [x] 正常 turn 只有一个 transcript final block，id 来自 committed assistant message。
+- [x] retry 草稿不会在两轮之间短暂成为 final。
+- [x] system turn、历史 turn、失败 turn 的兼容测试仍通过。
+- [x] Phase 2 不修改 runtime 和 React。
 
 ### Phase 2 验证命令
 
