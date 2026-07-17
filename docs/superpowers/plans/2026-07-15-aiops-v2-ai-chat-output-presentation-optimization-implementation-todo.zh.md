@@ -847,7 +847,33 @@ rg -n "containsAnyAssistantFinalMarker|finalMessageHasProcessIntent|containsConc
 - 真实页面：Playwright 与应用内浏览器均验证普通咨询 `final/process/tool=1/0/0`、单工具 `1/1/1`、双工具 `1/1/2`；完成过程默认折叠，刷新/历史恢复一致，console 0 error/0 warning。
 - 未运行项：无。剩余风险为既有 bundle chunk warning、`npm ci` 报告的 16 个既有依赖审计项（4 high），以及缺少 VerificationReport 时按设计保留的 actionable `needs_evidence` 卡片；依赖升级不属于本计划范围。
 
-## 17. 参考资料
+## 17. 浏览器批注验收收尾（已完成：2026-07-16）
+
+> 状态：✅ 已完成。代码、完整 Web 回归、24 张 Playwright 视觉回归、生产构建、重新部署与应用内浏览器验收均已通过。
+
+- [x] 删除过程区“整理最终回答 `<duration>`”标签。
+- [x] 删除聊天正文上方的 FinalContract 状态摘要模块；typed contract 数据仍保留在传输与审计链路。
+- [x] 将常见 `exec_command` 技术前缀替换为终端图标，只显示实际命令；文件读取使用文件图标。
+- [x] 未注册的自定义、业务和 MCP 工具继续显示名称，不以含义不明的图标替换。
+- [x] 为图标化工具补充中文可访问名称，并覆盖 legacy `displayKind=terminal + source=exec_command + foldGroupKind=tool`。
+- [x] Vitest 定向回归 94/94，完整回归 124 files/909 tests，Playwright fixture snapshot 24/24。
+- [x] typecheck、生产构建和重新部署通过；18080 当前加载 `index-CInvuOd1.js`，state API 返回 200。
+- [x] Codex 应用内浏览器打开真实双命令历史会话：2 个终端图标，`exec_command` 可见泄漏 0，已移除模块计数 0，console 日志 0。
+
+### Task 17.1：exec 主机身份与终端纯输出（功能与部署已完成：2026-07-16）
+
+> 状态：⚠️ 功能、自动化验证与部署已完成。Codex 内置浏览器已刷新并恢复真实会话，但 DOM/console 深度验收被本地 URL 安全策略阻止，未绕过该限制。
+
+- [x] 确认 legacy `kind=tool + displayKind=terminal/host.command` 的真实数据和唯一前端 owner。
+- [x] 在命令前显示执行主机，远程 inventory id 优先格式化为用户可识别的地址；后端在输出截断前正式投影 `hostId`，前端兼容历史信封回退。
+- [x] `exec_command` 使用终端卡片展示；成功只显示 stdout，失败只显示 stderr/error，不显示 JSON 信封。
+- [x] 未注册业务工具、MCP、文件写入及普通工具输出保持原行为。
+- [x] Vitest 定向 95/95、完整 Web 回归 124 files/910 tests、Playwright 视觉回归 24/24、Go appui、typecheck 与 diff check 通过。
+- [x] 生产 build 通过，前后端已重新部署；18080 返回 200，并加载 `index-DNi3ty9Q.js`。
+- [x] Codex 内置浏览器标签页已刷新；真实会话 `sess-1784192958941157000` 已恢复，state API 确认目标主机及两条 `aiops.terminal/v1` 命令数据完整。
+- [ ] Codex 内置浏览器 DOM 与 console 深度验收；当前被 Browser Use 本地 URL 安全策略阻止，等待用户侧重新授权/刷新后复验。
+
+## 18. 参考资料
 
 - `docs/2026-06-25-aiops-v2-agent-runtime-output-flow-debug.zh.md`
 - `docs/2026-06-25-codex-agent-runtime-output-flow-compare.zh.md`

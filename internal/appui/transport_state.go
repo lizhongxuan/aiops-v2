@@ -247,6 +247,7 @@ type AiopsProcessBlock struct {
 	Status              AiopsTransportProcessStatus `json:"status"`
 	Text                string                      `json:"text"`
 	Command             string                      `json:"command,omitempty"`
+	HostID              string                      `json:"hostId,omitempty"`
 	InputSummary        string                      `json:"inputSummary,omitempty"`
 	OutputPreview       string                      `json:"outputPreview,omitempty"`
 	FoldGroupID         string                      `json:"foldGroupId,omitempty"`

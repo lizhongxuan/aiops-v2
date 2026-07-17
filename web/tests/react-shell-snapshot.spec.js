@@ -1329,6 +1329,89 @@ function phase6SingleToolFixture() {
   });
 }
 
+function phase6CommonToolIconsFixture() {
+  return phase0OutputFixture({
+    name: "phase6-common-tool-icons",
+    userText: "分别执行 uptime 和 df -h /，最后总结结果。",
+    blocks: [
+      {
+        id: "phase6-common-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-phase6-uptime", "call-phase6-disk"],
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "分别执行两个独立的只读调用。",
+      },
+      {
+        id: "phase6-common-tool-uptime",
+        type: "tool",
+        kind: "tool",
+        displayKind: "terminal",
+        source: "exec_command",
+        inputSummary: "uptime",
+        text: "exec_command uptime",
+        toolCallId: "call-phase6-uptime",
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        outputPreview: JSON.stringify({
+          command: "uptime",
+          evidenceRefs: ["ev-phase6-common-uptime"],
+          exitCode: 0,
+          hostId: "remote-120-77-239-90",
+          schemaVersion: "aiops.terminal/v1",
+          source: "host.agent_http_exec",
+          status: "ok",
+          stderr: "",
+          stdout: " 17:10:05 up 246 days, 20:59, 0 users, load average: 0.03, 0.02, 0.00\n",
+          tool: "exec_command",
+        }),
+      },
+      {
+        id: "phase6-common-tool-disk",
+        type: "tool",
+        kind: "tool",
+        displayKind: "terminal",
+        source: "exec_command",
+        inputSummary: "df -h /",
+        text: "exec_command df -h /",
+        toolCallId: "call-phase6-disk",
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        outputPreview: JSON.stringify({
+          command: "df -h /",
+          evidenceRefs: ["ev-phase6-common-disk"],
+          exitCode: 0,
+          hostId: "remote-120-77-239-90",
+          schemaVersion: "aiops.terminal/v1",
+          source: "host.agent_http_exec",
+          status: "ok",
+          stderr: "",
+          stdout: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda3        40G   31G  6.4G  83% /\n",
+          tool: "exec_command",
+        }),
+      },
+      {
+        id: "phase6-common-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "系统负载较低，根分区当前使用率为 83%。",
+      },
+    ],
+  });
+}
+
 function phase6StreamErrorFixture() {
   const fixture = phase0OutputFixture({
     name: "phase6-stream-error",
@@ -1679,6 +1762,8 @@ test("chat shows context compaction and externalized evidence states", async ({ 
     await page.getByTestId("aiops-process-header").click();
   }
   await expect(toolRow).toBeVisible();
+  await expect(toolRow).toContainText("logs_query nginx timeout");
+  await expect(page.getByTestId("aiops-command-row-tool-context-spill")).toHaveCount(0);
   await toolRow.click();
   await expect(page.getByText("Large nginx log result was externalized. Summary: 17 upstream timeout lines.")).toBeVisible();
   await expect(page.getByText("结果较大，仅显示摘要。")).toHaveCount(0);
@@ -1807,22 +1892,24 @@ test("typed action group uses commentary as one title and keeps approval outside
 
   await actionToggle.click();
   await expect(page.getByTestId("aiops-tool-row-file-typed-action")).toBeVisible();
-  await expect(page.getByTestId("aiops-tool-row-mcp-typed-action")).toBeVisible();
+  const mcpRow = page.getByTestId("aiops-tool-row-mcp-typed-action");
+  await expect(mcpRow).toBeVisible();
+  await expect(mcpRow).toContainText("ops://payment-api");
+  await expect(page.getByTestId("aiops-command-row-mcp-typed-action")).toHaveCount(0);
   const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
   await expect(assistantTurn).toHaveScreenshot("phase4-typed-action-group.png");
 });
 
-test("limited final keeps only actionable contract details beside the answer", async ({ page }) => {
+test("limited final keeps the answer while contract metadata stays internal", async ({ page }) => {
   await openFixturePage(page, "/", phase5LimitedFinalFixture());
 
   const answer = page.getByTestId("aiops-answer-document");
   await expect(answer).toContainText("当前证据只能确认应用可访问");
-  const summary = page.getByTestId("aiops-final-contract-summary");
-  await expect(summary).toContainText("证据不足");
-  await expect(summary).toContainText("主机进程状态");
-  await expect(summary).toContainText("目标主机连接不可用");
-  await expect(summary).toContainText("尚未完成主机侧只读检查");
-  await expect(summary).not.toContainText("已验证");
+  await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+  await expect(page.getByText("证据不足", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("主机进程状态", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("目标主机连接不可用", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("尚未完成主机侧只读检查", { exact: true })).toHaveCount(0);
   await expect(answer.locator("..")).toHaveScreenshot("phase5-limited-final-contract.png");
 });
 
@@ -1838,6 +1925,54 @@ test.describe("phase 6 output story snapshots", () => {
     await expect(page.getByText("先读取配置文件，再核对关键字段。", { exact: true })).toHaveCount(1);
     await expect(page.getByText("配置读取完成：服务监听端口为 8080。", { exact: true })).toHaveCount(1);
     await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-single-tool-story.png");
+  });
+
+  test("common command tools show their host and stdout without exposing the terminal envelope", async ({ page }) => {
+    await openFixturePage(page, "/", phase6CommonToolIconsFixture());
+
+    await page.getByTestId("aiops-process-header").click();
+    await page.getByTestId("aiops-merged-tool-toggle").click();
+    const uptimeRow = page.getByTestId("aiops-command-row-phase6-common-tool-uptime");
+    const diskRow = page.getByTestId("aiops-command-row-phase6-common-tool-disk");
+    const uptimeHost = page.getByTestId("aiops-command-host-phase6-common-tool-uptime");
+    const diskHost = page.getByTestId("aiops-command-host-phase6-common-tool-disk");
+    await expect(uptimeRow).toContainText("uptime");
+    await expect(diskRow).toContainText("df -h /");
+    await expect(uptimeHost).toHaveText("120.77.239.90");
+    await expect(diskHost).toHaveText("120.77.239.90");
+    await expect(page.getByTestId("aiops-command-label-region-phase6-common-tool-uptime")).toContainText(
+      "120.77.239.90·uptime",
+    );
+    await expect(page.getByTestId("aiops-command-label-region-phase6-common-tool-disk")).toContainText(
+      "120.77.239.90·df -h /",
+    );
+    await expect(uptimeRow).not.toContainText("exec_command");
+    await expect(diskRow).not.toContainText("exec_command");
+    await expect(uptimeRow).toHaveAccessibleName("终端命令：在 120.77.239.90 执行 uptime，已完成");
+    await expect(diskRow).toHaveAccessibleName("终端命令：在 120.77.239.90 执行 df -h /，已完成");
+    await expect(page.getByTestId("aiops-command-icon-phase6-common-tool-uptime")).toBeVisible();
+    await expect(page.getByTestId("aiops-command-icon-phase6-common-tool-disk")).toBeVisible();
+
+    await uptimeRow.click();
+    await diskRow.click();
+    const uptimeTerminal = page.getByTestId("aiops-terminal-card-phase6-common-tool-uptime");
+    const diskTerminal = page.getByTestId("aiops-terminal-card-phase6-common-tool-disk");
+    await expect(uptimeTerminal).toContainText("Shell · 120.77.239.90");
+    await expect(uptimeTerminal).toContainText("$ uptime");
+    await expect(diskTerminal).toContainText("Shell · 120.77.239.90");
+    await expect(diskTerminal).toContainText("$ df -h /");
+    await expect(page.getByTestId("aiops-command-output-phase6-common-tool-uptime")).toHaveText(
+      "17:10:05 up 246 days, 20:59, 0 users, load average: 0.03, 0.02, 0.00",
+    );
+    await expect(page.getByTestId("aiops-command-output-phase6-common-tool-disk")).toHaveText(
+      "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda3        40G   31G  6.4G  83% /",
+    );
+    const transcript = page.getByTestId("aiops-process-transcript");
+    await expect(transcript).not.toContainText("schemaVersion");
+    await expect(transcript).not.toContainText("hostId");
+    await expect(transcript).not.toContainText("stdout");
+    await expect(transcript).not.toContainText("exec_command");
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-common-tool-icons.png");
   });
 
   test("stream error hides incomplete draft and renders one typed error", async ({ page }) => {
@@ -1869,19 +2004,21 @@ test.describe("phase 6 output story snapshots", () => {
       await page.getByTestId("aiops-process-header").click();
     }
     await expect(page.getByTestId("aiops-tool-row-phase6-failed-tool-row")).toHaveCount(1);
-    await expect(page.getByText("主机进程证据未采集", { exact: false })).toHaveCount(1);
+    await expect(page.getByText("主机进程证据未采集", { exact: false })).toHaveCount(0);
+    await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
     await expect(page.getByText("当前只能确认应用入口可访问；主机侧读取失败，结论保持受限。", { exact: true })).toHaveCount(1);
     await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-failed-tool-story.png");
   });
 
-  test("artifact-split process renders final duration once", async ({ page }) => {
+  test("artifact-split process keeps final duration metadata out of chat", async ({ page }) => {
     await openFixturePage(page, "/", phase6ArtifactDurationFixture());
 
     const headers = page.getByTestId("aiops-process-header");
     await expect(headers).toHaveCount(2);
     await headers.nth(0).click();
     await headers.nth(1).click();
-    await expect(page.getByText(/整理最终回答/)).toHaveCount(1);
+    await expect(page.getByText(/整理最终回答/)).toHaveCount(0);
+    await expect(page.getByTestId("aiops-final-generation-duration")).toHaveCount(0);
     await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-artifact-duration-once.png");
   });
 });

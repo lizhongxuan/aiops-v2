@@ -1457,61 +1457,6 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
-  it("shows final generation duration when provided", async () => {
-    const process = [
-      makeBlock({
-        id: "tool-budget",
-        kind: "tool",
-        status: "completed",
-        displayKind: "tool_budget",
-        text: "Tool budget reached",
-      }),
-    ];
-
-    await act(async () => {
-      root.render(
-        <ProcessTranscript
-          process={process}
-          turnStatus="completed"
-          finalText="基于已收集证据给出回答。"
-          finalDurationMs={456}
-          renderFinalText={false}
-        />,
-      );
-    });
-
-    await expandProcessTranscript();
-
-    expect(container.textContent).toContain("整理最终回答 456ms");
-  });
-
-  it("hides final generation duration while the turn is still running", async () => {
-    const process = [
-      makeBlock({
-        id: "tool-coroot",
-        kind: "tool",
-        status: "completed",
-        source: "coroot_list_services",
-        text: "coroot_list_services",
-      }),
-    ];
-
-    await act(async () => {
-      root.render(
-        <ProcessTranscript
-          process={process}
-          turnStatus="working"
-          finalText="正在流式生成最终回答。"
-          finalDurationMs={6200}
-          renderFinalText={false}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain("处理中");
-    expect(container.textContent).not.toContain("整理最终回答");
-  });
-
   it("renders only Coroot blocks admitted by the upstream presentation policy", async () => {
     const process = [
       makeBlock({
@@ -2072,6 +2017,7 @@ describe("ProcessTranscript", () => {
         kind: "command",
         status: "completed",
         command: "hostname",
+        hostId: "remote-120-77-239-90",
         text: "hostname",
         outputPreview: JSON.stringify({
           command: "hostname",
@@ -2115,6 +2061,12 @@ describe("ProcessTranscript", () => {
 
     const stdout = container.querySelector('[data-testid="aiops-command-output-cmd-json-stdout"]');
     const stderr = container.querySelector('[data-testid="aiops-command-output-cmd-json-stderr"]');
+    expect(container.querySelector('[data-testid="aiops-command-host-cmd-json-stdout"]')?.textContent).toBe(
+      "120.77.239.90",
+    );
+    expect(container.querySelector('[data-testid="aiops-command-row-cmd-json-stdout"]')?.getAttribute("aria-label")).toBe(
+      "终端命令：在 120.77.239.90 执行 hostname",
+    );
     expect(stdout?.textContent).toBe("host-a");
     expect(stderr?.textContent).toBe("uptime: command not found");
     expect(container.textContent).not.toContain('"stdout"');
@@ -2709,6 +2661,257 @@ describe("MergedToolSummary", () => {
     container.remove();
   });
 
+  it("replaces familiar command tool names with terminal icons while preserving custom tool names", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "command-action-title",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-uptime", "call-disk", "call-legacy", "call-custom"],
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              text: "分别执行两个只读命令，再调用业务探针。",
+            }),
+            makeBlock({
+              id: "tool-uptime",
+              kind: "tool",
+              displayKind: "terminal",
+              source: "exec_command",
+              inputSummary: "uptime",
+              text: "exec_command uptime",
+              toolCallId: "call-uptime",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "uptime",
+                status: "ok",
+                exitCode: 0,
+                stdout: "up 246 days\n",
+                stderr: "",
+              }),
+            }),
+            makeBlock({
+              id: "tool-disk",
+              kind: "tool",
+              displayKind: "terminal.command",
+              source: "exec_command",
+              inputSummary: "df -h /",
+              text: "exec_command df -h /",
+              toolCallId: "call-disk",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "df -h /",
+                status: "ok",
+                exitCode: 0,
+                stdout: "Filesystem Size Used Avail Use% Mounted on\n/dev/vda3 40G 31G 6.4G 83% /\n",
+                stderr: "",
+              }),
+            }),
+            makeBlock({
+              id: "tool-legacy",
+              kind: "tool",
+              displayKind: "exec_command",
+              text: "exec_command hostname",
+              toolCallId: "call-legacy",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+            }),
+            makeBlock({
+              id: "tool-custom",
+              kind: "tool",
+              displayKind: "business.probe",
+              source: "exec_command_runner",
+              inputSummary: "checkout",
+              text: "exec_command_runner checkout",
+              toolCallId: "call-custom",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const uptimeRow = container.querySelector('[data-testid="aiops-command-row-tool-uptime"]');
+    const diskRow = container.querySelector('[data-testid="aiops-command-row-tool-disk"]');
+    const legacyRow = container.querySelector('[data-testid="aiops-command-row-tool-legacy"]');
+    const customRow = container.querySelector('[data-testid="aiops-tool-row-tool-custom"]');
+    expect(uptimeRow?.textContent).toContain("uptime");
+    expect(diskRow?.textContent).toContain("df -h /");
+    expect(uptimeRow?.textContent).not.toContain("exec_command");
+    expect(diskRow?.textContent).not.toContain("exec_command");
+    expect(legacyRow?.textContent).toContain("hostname");
+    expect(legacyRow?.textContent).not.toContain("exec_command");
+    expect(uptimeRow?.getAttribute("aria-label")).toBe("终端命令：在 120.77.239.90 执行 uptime，已完成");
+    expect(diskRow?.getAttribute("aria-label")).toBe("终端命令：在 120.77.239.90 执行 df -h /，已完成");
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-uptime"]')?.getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-disk"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-legacy"]')).toBeTruthy();
+    const uptimeHost = container.querySelector('[data-testid="aiops-command-host-tool-uptime"]');
+    const uptimeCommand = container.querySelector('[data-testid="aiops-command-text-tool-uptime"]');
+    expect(uptimeHost?.textContent).toBe("120.77.239.90");
+    expect(uptimeCommand?.textContent).toBe("uptime");
+    expect(
+      ((uptimeHost?.compareDocumentPosition(uptimeCommand as Node) || 0) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    ).toBe(true);
+    expect(customRow?.textContent).toContain("exec_command_runner checkout");
+    expect(container.querySelector('[data-testid="aiops-tool-icon-tool-custom"]')).toBeNull();
+
+    await act(async () => {
+      uptimeRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      diskRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-uptime"]')?.textContent).toBe("up 246 days");
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-disk"]')?.textContent).toBe(
+      "Filesystem Size Used Avail Use% Mounted on\n/dev/vda3 40G 31G 6.4G 83% /",
+    );
+    expect(container.querySelector('[data-testid="aiops-terminal-card-tool-uptime"]')?.textContent).toContain(
+      "Shell · 120.77.239.90",
+    );
+    expect(container.textContent).not.toContain('"stdout"');
+    expect(container.textContent).not.toContain('"schemaVersion"');
+  });
+
+  it("shows failed exec tool stderr in a terminal without leaking its JSON envelope", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "tool-failed-command",
+              kind: "tool",
+              displayKind: "host.command",
+              source: "exec_command",
+              status: "failed",
+              inputSummary: "systemctl status missing.service",
+              text: "exec_command systemctl status missing.service",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "systemctl status missing.service",
+                status: "error",
+                exitCode: 4,
+                stdout: "partial output\n",
+                stderr: "Unit missing.service could not be found.\n",
+              }),
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-command-row-tool-failed-command"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-command-host-tool-failed-command"]')?.textContent).toBe(
+      "120.77.239.90",
+    );
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-failed-command"]')?.textContent).toBe(
+      "Unit missing.service could not be found.",
+    );
+    expect(container.textContent).not.toContain("partial output");
+    expect(container.textContent).not.toContain('"stderr"');
+    expect(container.textContent).not.toContain('"tool":"exec_command"');
+  });
+
+  it("does not replace explicit business or file mutation tool names with familiar icons", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "mutation-action-title",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-business", "call-patch"],
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+              text: "检查业务探针并更新配置。",
+            }),
+            makeBlock({
+              id: "tool-business",
+              kind: "tool",
+              displayKind: "business.probe",
+              source: "exec_command",
+              inputSummary: "checkout",
+              text: "exec_command checkout",
+              toolCallId: "call-business",
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+            }),
+            makeBlock({
+              id: "file-patch",
+              kind: "file",
+              displayKind: "file.diff",
+              source: "apply_patch",
+              text: "更新 config.yaml",
+              toolCallId: "call-patch",
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-business"]')?.textContent).toContain(
+      "exec_command checkout",
+    );
+    expect(container.querySelector('[data-testid="aiops-tool-icon-tool-business"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-business"]')?.getAttribute("aria-label")).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-patch"]')?.textContent).toContain(
+      "更新 config.yaml",
+    );
+    expect(container.querySelector('[data-testid="aiops-tool-icon-file-patch"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-patch"]')?.getAttribute("aria-label")).toBeNull();
+  });
+
   it("uses typed model prelude commentary as the action title instead of a tool row", async () => {
     await act(async () => {
       root.render(
@@ -2727,6 +2930,7 @@ describe("MergedToolSummary", () => {
             makeBlock({
               id: "file-action",
               kind: "file",
+              displayKind: "file.read",
               toolCallId: "call-file",
               foldGroupId: "action-file",
               foldGroupKind: "tool",
@@ -2752,6 +2956,10 @@ describe("MergedToolSummary", () => {
     });
     expect(container.querySelectorAll('[data-testid^="aiops-tool-row-"]')).toHaveLength(1);
     expect(container.textContent).toContain("读取 config.yaml");
+    expect(container.querySelector('[data-testid="aiops-tool-icon-file-action"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-action"]')?.getAttribute("aria-label")).toBe(
+      "文件读取：读取 config.yaml，已完成",
+    );
   });
 
   it("shows merged tool call details by default", async () => {

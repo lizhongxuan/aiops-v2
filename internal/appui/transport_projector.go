@@ -797,6 +797,7 @@ func projectTurnItem(
 		if outputPreview == "" && item.Type == agentstate.TurnItemTypeToolResult {
 			outputPreview = resultPreviews[tool.ToolCallID]
 		}
+		commandHostID := commandTerminalHostID(outputPreview)
 		if blockKind == AiopsTransportProcessKindCommand {
 			outputPreview = commandTerminalOutputPreview(outputPreview, tool.ExitCode, mapItemStatusToTransportProcessStatus(item.Status))
 		}
@@ -810,6 +811,7 @@ func projectTurnItem(
 			DisplayKind:         displayKindForTransportToolBlock(blockKind, tool.DisplayKind, item.Payload.Kind, tool.ToolName),
 			Status:              mapItemStatusToTransportProcessStatus(item.Status),
 			Text:                toolText,
+			HostID:              commandHostID,
 			Source:              strings.TrimSpace(tool.ToolName),
 			ToolCallID:          strings.TrimSpace(tool.ToolCallID),
 			InputSummary:        tool.InputSummary,
@@ -2918,12 +2920,22 @@ func outputPreviewForTransportToolBlock(blockKind AiopsTransportProcessKind, too
 }
 
 type commandTerminalOutputEnvelope struct {
-	Status   string `json:"status"`
-	Stdout   string `json:"stdout"`
-	Stderr   string `json:"stderr"`
-	Output   string `json:"output"`
-	Error    string `json:"error"`
-	ExitCode *int   `json:"exitCode"`
+	SchemaVersion string `json:"schemaVersion"`
+	HostID        string `json:"hostId"`
+	Status        string `json:"status"`
+	Stdout        string `json:"stdout"`
+	Stderr        string `json:"stderr"`
+	Output        string `json:"output"`
+	Error         string `json:"error"`
+	ExitCode      *int   `json:"exitCode"`
+}
+
+func commandTerminalHostID(outputPreview string) string {
+	envelope, ok := decodeCommandTerminalOutputEnvelope(strings.TrimSpace(outputPreview))
+	if !ok || !strings.EqualFold(strings.TrimSpace(envelope.SchemaVersion), "aiops.terminal/v1") {
+		return ""
+	}
+	return strings.TrimSpace(envelope.HostID)
 }
 
 func commandTerminalOutputPreview(outputPreview string, exitCode *int, status AiopsTransportProcessStatus) string {

@@ -358,6 +358,7 @@ export type AiopsProcessBlock = {
   status: AiopsTransportProcessStatus;
   text: string;
   command?: string;
+  hostId?: string;
   inputSummary?: string;
   outputPreview?: string;
   foldGroupId?: string;

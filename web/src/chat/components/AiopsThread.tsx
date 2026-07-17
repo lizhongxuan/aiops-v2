@@ -4,7 +4,7 @@ import { useLayoutEffect, useMemo, useRef, useState } from "react";
 
 import { AgentUiArtifactPart } from "@/components/chat/AgentUiArtifactPart";
 import { Button } from "@/components/ui/button";
-import type { AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportBlock, AiopsTransportFinal, AiopsTransportFinalStatus, AiopsTransportMcpSurface, AiopsTransportState, AiopsTransportTimelineItem, AiopsTransportTurn } from "@/transport/aiopsTransportTypes";
+import type { AiopsContextGovernanceEvent, AiopsProcessBlock, AiopsTransportAgentUiArtifact, AiopsTransportBlock, AiopsTransportMcpSurface, AiopsTransportState, AiopsTransportTurn } from "@/transport/aiopsTransportTypes";
 import { AIOPS_BLOCK_DATA_PART, AIOPS_TURN_DATA_PART, mergeOpsManualSearchAndPreflightArtifacts } from "@/transport/aiopsTransportConverter";
 import { useAiopsTransportCommands } from "@/transport/useAiopsTransportCommands";
 
@@ -14,25 +14,6 @@ import { ContextStatusNotice } from "./ContextStatusNotice";
 import { McpSurfacePart } from "./McpSurfacePart";
 import { ProcessTranscript } from "./ProcessTranscript";
 import { useSessionWorkspaceContext } from "./SessionWorkspaceContext";
-
-type AssistantMessageMeta = {
-  process?: AiopsProcessBlock[];
-  contextGovernance?: AiopsContextGovernanceEvent[];
-  agentUiArtifacts?: unknown[];
-  deferredAgentUiArtifacts?: unknown[];
-  intent?: { text?: string; status?: string } | null;
-  userText?: string;
-  turnStatus?: string;
-  turnStartedAt?: string;
-  turnCompletedAt?: string;
-  turnUpdatedAt?: string;
-  finalDurationMs?: number;
-  finalText?: string;
-  finalStatus?: AiopsTransportFinalStatus;
-  finalConfidence?: string;
-  finalContract?: Partial<AiopsTransportFinal>;
-  timeline?: AiopsTransportTimelineItem[];
-};
 
 export function AiopsThread() {
   const state = useAssistantTransportState() as AiopsTransportState;
@@ -276,20 +257,15 @@ function AssistantMessage() {
   const contextStatusEvent = latestContextStatusEvent(turn?.contextGovernance || []);
   const corootArtifacts = blocks.flatMap((block) => (block.artifact && isCorootChartArtifact(block.artifact) ? [block.artifact] : []));
   const hasFinalBlock = blocks.some((block) => block.type === "final_answer");
-  const finalDurationMs = blocks.find((block) => block.type === "final_answer")?.durationMs;
   const renderGroups = groupAssistantTranscriptBlocks(blocks);
   const hasProcessGroup = renderGroups.some((group) => group.type === "process");
-  const lastProcessGroupIndex = renderGroups.reduce(
-    (lastIndex, group, index) => (group.type === "process" ? index : lastIndex),
-    -1,
-  );
 
   return (
     <MessagePrimitive.Root className="flex justify-start px-1">
       <div className="w-full space-y-3">
         <ContextStatusNotice event={contextStatusEvent} />
         {!hasProcessGroup && isPendingAssistantTurn(turn?.status) ? <ProcessTranscript process={[]} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} renderFinalText={false} /> : null}
-        {renderGroups.map((group, index) => (group.type === "process" ? <ProcessTranscript key={group.id} process={group.blocks} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} finalDurationMs={index === lastProcessGroupIndex ? finalDurationMs : undefined} renderFinalText={false} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} /> : <AssistantTranscriptBlock key={group.block.id} block={group.block} turn={turn!} corootArtifacts={corootArtifacts} hasFinalBlock={hasFinalBlock} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} />))}
+        {renderGroups.map((group) => (group.type === "process" ? <ProcessTranscript key={group.id} process={group.blocks} turnStatus={turn?.status} turnStartedAt={turn?.startedAt} turnCompletedAt={turn?.completedAt} turnUpdatedAt={turn?.updatedAt} renderFinalText={false} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} /> : <AssistantTranscriptBlock key={group.block.id} block={group.block} turn={turn!} corootArtifacts={corootArtifacts} hasFinalBlock={hasFinalBlock} onApprovalDecision={(approvalId, decision) => commands.approvalDecision(approvalId, decision)} />))}
       </div>
     </MessagePrimitive.Root>
   );
@@ -355,25 +331,13 @@ function AssistantTranscriptBlock({ block, turn, corootArtifacts, hasFinalBlock,
     return <AgentUiArtifactPart artifact={block.artifact} />;
   }
   if (block.type === "final_answer") {
-    const contract = block.finalContract;
-    const meta: AssistantMessageMeta = {
-      finalText: block.text,
-      finalStatus: contract?.status,
-      finalConfidence: contract?.confidence,
-      finalContract: contract,
-    };
-    const finalText = assistantMessageRenderedFinalText([], meta);
-    return (
-      <>
-        <FinalContractSummary meta={meta} />
-        <AnswerDocumentRenderer finalText={finalText} artifacts={isTerminalAssistantTurn(turn.status) ? corootArtifacts : []} deferredArtifacts={[]} />
-      </>
-    );
+    const finalText = assistantMessageRenderedFinalText([], { finalText: block.text });
+    return <AnswerDocumentRenderer finalText={finalText} artifacts={isTerminalAssistantTurn(turn.status) ? corootArtifacts : []} deferredArtifacts={[]} />;
   }
   if (!shouldRenderProcessBlock(block)) {
     return null;
   }
-  return <ProcessTranscript process={[block]} turnStatus={turn.status} turnStartedAt={turn.startedAt} turnCompletedAt={turn.completedAt} turnUpdatedAt={turn.updatedAt} finalDurationMs={block.durationMs} renderFinalText={false} onApprovalDecision={onApprovalDecision} />;
+  return <ProcessTranscript process={[block]} turnStatus={turn.status} turnStartedAt={turn.startedAt} turnCompletedAt={turn.completedAt} turnUpdatedAt={turn.updatedAt} renderFinalText={false} onApprovalDecision={onApprovalDecision} />;
 }
 
 export function orderedAssistantTurnBlocks(turn: AiopsTransportTurn): AiopsTransportBlock[] {
@@ -475,7 +439,7 @@ function messageText(content: readonly { type: string; text?: string }[]) {
 
 export function assistantMessageRenderedFinalText(
   content: readonly { type: string; text?: string }[],
-  meta: Pick<AssistantMessageMeta, "finalText">,
+  meta: { finalText?: string },
 ) {
   if (typeof meta.finalText === "string") {
     return sanitizeAssistantDisplayText(meta.finalText);
@@ -483,269 +447,6 @@ export function assistantMessageRenderedFinalText(
   return sanitizeAssistantDisplayText(messageText(content));
 }
 
-type FinalContractSummaryInput = Pick<
-  AssistantMessageMeta,
-  "finalText" | "finalStatus" | "finalConfidence" | "finalContract"
->;
-
-type FinalContractSummaryModel = {
-  status: AiopsTransportFinalStatus;
-  statusLabel: string;
-  confidenceLabel?: string;
-  evidenceLabel?: string;
-  uncheckedRequirements: string[];
-  failedToolImpacts: string[];
-  limitations: string[];
-};
-
-function FinalContractSummary({ meta }: { meta: FinalContractSummaryInput }) {
-  const summary = finalContractSummaryView(meta);
-  if (!summary) {
-    return null;
-  }
-  return (
-    <div
-      className="space-y-1 rounded-md border border-slate-200 bg-white px-3 py-2 text-[13px] leading-6 text-slate-600"
-      data-testid="aiops-final-contract-summary"
-      data-final-status={summary.status}
-    >
-      <div className="flex flex-wrap items-center gap-2">
-        <span className={finalContractStatusClass(summary.status)}>{summary.statusLabel}</span>
-        {summary.confidenceLabel ? <span className="text-slate-400">{summary.confidenceLabel}</span> : null}
-      </div>
-      {summary.evidenceLabel ? <div className="break-words">{summary.evidenceLabel}</div> : null}
-      {summary.failedToolImpacts.length ? (
-        <div className="break-words">工具限制：{summary.failedToolImpacts.join("；")}</div>
-      ) : null}
-      {summary.uncheckedRequirements.length ? (
-        <div className="break-words">未完成检查：{summary.uncheckedRequirements.join("，")}</div>
-      ) : null}
-      {summary.limitations.length ? (
-        <div className="break-words">限制：{summary.limitations.join("，")}</div>
-      ) : null}
-    </div>
-  );
-}
-
-export function finalContractSummaryView(meta: FinalContractSummaryInput): FinalContractSummaryModel | null {
-  const contract = meta.finalContract || {};
-  const status = normalizeFinalStatus(contract.status || meta.finalStatus);
-  const checkedEvidenceRefs = stringList(contract.checkedEvidenceRefs);
-  const uncheckedRequirements = userVisibleStringList(contract.uncheckedRequirements);
-  const failedToolImpacts = failedToolImpactList(contract.failedToolImpacts);
-  const limitations = userVisibleStringList(contract.limitations);
-  const confidence = String(contract.confidence || meta.finalConfidence || "").trim();
-
-  if (
-    !contract.schemaVersion &&
-    !status &&
-    !confidence &&
-    !checkedEvidenceRefs.length &&
-    !uncheckedRequirements.length &&
-    !failedToolImpacts.length &&
-    !limitations.length
-  ) {
-    return null;
-  }
-
-  const normalizedStatus = status || "unknown";
-  const evidenceCount = checkedEvidenceRefs.length;
-  const hasUserActionableDetails =
-    uncheckedRequirements.length > 0 ||
-    failedToolImpacts.length > 0 ||
-    limitations.length > 0;
-  const hasSummaryDetails =
-    Boolean(confidence) ||
-    hasUserActionableDetails;
-  if (normalizedStatus === "unknown" && !hasUserActionableDetails) {
-    return null;
-  }
-  if (
-    (normalizedStatus === "verified" || normalizedStatus === "completed") &&
-    !hasUserActionableDetails
-  ) {
-    return null;
-  }
-  if (
-    !contract.schemaVersion &&
-    (normalizedStatus === "running" || normalizedStatus === "completed") &&
-    !hasSummaryDetails
-  ) {
-    return null;
-  }
-  if (
-    !contract.schemaVersion &&
-    normalizedStatus === "failed" &&
-    Boolean(String(meta.finalText || "").trim()) &&
-    !hasSummaryDetails
-  ) {
-    return null;
-  }
-
-  return {
-    status: normalizedStatus,
-    statusLabel: finalStatusLabel(normalizedStatus),
-    confidenceLabel: finalConfidenceLabel(confidence),
-    evidenceLabel: evidenceCount > 0 ? `已采集 ${evidenceCount} 条证据` : undefined,
-    uncheckedRequirements,
-    failedToolImpacts,
-    limitations,
-  };
-}
-
-function normalizeFinalStatus(status?: string): AiopsTransportFinalStatus | undefined {
-  switch (status) {
-    case "running":
-    case "completed":
-    case "failed":
-    case "verified":
-    case "partial":
-    case "blocked":
-    case "needs_evidence":
-    case "approval_denied":
-    case "tool_unavailable":
-    case "cancelled":
-    case "unknown":
-      return status;
-    default:
-      return status ? "unknown" : undefined;
-  }
-}
-
-function finalStatusLabel(status: AiopsTransportFinalStatus) {
-  switch (status) {
-    case "verified":
-      return "已验证";
-    case "partial":
-      return "部分确认";
-    case "blocked":
-      return "已阻止";
-    case "needs_evidence":
-      return "证据不足";
-    case "approval_denied":
-      return "审批拒绝";
-    case "tool_unavailable":
-      return "工具不可用";
-    case "cancelled":
-      return "已取消";
-    case "failed":
-      return "失败";
-    case "running":
-      return "生成中";
-    case "completed":
-      return "已完成";
-    default:
-      return "未确认";
-  }
-}
-
-function finalContractStatusClass(status: AiopsTransportFinalStatus) {
-  switch (status) {
-    case "verified":
-      return "font-medium text-emerald-700";
-    case "partial":
-    case "needs_evidence":
-      return "font-medium text-amber-700";
-    case "blocked":
-    case "approval_denied":
-    case "tool_unavailable":
-    case "failed":
-      return "font-medium text-red-700";
-    default:
-      return "font-medium text-slate-700";
-  }
-}
-
-function finalConfidenceLabel(confidence: string) {
-  switch (confidence) {
-    case "high":
-      return "置信度高";
-    case "medium":
-      return "置信度中";
-    case "low":
-      return "置信度低";
-    default:
-      return confidence ? `置信度${confidence}` : undefined;
-  }
-}
-
-const knownDiagnosticReplacements = [
-  {
-    old: "required evidence may be missing; do not use this failed tool as checked evidence",
-    value: "证据读取失败，不能作为已检查结果",
-  },
-  { old: "read_context_artifact", value: "读取上下文证据" },
-  { old: "read_mcp_resource", value: "读取 MCP 资源" },
-  { old: "list_mcp_resources", value: "列出 MCP 资源" },
-  { old: "coroot.collect_rca_context", value: "Coroot 根因分析上下文" },
-  { old: "coroot_collect_rca_context", value: "Coroot 根因分析上下文" },
-  { old: "coroot.list_services", value: "Coroot 服务列表" },
-  { old: "coroot_list_services", value: "Coroot 服务列表" },
-  { old: "coroot.incidents", value: "Coroot 异常事件" },
-  { old: "coroot_incidents", value: "Coroot 异常事件" },
-  { old: "tool_business_error", value: "工具执行失败" },
-] as const;
-
 function sanitizeAssistantDisplayText(text: string) {
   return text.trim();
-}
-
-function humanizeKnownToolName(value: string) {
-  let out = value;
-  for (const replacement of knownDiagnosticReplacements) {
-    if (replacement.old.includes(".") || replacement.old.includes("_")) {
-      out = out.split(replacement.old).join(replacement.value);
-    }
-  }
-  return out;
-}
-
-function humanizeUserVisibleDiagnostic(value: string) {
-  let out = value;
-  for (const replacement of knownDiagnosticReplacements) {
-    out = out.split(replacement.old).join(replacement.value);
-  }
-  out = out.replace(/(读取 MCP 资源|列出 MCP 资源|Coroot [^:：\n]+):\s*/g, "$1：");
-  return out;
-}
-
-function stringList(value: unknown) {
-  return Array.isArray(value)
-    ? value.map((item) => String(item || "").trim()).filter(Boolean)
-    : [];
-}
-
-function userVisibleStringList(value: unknown) {
-  return uniqueStringList(stringList(value).map(humanizeUserVisibleDiagnostic));
-}
-
-function failedToolImpactList(value: unknown) {
-  if (!Array.isArray(value)) {
-    return [];
-  }
-  return uniqueStringList(value.flatMap((item) => {
-    if (!item || typeof item !== "object") {
-      return [];
-    }
-    const record = item as Record<string, unknown>;
-    const rawName = String(record.toolName || record.toolCallId || "工具").trim();
-    const name = humanizeKnownToolName(rawName);
-    const detail = humanizeUserVisibleDiagnostic(String(record.impact || record.failureClass || "影响未知").trim());
-    const separator = name !== rawName ? "：" : ": ";
-    return name || detail ? [`${name}${separator}${detail}`] : [];
-  }));
-}
-
-function uniqueStringList(values: string[]) {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const value of values) {
-    const trimmed = value.trim();
-    if (!trimmed || seen.has(trimmed)) {
-      continue;
-    }
-    seen.add(trimmed);
-    out.push(trimmed);
-  }
-  return out;
 }

@@ -1911,6 +1911,8 @@ func TestTransportProjectorUsesTerminalStreamsFromStructuredCommandPreview(t *te
 		"inputSummary":"hostname",
 		"outputPreview":{
 			"command":"hostname",
+			"schemaVersion":"aiops.terminal/v1",
+			"hostId":"remote-120-77-239-90",
 			"status":"ok",
 			"stdout":"host-a\n",
 			"stderr":"",
@@ -1942,8 +1944,88 @@ func TestTransportProjectorUsesTerminalStreamsFromStructuredCommandPreview(t *te
 	if commandBlock.OutputPreview != "host-a" {
 		t.Fatalf("command output preview = %q, want stdout only", commandBlock.OutputPreview)
 	}
+	if commandBlock.HostID != "remote-120-77-239-90" {
+		t.Fatalf("command host ID = %q, want remote-120-77-239-90", commandBlock.HostID)
+	}
 	if strings.Contains(commandBlock.OutputPreview, "stdout") || strings.Contains(commandBlock.OutputPreview, "tool") {
 		t.Fatalf("command output preview leaked structured envelope: %q", commandBlock.OutputPreview)
+	}
+}
+
+func TestTransportProjectorProjectsTerminalHostForLegacyToolWithoutReclassifyingTools(t *testing.T) {
+	now := time.Date(2026, 5, 7, 14, 42, 0, 0, time.UTC)
+	terminalPreview, err := json.Marshal(map[string]any{
+		"schemaVersion": "aiops.terminal/v1",
+		"hostId":        "remote-120-77-239-90",
+		"status":        "ok",
+		"stdout":        strings.Repeat("x", 700),
+		"stderr":        "",
+		"exitCode":      0,
+	})
+	if err != nil {
+		t.Fatalf("marshal terminal preview: %v", err)
+	}
+	legacyPayload, err := json.Marshal(map[string]any{
+		"toolCallId":    "call-legacy-uptime",
+		"toolName":      "exec_command",
+		"displayKind":   "terminal",
+		"inputSummary":  "uptime",
+		"outputPreview": json.RawMessage(terminalPreview),
+	})
+	if err != nil {
+		t.Fatalf("marshal legacy payload: %v", err)
+	}
+	businessPayload := json.RawMessage(`{
+		"toolCallId":"call-business-report",
+		"toolName":"generate_business_report",
+		"displayKind":"business.report",
+		"inputSummary":"quarterly report",
+		"outputPreview":{
+			"schemaVersion":"business.report/v1",
+			"hostId":"business-host",
+			"status":"ok",
+			"stdout":"business content"
+		}
+	}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-legacy-terminal-host",
+		SessionID:   "session-1",
+		SessionType: runtimekernel.SessionTypeHost,
+		Mode:        runtimekernel.ModeInspect,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		CompletedAt: ptrTime(now.Add(time.Second)),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "legacy-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "uptime", Data: legacyPayload}, CreatedAt: now},
+			{ID: "business-result", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "business report", Data: businessPayload}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-1", "thread-1"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	byCallID := map[string]AiopsProcessBlock{}
+	for _, block := range projected.Turns[turn.ID].Process {
+		byCallID[block.ToolCallID] = block
+	}
+	legacy := byCallID["call-legacy-uptime"]
+	if legacy.Kind != AiopsTransportProcessKindTool || legacy.DisplayKind != "terminal" {
+		t.Fatalf("legacy terminal block = %#v, want tool kind with terminal display kind", legacy)
+	}
+	if legacy.HostID != "remote-120-77-239-90" {
+		t.Fatalf("legacy terminal host ID = %q, want remote-120-77-239-90", legacy.HostID)
+	}
+	if !strings.HasSuffix(legacy.OutputPreview, "…") {
+		t.Fatalf("legacy terminal output preview was not truncated: %q", legacy.OutputPreview)
+	}
+	business := byCallID["call-business-report"]
+	if business.Kind != AiopsTransportProcessKindTool || business.DisplayKind != "business.report" {
+		t.Fatalf("business block = %#v, want unchanged tool classification", business)
+	}
+	if business.HostID != "" {
+		t.Fatalf("business host ID = %q, want empty outside aiops.terminal/v1", business.HostID)
 	}
 }
 
