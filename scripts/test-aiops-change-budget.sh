@@ -6,6 +6,11 @@ CHECKER="${SCRIPT_DIR}/check-aiops-change-budget.sh"
 FIXTURE_ROOT="$(mktemp -d)"
 trap 'rm -rf "${FIXTURE_ROOT}"' EXIT
 
+# Fixture repositories have independent commit graphs, so audit refs inherited
+# from the outer CI job are invalid inside them. Individual cases inject refs
+# explicitly when that behavior is under test.
+unset AIOPS_HARNESS_BASE_REF AIOPS_HARNESS_HEAD_REF GITHUB_BASE_REF
+
 fail=0
 
 new_repo() {
