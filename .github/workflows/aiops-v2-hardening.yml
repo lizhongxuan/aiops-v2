@@ -53,6 +53,7 @@ jobs:
       - name: Run agent harness hardening gate
         env:
           AIOPS_HARNESS_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
+          AIOPS_HARNESS_HEAD_REF: ${{ github.event.pull_request.head.sha || github.sha }}
           AIOPS_HARNESS_REQUIRE_BASELINE_ACK: "1"
           AIOPS_CHANGE_BASELINE_ACK: "2026-07-14-harness-change-policy-bootstrap"
           AIOPS_CHANGE_BASELINE_REASON: "Commits before the permanent change gate are the reviewed harness rollout baseline."

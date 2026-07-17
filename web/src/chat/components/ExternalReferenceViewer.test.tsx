@@ -1,7 +1,7 @@
 import { act } from "react";
 import type { ComponentProps } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ExternalReferenceViewer } from "./ExternalReferenceViewer";
 import type { ExternalReferenceContent } from "@/api/externalReferences";
@@ -36,12 +36,13 @@ describe("ExternalReferenceViewer", () => {
     await clickViewButton();
 
     expect(container.textContent).toContain("正在读取原始证据");
-    resolveReference(makeReference({ content: "raw evidence" }));
-    await flush();
-    await flush();
-
-    expect(container.textContent).toContain("raw evidence");
-    expect(container.textContent).toContain("digest verified");
+    await act(async () => {
+      resolveReference(makeReference({ content: "raw evidence" }));
+    });
+    await waitForViewer(() => {
+      expect(container.textContent).toContain("raw evidence");
+      expect(container.textContent).toContain("digest verified");
+    });
   });
 
   it("shows an external reference load failure without blanking the tool block", async () => {
@@ -54,11 +55,11 @@ describe("ExternalReferenceViewer", () => {
     });
 
     await clickViewButton();
-    await flush();
-
-    expect(container.textContent).toContain("外溢摘要仍然可见");
-    expect(container.textContent).toContain("原始证据读取失败");
-    expect(container.textContent).toContain("not found");
+    await waitForViewer(() => {
+      expect(container.textContent).toContain("外溢摘要仍然可见");
+      expect(container.textContent).toContain("原始证据读取失败");
+      expect(container.textContent).toContain("not found");
+    });
   });
 
   it("shows digest mismatch without hiding content", async () => {
@@ -70,11 +71,10 @@ describe("ExternalReferenceViewer", () => {
     });
 
     await clickViewButton();
-    await flush();
-    await flush();
-
-    expect(container.textContent).toContain("digest mismatch");
-    expect(container.textContent).toContain("tampered");
+    await waitForViewer(() => {
+      expect(container.textContent).toContain("digest mismatch");
+      expect(container.textContent).toContain("tampered");
+    });
   });
 
   it("falls back for unknown kinds and empty content", async () => {
@@ -83,11 +83,10 @@ describe("ExternalReferenceViewer", () => {
     });
 
     await clickViewButton();
-    await flush();
-    await flush();
-
-    expect(container.textContent).toContain("unknown kind");
-    expect(container.textContent).toContain("没有可展示的原始内容");
+    await waitForViewer(() => {
+      expect(container.textContent).toContain("unknown kind");
+      expect(container.textContent).toContain("没有可展示的原始内容");
+    });
   });
 
   async function renderViewer(props: Partial<ComponentProps<typeof ExternalReferenceViewer>> = {}) {
@@ -102,6 +101,16 @@ describe("ExternalReferenceViewer", () => {
     await act(async () => {
       button?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+  }
+
+  async function waitForViewer(assertions: () => void) {
+    await vi.waitFor(async () => {
+      await act(async () => {
+        // Let WebCrypto and the resulting React update advance while act is active.
+        await new Promise((resolve) => window.setTimeout(resolve, 10));
+      });
+      assertions();
+    }, { interval: 0 });
   }
 });
 
@@ -122,8 +131,4 @@ function makeReference(overrides: Partial<ExternalReferenceContent> = {}): Exter
     raw: {},
     ...overrides,
   };
-}
-
-function flush() {
-  return act(() => new Promise((resolve) => window.setTimeout(resolve, 0)));
 }
