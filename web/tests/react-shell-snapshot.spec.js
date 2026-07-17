@@ -1,5 +1,11 @@
 import { expect, test } from "@playwright/test";
 
+import {
+  createChatFixtureSessions,
+  createChatFixtureState,
+  openFixturePage,
+} from "./helpers/uiFixtureHarness.js";
+
 function canonicalTranscript(process, final, artifacts = []) {
   const blocks = process.map((block) => ({
     ...block,
@@ -945,6 +951,638 @@ function completeTransportFixtureState(state) {
   };
 }
 
+function phase0OutputFixture({ name, userText, status = "idle", turnStatus = "completed", blocks, timeline = [] }) {
+  const turnId = `turn-${name}`;
+  const startedAt = "2026-07-16T06:00:00.000Z";
+  const completedAt = turnStatus === "completed" ? "2026-07-16T06:00:08.000Z" : undefined;
+  const active = turnStatus === "working";
+  const state = createChatFixtureState({
+    sessionId: name,
+    threadId: name,
+    status,
+    currentTurnId: turnId,
+    cards: [
+      {
+        id: `user-${name}`,
+        type: "UserMessageCard",
+        role: "user",
+        text: userText,
+        createdAt: startedAt,
+        updatedAt: startedAt,
+      },
+    ],
+    runtime: {
+      turn: { active, phase: active ? "thinking" : "completed" },
+      codex: { status: "connected", retryAttempt: 0, retryMax: 5 },
+      activity: {},
+    },
+    finalText: "",
+    turns: {
+      [turnId]: {
+        id: turnId,
+        status: turnStatus,
+        startedAt,
+        completedAt,
+        updatedAt: completedAt || "2026-07-16T06:00:03.000Z",
+        user: {
+          id: `user-${name}`,
+          text: userText,
+          createdAt: startedAt,
+        },
+        blockOrder: blocks.map((block) => block.id),
+        blocksById: Object.fromEntries(blocks.map((block) => [block.id, block])),
+        timeline,
+      },
+    },
+    turnOrder: [turnId],
+    runtimeLiveness: {
+      activeTurns: active ? { [turnId]: true } : {},
+      activeAgents: active ? { "agent-main": true } : {},
+      pendingApprovals: {},
+      pendingUserInputs: {},
+      activeCommandStreams: {},
+    },
+    updatedAt: completedAt || "2026-07-16T06:00:03.000Z",
+  });
+  return {
+    name,
+    state,
+    sessions: createChatFixtureSessions({
+      activeSessionId: name,
+      sessions: [
+        {
+          id: name,
+          kind: "single_host",
+          title: `Phase 0 ${name}`,
+          status: active ? "running" : "completed",
+          messageCount: 1,
+          preview: userText,
+          selectedHostId: "server-local",
+          lastActivityAt: completedAt || "2026-07-16T06:00:03.000Z",
+        },
+      ],
+    }),
+  };
+}
+
+function phase0RunningFixture() {
+  return phase0OutputFixture({
+    name: "output-contract-running",
+    userText: "检查当前运行状态，但不要提前显示最终结论。",
+    status: "working",
+    turnStatus: "working",
+    blocks: [],
+    timeline: [
+      {
+        id: "draft-running-trace",
+        type: "assistant_message",
+        status: "running",
+        text: "这段未分类草稿只能留在 trace 中。",
+        payloadKind: "unclassified",
+      },
+    ],
+  });
+}
+
+function phase0CompletedFixture() {
+  const finalText = "检查完成：服务状态稳定，最终答案只提交一次。";
+  return phase0OutputFixture({
+    name: "output-contract-completed",
+    userText: "完成检查后再给我最终结论。",
+    blocks: [
+      {
+        id: "final-output-contract-completed",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: finalText,
+        finalContract: {
+          id: "final-output-contract-completed",
+          text: finalText,
+          status: "verified",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "high",
+          checkedEvidenceRefs: ["evidence-output-contract"],
+        },
+      },
+    ],
+  });
+}
+
+function phase0RetryFixture() {
+  const supersededDraft = "旧的 retry 草稿不应进入普通聊天。";
+  return phase0OutputFixture({
+    name: "output-contract-retry",
+    userText: "如果模型重试，只显示最终提交的答案。",
+    blocks: [
+      {
+        id: "commentary-output-contract-retry",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "重试后重新校验只读证据。",
+      },
+      {
+        id: "final-output-contract-retry",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "重试完成：只保留这一次最终提交。",
+      },
+    ],
+    timeline: [
+      {
+        id: "draft-output-contract-retry",
+        type: "assistant_message",
+        status: "rejected",
+        text: supersededDraft,
+        payloadKind: "unclassified",
+      },
+    ],
+  });
+}
+
+function phase0ArtifactOrderingFixture() {
+  return phase0OutputFixture({
+    name: "output-contract-artifact-ordering",
+    userText: "按真实发生顺序展示检查、证据卡和最终结论。",
+    blocks: [
+      {
+        id: "commentary-before-artifact",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "先执行只读检查。",
+      },
+      {
+        id: "command-before-artifact",
+        type: "command",
+        kind: "command",
+        status: "completed",
+        text: "printf artifact-order-source",
+        command: "printf artifact-order-source",
+        outputPreview: "artifact-order-source",
+        toolCallId: "call-artifact-order",
+        foldGroupId: "action-artifact-order",
+        foldGroupKind: "command",
+      },
+      {
+        id: "artifact-ordering-evidence",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        text: "顺序验证证据卡",
+        artifact: {
+          id: "artifact-ordering-evidence",
+          type: "verification_result",
+          titleZh: "顺序验证证据卡",
+          summaryZh: "该证据卡紧跟来源工具出现。",
+          status: "ok",
+          source: "fixture",
+          inlineData: { check: "artifact-order-source", result: "passed" },
+        },
+      },
+      {
+        id: "commentary-after-artifact",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "证据卡生成后继续整理结论。",
+      },
+      {
+        id: "final-after-artifact",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "最终结论：工具、证据卡和回答顺序正确。",
+      },
+    ],
+  });
+}
+
+function phase4TypedActionGroupFixture() {
+  return phase0OutputFixture({
+    name: "typed-action-group",
+    userText: "用一组关联动作采集配置和 MCP 证据。",
+    blocks: [
+      {
+        id: "commentary-typed-action",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-file-action", "call-mcp-action"],
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "采集配置文件和 MCP 资源两类只读证据。",
+      },
+      {
+        id: "file-typed-action",
+        type: "file",
+        kind: "file",
+        displayKind: "file.read",
+        toolCallId: "call-file-action",
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取服务配置",
+        inputSummary: "/etc/payment-api/config.yaml",
+        outputPreview: "port: 8080",
+      },
+      {
+        id: "mcp-typed-action",
+        type: "mcp",
+        kind: "mcp",
+        displayKind: "mcp.action",
+        toolCallId: "call-mcp-action",
+        foldGroupId: "typed-action-1",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取 MCP 运维资源",
+        inputSummary: "ops://payment-api",
+        outputPreview: "resource available",
+      },
+      {
+        id: "approval-typed-action",
+        type: "approval",
+        kind: "approval",
+        displayKind: "approval",
+        status: "rejected",
+        text: "用户拒绝后续变更操作，审批记录保持独立可见。",
+        approvalId: "approval-typed-action",
+      },
+      {
+        id: "final-typed-action",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "只读证据采集完成；未执行被拒绝的变更。",
+      },
+    ],
+  });
+}
+
+function phase5LimitedFinalFixture() {
+  const finalText = "当前证据只能确认应用可访问；主机侧检查因连接失败尚未完成。";
+  return phase0OutputFixture({
+    name: "limited-final-contract",
+    userText: "说明当前能确认的结论和仍缺少的检查。",
+    blocks: [
+      {
+        id: "final-limited-contract",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "blocked",
+        text: finalText,
+        finalContract: {
+          id: "final-limited-contract",
+          text: finalText,
+          status: "needs_evidence",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+          checkedEvidenceRefs: ["evidence-http"],
+          uncheckedRequirements: ["主机进程状态"],
+          failedToolImpacts: [
+            {
+              toolName: "exec_command",
+              failureClass: "needs_host_agent",
+              impact: "目标主机连接不可用",
+            },
+          ],
+          limitations: ["尚未完成主机侧只读检查"],
+        },
+      },
+    ],
+  });
+}
+
+function phase6SingleToolFixture() {
+  return phase0OutputFixture({
+    name: "phase6-single-tool",
+    userText: "读取一个配置文件后给出结论。",
+    blocks: [
+      {
+        id: "phase6-single-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        toolCallIds: ["call-phase6-single-tool"],
+        foldGroupId: "phase6-single-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "先读取配置文件，再核对关键字段。",
+      },
+      {
+        id: "phase6-single-tool-row",
+        type: "file",
+        kind: "file",
+        displayKind: "file.read",
+        toolCallId: "call-phase6-single-tool",
+        foldGroupId: "phase6-single-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取 config.yaml",
+        inputSummary: "/srv/app/config.yaml",
+        outputPreview: "port: 8080",
+      },
+      {
+        id: "phase6-single-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "配置读取完成：服务监听端口为 8080。",
+      },
+    ],
+  });
+}
+
+function phase6CommonToolIconsFixture() {
+  return phase0OutputFixture({
+    name: "phase6-common-tool-icons",
+    userText: "分别执行 uptime 和 df -h /，最后总结结果。",
+    blocks: [
+      {
+        id: "phase6-common-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-phase6-uptime", "call-phase6-disk"],
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "分别执行两个独立的只读调用。",
+      },
+      {
+        id: "phase6-common-tool-uptime",
+        type: "tool",
+        kind: "tool",
+        displayKind: "terminal",
+        source: "exec_command",
+        inputSummary: "uptime",
+        text: "exec_command uptime",
+        toolCallId: "call-phase6-uptime",
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        outputPreview: JSON.stringify({
+          command: "uptime",
+          evidenceRefs: ["ev-phase6-common-uptime"],
+          exitCode: 0,
+          hostId: "remote-120-77-239-90",
+          schemaVersion: "aiops.terminal/v1",
+          source: "host.agent_http_exec",
+          status: "ok",
+          stderr: "",
+          stdout: " 17:10:05 up 246 days, 20:59, 0 users, load average: 0.03, 0.02, 0.00\n",
+          tool: "exec_command",
+        }),
+      },
+      {
+        id: "phase6-common-tool-disk",
+        type: "tool",
+        kind: "tool",
+        displayKind: "terminal",
+        source: "exec_command",
+        inputSummary: "df -h /",
+        text: "exec_command df -h /",
+        toolCallId: "call-phase6-disk",
+        foldGroupId: "phase6-common-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        outputPreview: JSON.stringify({
+          command: "df -h /",
+          evidenceRefs: ["ev-phase6-common-disk"],
+          exitCode: 0,
+          hostId: "remote-120-77-239-90",
+          schemaVersion: "aiops.terminal/v1",
+          source: "host.agent_http_exec",
+          status: "ok",
+          stderr: "",
+          stdout: "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda3        40G   31G  6.4G  83% /\n",
+          tool: "exec_command",
+        }),
+      },
+      {
+        id: "phase6-common-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        text: "系统负载较低，根分区当前使用率为 83%。",
+      },
+    ],
+  });
+}
+
+function phase6StreamErrorFixture() {
+  const fixture = phase0OutputFixture({
+    name: "phase6-stream-error",
+    userText: "分析当前服务状态。",
+    status: "failed",
+    turnStatus: "failed",
+    blocks: [
+      {
+        id: "phase6-stream-error-draft",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "unclassified",
+        streamState: "incomplete",
+        status: "failed",
+        text: "这段流中断草稿不能作为最终结论。",
+      },
+    ],
+  });
+  fixture.state.lastError = "模型流中断，已保留可追踪状态；本轮没有已验证结论。";
+  return fixture;
+}
+
+function phase6CanceledFixture() {
+  return phase0OutputFixture({
+    name: "phase6-canceled",
+    userText: "停止当前检查。",
+    status: "canceled",
+    turnStatus: "canceled",
+    blocks: [
+      {
+        id: "phase6-canceled-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "停止前完成的只读步骤仍可追踪。",
+      },
+      {
+        id: "phase6-canceled-draft",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "unclassified",
+        streamState: "incomplete",
+        status: "failed",
+        text: "正在等待模型返回",
+      },
+    ],
+  });
+}
+
+function phase6FailedToolFixture() {
+  const finalText = "当前只能确认应用入口可访问；主机侧读取失败，结论保持受限。";
+  return phase0OutputFixture({
+    name: "phase6-failed-tool",
+    userText: "检查应用和主机进程状态。",
+    blocks: [
+      {
+        id: "phase6-failed-tool-commentary",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-phase6-failed-tool"],
+        foldGroupId: "phase6-failed-tool-action",
+        foldGroupKind: "tool",
+        status: "completed",
+        text: "读取主机进程状态。",
+      },
+      {
+        id: "phase6-failed-tool-row",
+        type: "tool",
+        kind: "tool",
+        displayKind: "tool_error",
+        toolCallId: "call-phase6-failed-tool",
+        foldGroupId: "phase6-failed-tool-action",
+        foldGroupKind: "tool",
+        status: "failed",
+        text: "主机只读检查失败",
+        inputSummary: "读取进程状态",
+        outputPreview: "连接被拒绝",
+      },
+      {
+        id: "phase6-failed-tool-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "blocked",
+        text: finalText,
+        finalContract: {
+          id: "phase6-failed-tool-final",
+          text: finalText,
+          status: "needs_evidence",
+          schemaVersion: "aiops.harness.final.v1",
+          confidence: "low",
+          uncheckedRequirements: ["主机进程状态"],
+          failedToolImpacts: [{
+            toolName: "exec_command",
+            failureClass: "needs_host_agent",
+            impact: "主机进程证据未采集",
+          }],
+          limitations: ["主机侧读取失败"],
+        },
+      },
+    ],
+  });
+}
+
+function phase6ArtifactDurationFixture() {
+  return phase0OutputFixture({
+    name: "phase6-artifact-duration",
+    userText: "生成证据卡后继续分析，并只显示一次最终生成耗时。",
+    blocks: [
+      {
+        id: "phase6-duration-before",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "先采集第一段证据。",
+      },
+      {
+        id: "phase6-duration-artifact",
+        type: "artifact",
+        kind: "tool",
+        status: "completed",
+        text: "耗时验证证据卡",
+        artifact: {
+          id: "phase6-duration-artifact",
+          type: "verification_result",
+          titleZh: "耗时验证证据卡",
+          summaryZh: "证据卡将过程分成两段。",
+          status: "ok",
+          source: "fixture",
+          inlineData: { result: "passed" },
+        },
+      },
+      {
+        id: "phase6-duration-after",
+        type: "commentary",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "commentary",
+        streamState: "complete",
+        status: "completed",
+        text: "证据卡后继续整理。",
+      },
+      {
+        id: "phase6-duration-final",
+        type: "final_answer",
+        kind: "assistant",
+        displayKind: "assistant.message",
+        phase: "final_answer",
+        streamState: "complete",
+        status: "completed",
+        durationMs: 2400,
+        text: "最终回答只关联最后一段生成耗时。",
+      },
+    ],
+  });
+}
+
 async function routeShellApis(page, stateOrGetState) {
   await page.route("**/api/v1/sessions", async (route) => {
     await route.fulfill({ json: sessionsPayload });
@@ -989,12 +1627,13 @@ test("process transcript keeps narration and expanded search details aligned", a
   await page.goto("/");
   await expect(page.getByTestId("aiops-process-header")).toBeVisible();
   await page.getByTestId("aiops-process-header").click();
-  await page.getByTestId("aiops-search-toggle").click();
+  await page.getByTestId("aiops-search-toggle").last().click();
   await page.getByTestId("aiops-search-detail-row-toggle").first().click();
 
   const transcript = page.getByTestId("aiops-process-transcript-body");
   await expect(transcript).toContainText("接下来我要检查运行环境和最近任务状态。");
-  await expect(transcript).toContainText("网页搜索 2 次 · 找到 1 个来源");
+  await expect(page.getByTestId("aiops-search-toggle")).toHaveCount(2);
+  await expect(transcript).toContainText("网页搜索 1 次 · 找到 1 个来源");
   await expect(transcript).toContainText("https://example.com/aiops-v2-order");
   await expect(transcript).toHaveScreenshot("process-transcript-order-alignment.png");
 });
@@ -1010,14 +1649,12 @@ test("codex-like process transcript interleaves commentary and tools", async ({ 
   await expect(transcript).toHaveScreenshot("codex-like-process-transcript.png");
 });
 
-test("assistant final markdown keeps the same layout while running and after completion", async ({ page }) => {
+test("assistant final markdown appears only after terminal completion", async ({ page }) => {
   let resumeState = finalMarkdownState("working");
   await routeShellApis(page, () => resumeState);
 
   await page.goto("/");
-  const runningFinal = page.getByTestId("aiops-answer-document");
-  await expect(runningFinal).toBeVisible();
-  await expect(runningFinal).toHaveScreenshot("assistant-final-markdown-running.png");
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
 
   resumeState = finalMarkdownState("completed");
   await page.reload();
@@ -1026,18 +1663,17 @@ test("assistant final markdown keeps the same layout while running and after com
   await expect(completedFinal).toHaveScreenshot("assistant-final-markdown-completed.png");
 });
 
-test("final contract summary hides raw evidence refs", async ({ page }) => {
+test("clean verified final hides the contract summary and raw evidence refs", async ({ page }) => {
   await routeShellApis(page, finalContractSummaryState());
   await page.goto("/");
 
   const summary = page.getByTestId("aiops-final-contract-summary");
-  await expect(summary).toBeVisible();
-  await expect(summary).toContainText("已验证");
-  await expect(summary).toContainText("置信度高");
-  await expect(summary).toContainText("已采集 2 条证据");
-  await expect(summary).not.toContainText("call_secret_1");
-  await expect(summary).not.toContainText("call_secret_2");
-  await expect(summary).toHaveScreenshot("final-contract-summary-redacted-evidence.png");
+  await expect(summary).toHaveCount(0);
+  await expect(page.getByTestId("aiops-answer-document")).toContainText(
+    "以下是只读巡检结果：系统负载稳定，未执行任何修改。",
+  );
+  await expect(page.getByText("call_secret_1", { exact: false })).toHaveCount(0);
+  await expect(page.getByText("call_secret_2", { exact: false })).toHaveCount(0);
 });
 
 test("final contract summary hides internal low confidence calibration", async ({ page }) => {
@@ -1051,17 +1687,17 @@ test("final contract summary hides internal low confidence calibration", async (
   await expect(answer).toHaveScreenshot("final-contract-internal-calibration-hidden.png");
 });
 
-test("running assistant text keeps the process header before tool blocks arrive", async ({ page }) => {
+test("unclassified running assistant text stays hidden before tool blocks arrive", async ({ page }) => {
   await page.clock.setFixedTime(runningPreludeRenderedAt);
   await routeShellApis(page, runningPreludeBeforeToolsState());
 
   await page.goto("/");
   const transcript = page.getByTestId("aiops-process-transcript");
   await expect(page.getByTestId("aiops-process-header")).toContainText("处理中 1s");
-  await expect(page.getByTestId("aiops-answer-document")).toContainText(runningPreludeText);
-  await expect(page.getByText(runningPreludeText, { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+  await expect(page.getByText(runningPreludeText, { exact: true })).toHaveCount(0);
   await expect(page.getByTestId("aiops-process-transcript-body")).toHaveCount(0);
-  await expect(transcript.locator("..")).toHaveScreenshot("assistant-running-prelude-with-process-header.png");
+  await expect(transcript).toBeVisible();
 });
 
 test("long terminal output stays inside a scrollable output box", async ({ page }) => {
@@ -1115,7 +1751,9 @@ test("chat shows context compaction and externalized evidence states", async ({ 
   });
 
   await page.goto("/");
-  await expect(page.getByText("上下文过长，已使用本地摘要继续")).toBeVisible();
+  await expect(page.getByText("上下文过长，已使用本地摘要继续", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-process-transcript")).not.toContainText("上下文过长，已使用本地摘要继续");
+  await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
   await expect(page.getByText("正在重试压缩")).toHaveCount(0);
   await expect(page.getByText("已外溢")).toHaveCount(0);
   await expect(page.getByRole("button", { name: /查看原始证据/ })).toHaveCount(0);
@@ -1124,6 +1762,8 @@ test("chat shows context compaction and externalized evidence states", async ({ 
     await page.getByTestId("aiops-process-header").click();
   }
   await expect(toolRow).toBeVisible();
+  await expect(toolRow).toContainText("logs_query nginx timeout");
+  await expect(page.getByTestId("aiops-command-row-tool-context-spill")).toHaveCount(0);
   await toolRow.click();
   await expect(page.getByText("Large nginx log result was externalized. Summary: 17 upstream timeout lines.")).toBeVisible();
   await expect(page.getByText("结果较大，仅显示摘要。")).toHaveCount(0);
@@ -1180,4 +1820,205 @@ test("ops manual search and parameter confirmation merge into one card", async (
   await expect(card.getByText("server-local")).toBeVisible();
   await expect(card.getByText("docker:aiops-mysql")).toBeVisible();
   await expect(card).toHaveScreenshot("ops-manual-merged-param-confirmation.png");
+});
+
+test.describe("phase 0 output contract snapshots", () => {
+  test("running turn keeps unclassified draft out of chat", async ({ page }) => {
+    await page.clock.setFixedTime("2026-07-16T06:00:02.000Z");
+    await openFixturePage(page, "/", phase0RunningFixture());
+
+    await expect(page.getByText("这段未分类草稿只能留在 trace 中。", { exact: true })).toHaveCount(0);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    const transcript = page.getByTestId("aiops-process-transcript");
+    await expect(transcript).toContainText("处理中 2s");
+    await expect(transcript).toHaveScreenshot("phase0-running-no-final-draft.png");
+  });
+
+  test("completed turn shows one final without a success contract card", async ({ page }) => {
+    await openFixturePage(page, "/", phase0CompletedFixture());
+
+    await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+    const answer = page.getByTestId("aiops-answer-document");
+    await expect(answer).toContainText("检查完成：服务状态稳定，最终答案只提交一次。");
+    await expect(page.getByText("检查完成：服务状态稳定，最终答案只提交一次。", { exact: true })).toHaveCount(1);
+    await expect(answer).toHaveScreenshot("phase0-completed-single-final.png");
+  });
+
+  test("retry keeps superseded draft trace-only", async ({ page }) => {
+    await openFixturePage(page, "/", phase0RetryFixture());
+
+    await expect(page.getByText("旧的 retry 草稿不应进入普通聊天。", { exact: true })).toHaveCount(0);
+    await expect(page.getByText("重试完成：只保留这一次最终提交。", { exact: true })).toHaveCount(1);
+    await page.getByTestId("aiops-process-header").click();
+    const assistantTurn = page.getByTestId("aiops-process-transcript").locator("..");
+    await expect(assistantTurn).toContainText("重试后重新校验只读证据。");
+    await expect(assistantTurn).toHaveScreenshot("phase0-retry-superseded-draft-hidden.png");
+  });
+
+  test("artifact stays between its source tool and later final", async ({ page }) => {
+    await openFixturePage(page, "/", phase0ArtifactOrderingFixture());
+
+    const processHeaders = page.getByTestId("aiops-process-header");
+    await expect(processHeaders).toHaveCount(2);
+    await processHeaders.nth(0).click();
+    await processHeaders.nth(1).click();
+
+    const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
+    const visibleText = await assistantTurn.innerText();
+    const commentaryBefore = visibleText.indexOf("先执行只读检查。");
+    const sourceTool = visibleText.indexOf("printf artifact-order-source");
+    const artifact = visibleText.indexOf("顺序验证证据卡");
+    const commentaryAfter = visibleText.indexOf("证据卡生成后继续整理结论。");
+    const final = visibleText.indexOf("最终结论：工具、证据卡和回答顺序正确。");
+
+    expect(commentaryBefore).toBeGreaterThanOrEqual(0);
+    expect(sourceTool).toBeGreaterThan(commentaryBefore);
+    expect(artifact).toBeGreaterThan(sourceTool);
+    expect(commentaryAfter).toBeGreaterThan(artifact);
+    expect(final).toBeGreaterThan(commentaryAfter);
+    await expect(assistantTurn).toHaveScreenshot("phase0-artifact-visible-ordering.png");
+  });
+});
+
+test("typed action group uses commentary as one title and keeps approval outside the fold", async ({ page }) => {
+  await openFixturePage(page, "/", phase4TypedActionGroupFixture());
+
+  await page.getByTestId("aiops-process-header").click();
+  const actionToggle = page.getByTestId("aiops-merged-tool-toggle");
+  await expect(actionToggle).toContainText("采集配置文件和 MCP 资源两类只读证据。");
+  await expect(actionToggle).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("采集配置文件和 MCP 资源两类只读证据。", { exact: true })).toHaveCount(1);
+  await expect(page.getByTestId("aiops-process-transcript")).toContainText("用户拒绝后续变更操作，审批记录保持独立可见。");
+
+  await actionToggle.click();
+  await expect(page.getByTestId("aiops-tool-row-file-typed-action")).toBeVisible();
+  const mcpRow = page.getByTestId("aiops-tool-row-mcp-typed-action");
+  await expect(mcpRow).toBeVisible();
+  await expect(mcpRow).toContainText("ops://payment-api");
+  await expect(page.getByTestId("aiops-command-row-mcp-typed-action")).toHaveCount(0);
+  const assistantTurn = page.getByTestId("aiops-answer-document").locator("..");
+  await expect(assistantTurn).toHaveScreenshot("phase4-typed-action-group.png");
+});
+
+test("limited final keeps the answer while contract metadata stays internal", async ({ page }) => {
+  await openFixturePage(page, "/", phase5LimitedFinalFixture());
+
+  const answer = page.getByTestId("aiops-answer-document");
+  await expect(answer).toContainText("当前证据只能确认应用可访问");
+  await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+  await expect(page.getByText("证据不足", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("主机进程状态", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("目标主机连接不可用", { exact: true })).toHaveCount(0);
+  await expect(page.getByText("尚未完成主机侧只读检查", { exact: true })).toHaveCount(0);
+  await expect(answer.locator("..")).toHaveScreenshot("phase5-limited-final-contract.png");
+});
+
+test.describe("phase 6 output story snapshots", () => {
+  test("single typed tool action has one title, one lifecycle row, and one final", async ({ page }) => {
+    await openFixturePage(page, "/", phase6SingleToolFixture());
+
+    await page.getByTestId("aiops-process-header").click();
+    const action = page.getByTestId("aiops-merged-tool-toggle");
+    await expect(action).toContainText("先读取配置文件，再核对关键字段。");
+    await action.click();
+    await expect(page.getByTestId("aiops-tool-row-phase6-single-tool-row")).toHaveCount(1);
+    await expect(page.getByText("先读取配置文件，再核对关键字段。", { exact: true })).toHaveCount(1);
+    await expect(page.getByText("配置读取完成：服务监听端口为 8080。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-single-tool-story.png");
+  });
+
+  test("common command tools show their host and stdout without exposing the terminal envelope", async ({ page }) => {
+    await openFixturePage(page, "/", phase6CommonToolIconsFixture());
+
+    await page.getByTestId("aiops-process-header").click();
+    await page.getByTestId("aiops-merged-tool-toggle").click();
+    const uptimeRow = page.getByTestId("aiops-command-row-phase6-common-tool-uptime");
+    const diskRow = page.getByTestId("aiops-command-row-phase6-common-tool-disk");
+    const uptimeHost = page.getByTestId("aiops-command-host-phase6-common-tool-uptime");
+    const diskHost = page.getByTestId("aiops-command-host-phase6-common-tool-disk");
+    await expect(uptimeRow).toContainText("uptime");
+    await expect(diskRow).toContainText("df -h /");
+    await expect(uptimeHost).toHaveText("120.77.239.90");
+    await expect(diskHost).toHaveText("120.77.239.90");
+    await expect(page.getByTestId("aiops-command-label-region-phase6-common-tool-uptime")).toContainText(
+      "120.77.239.90·uptime",
+    );
+    await expect(page.getByTestId("aiops-command-label-region-phase6-common-tool-disk")).toContainText(
+      "120.77.239.90·df -h /",
+    );
+    await expect(uptimeRow).not.toContainText("exec_command");
+    await expect(diskRow).not.toContainText("exec_command");
+    await expect(uptimeRow).toHaveAccessibleName("终端命令：在 120.77.239.90 执行 uptime，已完成");
+    await expect(diskRow).toHaveAccessibleName("终端命令：在 120.77.239.90 执行 df -h /，已完成");
+    await expect(page.getByTestId("aiops-command-icon-phase6-common-tool-uptime")).toBeVisible();
+    await expect(page.getByTestId("aiops-command-icon-phase6-common-tool-disk")).toBeVisible();
+
+    await uptimeRow.click();
+    await diskRow.click();
+    const uptimeTerminal = page.getByTestId("aiops-terminal-card-phase6-common-tool-uptime");
+    const diskTerminal = page.getByTestId("aiops-terminal-card-phase6-common-tool-disk");
+    await expect(uptimeTerminal).toContainText("Shell · 120.77.239.90");
+    await expect(uptimeTerminal).toContainText("$ uptime");
+    await expect(diskTerminal).toContainText("Shell · 120.77.239.90");
+    await expect(diskTerminal).toContainText("$ df -h /");
+    await expect(page.getByTestId("aiops-command-output-phase6-common-tool-uptime")).toHaveText(
+      "17:10:05 up 246 days, 20:59, 0 users, load average: 0.03, 0.02, 0.00",
+    );
+    await expect(page.getByTestId("aiops-command-output-phase6-common-tool-disk")).toHaveText(
+      "Filesystem      Size  Used Avail Use% Mounted on\n/dev/vda3        40G   31G  6.4G  83% /",
+    );
+    const transcript = page.getByTestId("aiops-process-transcript");
+    await expect(transcript).not.toContainText("schemaVersion");
+    await expect(transcript).not.toContainText("hostId");
+    await expect(transcript).not.toContainText("stdout");
+    await expect(transcript).not.toContainText("exec_command");
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-common-tool-icons.png");
+  });
+
+  test("stream error hides incomplete draft and renders one typed error", async ({ page }) => {
+    await openFixturePage(page, "/", phase6StreamErrorFixture());
+
+    await expect(page.getByText("这段流中断草稿不能作为最终结论。", { exact: true })).toHaveCount(0);
+    await page.getByTestId("aiops-process-header").click();
+    await expect(page.getByText("模型流中断，已保留可追踪状态；本轮没有已验证结论。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    await expect(page.getByTestId("aiops-process-transcript").locator("..")).toHaveScreenshot("phase6-stream-error-story.png");
+  });
+
+  test("canceled turn removes model wait and final placeholders", async ({ page }) => {
+    await openFixturePage(page, "/", phase6CanceledFixture());
+
+    await expect(page.getByText("正在等待模型返回", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(/处理中/)).toHaveCount(0);
+    await expect(page.getByTestId("aiops-answer-document")).toHaveCount(0);
+    await page.getByTestId("aiops-process-header").click();
+    await expect(page.getByTestId("aiops-process-transcript")).toContainText("停止前完成的只读步骤仍可追踪。");
+    await expect(page.getByTestId("aiops-process-transcript").locator("..")).toHaveScreenshot("phase6-canceled-story.png");
+  });
+
+  test("failed tool, impact, and limited final remain traceable without duplication", async ({ page }) => {
+    await openFixturePage(page, "/", phase6FailedToolFixture());
+
+    const body = page.getByTestId("aiops-process-transcript-body");
+    if ((await body.count()) === 0) {
+      await page.getByTestId("aiops-process-header").click();
+    }
+    await expect(page.getByTestId("aiops-tool-row-phase6-failed-tool-row")).toHaveCount(1);
+    await expect(page.getByText("主机进程证据未采集", { exact: false })).toHaveCount(0);
+    await expect(page.getByTestId("aiops-final-contract-summary")).toHaveCount(0);
+    await expect(page.getByText("当前只能确认应用入口可访问；主机侧读取失败，结论保持受限。", { exact: true })).toHaveCount(1);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-failed-tool-story.png");
+  });
+
+  test("artifact-split process keeps final duration metadata out of chat", async ({ page }) => {
+    await openFixturePage(page, "/", phase6ArtifactDurationFixture());
+
+    const headers = page.getByTestId("aiops-process-header");
+    await expect(headers).toHaveCount(2);
+    await headers.nth(0).click();
+    await headers.nth(1).click();
+    await expect(page.getByText(/整理最终回答/)).toHaveCount(0);
+    await expect(page.getByTestId("aiops-final-generation-duration")).toHaveCount(0);
+    await expect(page.getByTestId("aiops-answer-document").locator("..")).toHaveScreenshot("phase6-artifact-duration-once.png");
+  });
 });

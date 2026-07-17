@@ -261,3 +261,14 @@
 - 验证结果：三项 RED 分别复现 Enter 无 command、旧 running Final 残留、第三次失败后工具仍可见；context artifact 额外 RED 证明 4096 字节预算会把 4900 字节的 bounded result 再次 spill。GREEN 后 `go test ./internal/runtimekernel ./internal/appui -count=1`、Web typecheck 和 124 个 Vitest 文件/908 tests 全部通过；Playwright 用中文紧邻的 `@Coroot`、真实 Enter 操作验证特殊标签与 typed metadata，focused browser suite 3/3 通过。最新生产二进制的全新真实回合中，服务端确认 `mentionValidation=confirmed`、Coroot route/tool allowed 均为 true；Coroot 登录超时后只调用一次 `coroot_list_services` 即输出受限终态。内置浏览器展开 completed process 后过程文案计数 1、失败工具计数 1、`read_context_artifact` 计数 0，console error/warn 为 0。
 - 风险与后续：
 入第二套 timeline 或 route 事实源。
+
+## 2026-07-16 17:14 - AI Chat 未分类草稿提前成为 final、过程错序并重复展示
+
+- 修复时间：2026-07-16 17:14（Asia/Shanghai）。
+- Bug 现象与影响：模型仍在生成或准备调用工具时，未分类草稿会先出现在最终回答区；`model_call`/reasoning 等 trace 被提升为普通聊天过程；tool、artifact、final 按类型分桶后可能错序；commentary、工具卡与成功态 FinalContract 又会重复表达同一事实。无工具、单工具、多工具、retry、stream error、cancel、approval、artifact 和失败工具场景均可能出现闪烁、重复或顺序混乱。
+- 已确认根因：Runtime 在 provider 完成分类前写入 `phase=final_answer`；Transport 没有集中 typed visibility policy，并在收尾时按类型重建 `blockOrder`；commentary 与 tool 缺少稳定 action identity；React/converter 通过可见文本、业务关键词和 JSON 行修复上游协议问题，形成多套 final/process 语义。
+- 修复方式：Runtime 将增量草稿持久化为不可见的 `unclassified`，只在结构化 response facts、evidence boundary 和唯一 terminal commit 后提交 final；Transport 以 typed policy 隐藏 trace/retry draft，并按 block 第一次可见位置增量登记顺序，tool call/result 原位更新、artifact 紧跟来源；commentary 与 tool 通过 `toolCallIds`、`displayKind`、`foldGroupId` 归组；React 只渲染 canonical typed blocks，正常 verified final 隐藏独立成功卡，异常限制继续可见。P0 门禁同时修复了 case ID 被 secret scanner 误报为 API key 的边界问题。
+- 关键修改：`internal/runtimekernel/assistant_output_commit.go`、`assistant_message_boundary.go`、`runtime_kernel.go`、`internal/appui/transport_presentation_policy.go`、`transport_block_order.go`、`transport_process_grouping.go`、`transport_projector.go`、`web/src/transport/aiopsTransportConverter.ts`、`web/src/chat/components/AiopsThread.tsx`、`ProcessTranscript.tsx`；故事链、Vitest、Playwright fixture/screenshot 和 rollout replay golden 均同步更新。
+- 验证结果：新增测试先复现再修复；`go test ./... -count=1`、124 个 Vitest 文件/915 tests、typecheck、build、Playwright 23/23、artifact 顺序 screenshot 10/10、boundary/change-budget self-test 与固定基线 gate、`scripts/aichat-harness-hardening-gate.sh` 均以 exit code 0 通过。P0 self-opt run `self-opt-20260716T091424Z-1` 的真实 AIOps core 8/8、synthetic 5/5、selfopt 6/6，`overall=1`、`gate=pass`、`worse=0`，secret scan 通过。
+- 真实页面验收：终端 Playwright 与应用内浏览器均使用真实 provider 操作页面。普通咨询为 1 final/0 process/0 tool；单工具为 1 final/1 process group/1 tool；双工具为 1 final/1 process group/2 tools。刷新与历史恢复后正文和分组一致，浏览器 console 为 0 error/0 warning；运行中未出现未分类 final，完成后的过程默认折叠。
+- 剩余风险：前端 build 仍有既有的大 chunk 警告，`npm ci` 报告 16 个既有依赖审计项（4 high）；要求执行证据但未生成 VerificationReport 的只读主机回答会按设计显示可行动的 `needs_evidence` 限制卡。依赖升级不属于本计划范围。未变更 provider 协议、工具路由、permission、approval、evidence gate 或 ToolDispatcher；未记录凭据、主机敏感信息或完整高风险命令输出。

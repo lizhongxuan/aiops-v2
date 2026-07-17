@@ -116,6 +116,46 @@ func TestTransportProjectorIncludesHostMissionAndChildAgents(t *testing.T) {
 	}
 }
 
+func TestTransportProjectorKeepsOneLifecycleBlockWhenToolResultAddsTypedKind(t *testing.T) {
+	now := time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)
+	projector := NewTransportProjector()
+	state := NewAiopsTransportState("session-typed-tool-lifecycle", "thread-typed-tool-lifecycle")
+	callData := json.RawMessage(`{"toolCallId":"call-host-agent","toolName":"spawn_host_agent","inputSummary":"启动只读子任务"}`)
+	resultData := json.RawMessage(`{"toolCallId":"call-host-agent","toolName":"spawn_host_agent","displayKind":"hostops.spawn_host_agent","inputSummary":"启动只读子任务","outputSummary":"子任务已完成","outputPreview":{"children":[]}}`)
+	turn := &runtimekernel.TurnSnapshot{
+		ID:          "turn-typed-tool-lifecycle",
+		SessionID:   "session-typed-tool-lifecycle",
+		SessionType: runtimekernel.SessionTypeWorkspace,
+		Mode:        runtimekernel.ModeChat,
+		Lifecycle:   runtimekernel.TurnLifecycleCompleted,
+		StartedAt:   now,
+		UpdatedAt:   now.Add(time.Second),
+		AgentItems: []agentstate.TurnItem{
+			{ID: "call-item", Type: agentstate.TurnItemTypeToolCall, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "spawn_host_agent", Data: callData}, CreatedAt: now},
+			{ID: "result-item", Type: agentstate.TurnItemTypeToolResult, Status: agentstate.ItemStatusCompleted, Payload: agentstate.PayloadEnvelope{Kind: "tool", Summary: "子任务已完成", Data: resultData}, CreatedAt: now.Add(time.Second)},
+		},
+	}
+
+	projected, err := projector.ProjectTurnSnapshot(state, turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	projectedTurn := projected.Turns[turn.ID]
+	matching := make([]AiopsTransportBlock, 0, 1)
+	for _, id := range projectedTurn.BlockOrder {
+		block := projectedTurn.BlocksByID[id]
+		if block.ToolCallID == "call-host-agent" {
+			matching = append(matching, block)
+		}
+	}
+	if len(matching) != 1 {
+		t.Fatalf("tool lifecycle blocks = %#v, want exactly one block for one toolCallId", matching)
+	}
+	if matching[0].Kind != AiopsTransportProcessKindSubagent || matching[0].ID != "block:turn-typed-tool-lifecycle:tool:call-host-agent" {
+		t.Fatalf("tool lifecycle block = %#v, want typed result in first-visible stable id", matching[0])
+	}
+}
+
 func TestTransportProjectorMarksHostOpsApprovalBlockAsBlocked(t *testing.T) {
 	now := time.Date(2026, 6, 11, 12, 0, 0, 0, time.UTC)
 	projector := NewTransportProjector()

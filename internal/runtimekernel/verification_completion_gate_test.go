@@ -16,6 +16,40 @@ import (
 	"aiops-v2/internal/verification"
 )
 
+func TestAppendVerificationCompletionGateItemBackfillsTypedKind(t *testing.T) {
+	itemID := "turn-gate-kind-verification-completion-gate-0"
+	snapshot := &TurnSnapshot{
+		ID:        "turn-gate-kind",
+		SessionID: "session-gate-kind",
+		AgentItems: []agentstate.TurnItem{{
+			ID:     itemID,
+			Type:   agentstate.TurnItemTypeEvidence,
+			Status: agentstate.ItemStatusCompleted,
+			Payload: agentstate.PayloadEnvelope{
+				Summary: "legacy gate summary",
+			},
+		}},
+	}
+	decision := VerificationCompletionDecision{
+		Action:  VerificationCompletionActionBlockSuccessFinal,
+		Reasons: []string{"missing_verification_report"},
+	}
+
+	appendVerificationCompletionGateItem(snapshot, snapshot.ID, 0, decision)
+
+	if len(snapshot.AgentItems) != 1 {
+		t.Fatalf("agent items = %#v, want existing item updated in place", snapshot.AgentItems)
+	}
+	item := snapshot.AgentItems[0]
+	if item.Payload.Kind != VerificationCompletionGateItemKind || item.Status != agentstate.ItemStatusBlocked {
+		t.Fatalf("gate item = %#v, want typed kind and blocked status", item)
+	}
+	var got VerificationCompletionDecision
+	if err := json.Unmarshal(item.Payload.Data, &got); err != nil || got.Action != decision.Action {
+		t.Fatalf("gate decision = %#v err=%v, want updated typed payload", got, err)
+	}
+}
+
 func TestVerificationCompletionGateRequiresExecutionReportForComplexTask(t *testing.T) {
 	decision := EvaluateVerificationCompletionGate(taskdepth.Profile{
 		Level:              taskdepth.LevelOperations,
@@ -193,6 +227,15 @@ func TestRunTurnVerificationCompletionGateRecordsMissingReportWithoutProseRetry(
 	}
 	if !hasAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeEvidence, agentstate.ItemStatusBlocked) {
 		t.Fatalf("agent items missing blocked verification gate item: %#v", session.CurrentTurn.AgentItems)
+	}
+	gateItemKind := ""
+	for _, item := range session.CurrentTurn.AgentItems {
+		if item.Type == agentstate.TurnItemTypeEvidence && item.Status == agentstate.ItemStatusBlocked {
+			gateItemKind = item.Payload.Kind
+		}
+	}
+	if gateItemKind != VerificationCompletionGateItemKind {
+		t.Fatalf("verification gate item kind = %q, want %q", gateItemKind, VerificationCompletionGateItemKind)
 	}
 	data := readRuntimeTrace(t, session.CurrentTurn.Iterations[1].ModelInputTraceFile)
 	for _, want := range []string{`"completionGate"`, `"block_success_final"`, `"missing_verification_report"`, `"execution_required"`} {

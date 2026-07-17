@@ -1,4 +1,4 @@
-import { Bot, ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
+import { ChevronDown, FileSearch, ListChecks, Search, SquareTerminal, Wrench, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { cn } from "@/lib/utils";
@@ -77,7 +77,6 @@ type ProcessTranscriptProps = {
   turnStartedAt?: string;
   turnCompletedAt?: string;
   turnUpdatedAt?: string;
-  finalDurationMs?: number;
   finalText?: string;
   renderFinalText?: boolean;
   onApprovalDecision?: ApprovalDecisionHandler;
@@ -89,6 +88,34 @@ const TOOL_TRANSCRIPT_TEXT_CLASS = "text-[14px] leading-6";
 const TOOL_TRANSCRIPT_CHILD_INDENT_CLASS = "pl-3";
 const MAX_TOOL_OUTPUT_PREVIEW_CHARS = 480;
 type TranscriptGroupKind = "search" | "command" | "tool" | "mcp" | "file" | "";
+type FamiliarToolIconKind = "command" | "file";
+
+type FamiliarToolPresentation = {
+  iconKind: FamiliarToolIconKind;
+  accessibleLabel: string;
+};
+
+const COMMAND_TOOL_SOURCES = new Set(["exec_command"]);
+const COMMAND_TOOL_DISPLAY_KINDS = new Set(["command", "exec_command", "terminal.command", "host.command"]);
+const FILE_READ_TOOL_SOURCES = new Set(["read_file"]);
+const FILE_READ_DISPLAY_KINDS = new Set(["file.read", "read_file"]);
+const SOURCE_FALLBACK_DISPLAY_KINDS = new Set(["", "tool", "terminal", "file"]);
+
+const SEARCH_DISPLAY_KINDS = new Set([
+  "web_search",
+  "web.search",
+  "search_web",
+  "browse_url",
+  "browser",
+  "browser.open",
+]);
+
+const TRACE_ONLY_DISPLAY_KINDS = new Set([
+  "model_call",
+  "model.call",
+  "model_wait",
+  "model.wait",
+]);
 
 /**
  * Represents either a single block (reasoning or standalone tool) or a merged group
@@ -105,23 +132,24 @@ export function ProcessTranscript({
   turnStartedAt,
   turnCompletedAt,
   turnUpdatedAt,
-  finalDurationMs,
   finalText,
   renderFinalText = true,
 }: ProcessTranscriptProps) {
   const projectedAgentProcess = useMemo(() => agentStepsToProcessBlocks(agentSteps || []), [agentSteps]);
   const sourceProcess = process.length ? process : projectedAgentProcess;
-  const visibleProcess = useMemo(() => sourceProcess.filter(shouldShowInTranscript), [sourceProcess]);
+  const visibleProcess = useMemo(
+    () => dedupeTypedModelPreludes(sourceProcess).filter(shouldShowInTranscript),
+    [sourceProcess],
+  );
   const running = isProcessRunning(visibleProcess, turnStatus);
   const waiting = isProcessWaiting(visibleProcess, turnStatus);
-  const explicitFinalText = sanitizeFinalTranscriptText(finalText?.trim() || "");
+  const live = running || waiting;
+  const explicitFinalText = finalText?.trim() || "";
   const processBlocks = visibleProcess;
-  const renderedFinalText = explicitFinalText.trim();
+  const renderedFinalText = shouldRenderFinalTranscriptText(turnStatus) ? explicitFinalText : "";
   const hasMeaningful = hasMeaningfulContent(processBlocks);
   const hasTurnTiming = Boolean(turnStartedAt || turnCompletedAt || turnUpdatedAt);
-  const live = running || waiting;
-  const finalGenerationLabel = live ? "" : formatFinalGenerationDuration(finalDurationMs);
-  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming || Boolean(finalGenerationLabel);
+  const shouldRenderProcess = processBlocks.length > 0 || running || waiting || hasTurnTiming;
   const fallbackStartRef = useRef(Date.now());
   const [nowMs, setNowMs] = useState(Date.now());
   const [open, setOpen] = useState(live);
@@ -205,7 +233,7 @@ export function ProcessTranscript({
             <DisclosureChevron open={open} testId="aiops-process-header-chevron" />
           </button>
 
-          {open && (processGroups.length || finalGenerationLabel || (running && hasMeaningful)) ? (
+          {open && hasMeaningful ? (
             <div className="space-y-3 pb-2 pt-3" data-testid="aiops-process-transcript-body">
               {processGroups.length ? (
                 <div className="space-y-2">
@@ -218,21 +246,11 @@ export function ProcessTranscript({
                   ))}
                 </div>
               ) : null}
-              {finalGenerationLabel ? <FinalGenerationDuration label={finalGenerationLabel} /> : null}
             </div>
           ) : null}
         </>
       ) : null}
       {renderFinalText && renderedFinalText ? <AssistantFinalText text={renderedFinalText} /> : null}
-    </div>
-  );
-}
-
-function FinalGenerationDuration({ label }: { label: string }) {
-  return (
-    <div className="flex items-center gap-1.5 text-[13px] leading-6 text-slate-400" data-testid="aiops-final-generation-duration">
-      <span className="h-1.5 w-1.5 rounded-full bg-slate-300" aria-hidden="true" />
-      <span>{label}</span>
     </div>
   );
 }
@@ -306,19 +324,6 @@ function processStatusForAgentStep(status?: AgentStepView["status"]): AiopsTrans
   }
 }
 
-function isRawRuntimeFailureText(text: string) {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.includes("failed to receive stream chunk") ||
-    normalized.includes("context deadline exceeded") ||
-    normalized.includes("stream chunk") ||
-    normalized.includes("upstream request timeout")
-  );
-}
-
 function processHeaderLabel({ running, waiting }: { running: boolean; waiting: boolean }) {
   if (running) {
     return "处理中";
@@ -330,65 +335,48 @@ function processHeaderLabel({ running, waiting }: { running: boolean; waiting: b
 }
 
 function shouldShowInTranscript(block: AiopsProcessBlock) {
-  const text = (block.text || block.command || block.outputPreview || "").trim().toLowerCase();
+  const text = (block.text || block.command || block.outputPreview || "").trim();
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  if (block.kind === "assistant" && block.phase === "final_answer") {
+    return false;
+  }
+  if (block.kind === "reasoning" && TRACE_ONLY_DISPLAY_KINDS.has(displayKind)) {
+    return false;
+  }
   if (block.kind === "approval") {
     return Boolean(text || block.approvalId || block.targetSummary || block.riskSummary || block.expectedEffect);
   }
-  if (isCorootInternalReuseBlock(block)) {
-    return false;
-  }
-  if (isRuntimeInternalGateText(text)) {
-    return false;
-  }
-  if (block.kind === "assistant" && isRiskyOperationalAdviceText(text)) {
-    return false;
-  }
   if (!text && !block.steps?.length && !block.queries?.length && !block.results?.length) {
-    return false;
-  }
-  if (block.kind === "reasoning" && text === "model response received") {
     return false;
   }
   return true;
 }
 
-function isCorootInternalReuseBlock(block: AiopsProcessBlock) {
-  const source = (block.source || block.displayKind || "").toLowerCase();
-  if (!source.includes("coroot")) {
-    return false;
-  }
-  return [block.text, block.outputPreview, block.inputSummary, block.displayKind]
-    .some((value) => (value || "").toLowerCase().includes("covered_by_prior_broad_query"));
-}
-
-function isRuntimeInternalGateText(text: string) {
-  return [
-    "verification completion gate",
-    "block_success_final",
-    "missing_verification_report",
-    "execution_required,missing_verification_report",
-  ].some((marker) => text.includes(marker));
-}
-
-function sanitizeFinalTranscriptText(text: string) {
-  if (!text) {
-    return "";
-  }
-  return isRiskyOperationalAdviceText(text.toLowerCase()) ? "" : text;
-}
-
-function isRiskyOperationalAdviceText(text: string) {
-  return /(rm\s+-rf|删除|清理).{0,120}(archive|wal|pgdata|数据目录|归档)/i.test(text);
+function dedupeTypedModelPreludes(blocks: AiopsProcessBlock[]) {
+  const seenIterations = new Set<number>();
+  return blocks.filter((block) => {
+    if (block.commentarySource !== "model_prelude" || typeof block.iteration !== "number") {
+      return true;
+    }
+    if (seenIterations.has(block.iteration)) {
+      return false;
+    }
+    seenIterations.add(block.iteration);
+    return true;
+  });
 }
 
 function isSearchLikeBlock(block: AiopsProcessBlock) {
-  if (block.kind === "search") {
-    return true;
-  }
-  const candidates = [block.displayKind, block.source, block.command].map((value) => (value || "").toLowerCase().trim());
-  return candidates.some((value) =>
-    /^(web_search|web[._-]search|search_web|browse_url|browser(?:[._-]|$))/.test(value),
-  );
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  return block.foldGroupKind === "web_lookup" || block.kind === "search" || SEARCH_DISPLAY_KINDS.has(displayKind);
+}
+
+function isTerminalTurnStatus(turnStatus?: string) {
+  return turnStatus === "completed" || turnStatus === "failed" || turnStatus === "canceled";
+}
+
+function shouldRenderFinalTranscriptText(turnStatus: string | undefined) {
+  return !turnStatus || isTerminalTurnStatus(turnStatus);
 }
 
 function isProcessRunning(process: AiopsProcessBlock[], turnStatus?: string) {
@@ -414,6 +402,9 @@ function isProcessWaiting(process: AiopsProcessBlock[], turnStatus?: string) {
 function hasMeaningfulContent(blocks: AiopsProcessBlock[]): boolean {
   return blocks.some((block) => {
     if (block.kind === "reasoning") {
+      if (isBlockActive(block)) {
+        return false;
+      }
       const text = (block.text || "").trim().toLowerCase();
       return text !== "" && text !== "calling model";
     }
@@ -440,7 +431,11 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
 
     const consecutive: AiopsProcessBlock[] = [block];
     let j = i + 1;
-    while (j < blocks.length && groupingKindForBlock(blocks[j]) === groupKind) {
+    while (
+      j < blocks.length &&
+      groupingKindForBlock(blocks[j]) === groupKind &&
+      hasSameFoldIdentity(block, blocks[j])
+    ) {
       consecutive.push(blocks[j]);
       j += 1;
     }
@@ -456,19 +451,32 @@ export function groupConsecutiveBlocks(blocks: AiopsProcessBlock[]): ProcessGrou
   return groups;
 }
 
+function hasSameFoldIdentity(left: AiopsProcessBlock, right: AiopsProcessBlock) {
+  const leftFoldGroupId = (left.foldGroupId || "").trim();
+  const rightFoldGroupId = (right.foldGroupId || "").trim();
+  const leftFoldGroupKind = (left.foldGroupKind || "").trim().toLowerCase();
+  const rightFoldGroupKind = (right.foldGroupKind || "").trim().toLowerCase();
+  return Boolean(
+    leftFoldGroupId &&
+    rightFoldGroupId &&
+    leftFoldGroupId === rightFoldGroupId &&
+    leftFoldGroupKind &&
+    leftFoldGroupKind === rightFoldGroupKind
+  );
+}
+
 function groupingKindForBlock(block: AiopsProcessBlock): TranscriptGroupKind {
-  const explicitKind = (block.foldGroupKind || "").trim();
+  const explicitKind = (block.foldGroupKind || "").trim().toLowerCase();
   if (explicitKind === "web_lookup") {
     return "search";
   }
-  if (explicitKind === "command") {
-    return "command";
-  }
-  if (isSearchLikeBlock(block)) {
-    return "search";
-  }
-  if (block.kind === "command") {
-    return "command";
+  if (
+    explicitKind === "command" ||
+    explicitKind === "tool" ||
+    explicitKind === "mcp" ||
+    explicitKind === "file"
+  ) {
+    return explicitKind;
   }
   return "";
 }
@@ -584,13 +592,15 @@ function MergedToolSummary({
 }: {
   group: Extract<ProcessGroup, { kind: "merged" }>;
 }) {
-  const text = getMergedGroupSummaryText(group);
-  const details = group.blocks.map(mergedBlockDetail).filter((detail) => detail.text);
-  const toolLike = group.blocks.some((block) => {
-    const kind = groupingKindForBlock(block);
-    return kind === "tool" || kind === "mcp";
-  });
-  const [open, setOpen] = useState(group.mergedKind === "command" || toolLike || group.blocks.some(isBlockActive));
+  const actionTitle = group.blocks.find(
+    (block) => block.kind === "assistant" && block.phase === "commentary",
+  );
+  const actionBlocks = actionTitle ? group.blocks.filter((block) => block.id !== actionTitle.id) : group.blocks;
+  const text = actionTitle?.text?.trim() || getMergedGroupSummaryText(group, actionBlocks);
+  const details = actionBlocks.map(mergedBlockDetail).filter((detail) => detail.text);
+  const [open, setOpen] = useState(
+    actionBlocks.some((block) => isBlockActive(block) || block.status === "failed" || block.status === "rejected" || block.status === "blocked"),
+  );
   if (!details.length) {
     return (
       <div className={cn("flex min-w-0 items-center gap-1.5 text-slate-400", TOOL_TRANSCRIPT_TEXT_CLASS)}>
@@ -610,6 +620,7 @@ function MergedToolSummary({
         )}
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
+        data-testid={`aiops-merged-${group.mergedKind}-toggle`}
       >
         <ToolSummaryIcon kind={group.mergedKind} testId={`aiops-merged-${group.mergedKind}-icon`} />
         <span className="min-w-0 truncate">{text}</span>
@@ -623,11 +634,11 @@ function MergedToolSummary({
           )}
           data-testid={`aiops-merged-${group.mergedKind}-details`}
         >
-          {details.map((detail, index) =>
-            detail.kind === "command" ? (
-              <CommandDetailRow key={`${detail.id}:${index}`} detail={detail} />
+          {details.map((detail) =>
+            detail.kind === "command" || detail.terminalTool ? (
+              <CommandDetailRow key={detail.id} detail={detail} showSummaryIcon={detail.terminalTool} />
             ) : (
-              <ToolDetailRow key={`${detail.id}:${index}`} detail={detail} />
+              <ToolDetailRow key={detail.id} detail={detail} />
             ),
           )}
         </div>
@@ -645,6 +656,10 @@ function ToolDetailRow({
 }) {
   const hasOutput = Boolean(detail.output);
   const toolRunning = detail.status === "running" || detail.status === "queued";
+  const summaryIconKind = detail.summaryIconKind || (showSummaryIcon ? detail.kind : "");
+  const summaryLabel = toolDetailSummaryLabel(detail);
+  const rowStatus = statusLabel(detail.status);
+  const accessibleSummary = detail.text || (summaryIconKind === "command" ? "命令" : "工具调用");
   const [open, setOpen] = useState(toolRunning);
   useEffect(() => {
     if (!toolRunning) {
@@ -661,15 +676,23 @@ function ToolDetailRow({
         )}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-label={
+          detail.summaryIconLabel ? `${detail.summaryIconLabel}：${accessibleSummary}，${rowStatus}` : undefined
+        }
         data-testid={`aiops-tool-row-${detail.id}`}
       >
-        <span className="flex min-w-0 flex-1 items-center gap-1.5">
-          {showSummaryIcon ? (
-            <ToolSummaryIcon kind={detail.kind} testId={`aiops-tool-icon-${detail.id}`} />
+        <span
+          className="flex min-w-0 flex-1 items-center gap-1.5"
+          data-testid={`aiops-tool-label-region-${detail.id}`}
+        >
+          {summaryIconKind ? (
+            <span className="inline-flex shrink-0" title={detail.summaryIconLabel || undefined}>
+              <ToolSummaryIcon kind={summaryIconKind} testId={`aiops-tool-icon-${detail.id}`} />
+            </span>
           ) : null}
-          <span className="min-w-0 truncate">{toolDetailSummaryLabel(detail)}</span>
+          <span className="min-w-0 truncate">{summaryLabel}</span>
         </span>
-        <span className="shrink-0 text-[13px] text-slate-400">{statusLabel(detail.status)}</span>
+        <span className="shrink-0 text-[13px] text-slate-400">{rowStatus}</span>
         <DisclosureChevron open={open} testId={`aiops-tool-chevron-${detail.id}`} />
       </button>
       {open && hasOutput ? (
@@ -694,8 +717,17 @@ function CommandDetailRow({
 }) {
   const hasOutput = Boolean(detail.output);
   const commandRunning = detail.status === "running" || detail.status === "queued";
-  const rowStatus = commandRowStatusLabel(detail.status);
+  const rowStatus = detail.terminalTool ? statusLabel(detail.status) : commandRowStatusLabel(detail.status);
   const cardStatus = terminalCardStatusLabel(detail.status);
+  const summaryIconKind = detail.summaryIconKind || (showSummaryIcon ? detail.kind : "");
+  const commandText = detail.text || "命令";
+  const showHostAwareCommand = detail.terminalTool || Boolean(detail.hostLabel);
+  const accessibleCommand = detail.hostLabel
+    ? `在 ${detail.hostLabel} 执行 ${commandText}`
+    : commandText;
+  const accessibleLabel = showHostAwareCommand
+    ? `终端命令：${accessibleCommand}${rowStatus ? `，${rowStatus}` : ""}`
+    : undefined;
   const [open, setOpen] = useState(commandRunning);
   useEffect(() => {
     if (!commandRunning) {
@@ -712,16 +744,38 @@ function CommandDetailRow({
         )}
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
+        aria-label={accessibleLabel}
         data-testid={`aiops-command-row-${detail.id}`}
       >
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5"
           data-testid={`aiops-command-label-region-${detail.id}`}
         >
-          {showSummaryIcon ? (
-            <ToolSummaryIcon kind={detail.kind} testId={`aiops-command-icon-${detail.id}`} />
+          {summaryIconKind ? (
+            <ToolSummaryIcon kind={summaryIconKind} testId={`aiops-command-icon-${detail.id}`} />
           ) : null}
-          <span className="min-w-0 truncate">{commandSummaryLabel(detail)}</span>
+          {showHostAwareCommand ? (
+            <>
+              {detail.hostLabel ? (
+                <span
+                  className="max-w-44 shrink-0 truncate rounded-md bg-slate-100 px-1.5 py-0.5 text-[12px] font-medium leading-5 text-slate-500"
+                  data-testid={`aiops-command-host-${detail.id}`}
+                  title={detail.hostLabel}
+                >
+                  {detail.hostLabel}
+                </span>
+              ) : null}
+              {detail.hostLabel ? <span aria-hidden="true">·</span> : null}
+              <span
+                className="min-w-0 truncate font-mono text-[13px] text-slate-500"
+                data-testid={`aiops-command-text-${detail.id}`}
+              >
+                {commandText}
+              </span>
+            </>
+          ) : (
+            <span className="min-w-0 truncate">{commandSummaryLabel(detail)}</span>
+          )}
           <DisclosureChevron open={open} testId={`aiops-command-chevron-${detail.id}`} />
         </span>
         {rowStatus ? (
@@ -735,9 +789,11 @@ function CommandDetailRow({
           className="flex max-h-72 flex-col overflow-hidden rounded-lg bg-slate-100 px-3 py-2 text-slate-500"
           data-testid={`aiops-terminal-card-${detail.id}`}
         >
-          <div className="shrink-0 text-[13px] leading-5 text-slate-500">Shell</div>
+          <div className="shrink-0 text-[13px] leading-5 text-slate-500">
+            {detail.hostLabel ? `Shell · ${detail.hostLabel}` : "Shell"}
+          </div>
           <div className="mt-2 shrink-0 whitespace-pre-wrap break-words font-mono text-[13px] leading-6 text-slate-950">
-            $ {detail.text}
+            $ {commandText}
           </div>
           {hasOutput ? (
             <pre
@@ -780,14 +836,14 @@ function terminalCardStatusLabel(status?: AiopsProcessBlock["status"]) {
   return terminalStatusLabel(status);
 }
 
-function getMergedGroupSummaryText(group: Extract<ProcessGroup, { kind: "merged" }>) {
+function getMergedGroupSummaryText(
+  group: Extract<ProcessGroup, { kind: "merged" }>,
+  blocks: AiopsProcessBlock[] = group.blocks,
+) {
   if (group.mergedKind === "mixed") {
-    return getMixedMergedSummaryText(group.blocks);
+    return getMixedMergedSummaryText(blocks);
   }
-  if (group.mergedKind === "command") {
-    return getMergedSummaryText(group.mergedKind, group.blocks.length);
-  }
-  return getMergedSummaryText(group.mergedKind, group.blocks.length);
+  return getMergedSummaryText(group.mergedKind, blocks.length);
 }
 
 function getMixedMergedSummaryText(blocks: AiopsProcessBlock[]) {
@@ -812,11 +868,16 @@ function getMixedMergedSummaryText(blocks: AiopsProcessBlock[]) {
 
 function mergedBlockDetail(block: AiopsProcessBlock) {
   let text = "";
+  const presentation = familiarToolPresentation(block);
+  const terminalTool = block.kind !== "command" && presentation?.iconKind === "command";
+  const terminalCommand = block.kind === "command" || terminalTool;
   const hasOutputPreview = typeof block.outputPreview === "string" && block.outputPreview.trim() !== "";
   if (isSearchLikeBlock(block)) {
     text = searchDetailTextForBlock(block);
   } else if (block.kind === "command") {
     text = block.command || block.inputSummary || stripHtml(block.text || "");
+  } else if (presentation?.iconKind === "command") {
+    text = familiarCommandText(block);
   } else if (block.kind === "file") {
     text = stripHtml(block.text || "") || block.inputSummary || block.displayKind || "";
   } else {
@@ -831,10 +892,81 @@ function mergedBlockDetail(block: AiopsProcessBlock) {
     externalized: isExternalizedProcessBlock(block),
     mock: Boolean(block.mock),
     text: block.kind === "command" ? stripHtml(text).trim() : cleanToolText(text),
+    summaryIconKind: presentation?.iconKind || "",
+    summaryIconLabel: presentation?.accessibleLabel || "",
+    terminalTool,
+    hostLabel: terminalCommand ? commandHostLabelForBlock(block) : "",
     output: hasOutputPreview && (block.kind === "command" || block.kind === "tool" || block.kind === "mcp")
-      ? compactOutputPreviewForBlock(block)
+      ? compactOutputPreviewForBlock(block, terminalCommand)
       : "",
   };
+}
+
+function familiarToolPresentation(block: AiopsProcessBlock): FamiliarToolPresentation | null {
+  const source = cleanToolText(stripHtml(block.source || "").trim()).toLowerCase();
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  const allowSourceFallback = SOURCE_FALLBACK_DISPLAY_KINDS.has(displayKind);
+
+  if (
+    block.kind === "command" ||
+    COMMAND_TOOL_DISPLAY_KINDS.has(displayKind) ||
+    (allowSourceFallback && COMMAND_TOOL_SOURCES.has(source))
+  ) {
+    return { iconKind: "command", accessibleLabel: "终端命令" };
+  }
+  if (
+    FILE_READ_DISPLAY_KINDS.has(displayKind) ||
+    (allowSourceFallback && FILE_READ_TOOL_SOURCES.has(source))
+  ) {
+    return { iconKind: "file", accessibleLabel: "文件读取" };
+  }
+  return null;
+}
+
+function familiarCommandText(block: AiopsProcessBlock) {
+  const input = cleanToolInputSummary(block.inputSummary);
+  if (input && !COMMAND_TOOL_SOURCES.has(input.toLowerCase())) {
+    return input;
+  }
+  const command = stripHtml(block.command || "").trim();
+  if (command) {
+    return command;
+  }
+  const source = cleanToolText(stripHtml(block.source || "").trim());
+  const text = cleanToolText(stripHtml(block.text || ""));
+  if (text && text.toLowerCase() !== source.toLowerCase()) {
+    if (COMMAND_TOOL_SOURCES.has(text.toLowerCase())) {
+      return "命令";
+    }
+    for (const technicalName of COMMAND_TOOL_SOURCES) {
+      const technicalPrefix = `${technicalName} `;
+      if (text.toLowerCase().startsWith(technicalPrefix)) {
+        return text.slice(technicalPrefix.length).trim() || "命令";
+      }
+    }
+    return text;
+  }
+  return "命令";
+}
+
+function commandHostLabelForBlock(block: AiopsProcessBlock) {
+  const envelope = parseCommandTerminalOutputEnvelope(cleanCommandOutput(block.outputPreview));
+  const envelopeHost = envelope
+    ? firstNonEmptyDisplayString(envelope.address, envelope.hostname, envelope.hostName, envelope.host, envelope.hostId)
+    : "";
+  return formatCommandHostLabel(block.hostId || envelopeHost || block.targetSummary || "");
+}
+
+function formatCommandHostLabel(value: string) {
+  const text = cleanToolText(stripHtml(value || "")).replace(/^@/, "");
+  const remoteIpv4 = text.match(/^remote-(\d{1,3})-(\d{1,3})-(\d{1,3})-(\d{1,3})$/i);
+  if (remoteIpv4) {
+    const octets = remoteIpv4.slice(1).map(Number);
+    if (octets.every((octet) => octet >= 0 && octet <= 255)) {
+      return octets.join(".");
+    }
+  }
+  return text;
 }
 
 function searchDetailTextForBlock(block: AiopsProcessBlock) {
@@ -851,13 +983,13 @@ function cleanCommandOutput(value?: string) {
   return stripHtml(value || "").trim();
 }
 
-function compactOutputPreviewForBlock(block: AiopsProcessBlock) {
+function compactOutputPreviewForBlock(block: AiopsProcessBlock, terminalCommand = block.kind === "command") {
   const rawOutput = cleanCommandOutput(block.outputPreview);
-  const output = block.kind === "command" ? commandTerminalOutputForDisplay(rawOutput, block) : rawOutput;
+  const output = terminalCommand ? commandTerminalOutputForDisplay(rawOutput, block) : rawOutput;
   if (!output) {
     return "";
   }
-  if (block.kind !== "command" && (isExternalizedProcessBlock(block) || isLargeStructuredPayload(output))) {
+  if (!terminalCommand && (isExternalizedProcessBlock(block) || isLargeStructuredPayload(output))) {
     return truncateToolOutputPreview(output);
   }
   return output;
@@ -869,7 +1001,13 @@ type CommandTerminalOutputEnvelope = {
   stderr?: unknown;
   output?: unknown;
   error?: unknown;
+  content?: unknown;
   exitCode?: unknown;
+  hostId?: unknown;
+  host?: unknown;
+  hostName?: unknown;
+  hostname?: unknown;
+  address?: unknown;
 };
 
 function commandTerminalOutputForDisplay(outputPreview: string, block: AiopsProcessBlock) {
@@ -879,12 +1017,15 @@ function commandTerminalOutputForDisplay(outputPreview: string, block: AiopsProc
   }
   const failed = commandOutputFailed(envelope, block);
   if (failed) {
-    return firstNonEmptyDisplayString(envelope.stderr, envelope.error, envelope.stdout, envelope.output);
+    return firstNonEmptyDisplayString(envelope.stderr, envelope.error, envelope.stdout, envelope.output, envelope.content);
   }
-  return firstNonEmptyDisplayString(envelope.stdout, envelope.output, envelope.stderr, envelope.error);
+  return firstNonEmptyDisplayString(envelope.stdout, envelope.output, envelope.content, envelope.stderr, envelope.error);
 }
 
-function parseCommandTerminalOutputEnvelope(outputPreview: string): CommandTerminalOutputEnvelope | null {
+function parseCommandTerminalOutputEnvelope(
+  outputPreview: string,
+  depth = 0,
+): CommandTerminalOutputEnvelope | null {
   const text = outputPreview.trim();
   if (!text) {
     return null;
@@ -898,8 +1039,18 @@ function parseCommandTerminalOutputEnvelope(outputPreview: string): CommandTermi
       return null;
     }
     const envelope = parsed as CommandTerminalOutputEnvelope;
+    const nestedContent = stringValue(envelope.content).trim();
+    const hasDirectOutput = ["stdout", "stderr", "output"].some((key) =>
+      Object.prototype.hasOwnProperty.call(envelope, key),
+    );
+    if (!hasDirectOutput && nestedContent.startsWith("{") && depth < 2) {
+      const nestedEnvelope = parseCommandTerminalOutputEnvelope(nestedContent, depth + 1);
+      if (nestedEnvelope) {
+        return nestedEnvelope;
+      }
+    }
     if (
-      ["stdout", "stderr", "output", "error", "exitCode", "status"].some((key) =>
+      ["stdout", "stderr", "output", "error", "content", "exitCode", "status", "hostId"].some((key) =>
         Object.prototype.hasOwnProperty.call(envelope, key),
       )
     ) {
@@ -1064,13 +1215,7 @@ function NativeProcessText({
   if (block.kind === "assistant") {
     return <AssistantProgressText text={block.text} />;
   }
-  if (block.kind === "system" && isRawRuntimeFailureText(stripHtml(block.text || ""))) {
-    return <RuntimeStreamInterruptedPill />;
-  }
   if (block.kind === "reasoning") {
-    if (isModelWaitReasoningBlock(block)) {
-      return <ModelWaitPill text={stripHtml(block.text || "")} />;
-    }
     return <ThinkingText block={block} />;
   }
   if (block.kind === "plan") {
@@ -1080,7 +1225,10 @@ function NativeProcessText({
     return <CommandDetailRow detail={mergedBlockDetail(block)} showSummaryIcon />;
   }
   if (isToolSummaryBlock(block)) {
-    return <ToolDetailRow detail={mergedBlockDetail(block)} showSummaryIcon />;
+    const detail = mergedBlockDetail(block);
+    return detail.terminalTool
+      ? <CommandDetailRow detail={detail} showSummaryIcon />
+      : <ToolDetailRow detail={detail} showSummaryIcon />;
   }
   const text = readableBlockSummary(block);
   if (!text) {
@@ -1091,37 +1239,6 @@ function NativeProcessText({
       {text}
     </div>
   );
-}
-
-function RuntimeStreamInterruptedPill() {
-  return (
-    <div className="inline-flex w-fit items-center gap-1.5 rounded-full border border-amber-100 bg-amber-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-amber-700">
-      模型流中断，已保留已生成内容
-    </div>
-  );
-}
-
-function ModelWaitPill({ text }: { text: string }) {
-  return (
-    <div
-      className="inline-flex w-fit items-center gap-1.5 rounded-full border border-sky-100 bg-sky-50 px-2 py-0.5 text-[12px] font-medium leading-5 text-sky-700"
-      data-testid="aiops-model-wait-pill"
-    >
-      <span
-        className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-sky-100 text-sky-600"
-        data-testid="aiops-model-wait-icon"
-        aria-hidden="true"
-      >
-        <Bot className="h-2.5 w-2.5" />
-      </span>
-      <span>{text.trim() || "正在等待模型返回"}</span>
-    </div>
-  );
-}
-
-function isModelWaitReasoningBlock(block: AiopsProcessBlock) {
-  const text = stripHtml(block.text || "").trim();
-  return text === "正在等待模型返回" || text === "排队等待模型返回";
 }
 
 function PlanSteps({ block }: { block: AiopsProcessBlock }) {
@@ -1194,18 +1311,7 @@ function ThinkingText({ block }: { block: AiopsProcessBlock }) {
 }
 
 function transformThinkingText(raw: string): string {
-  const trimmed = raw.trim();
-  if (!trimmed) {
-    return "";
-  }
-  if (trimmed.toLowerCase() === "calling model") {
-    return "";
-  }
-  const prefixPattern = /^calling model\s*/i;
-  if (prefixPattern.test(trimmed)) {
-    return trimmed.replace(prefixPattern, "");
-  }
-  return trimmed;
+  return raw.trim();
 }
 
 /**
@@ -1559,16 +1665,12 @@ function browseUrlForBlock(block: AiopsProcessBlock) {
 }
 
 function isSearchActionBlock(block: AiopsProcessBlock) {
-  if (block.kind === "search") {
-    return true;
-  }
-  const display = `${block.displayKind || ""} ${block.command || ""}`.toLowerCase();
-  return /\b(web_search|search_web|browser\.search|search)\b/.test(display);
+  return block.kind === "search" || block.foldGroupKind === "web_lookup" || SEARCH_DISPLAY_KINDS.has((block.displayKind || "").trim().toLowerCase());
 }
 
 function isBrowseActionBlock(block: AiopsProcessBlock) {
-  const display = `${block.displayKind || ""} ${block.command || ""}`.toLowerCase();
-  return /\b(browse_url|browser\.open|open_url|open_page|fetch_url|browser)\b/.test(display);
+  const displayKind = (block.displayKind || "").trim().toLowerCase();
+  return block.operation === "open" || displayKind === "browse_url" || displayKind === "browser.open";
 }
 
 function hasUrlLikeSummary(block: AiopsProcessBlock) {
@@ -1842,18 +1944,6 @@ function formatElapsedDuration(totalSeconds: number) {
   }
   parts.push(`${remainingSeconds}s`);
   return parts.join(" ");
-}
-
-function formatFinalGenerationDuration(durationMs?: number) {
-  const value = Number(durationMs);
-  if (!Number.isFinite(value) || value <= 0) {
-    return "";
-  }
-  const rounded = Math.max(1, Math.round(value));
-  if (rounded < 1000) {
-    return `整理最终回答 ${rounded}ms`;
-  }
-  return `整理最终回答 ${formatElapsedDuration(Math.round(rounded / 1000))}`;
 }
 
 function estimateElapsedSeconds(process: AiopsProcessBlock[]) {

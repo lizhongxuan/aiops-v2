@@ -40,6 +40,34 @@ func (m *cancelAwareBlockingModel) BindTools(_ []*schema.ToolInfo) error {
 	return nil
 }
 
+type cancelAwarePartialStreamingModel struct {
+	firstSent chan struct{}
+}
+
+func newCancelAwarePartialStreamingModel() *cancelAwarePartialStreamingModel {
+	return &cancelAwarePartialStreamingModel{firstSent: make(chan struct{})}
+}
+
+func (m *cancelAwarePartialStreamingModel) Generate(_ context.Context, _ []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	return nil, context.Canceled
+}
+
+func (m *cancelAwarePartialStreamingModel) Stream(ctx context.Context, _ []*schema.Message, _ ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	sr, sw := schema.Pipe[*schema.Message](2)
+	go func() {
+		defer sw.Close()
+		sw.Send(schema.AssistantMessage("已生成但尚未完成的草稿", nil), nil)
+		close(m.firstSent)
+		<-ctx.Done()
+		sw.Send(nil, ctx.Err())
+	}()
+	return sr, nil
+}
+
+func (m *cancelAwarePartialStreamingModel) BindTools(_ []*schema.ToolInfo) error {
+	return nil
+}
+
 func TestCancelTurn_PersistsCanceledLifecycle(t *testing.T) {
 	kernel := newTestKernel(nil)
 	now := time.Now().UTC()
@@ -237,6 +265,82 @@ func TestCancelTurn_CancelsInFlightRunTurn(t *testing.T) {
 	}
 	if strings.Contains(modelItem.Payload.Summary, "context canceled") {
 		t.Fatalf("model item summary leaked raw cancellation error: %q", modelItem.Payload.Summary)
+	}
+}
+
+func TestCancelTurn_PreservesPartialAssistantDraftAsUnclassifiedIncomplete(t *testing.T) {
+	kernel := newTestKernel(nil)
+	partialModel := newCancelAwarePartialStreamingModel()
+	kernel.modelRouter = modelrouter.NewRouter("partial", map[string]modelrouter.ChatModel{"partial": partialModel}, nil)
+
+	session := kernel.sessions.GetOrCreate("sess-cancel-partial", SessionTypeHost, ModeChat)
+	done := make(chan struct {
+		result TurnResult
+		err    error
+	}, 1)
+	go func() {
+		result, err := kernel.RunTurn(context.Background(), TurnRequest{
+			SessionType: SessionTypeHost,
+			Mode:        ModeChat,
+			SessionID:   session.ID,
+			TurnID:      "turn-cancel-partial",
+			Input:       "生成后由用户停止",
+		})
+		done <- struct {
+			result TurnResult
+			err    error
+		}{result: result, err: err}
+	}()
+
+	select {
+	case <-partialModel.firstSent:
+	case <-time.After(time.Second):
+		t.Fatal("model did not stream a partial draft before cancel")
+	}
+
+	if _, err := kernel.CancelTurn(context.Background(), CancelRequest{
+		SessionID: session.ID,
+		TurnID:    "turn-cancel-partial",
+		Reason:    "user stop",
+	}); err != nil {
+		t.Fatalf("CancelTurn() error = %v", err)
+	}
+
+	select {
+	case outcome := <-done:
+		if outcome.err != nil {
+			t.Fatalf("RunTurn() error = %v, want nil canceled result", outcome.err)
+		}
+		if outcome.result.Status != "cancelled" {
+			t.Fatalf("RunTurn status = %q, want cancelled", outcome.result.Status)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("RunTurn did not exit after cancel")
+	}
+
+	updated := kernel.sessions.Get(session.ID)
+	if updated == nil || updated.CurrentTurn == nil {
+		t.Fatal("updated session/current turn is nil")
+	}
+	draft := findAgentItem(updated.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
+	if draft.ID == "" {
+		t.Fatalf("agent items = %#v, want canceled assistant draft", updated.CurrentTurn.AgentItems)
+	}
+	if draft.Status != agentstate.ItemStatusCancelled || draft.Payload.Summary != "已生成但尚未完成的草稿" {
+		t.Fatalf("canceled assistant draft = %#v, want preserved text with cancelled status", draft)
+	}
+	var payload struct {
+		Phase       string `json:"phase"`
+		StreamState string `json:"streamState"`
+	}
+	if err := json.Unmarshal(draft.Payload.Data, &payload); err != nil {
+		t.Fatalf("decode canceled assistant draft: %v; raw=%s", err, string(draft.Payload.Data))
+	}
+	if payload.Phase != "unclassified" || payload.StreamState != "incomplete" {
+		t.Fatalf("canceled assistant draft payload = %+v, want unclassified incomplete", payload)
+	}
+	if updated.CurrentTurn.FinalOutput != "" {
+		t.Fatalf("FinalOutput = %q after cancel, want empty", updated.CurrentTurn.FinalOutput)
 	}
 }
 

@@ -39,7 +39,7 @@ describe("ProcessTranscript", () => {
     });
   }
 
-  it("renders streaming final answer markdown immediately and keeps completed markup stable", async () => {
+  it("does not render final answer markdown before terminal completion", async () => {
     const markdown = "检查结果如下：\n\n1. **Nginx 正常**\n2. **CPU 负载稳定**";
 
     await act(async () => {
@@ -49,17 +49,17 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
     expect(container.textContent).toContain("处理中");
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
-    expect(container.querySelectorAll("ol li")).toHaveLength(2);
-    expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
-    expect(container.textContent).not.toContain("**Nginx 正常**");
-    const streamingFinalMarkup = container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML;
+    expect(container.querySelector('[data-testid="aiops-final-text"]')).toBeNull();
+    expect(container.textContent).not.toContain("Nginx 正常");
 
     await act(async () => {
       root.render(<ProcessTranscript process={[]} turnStatus="completed" finalText={markdown} />);
     });
 
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeNull();
-    expect(container.querySelector('[data-testid="aiops-final-text"]')?.innerHTML).toBe(streamingFinalMarkup);
+    expect(container.querySelectorAll("ol li")).toHaveLength(2);
+    expect(container.querySelector("strong")?.textContent).toBe("Nginx 正常");
+    expect(container.textContent).not.toContain("**Nginx 正常**");
   });
 
   it("can hide final text when another renderer owns the answer document", async () => {
@@ -93,12 +93,6 @@ describe("ProcessTranscript", () => {
         status: "completed",
         command: "docker run -d --name nginx -p 1234:80 nginx:latest",
         outputPreview: "container-id",
-      }),
-      makeBlock({
-        id: "verification-gate",
-        kind: "evidence",
-        status: "completed",
-        text: "verification completion gate: block_success_final: execution_required,missing_verification_report",
       }),
     ];
 
@@ -259,6 +253,39 @@ describe("ProcessTranscript", () => {
     expect(processText).toContain("正在等待模型返回");
   });
 
+  it("shows at most one typed model prelude per iteration", async () => {
+    const process = [
+      makeBlock({
+        id: "model-prelude-first",
+        kind: "assistant",
+        status: "completed",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        iteration: 2,
+        text: "本轮先采集只读证据。",
+      }),
+      makeBlock({
+        id: "model-prelude-duplicate",
+        kind: "assistant",
+        status: "completed",
+        phase: "commentary",
+        streamState: "complete",
+        commentarySource: "model_prelude",
+        iteration: 2,
+        text: "同一轮重复说明不应出现。",
+      }),
+    ];
+
+    await act(async () => {
+      root.render(<ProcessTranscript process={process} turnStatus="working" />);
+    });
+
+    const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
+    expect(bodyText).toContain("本轮先采集只读证据。");
+    expect(bodyText).not.toContain("同一轮重复说明不应出现。");
+  });
+
   it("keeps final output stable when assistant_message final becomes completed", async () => {
     const running = [
       makeBlock({
@@ -324,14 +351,15 @@ describe("ProcessTranscript", () => {
     expect(processText).toContain("我会基于新证据重新整理结论");
   });
 
-  it("shows raw stream failures as compact status without replacing preserved answer", async () => {
+  it("renders the typed normalized stream error without inspecting raw error strings", async () => {
     const answer = "根因：已生成的分析内容应该保留。";
     const process = [
       makeBlock({
         id: "stream-error",
         kind: "system",
+        displayKind: "runtime.error",
         status: "failed",
-        text: "failed to receive stream chunk: context deadline exceeded",
+        text: "模型流中断，已保留已生成内容",
       }),
     ];
 
@@ -368,35 +396,25 @@ describe("ProcessTranscript", () => {
     expect(text).toContain("优先检索官方资料");
   });
 
-  it("does not render risky assistant final advice", async () => {
-    const risky = "可以执行 rm -rf $PG_DATA/recovery/repos/archive/paf/15-1/* 清理 archive。";
+  it("renders the upstream typed safety decision without rescanning final prose", async () => {
+    const safeDecision = "安全策略已阻止该高风险操作。";
     const process = [
-      makeBlock({
-        id: "assistant-risky",
-        kind: "assistant",
-        status: "completed",
-        displayKind: "assistant.message",
-        phase: "commentary",
-        streamState: "complete",
-        text: risky,
-      }),
       makeBlock({
         id: "visible-system",
         kind: "system",
         status: "completed",
-        text: "已识别为证据分析",
+        displayKind: "safety.decision",
+        text: safeDecision,
       }),
     ];
 
     await act(async () => {
-      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText={risky} />);
+      root.render(<ProcessTranscript process={process} turnStatus="completed" finalText={safeDecision} />);
     });
     await expandProcessTranscript();
 
     const text = container.textContent || "";
-    expect(text).not.toContain("rm -rf $PG_DATA");
-    expect(text).not.toContain("archive/paf");
-    expect(text).toContain("已识别为证据分析");
+    expect(text).toContain(safeDecision);
   });
 
   it("renders final answer text one step smaller without changing tool transcript text", async () => {
@@ -427,7 +445,7 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-command-row-cmd-font-baseline"]')?.className).toContain("leading-6");
   });
 
-  it("keeps the running process header visible when assistant text streams before tool blocks", async () => {
+  it("keeps the running process header without exposing an uncommitted final draft", async () => {
     await act(async () => {
       root.render(
         <ProcessTranscript
@@ -441,7 +459,8 @@ describe("ProcessTranscript", () => {
 
     expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
     expect(container.textContent).toContain("处理中");
-    expect(container.textContent).toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
+    expect(container.textContent).not.toContain("我先复查主机当前的 CPU、内存、磁盘和负载情况");
+    expect(container.querySelector('[data-testid="aiops-final-text"]')).toBeNull();
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
@@ -582,6 +601,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "BTC price today USD",
         outputPreview:
           'failed: Post "http://127.0.0.1:8317/v1/responses": context deadline exceeded (Client.Timeout exceeded while awaiting headers)',
@@ -591,6 +612,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browse_url",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
         outputPreview:
           '{"contentType":"application/json; charset=utf-8","text":"{\\"bitcoin\\":{\\"usd\\":80978}}","url":"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"}',
@@ -600,6 +623,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary: "Searching the web",
         outputPreview: '{"contentType":"application/json; charset=utf-8","text":"raw response body"}',
       }),
@@ -608,6 +633,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browser.open",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         inputSummary:
           '{"contentType":"application/json; charset=utf-8","text":"{\\"bitcoin\\":{\\"usd\\":80978}}","url":"https://api.coingecko.com/api/v3/simple/price?ids=bitcoin\\u0026vs_currencies=usd"}',
         outputPreview:
@@ -617,6 +644,8 @@ describe("ProcessTranscript", () => {
         id: "search-7",
         kind: "search",
         status: "completed",
+        foldGroupId: "lookup-btc",
+        foldGroupKind: "web_lookup",
         text: "BTC price today USD",
         queries: ["BTC price today USD"],
         results: [
@@ -666,6 +695,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-compact",
+        foldGroupKind: "web_lookup",
         inputSummary: "pg_auto_failover standby timeline higher than primary",
         queries: ["pg_auto_failover standby timeline higher than primary"],
         results: [
@@ -679,6 +710,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-compact",
+        foldGroupKind: "web_lookup",
         inputSummary: "pgBackRest restore timeline recovery_target_timeline latest",
         queries: ["pgBackRest restore timeline recovery_target_timeline latest"],
         results: [
@@ -854,7 +887,7 @@ describe("ProcessTranscript", () => {
     expect(searchToggle?.firstElementChild).toBe(searchIcon);
   });
 
-  it("renders model wait status as a compact pill instead of a large transcript line", async () => {
+  it("keeps model wait reasoning trace-only", async () => {
     await act(async () => {
       root.render(
         <ProcessTranscript
@@ -871,16 +904,12 @@ describe("ProcessTranscript", () => {
       );
     });
 
-    const pill = container.querySelector('[data-testid="aiops-model-wait-pill"]');
-    expect(pill).toBeTruthy();
-    expect(pill?.textContent).toContain("正在等待模型返回");
-    expect(pill?.className).toContain("text-[12px]");
-    expect(pill?.className).toContain("rounded-full");
-    expect(container.querySelector('[data-testid="aiops-model-wait-icon"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-process-header"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-model-wait-pill"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-model-wait-icon"]')).toBeNull();
     expect(container.querySelector('[data-testid="aiops-inline-status-indicator"]')).toBeNull();
-    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent).not.toContain(
-      "正在等待模型返回正在等待模型返回",
-    );
+    expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
+    expect(container.textContent).not.toContain("正在等待模型返回");
   });
 
   it("wraps long searched urls instead of truncating them", async () => {
@@ -1051,7 +1080,7 @@ describe("ProcessTranscript", () => {
     const searchIndex = bodyText.indexOf("正在搜索网页：BTC current price USD 24h change");
     expect(preludeIndex).toBeGreaterThanOrEqual(0);
     expect(searchIndex).toBeGreaterThan(preludeIndex);
-    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="aiops-final-text"]')).toHaveLength(0);
   });
 
   it("renders assistant commentary between folded tool groups without pulling final text into process", async () => {
@@ -1195,6 +1224,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-1",
         kind: "command",
+        foldGroupId: "commands-1",
+        foldGroupKind: "command",
         command: "kubectl get pods -n prod",
         text: "kubectl get pods",
       }),
@@ -1202,6 +1233,8 @@ describe("ProcessTranscript", () => {
         id: "cmd-2",
         kind: "command",
         status: "blocked",
+        foldGroupId: "commands-1",
+        foldGroupKind: "command",
         command: "kubectl rollout restart deployment/api -n prod",
         text: "kubectl rollout restart deployment/api",
       }),
@@ -1283,6 +1316,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-grow-1",
         kind: "command",
+        foldGroupId: "commands-grow",
+        foldGroupKind: "command",
         status: "completed",
         command: "ifconfig en0",
         text: "ifconfig en0",
@@ -1297,6 +1332,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-grow-2",
         kind: "command",
+        foldGroupId: "commands-grow",
+        foldGroupKind: "command",
         status: "failed",
         command: "ifconfig en0 down",
         text: "ifconfig en0 down",
@@ -1420,62 +1457,7 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-transcript-body"]')).toBeNull();
   });
 
-  it("shows final generation duration when provided", async () => {
-    const process = [
-      makeBlock({
-        id: "tool-budget",
-        kind: "tool",
-        status: "completed",
-        displayKind: "tool_budget",
-        text: "Tool budget reached",
-      }),
-    ];
-
-    await act(async () => {
-      root.render(
-        <ProcessTranscript
-          process={process}
-          turnStatus="completed"
-          finalText="基于已收集证据给出回答。"
-          finalDurationMs={456}
-          renderFinalText={false}
-        />,
-      );
-    });
-
-    await expandProcessTranscript();
-
-    expect(container.textContent).toContain("整理最终回答 456ms");
-  });
-
-  it("hides final generation duration while the turn is still running", async () => {
-    const process = [
-      makeBlock({
-        id: "tool-coroot",
-        kind: "tool",
-        status: "completed",
-        source: "coroot_list_services",
-        text: "coroot_list_services",
-      }),
-    ];
-
-    await act(async () => {
-      root.render(
-        <ProcessTranscript
-          process={process}
-          turnStatus="working"
-          finalText="正在流式生成最终回答。"
-          finalDurationMs={6200}
-          renderFinalText={false}
-        />,
-      );
-    });
-
-    expect(container.textContent).toContain("处理中");
-    expect(container.textContent).not.toContain("整理最终回答");
-  });
-
-  it("hides internal Coroot reuse tool results from the transcript", async () => {
+  it("renders only Coroot blocks admitted by the upstream presentation policy", async () => {
     const process = [
       makeBlock({
         id: "tool-coroot-broad",
@@ -1483,15 +1465,6 @@ describe("ProcessTranscript", () => {
         status: "completed",
         source: "coroot_list_services",
         text: "coroot_list_services",
-      }),
-      makeBlock({
-        id: "tool-coroot-reused",
-        kind: "tool",
-        status: "completed",
-        source: "coroot_list_services",
-        text: "coroot_list_services",
-        inputSummary: '{"status":"warning"}',
-        outputPreview: '{"schemaVersion":"aiops.coroot/v1","tool":"coroot.list_services","status":"reused","skipReason":"covered_by_prior_broad_query"}',
       }),
       makeBlock({
         id: "tool-coroot-incidents",
@@ -1618,6 +1591,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-chevron-1",
         kind: "command",
+        foldGroupId: "commands-chevron",
+        foldGroupKind: "command",
         status: "completed",
         command: "pwd",
         outputPreview: "/tmp",
@@ -1625,6 +1600,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-chevron-2",
         kind: "command",
+        foldGroupId: "commands-chevron",
+        foldGroupKind: "command",
         status: "completed",
         command: "date",
         outputPreview: "Fri May 8",
@@ -1638,6 +1615,11 @@ describe("ProcessTranscript", () => {
     expect(container.querySelector('[data-testid="aiops-process-header-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
     await expandProcessTranscript();
     expect(container.querySelector('[data-testid="aiops-merged-command-chevron"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-command-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
     expect(container.querySelector('[data-testid="aiops-command-chevron-cmd-chevron-1"]')?.getAttribute("class")).toContain("group-hover:opacity-100");
   });
 
@@ -2035,6 +2017,7 @@ describe("ProcessTranscript", () => {
         kind: "command",
         status: "completed",
         command: "hostname",
+        hostId: "remote-120-77-239-90",
         text: "hostname",
         outputPreview: JSON.stringify({
           command: "hostname",
@@ -2078,6 +2061,12 @@ describe("ProcessTranscript", () => {
 
     const stdout = container.querySelector('[data-testid="aiops-command-output-cmd-json-stdout"]');
     const stderr = container.querySelector('[data-testid="aiops-command-output-cmd-json-stderr"]');
+    expect(container.querySelector('[data-testid="aiops-command-host-cmd-json-stdout"]')?.textContent).toBe(
+      "120.77.239.90",
+    );
+    expect(container.querySelector('[data-testid="aiops-command-row-cmd-json-stdout"]')?.getAttribute("aria-label")).toBe(
+      "终端命令：在 120.77.239.90 执行 hostname",
+    );
     expect(stdout?.textContent).toBe("host-a");
     expect(stderr?.textContent).toBe("uptime: command not found");
     expect(container.textContent).not.toContain('"stdout"');
@@ -2202,6 +2191,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-order-1",
         kind: "command",
+        foldGroupId: "commands-order",
+        foldGroupKind: "command",
         status: "completed",
         command: "pwd",
         outputPreview: "/Users/lizhongxuan/Desktop/aiops-v2",
@@ -2209,6 +2200,8 @@ describe("ProcessTranscript", () => {
       makeBlock({
         id: "cmd-order-2",
         kind: "command",
+        foldGroupId: "commands-order",
+        foldGroupKind: "command",
         status: "completed",
         command: "git status --short",
         outputPreview: "",
@@ -2224,6 +2217,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "web_search",
+        foldGroupId: "lookup-order",
+        foldGroupKind: "web_lookup",
         inputSummary: "aiops-v2 AssistantTransport 顺序",
         queries: ["aiops-v2 AssistantTransport 顺序"],
       }),
@@ -2232,6 +2227,8 @@ describe("ProcessTranscript", () => {
         kind: "tool",
         status: "completed",
         displayKind: "browse_url",
+        foldGroupId: "lookup-order",
+        foldGroupKind: "web_lookup",
         inputSummary: "https://example.com/aiops-v2-order",
       }),
       makeBlock({
@@ -2254,6 +2251,11 @@ describe("ProcessTranscript", () => {
     expect(mergedCommandIcon?.parentElement?.firstElementChild).toBe(mergedCommandIcon);
     expect(searchIcon).toBeTruthy();
     expect(searchIcon?.parentElement?.firstElementChild).toBe(searchIcon);
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-command-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
     const bodyText = container.querySelector('[data-testid="aiops-process-transcript-body"]')?.textContent || "";
     const next = bodyText.indexOf("接下来我要检查运行环境和最近任务状态。");
     const commandSummary = bodyText.indexOf("已运行 2 条命令");
@@ -2401,6 +2403,91 @@ describe("groupConsecutiveBlocks", () => {
     expect(groupConsecutiveBlocks([])).toEqual([]);
   });
 
+  it("uses typed fold identity instead of visible text to group tool blocks", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({
+        id: "tool-a",
+        kind: "tool",
+        foldGroupId: "action-a",
+        foldGroupKind: "tool",
+        toolCallId: "call-a",
+        text: "相同的可见说明",
+      }),
+      makeBlock({
+        id: "tool-b-1",
+        kind: "tool",
+        foldGroupId: "action-b",
+        foldGroupKind: "tool",
+        toolCallId: "call-b-1",
+        text: "相同的可见说明",
+      }),
+      makeBlock({
+        id: "tool-b-2",
+        kind: "mcp",
+        foldGroupId: "action-b",
+        foldGroupKind: "tool",
+        toolCallId: "call-b-2",
+        text: "不同的可见说明",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups[0]).toMatchObject({ kind: "single", block: { id: "tool-a" } });
+    expect(groups[1]).toMatchObject({
+      kind: "merged",
+      mergedKind: "tool",
+      blocks: [{ id: "tool-b-1" }, { id: "tool-b-2" }],
+    });
+  });
+
+  it("groups runtime tool intent commentary with every explicitly linked tool", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({
+        id: "commentary-action",
+        kind: "assistant",
+        phase: "commentary",
+        commentarySource: "runtime_tool_intent",
+        toolCallIds: ["call-file", "call-mcp"],
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "采集两类只读证据。",
+      }),
+      makeBlock({
+        id: "file-action",
+        kind: "file",
+        toolCallId: "call-file",
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "读取配置",
+      }),
+      makeBlock({
+        id: "mcp-action",
+        kind: "mcp",
+        toolCallId: "call-mcp",
+        foldGroupId: "action-1",
+        foldGroupKind: "tool",
+        text: "读取 MCP 资源",
+      }),
+    ]);
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({
+      kind: "merged",
+      mergedKind: "tool",
+      blocks: [{ id: "commentary-action" }, { id: "file-action" }, { id: "mcp-action" }],
+    });
+  });
+
+  it("does not merge adjacent same-kind tools when their typed fold ids differ", () => {
+    const groups = groupConsecutiveBlocks([
+      makeBlock({ id: "search-a", kind: "tool", foldGroupId: "lookup-a", foldGroupKind: "web_lookup" }),
+      makeBlock({ id: "search-b", kind: "tool", foldGroupId: "lookup-b", foldGroupKind: "web_lookup" }),
+    ]);
+
+    expect(groups).toHaveLength(2);
+    expect(groups.every((group) => group.kind === "single")).toBe(true);
+  });
+
   it("keeps a single reasoning block as a single group", () => {
     const blocks = [makeBlock({ id: "r1", kind: "reasoning", text: "thinking" })];
     const groups = groupConsecutiveBlocks(blocks);
@@ -2443,9 +2530,9 @@ describe("groupConsecutiveBlocks", () => {
     const blocks = [
       makeBlock({ id: "f1", kind: "file", text: "read a.ts" }),
       makeBlock({ id: "f2", kind: "file", text: "read b.ts" }),
-      makeBlock({ id: "c1", kind: "command", text: "npm test" }),
-      makeBlock({ id: "c2", kind: "command", text: "npm build" }),
-      makeBlock({ id: "c3", kind: "command", text: "npm lint" }),
+      makeBlock({ id: "c1", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm test" }),
+      makeBlock({ id: "c2", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm build" }),
+      makeBlock({ id: "c3", kind: "command", foldGroupId: "commands", foldGroupKind: "command", text: "npm lint" }),
     ];
     const groups = groupConsecutiveBlocks(blocks);
     expect(groups).toHaveLength(3);
@@ -2480,8 +2567,8 @@ describe("groupConsecutiveBlocks", () => {
 
   it("merges only consecutive search blocks and keeps separated searches apart", () => {
     const blocks = [
-      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", text: "search a" }),
-      makeBlock({ id: "s2", kind: "tool", displayKind: "web_search", text: "search b" }),
+      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search a" }),
+      makeBlock({ id: "s2", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search b" }),
       makeBlock({ id: "r1", kind: "reasoning", text: "middle" }),
       makeBlock({ id: "s3", kind: "tool", displayKind: "web_search", text: "search c" }),
     ];
@@ -2510,11 +2597,11 @@ describe("groupConsecutiveBlocks", () => {
 
   it("uses explicit backend foldGroupKind without merging unrelated MCP blocks", () => {
     const blocks = [
-      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupKind: "web_lookup", text: "search a" }),
-      makeBlock({ id: "s2", kind: "tool", displayKind: "browse_url", foldGroupKind: "web_lookup", text: "open a" }),
+      makeBlock({ id: "s1", kind: "tool", displayKind: "web_search", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "search a" }),
+      makeBlock({ id: "s2", kind: "tool", displayKind: "browse_url", foldGroupId: "lookup-a", foldGroupKind: "web_lookup", text: "open a" }),
       makeBlock({ id: "mcp", kind: "mcp", displayKind: "read_mcp_resource", text: "read resource" }),
-      makeBlock({ id: "c1", kind: "command", foldGroupKind: "command", text: "pwd" }),
-      makeBlock({ id: "c2", kind: "command", foldGroupKind: "command", text: "uptime" }),
+      makeBlock({ id: "c1", kind: "command", foldGroupId: "commands-a", foldGroupKind: "command", text: "pwd" }),
+      makeBlock({ id: "c2", kind: "command", foldGroupId: "commands-a", foldGroupKind: "command", text: "uptime" }),
     ];
 
     const groups = groupConsecutiveBlocks(blocks);
@@ -2572,6 +2659,307 @@ describe("MergedToolSummary", () => {
       root.unmount();
     });
     container.remove();
+  });
+
+  it("replaces familiar command tool names with terminal icons while preserving custom tool names", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "command-action-title",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-uptime", "call-disk", "call-legacy", "call-custom"],
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              text: "分别执行两个只读命令，再调用业务探针。",
+            }),
+            makeBlock({
+              id: "tool-uptime",
+              kind: "tool",
+              displayKind: "terminal",
+              source: "exec_command",
+              inputSummary: "uptime",
+              text: "exec_command uptime",
+              toolCallId: "call-uptime",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "uptime",
+                status: "ok",
+                exitCode: 0,
+                stdout: "up 246 days\n",
+                stderr: "",
+              }),
+            }),
+            makeBlock({
+              id: "tool-disk",
+              kind: "tool",
+              displayKind: "terminal.command",
+              source: "exec_command",
+              inputSummary: "df -h /",
+              text: "exec_command df -h /",
+              toolCallId: "call-disk",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "df -h /",
+                status: "ok",
+                exitCode: 0,
+                stdout: "Filesystem Size Used Avail Use% Mounted on\n/dev/vda3 40G 31G 6.4G 83% /\n",
+                stderr: "",
+              }),
+            }),
+            makeBlock({
+              id: "tool-legacy",
+              kind: "tool",
+              displayKind: "exec_command",
+              text: "exec_command hostname",
+              toolCallId: "call-legacy",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+            }),
+            makeBlock({
+              id: "tool-custom",
+              kind: "tool",
+              displayKind: "business.probe",
+              source: "exec_command_runner",
+              inputSummary: "checkout",
+              text: "exec_command_runner checkout",
+              toolCallId: "call-custom",
+              foldGroupId: "command-action",
+              foldGroupKind: "tool",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    const uptimeRow = container.querySelector('[data-testid="aiops-command-row-tool-uptime"]');
+    const diskRow = container.querySelector('[data-testid="aiops-command-row-tool-disk"]');
+    const legacyRow = container.querySelector('[data-testid="aiops-command-row-tool-legacy"]');
+    const customRow = container.querySelector('[data-testid="aiops-tool-row-tool-custom"]');
+    expect(uptimeRow?.textContent).toContain("uptime");
+    expect(diskRow?.textContent).toContain("df -h /");
+    expect(uptimeRow?.textContent).not.toContain("exec_command");
+    expect(diskRow?.textContent).not.toContain("exec_command");
+    expect(legacyRow?.textContent).toContain("hostname");
+    expect(legacyRow?.textContent).not.toContain("exec_command");
+    expect(uptimeRow?.getAttribute("aria-label")).toBe("终端命令：在 120.77.239.90 执行 uptime，已完成");
+    expect(diskRow?.getAttribute("aria-label")).toBe("终端命令：在 120.77.239.90 执行 df -h /，已完成");
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-uptime"]')?.getAttribute("aria-hidden")).toBe("true");
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-disk"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-command-icon-tool-legacy"]')).toBeTruthy();
+    const uptimeHost = container.querySelector('[data-testid="aiops-command-host-tool-uptime"]');
+    const uptimeCommand = container.querySelector('[data-testid="aiops-command-text-tool-uptime"]');
+    expect(uptimeHost?.textContent).toBe("120.77.239.90");
+    expect(uptimeCommand?.textContent).toBe("uptime");
+    expect(
+      ((uptimeHost?.compareDocumentPosition(uptimeCommand as Node) || 0) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    ).toBe(true);
+    expect(customRow?.textContent).toContain("exec_command_runner checkout");
+    expect(container.querySelector('[data-testid="aiops-tool-icon-tool-custom"]')).toBeNull();
+
+    await act(async () => {
+      uptimeRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      diskRow?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-uptime"]')?.textContent).toBe("up 246 days");
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-disk"]')?.textContent).toBe(
+      "Filesystem Size Used Avail Use% Mounted on\n/dev/vda3 40G 31G 6.4G 83% /",
+    );
+    expect(container.querySelector('[data-testid="aiops-terminal-card-tool-uptime"]')?.textContent).toContain(
+      "Shell · 120.77.239.90",
+    );
+    expect(container.textContent).not.toContain('"stdout"');
+    expect(container.textContent).not.toContain('"schemaVersion"');
+  });
+
+  it("shows failed exec tool stderr in a terminal without leaking its JSON envelope", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "tool-failed-command",
+              kind: "tool",
+              displayKind: "host.command",
+              source: "exec_command",
+              status: "failed",
+              inputSummary: "systemctl status missing.service",
+              text: "exec_command systemctl status missing.service",
+              outputPreview: JSON.stringify({
+                schemaVersion: "aiops.terminal/v1",
+                tool: "exec_command",
+                hostId: "remote-120-77-239-90",
+                command: "systemctl status missing.service",
+                status: "error",
+                exitCode: 4,
+                stdout: "partial output\n",
+                stderr: "Unit missing.service could not be found.\n",
+              }),
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-command-row-tool-failed-command"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-command-host-tool-failed-command"]')?.textContent).toBe(
+      "120.77.239.90",
+    );
+    expect(container.querySelector('[data-testid="aiops-command-output-tool-failed-command"]')?.textContent).toBe(
+      "Unit missing.service could not be found.",
+    );
+    expect(container.textContent).not.toContain("partial output");
+    expect(container.textContent).not.toContain('"stderr"');
+    expect(container.textContent).not.toContain('"tool":"exec_command"');
+  });
+
+  it("does not replace explicit business or file mutation tool names with familiar icons", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "mutation-action-title",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-business", "call-patch"],
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+              text: "检查业务探针并更新配置。",
+            }),
+            makeBlock({
+              id: "tool-business",
+              kind: "tool",
+              displayKind: "business.probe",
+              source: "exec_command",
+              inputSummary: "checkout",
+              text: "exec_command checkout",
+              toolCallId: "call-business",
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+            }),
+            makeBlock({
+              id: "file-patch",
+              kind: "file",
+              displayKind: "file.diff",
+              source: "apply_patch",
+              text: "更新 config.yaml",
+              toolCallId: "call-patch",
+              foldGroupId: "mutation-action",
+              foldGroupKind: "tool",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-business"]')?.textContent).toContain(
+      "exec_command checkout",
+    );
+    expect(container.querySelector('[data-testid="aiops-tool-icon-tool-business"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-tool-business"]')?.getAttribute("aria-label")).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-patch"]')?.textContent).toContain(
+      "更新 config.yaml",
+    );
+    expect(container.querySelector('[data-testid="aiops-tool-icon-file-patch"]')).toBeNull();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-patch"]')?.getAttribute("aria-label")).toBeNull();
+  });
+
+  it("uses typed model prelude commentary as the action title instead of a tool row", async () => {
+    await act(async () => {
+      root.render(
+        <ProcessTranscript
+          process={[
+            makeBlock({
+              id: "model-prelude-action",
+              kind: "assistant",
+              phase: "commentary",
+              commentarySource: "model_prelude",
+              toolCallIds: ["call-file"],
+              foldGroupId: "action-file",
+              foldGroupKind: "tool",
+              text: "先读取配置文件，再核对字段。",
+            }),
+            makeBlock({
+              id: "file-action",
+              kind: "file",
+              displayKind: "file.read",
+              toolCallId: "call-file",
+              foldGroupId: "action-file",
+              foldGroupKind: "tool",
+              text: "读取 config.yaml",
+            }),
+          ]}
+          turnStatus="completed"
+        />,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-process-header"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect((container.textContent?.match(/先读取配置文件，再核对字段。/g) || [])).toHaveLength(1);
+
+    await act(async () => {
+      container.querySelector('[data-testid="aiops-merged-tool-toggle"]')?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    expect(container.querySelectorAll('[data-testid^="aiops-tool-row-"]')).toHaveLength(1);
+    expect(container.textContent).toContain("读取 config.yaml");
+    expect(container.querySelector('[data-testid="aiops-tool-icon-file-action"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="aiops-tool-row-file-action"]')?.getAttribute("aria-label")).toBe(
+      "文件读取：读取 config.yaml，已完成",
+    );
   });
 
   it("shows merged tool call details by default", async () => {

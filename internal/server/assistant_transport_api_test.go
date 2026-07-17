@@ -336,8 +336,9 @@ func (r *assistantTransportAPITestRuntime) RunTurn(_ context.Context, req runtim
 	session.CurrentTurn.Lifecycle = runtimekernel.TurnLifecycleCompleted
 	session.CurrentTurn.UpdatedAt = time.Now().UTC()
 	session.CurrentTurn.AgentItems[1].Status = agentstate.ItemStatusCompleted
-	session.CurrentTurn.AgentItems[2].Status = agentstate.ItemStatusCompleted
-	session.CurrentTurn.AgentItems[2].Payload.Summary = "final answer"
+	completedFinal := assistantMessageFinalItemForServerTest("final-1", agentstate.ItemStatusCompleted, "final answer", time.Now().UTC())
+	completedFinal.CreatedAt = session.CurrentTurn.AgentItems[2].CreatedAt
+	session.CurrentTurn.AgentItems[2] = completedFinal
 	r.sessions.Update(session)
 
 	return runtimekernel.TurnResult{
@@ -644,7 +645,7 @@ func assistantTransportRuntimeControlPayload(t *testing.T, config map[string]any
 	return payload
 }
 
-func TestAssistantTransportAPIStopReturnsReprojectedCanceledProcess(t *testing.T) {
+func TestAssistantTransportAPIStopKeepsModelTraceOutOfCanceledChat(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	session := sessions.GetOrCreate("sess-stop-reproject", runtimekernel.SessionTypeHost, runtimekernel.ModeChat)
 	now := time.Now().UTC()
@@ -729,11 +730,10 @@ func TestAssistantTransportAPIStopReturnsReprojectedCanceledProcess(t *testing.T
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d body = %s", resp.StatusCode, text)
 	}
-	if !strings.Contains(text, "模型调用已取消") {
-		t.Fatalf("response = %q, want canceled model process projection", text)
-	}
-	if strings.Contains(text, "正在等待模型返回") {
-		t.Fatalf("response = %q, should not re-emit stale waiting process after stop", text)
+	for _, hidden := range []string{"模型调用已取消", "正在等待模型返回", `"kind":"reasoning"`} {
+		if strings.Contains(text, hidden) {
+			t.Fatalf("response = %q, should keep trace-only model state %q out of canceled chat", text, hidden)
+		}
 	}
 }
 
@@ -2487,13 +2487,15 @@ func assistantTransportRedisManual() opsmanual.OpsManual {
 }
 
 func assistantMessageFinalItemForServerTest(id string, status agentstate.ItemStatus, summary string, at time.Time) agentstate.TurnItem {
+	phase := "final_answer"
 	streamState := "complete"
 	if status == agentstate.ItemStatusRunning {
+		phase = "unclassified"
 		streamState = "streaming"
 	}
 	data, _ := json.Marshal(map[string]string{
 		"displayKind": "assistant.message",
-		"phase":       "final_answer",
+		"phase":       phase,
 		"streamState": streamState,
 	})
 	return agentstate.TurnItem{

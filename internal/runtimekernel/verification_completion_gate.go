@@ -11,6 +11,8 @@ import (
 	"aiops-v2/internal/verification"
 )
 
+const VerificationCompletionGateItemKind = "runtime.verification_completion_gate"
+
 const verificationCompletionGateRetryMetadataKey = "verificationCompletionGate.retry"
 
 const (
@@ -219,15 +221,24 @@ func appendVerificationCompletionGateItem(snapshot *TurnSnapshot, turnID string,
 	}
 	if hasAgentItemID(snapshot.AgentItems, itemID) {
 		updateAgentItem(snapshot, itemID, status, verificationCompletionGateSummary(decision))
+		updateAgentItemData(snapshot, itemID, decision)
+		for i := range snapshot.AgentItems {
+			if snapshot.AgentItems[i].ID == itemID {
+				snapshot.AgentItems[i].Payload.Kind = VerificationCompletionGateItemKind
+				break
+			}
+		}
 		return
 	}
-	appendAgentItem(snapshot, newAgentItem(
+	item := newAgentItem(
 		itemID,
 		agentstate.TurnItemTypeEvidence,
 		status,
 		verificationCompletionGateSummary(decision),
 		decision,
-	))
+	)
+	item.Payload.Kind = VerificationCompletionGateItemKind
+	appendAgentItem(snapshot, item)
 }
 
 func verificationCompletionGateSummary(decision VerificationCompletionDecision) string {

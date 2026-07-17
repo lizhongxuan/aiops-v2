@@ -400,12 +400,14 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([
-      {
-        type: "text",
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        displayKind: "runtime.error",
+        status: "failed",
         text: "error, status code: 500, status: 500 Internal Server Error, message: Network error",
-      },
-    ]);
+      }),
+    ]));
     expect(result.messages[1]?.content).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ text: "我先研究 pgBackRest 恢复与 pg_auto_failover 集成的常见故障模式，再给出分析。" }),
@@ -456,7 +458,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("does not duplicate a running final draft when it is already shown as assistant commentary", () => {
+  it("does not expose a running final draft even when it matches visible commentary", () => {
     const state = createState();
     const duplicateText = "前两个命令因 agent 端口 7072 拒绝连接且 SSH 回退失败，但 DNS 查询成功了。";
     state.status = "working";
@@ -493,7 +495,7 @@ describe("aiopsTransportConverter", () => {
     const result = converter(state, metadata());
 
     expect(textContent(result.messages[1]?.content)).toEqual([]);
-    expect(resultFinalBlock(result)?.text).toBe(duplicateText);
+    expect(resultFinalBlock(result)).toBeUndefined();
     expect(resultBlocks(result)).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -504,7 +506,7 @@ describe("aiopsTransportConverter", () => {
     );
   });
 
-  it("prefers preserved assistant progress when a failed turn final is only a raw stream error", () => {
+  it("uses the typed normalized error instead of promoting commentary after a stream failure", () => {
     const state = createState();
     const preservedAnswer = [
       "Now I have enough context from the PostgreSQL PITR documentation and pg_auto_failover operations guide.",
@@ -514,16 +516,12 @@ describe("aiopsTransportConverter", () => {
       "下一步：先核对主机 A 和主机 B 的 pg_controldata timeline，再检查恢复残留配置和归档 timeline history。",
     ].join("\n");
     state.status = "failed";
-    state.lastError = "failed to receive stream chunk: context deadline exceeded";
+    state.lastError = "模型流中断，已保留已生成内容";
     state.turns["turn-1"] = {
       ...state.turns["turn-1"],
       status: "failed",
       completedAt: "2026-05-06T00:05:25Z",
-      final: {
-        id: "final-stream-error",
-        status: "failed",
-        text: "failed to receive stream chunk: context deadline exceeded",
-      },
+      final: undefined,
       process: [
         {
           id: "assistant-analysis",
@@ -534,21 +532,27 @@ describe("aiopsTransportConverter", () => {
           streamState: "complete",
           text: preservedAnswer,
         },
+        {
+          id: "runtime-error",
+          kind: "system",
+          displayKind: "runtime.error",
+          status: "failed",
+          text: "模型流中断，已保留已生成内容",
+        },
       ],
     };
     const converter = createAiopsTransportConverter();
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([{ type: "text", text: preservedAnswer }]);
-    expect(result.messages[1]?.content).not.toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ text: "failed to receive stream chunk: context deadline exceeded" }),
-      ]),
-    );
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "assistant-analysis", phase: "commentary" }),
+      expect.objectContaining({ id: "runtime-error", displayKind: "runtime.error" }),
+    ]));
   });
 
-  it("keeps streamed assistant progress visible when a turn is canceled after partial output", () => {
+  it("keeps canceled assistant progress traceable without promoting it to final text", () => {
     const state = createState();
     state.status = "canceled";
     state.lastError = "user stop";
@@ -573,9 +577,10 @@ describe("aiopsTransportConverter", () => {
 
     const result = converter(state, metadata());
 
-    expect(textContent(result.messages[1]?.content)).toEqual([
-      { type: "text", text: "已经输出的部分分析应该保留，不能因为取消而消失。" },
-    ]);
+    expect(textContent(result.messages[1]?.content)).toEqual([]);
+    expect(resultBlocks(result)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "assistant-progress-canceled", phase: "commentary", streamState: "incomplete" }),
+    ]));
   });
 
   it("drops incomplete stream states instead of migrating old transport data", () => {
@@ -635,7 +640,7 @@ describe("aiopsTransportConverter", () => {
     });
   });
 
-  it("keeps assistant message id stable while final text streams in", () => {
+  it("keeps the assistant message empty until the terminal final commit", () => {
     const state = createState();
     const converter = createAiopsTransportConverter();
     const runningState: AiopsTransportState = {
@@ -660,15 +665,33 @@ describe("aiopsTransportConverter", () => {
         },
       },
     };
+    const completedState: AiopsTransportState = {
+      ...streamingState,
+      status: "idle",
+      turns: {
+        ...streamingState.turns,
+        "turn-1": {
+          ...streamingState.turns["turn-1"],
+          status: "completed",
+          completedAt: "2026-05-06T00:00:05Z",
+          final: { id: "final-1", text: "complete", status: "completed" },
+        },
+      },
+    };
 
     const before = converter(runningState, metadata());
     const after = converter(streamingState, metadata());
+    const completed = converter(completedState, metadata());
 
     expect(before.messages[1]?.id).toBe("turn-1:assistant");
     expect(after.messages[1]?.id).toBe("turn-1:assistant");
-    expect(textContent(after.messages[1]?.content)).toEqual([
-      { type: "text", text: "partial" },
+    expect(textContent(after.messages[1]?.content)).toEqual([]);
+    expect(resultFinalBlock(after)).toBeUndefined();
+    expect(completed.messages[1]?.id).toBe("turn-1:assistant");
+    expect(textContent(completed.messages[1]?.content)).toEqual([
+      { type: "text", text: "complete" },
     ]);
+    expect(resultFinalBlock(completed)?.text).toBe("complete");
   });
 
   it("adds optimistic pending add-message commands without mutating source state", () => {

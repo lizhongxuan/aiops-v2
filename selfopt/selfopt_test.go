@@ -247,6 +247,19 @@ func TestSecretScanBlocksCredentialsButAllowsRedactedMetadata(t *testing.T) {
 	}
 }
 
+func TestSecretScanDistinguishesCaseIDFromAPIKey(t *testing.T) {
+	scanner := NewSecretScanner()
+	if findings := scanner.ScanString(`{"id":"high-risk-approval-required"}`); len(findings) != 0 {
+		t.Fatalf("case ID must not be treated as an API key, got %+v", findings)
+	}
+
+	fakeKey := "sk-" + strings.Repeat("A1", 12)
+	findings := scanner.ScanString(`{"apiKey":"` + fakeKey + `"}`)
+	if len(findings) != 1 || findings[0].Kind != "api_key" {
+		t.Fatalf("well-formed sk-prefixed key must be detected, got %+v", findings)
+	}
+}
+
 func TestRunOfflineWritesReportsDashboardAndCandidateAssets(t *testing.T) {
 	root := t.TempDir()
 	casesDir := filepath.Join(root, "cases")

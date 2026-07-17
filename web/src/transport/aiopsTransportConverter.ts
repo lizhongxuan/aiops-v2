@@ -44,29 +44,41 @@ export function canonicalizeTransportTranscript(state: AiopsTransportState): Aio
   return {
     ...state,
     turns: Object.fromEntries(
-      Object.entries(state.turns || {}).map(([turnId, turn]) => [turnId, canonicalizeTransportTurn(turn)]),
+      Object.entries(state.turns || {}).map(([turnId, turn]) => [
+        turnId,
+        canonicalizeTransportTurn(turn, turnId === state.currentTurnId ? state.lastError : undefined),
+      ]),
     ),
   };
 }
 
-function canonicalizeTransportTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
+function canonicalizeTransportTurn(turn: AiopsTransportTurn, currentTurnError?: string): AiopsTransportTurn {
   const existingOrder = Array.isArray(turn.blockOrder) ? turn.blockOrder : [];
   const existingBlocks = turn.blocksById && typeof turn.blocksById === "object" ? turn.blocksById : {};
-  const canonicalOrder = existingOrder.filter((id) => Boolean(id && existingBlocks[id]));
+  const canonicalOrder = existingOrder.filter((id) => {
+    const block = existingBlocks[id];
+    return Boolean(id && block && isVisibleTranscriptBlock(block));
+  });
   let blockOrder = canonicalOrder;
   let blocksById = Object.fromEntries(canonicalOrder.map((id) => [id, existingBlocks[id]]));
 
   // One-time compatibility projection for persisted pre-blockOrder states.
   // Production aiops.transport.v2 responses are emitted with native blocks.
-  if (blockOrder.length === 0) {
+  if (existingOrder.length === 0) {
     const legacyBlocks: AiopsTransportBlock[] = [];
     for (const block of turn.process || []) {
+      if (!isVisibleTranscriptBlock({
+        ...block,
+        type: block.kind === "assistant" && block.phase === "commentary" ? "commentary" : block.kind,
+      })) {
+        continue;
+      }
       legacyBlocks.push({
         ...block,
         type: block.kind === "assistant" && block.phase === "commentary" ? "commentary" : block.kind,
       });
     }
-    if (turn.final?.id) {
+    if (turn.final?.id && turn.final.status !== "running") {
       legacyBlocks.push({
         id: uniqueBlockId(turn.final.id, legacyBlocks),
         type: "final_answer",
@@ -94,8 +106,64 @@ function canonicalizeTransportTurn(turn: AiopsTransportTurn): AiopsTransportTurn
     blocksById = Object.fromEntries(legacyBlocks.map((block) => [block.id, block]));
   }
 
+  const visibleBlocks = blockOrder.flatMap((id) => (blocksById[id] ? [blocksById[id]] : []));
+  const normalizedError = currentTurnError?.trim() || "";
+  if (
+    turn.status === "failed" &&
+    normalizedError &&
+    !visibleBlocks.some((block) => block.type === "final_answer") &&
+    !visibleBlocks.some((block) => block.displayKind === "runtime.error")
+  ) {
+    const errorId = uniqueBlockId(`block:${turn.id}:system:state-last-error`, visibleBlocks);
+    const errorBlock: AiopsTransportBlock = {
+      id: errorId,
+      type: "system",
+      kind: "system",
+      displayKind: "runtime.error",
+      status: "failed",
+      text: normalizedError,
+    };
+    blockOrder = [...blockOrder, errorId];
+    blocksById = { ...blocksById, [errorId]: errorBlock };
+  }
+
   const { process: _legacyProcess, final: _legacyFinal, ...canonicalTurn } = turn;
   return { ...canonicalTurn, blockOrder, blocksById };
+}
+
+function isVisibleTranscriptBlock(block: AiopsTransportBlock) {
+  const isAssistantMessage = block.kind === "assistant" || block.type === "commentary" || block.type === "final_answer";
+  if (!isAssistantMessage) {
+    return true;
+  }
+  const boundary = block as AiopsTransportBlock & {
+    boundaryAction?: string;
+    replacedByMessageId?: string;
+  };
+  const phase = String(block.phase || "").trim().toLowerCase();
+  const streamState = String(block.streamState || "").trim().toLowerCase();
+  const boundaryAction = String(boundary.boundaryAction || "").trim().toLowerCase();
+  if (phase === "unclassified") {
+    return false;
+  }
+  if (boundaryAction === "retry_once" || String(boundary.replacedByMessageId || "").trim()) {
+    return false;
+  }
+  if (block.type !== "final_answer") {
+    return true;
+  }
+  if (phase && phase !== "final_answer") {
+    return false;
+  }
+  if (
+    block.status === "queued" ||
+    block.status === "running" ||
+    block.finalContract?.status === "running" ||
+    streamState === "streaming"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function uniqueBlockId(id: string, blocks: AiopsTransportBlock[]) {
@@ -137,7 +205,7 @@ function orderedTurnMessages(state: AiopsTransportState) {
     if (userMessage) {
       messages.push(userMessage);
     }
-    const assistantMessage = toAssistantThreadMessage(state, turn);
+    const assistantMessage = toAssistantThreadMessage(turn);
     if (assistantMessage) {
       messages.push(assistantMessage);
     }
@@ -190,11 +258,11 @@ function toUserThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   };
 }
 
-function toAssistantThreadMessage(state: AiopsTransportState, turn: AiopsTransportTurn): ThreadMessage | null {
+function toAssistantThreadMessage(turn: AiopsTransportTurn): ThreadMessage | null {
   if (!shouldShowAssistantMessage(turn)) {
     return null;
   }
-  const displayText = assistantDisplayText(state, turn);
+  const displayText = assistantDisplayText(turn);
   const content: ThreadMessage["content"] = [
     { type: "data", name: AIOPS_TURN_DATA_PART, data: assistantTurnEnvelope(turn) },
     ...orderedTurnBlocks(turn).map((block) => ({
@@ -233,89 +301,9 @@ function assistantTurnEnvelope(turn: AiopsTransportTurn) {
   };
 }
 
-function assistantDisplayText(state: AiopsTransportState, turn: AiopsTransportTurn) {
+function assistantDisplayText(turn: AiopsTransportTurn) {
   const final = finalAnswerBlock(turn);
-  const finalText = final?.text?.trim() || "";
-  const finalIsRawRuntimeFailure = isRawRuntimeFailureText(finalText);
-  if (finalText && !finalIsRawRuntimeFailure && !isDuplicateRunningFinalDraft(turn, finalText)) {
-    return finalText;
-  }
-  if (turn.status === "failed" || turn.status === "canceled" || finalIsRawRuntimeFailure) {
-    const preservedProgress = turn.status === "canceled"
-      ? latestAssistantProcessText(processBlocks(turn))
-      : latestSubstantialAssistantProcessText(processBlocks(turn));
-    if (preservedProgress) {
-      return preservedProgress;
-    }
-    if (finalText) {
-      return finalText;
-    }
-    if (turn.status === "failed" && state.lastError) {
-      return state.lastError;
-    }
-  }
-  return "";
-}
-
-function isDuplicateRunningFinalDraft(turn: AiopsTransportTurn, finalText: string) {
-  if (finalAnswerBlock(turn)?.finalContract?.status !== "running") {
-    return false;
-  }
-  const normalizedFinal = normalizeAssistantDraftText(finalText);
-  if (!normalizedFinal) {
-    return false;
-  }
-  return processBlocks(turn).some((block) => {
-    if (block?.kind !== "assistant") {
-      return false;
-    }
-    return normalizeAssistantDraftText(block.text || "") === normalizedFinal;
-  });
-}
-
-function normalizeAssistantDraftText(text: string) {
-  return text.trim().replace(/\s+/g, " ");
-}
-
-function latestAssistantProcessText(process: AiopsProcessBlock[]) {
-  for (let i = process.length - 1; i >= 0; i -= 1) {
-    const block = process[i];
-    if (block?.kind !== "assistant") {
-      continue;
-    }
-    const text = block.text?.trim();
-    if (text) {
-      return text;
-    }
-  }
-  return "";
-}
-
-function latestSubstantialAssistantProcessText(process: AiopsProcessBlock[]) {
-  const text = latestAssistantProcessText(process);
-  return isSubstantialAssistantProcessText(text) ? text : "";
-}
-
-function isSubstantialAssistantProcessText(text: string) {
-  const normalized = text.trim();
-  if (normalized.length >= 360) {
-    return true;
-  }
-  const paragraphs = normalized.split(/\n\s*\n/).filter(Boolean).length;
-  return normalized.length >= 180 && paragraphs >= 2;
-}
-
-function isRawRuntimeFailureText(text: string) {
-  const normalized = text.trim().toLowerCase();
-  if (!normalized) {
-    return false;
-  }
-  return (
-    normalized.includes("failed to receive stream chunk") ||
-    normalized.includes("context deadline exceeded") ||
-    normalized.includes("stream chunk") ||
-    normalized.includes("upstream request timeout")
-  );
+  return final?.text?.trim() || "";
 }
 
 function shouldShowAssistantMessage(turn: AiopsTransportTurn) {

@@ -185,7 +185,7 @@ func markAssistantMessageReplacedForRetry(snapshot *TurnSnapshot, itemID string,
 	failAssistantMessageItem(snapshot, itemID, text, assistantMessageData{
 		MessageID:           messageID,
 		Iteration:           iteration,
-		Phase:               AssistantMessagePhaseFinalAnswer,
+		Phase:               AssistantMessagePhaseUnclassified,
 		StreamState:         AssistantMessageStreamStateIncomplete,
 		EvidenceBoundary:    evidenceBoundary,
 		BoundaryAction:      action,
@@ -229,6 +229,14 @@ func cancelActiveAgentItems(snapshot *TurnSnapshot) {
 		case agentstate.ItemStatusPending, agentstate.ItemStatusRunning, agentstate.ItemStatusBlocked:
 			snapshot.AgentItems[i].Status = agentstate.ItemStatusCancelled
 			snapshot.AgentItems[i].UpdatedAt = time.Now()
+			if snapshot.AgentItems[i].Type == agentstate.TurnItemTypeAssistantMessage {
+				payload := agentItemPayloadMap(snapshot.AgentItems[i])
+				payload["phase"] = string(AssistantMessagePhaseUnclassified)
+				payload["streamState"] = string(AssistantMessageStreamStateIncomplete)
+				if raw, err := json.Marshal(payload); err == nil {
+					snapshot.AgentItems[i].Payload.Data = raw
+				}
+			}
 		}
 	}
 }

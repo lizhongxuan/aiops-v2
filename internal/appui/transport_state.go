@@ -241,11 +241,13 @@ type AiopsProcessBlock struct {
 	Phase               string                      `json:"phase,omitempty"`
 	StreamState         string                      `json:"streamState,omitempty"`
 	CommentarySource    string                      `json:"commentarySource,omitempty"`
+	Iteration           *int                        `json:"iteration,omitempty"`
 	ToolCallIDs         []string                    `json:"toolCallIds,omitempty"`
 	EvidenceBoundary    string                      `json:"evidenceBoundary,omitempty"`
 	Status              AiopsTransportProcessStatus `json:"status"`
 	Text                string                      `json:"text"`
 	Command             string                      `json:"command,omitempty"`
+	HostID              string                      `json:"hostId,omitempty"`
 	InputSummary        string                      `json:"inputSummary,omitempty"`
 	OutputPreview       string                      `json:"outputPreview,omitempty"`
 	FoldGroupID         string                      `json:"foldGroupId,omitempty"`
