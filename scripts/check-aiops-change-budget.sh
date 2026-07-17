@@ -7,8 +7,10 @@ REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"
 POLICY_PATH="scripts/check-aiops-change-budget.sh"
 cd "${REPO_ROOT}"
 
-# The gate audits every commit in AIOPS_HARNESS_BASE_REF..HEAD (or HEAD^..HEAD
-# locally) and treats an uncommitted worktree as one additional change. Budget
+# The gate audits every commit in AIOPS_HARNESS_BASE_REF..AIOPS_HARNESS_HEAD_REF
+# (or HEAD^..HEAD locally) and treats an uncommitted worktree as one additional
+# change. The explicit head keeps pull_request synthetic merge commits out of the
+# per-commit audit while the rest of CI still tests the merged tree. Budget
 # exceptions are intentionally commit-only and require these trailers:
 #   AIOps-Change-Exception: mechanical|baseline
 #   AIOps-Change-Reason: <why the exception is safe>
@@ -280,27 +282,46 @@ check_change() {
 	rm -f "${files_file}"
 }
 
+resolve_head() {
+	local candidate="${AIOPS_HARNESS_HEAD_REF:-HEAD}"
+	if ! git rev-parse --verify "${candidate}^{commit}" >/dev/null 2>&1; then
+		echo "ERROR: unable to resolve AIOps harness change head: ${candidate}" >&2
+		return 1
+	fi
+	git rev-parse --verify "${candidate}^{commit}"
+}
+
 resolve_base() {
+	local audit_head="$1"
 	if [[ -n "${AIOPS_HARNESS_BASE_REF:-}" ]]; then
 		if [[ "${AIOPS_HARNESS_BASE_REF}" =~ ^0+$ ]]; then
 			AIOPS_HARNESS_BASE_REF=""
 		else
+			if ! git rev-parse --verify "${AIOPS_HARNESS_BASE_REF}^{commit}" >/dev/null 2>&1; then
+				echo "ERROR: unable to resolve AIOps harness change base: ${AIOPS_HARNESS_BASE_REF}" >&2
+				return 1
+			fi
 			git rev-parse --verify "${AIOPS_HARNESS_BASE_REF}^{commit}"
 			return
 		fi
 	fi
 	if [[ -n "${GITHUB_BASE_REF:-}" ]] && git rev-parse --verify "origin/${GITHUB_BASE_REF}^{commit}" >/dev/null 2>&1; then
-		git merge-base HEAD "origin/${GITHUB_BASE_REF}"
+		git merge-base "${audit_head}" "origin/${GITHUB_BASE_REF}"
 		return
 	fi
-	if git rev-parse HEAD^ >/dev/null 2>&1; then
-		git rev-parse HEAD^
+	if git rev-parse "${audit_head}^" >/dev/null 2>&1; then
+		git rev-parse "${audit_head}^"
 	else
 		git hash-object -t tree /dev/null
 	fi
 }
 
-base="$(resolve_base)"
+if ! head="$(resolve_head)"; then
+	exit 2
+fi
+if ! base="$(resolve_base "${head}")"; then
+	exit 2
+fi
 if ! git rev-parse --verify "${base}^{commit}" >/dev/null 2>&1 && ! git cat-file -e "${base}^{tree}" >/dev/null 2>&1; then
 	echo "ERROR: unable to resolve AIOps harness change base: ${base}" >&2
 	exit 2
@@ -324,7 +345,7 @@ while IFS= read -r commit; do
 		fi
 	fi
 	check_change "${parent}" "${commit}" "commit ${commit}" "${commit}" "${bootstrap_exception}"
-done < <(git rev-list --reverse "${base}..HEAD")
+done < <(git rev-list --reverse "${base}..${head}")
 
 if [[ "${pre_policy_count}" -gt 0 ]]; then
 	if [[ "${AIOPS_HARNESS_REQUIRE_BASELINE_ACK:-0}" == "1" ]]; then

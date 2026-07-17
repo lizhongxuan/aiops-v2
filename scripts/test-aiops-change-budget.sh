@@ -53,8 +53,9 @@ run_gate() {
 expect_allowed() {
 	local name="$1"
 	local root="$2"
+	shift 2
 	local output
-	if ! output="$(run_gate "${root}")"; then
+	if ! output="$(run_gate "${root}" "$@")"; then
 		echo "ERROR: legal change fixture unexpectedly failed: ${name}" >&2
 		echo "${output}" >&2
 		fail=1
@@ -65,8 +66,9 @@ expect_rejected() {
 	local name="$1"
 	local root="$2"
 	local rule="$3"
+	shift 3
 	local output
-	if output="$(run_gate "${root}")"; then
+	if output="$(run_gate "${root}" "$@")"; then
 		echo "ERROR: violation fixture unexpectedly passed: ${name}" >&2
 		fail=1
 		return
@@ -100,6 +102,7 @@ harness_golden_root="${FIXTURE_ROOT}/harness-golden-undeclared"
 declared_harness_golden_root="${FIXTURE_ROOT}/harness-golden-declared"
 transport_story_root="${FIXTURE_ROOT}/transport-story-undeclared"
 declared_transport_story_root="${FIXTURE_ROOT}/transport-story-declared"
+synthetic_merge_root="${FIXTURE_ROOT}/synthetic-merge"
 bootstrap_root="${FIXTURE_ROOT}/bootstrap"
 
 for root in \
@@ -123,7 +126,8 @@ for root in \
 	"${harness_golden_root}" \
 	"${declared_harness_golden_root}" \
 	"${transport_story_root}" \
-	"${declared_transport_story_root}"; do
+	"${declared_transport_story_root}" \
+	"${synthetic_merge_root}"; do
 	new_repo "${root}"
 done
 
@@ -256,6 +260,16 @@ done
 commit_plain "${transport_story_root}" "test: drift AssistantTransport story without declaration"
 commit_exception "${declared_transport_story_root}" baseline "test: review expected AssistantTransport story change"
 
+synthetic_base_branch="$(git -C "${synthetic_merge_root}" symbolic-ref --short HEAD)"
+git -C "${synthetic_merge_root}" switch -q -c feature
+mkdir -p "${synthetic_merge_root}/web/tests/__screenshots__"
+printf '%s\n' 'reviewed feature snapshot bytes' >"${synthetic_merge_root}/web/tests/__screenshots__/feature.png"
+git -C "${synthetic_merge_root}" add -f web/tests/__screenshots__/feature.png
+commit_exception "${synthetic_merge_root}" baseline "test: review feature snapshot before synthetic merge"
+synthetic_head="$(git -C "${synthetic_merge_root}" rev-parse HEAD)"
+git -C "${synthetic_merge_root}" switch -q "${synthetic_base_branch}"
+git -C "${synthetic_merge_root}" merge -q --no-ff feature -m "test: synthetic pull request merge"
+
 mkdir -p "${bootstrap_root}"
 git -C "${bootstrap_root}" init -q
 git -C "${bootstrap_root}" config user.name "Harness Gate Selftest"
@@ -298,6 +312,10 @@ expect_rejected "undeclared AI Chat harness golden drift" "${harness_golden_root
 expect_allowed "declared AI Chat harness golden change" "${declared_harness_golden_root}"
 expect_rejected "undeclared AssistantTransport story drift" "${transport_story_root}" "undeclared golden/snapshot drift"
 expect_allowed "declared AssistantTransport story change" "${declared_transport_story_root}"
+expect_rejected "synthetic merge is not an auditable feature head" "${synthetic_merge_root}" "undeclared golden/snapshot drift"
+expect_allowed "explicit PR head excludes the synthetic merge" "${synthetic_merge_root}" env AIOPS_HARNESS_HEAD_REF="${synthetic_head}"
+expect_rejected "invalid explicit audit head" "${small_root}" "unable to resolve AIOps harness change head" env AIOPS_HARNESS_HEAD_REF="refs/heads/missing-audit-head"
+expect_rejected "invalid explicit audit base" "${small_root}" "unable to resolve AIOps harness change base" env AIOPS_HARNESS_BASE_REF="refs/heads/missing-audit-base"
 
 bootstrap_output=""
 if bootstrap_output="$(
