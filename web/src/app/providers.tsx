@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
 
 import { AppShellChromeProvider } from "@/app/AppShellChromeContext";
+import { AppSnapshotProvider } from "@/app/AppSnapshotContext";
 import { createAiopsQueryClient } from "@/app/queryClient";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
@@ -13,11 +14,13 @@ export function Providers({ children }: PropsWithChildren) {
 
   return (
     <QueryClientProvider client={queryClient}>
-      <AppShellChromeProvider>
-        <TooltipProvider>
-          <BrowserRouter>{children}</BrowserRouter>
-        </TooltipProvider>
-      </AppShellChromeProvider>
+      <AppSnapshotProvider>
+        <AppShellChromeProvider>
+          <TooltipProvider>
+            <BrowserRouter>{children}</BrowserRouter>
+          </TooltipProvider>
+        </AppShellChromeProvider>
+      </AppSnapshotProvider>
     </QueryClientProvider>
   );
 }

@@ -199,6 +199,11 @@ type ToolResourceLockKey struct {
 	OperationKind string `json:"operationKind,omitempty"`
 }
 
+// ToolResourceLockResolver derives canonical lock keys from validated tool
+// arguments and the trusted execution context. Returning no keys is a denial
+// for mutation tools that declare this resolver.
+type ToolResourceLockResolver func(json.RawMessage, ToolExecutionContext) ([]ToolResourceLockKey, error)
+
 type ToolIdempotencyStrategy string
 
 const (
@@ -248,38 +253,39 @@ func (m ToolRollbackMetadata) DeclarativelyReady() bool {
 
 // ToolMetadata captures the registry-facing metadata for a tool.
 type ToolMetadata struct {
-	Name                   string                  `json:"name"`
-	Aliases                []string                `json:"aliases,omitempty"`
-	Description            string                  `json:"description,omitempty"`
-	Domain                 string                  `json:"domain,omitempty"`
-	Mock                   bool                    `json:"mock,omitempty"`
-	Origin                 ToolOrigin              `json:"origin,omitempty"`
-	SearchHint             string                  `json:"searchHint,omitempty"`
-	ShouldDefer            bool                    `json:"shouldDefer,omitempty"`
-	AlwaysLoad             bool                    `json:"alwaysLoad,omitempty"`
-	Layer                  ToolLayer               `json:"layer,omitempty"`
-	Pack                   string                  `json:"pack,omitempty"`
-	DeferByDefault         bool                    `json:"deferByDefault,omitempty"`
-	Profiles               []string                `json:"profiles,omitempty"`
-	Triggers               []string                `json:"triggers,omitempty"`
-	RecordEvidence         bool                    `json:"recordEvidence,omitempty"`
-	DedupeEligible         bool                    `json:"dedupeEligible,omitempty"`
-	MicrocompactEligible   bool                    `json:"microcompactEligible,omitempty"`
-	ObservationKeyHints    []string                `json:"observationKeyHints,omitempty"`
-	SmallContextBudgetHint int                     `json:"smallContextBudgetHint,omitempty"`
-	IsMCP                  bool                    `json:"isMCP,omitempty"`
-	IsLSP                  bool                    `json:"isLSP,omitempty"`
-	RiskLevel              ToolRiskLevel           `json:"riskLevel,omitempty"`
-	Mutating               bool                    `json:"mutating,omitempty"`
-	RequiresApproval       bool                    `json:"requiresApproval,omitempty"`
-	ResultBudget           ResultBudget            `json:"resultBudget,omitempty"`
-	FailurePolicy          ToolFailurePolicy       `json:"failurePolicy,omitempty"`
-	Discovery              ToolDiscoveryMetadata   `json:"discovery,omitempty"`
-	ResourceLocks          []ToolResourceLockKey   `json:"resourceLocks,omitempty"`
-	Idempotency            ToolIdempotencyMetadata `json:"idempotency,omitempty"`
-	Rollback               *ToolRollbackMetadata   `json:"rollback,omitempty"`
-	MCPInfo                MCPInfo                 `json:"mcpInfo,omitempty"`
-	ProviderNative         *ProviderNativeToolInfo `json:"providerNative,omitempty"`
+	Name                   string                   `json:"name"`
+	Aliases                []string                 `json:"aliases,omitempty"`
+	Description            string                   `json:"description,omitempty"`
+	Domain                 string                   `json:"domain,omitempty"`
+	Mock                   bool                     `json:"mock,omitempty"`
+	Origin                 ToolOrigin               `json:"origin,omitempty"`
+	SearchHint             string                   `json:"searchHint,omitempty"`
+	ShouldDefer            bool                     `json:"shouldDefer,omitempty"`
+	AlwaysLoad             bool                     `json:"alwaysLoad,omitempty"`
+	Layer                  ToolLayer                `json:"layer,omitempty"`
+	Pack                   string                   `json:"pack,omitempty"`
+	DeferByDefault         bool                     `json:"deferByDefault,omitempty"`
+	Profiles               []string                 `json:"profiles,omitempty"`
+	Triggers               []string                 `json:"triggers,omitempty"`
+	RecordEvidence         bool                     `json:"recordEvidence,omitempty"`
+	DedupeEligible         bool                     `json:"dedupeEligible,omitempty"`
+	MicrocompactEligible   bool                     `json:"microcompactEligible,omitempty"`
+	ObservationKeyHints    []string                 `json:"observationKeyHints,omitempty"`
+	SmallContextBudgetHint int                      `json:"smallContextBudgetHint,omitempty"`
+	IsMCP                  bool                     `json:"isMCP,omitempty"`
+	IsLSP                  bool                     `json:"isLSP,omitempty"`
+	RiskLevel              ToolRiskLevel            `json:"riskLevel,omitempty"`
+	Mutating               bool                     `json:"mutating,omitempty"`
+	RequiresApproval       bool                     `json:"requiresApproval,omitempty"`
+	ResultBudget           ResultBudget             `json:"resultBudget,omitempty"`
+	FailurePolicy          ToolFailurePolicy        `json:"failurePolicy,omitempty"`
+	Discovery              ToolDiscoveryMetadata    `json:"discovery,omitempty"`
+	ResourceLocks          []ToolResourceLockKey    `json:"resourceLocks,omitempty"`
+	ResourceLockResolver   ToolResourceLockResolver `json:"-"`
+	Idempotency            ToolIdempotencyMetadata  `json:"idempotency,omitempty"`
+	Rollback               *ToolRollbackMetadata    `json:"rollback,omitempty"`
+	MCPInfo                MCPInfo                  `json:"mcpInfo,omitempty"`
+	ProviderNative         *ProviderNativeToolInfo  `json:"providerNative,omitempty"`
 }
 
 // ToolAllowedInSmallContext reports whether a tool should remain visible when
@@ -417,15 +423,36 @@ func (o ToolResultOutcome) Normalize() ToolResultOutcome {
 }
 
 type ToolResult struct {
-	ToolCallID   string              `json:"toolCallId,omitempty"`
-	Content      string              `json:"content,omitempty"`
-	Display      *ToolDisplayPayload `json:"display,omitempty"`
-	Error        string              `json:"error,omitempty"`
-	Outcome      ToolResultOutcome   `json:"outcome,omitempty"`
-	References   []ResultReference   `json:"references,omitempty"`
-	ResultBudget ResultBudget        `json:"resultBudget,omitempty"`
-	Spill        *ResultSpill        `json:"spill,omitempty"`
-	Stream       *StreamingResult    `json:"-"`
+	ToolCallID        string              `json:"toolCallId,omitempty"`
+	Content           string              `json:"content,omitempty"`
+	StructuredContent json.RawMessage     `json:"structuredContent,omitempty"`
+	IsError           bool                `json:"isError,omitempty"`
+	Display           *ToolDisplayPayload `json:"display,omitempty"`
+	Error             string              `json:"error,omitempty"`
+	Outcome           ToolResultOutcome   `json:"outcome,omitempty"`
+	References        []ResultReference   `json:"references,omitempty"`
+	ResultBudget      ResultBudget        `json:"resultBudget,omitempty"`
+	Spill             *ResultSpill        `json:"spill,omitempty"`
+	Stream            *StreamingResult    `json:"-"`
+}
+
+// ExecutionFailed applies the canonical tool-error semantics. MCP isError and
+// the legacy Error field are equivalent execution failures.
+func (r ToolResult) ExecutionFailed() bool { return r.IsError || strings.TrimSpace(r.Error) != "" }
+
+// FailureText returns a short, user-readable failure while StructuredContent
+// remains available to lifecycle and transport consumers for typed recovery.
+func (r ToolResult) FailureText() string {
+	if value := strings.TrimSpace(r.Error); value != "" {
+		return value
+	}
+	if value := strings.TrimSpace(r.Content); value != "" {
+		return value
+	}
+	if r.IsError && len(r.StructuredContent) > 0 {
+		return "tool returned a structured execution error"
+	}
+	return ""
 }
 
 // EffectiveResultBudget returns the configured result budget or runtime defaults.

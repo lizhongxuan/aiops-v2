@@ -1,9 +1,14 @@
 package server
 
 import (
+	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"aiops-v2/internal/appui"
+	"aiops-v2/internal/tooling"
 )
 
 func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
@@ -52,6 +57,12 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 						"aiops.target.kind": "label",
 						"aiops.target.labelKey": "env",
 						"aiops.target.labelValue": "prod"
+					},
+					"workflowContext": {
+						"workflowId": "workflow-a",
+						"revision": {"resourceVersion":"rv-1","semanticHash":"sem-1","layoutHash":"layout-1"},
+						"selection": {"nodeIds":["node-a"]},
+						"environment": {"name":"staging","bindingVersion":"env-1"}
 					},
 					"parts": [
 						{"type": "text", "text": "hello"}
@@ -174,6 +185,9 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	if got := transportCommand.AddMessage.Metadata["aiops.target.labelKey"]; got != "env" {
 		t.Fatalf("AddMessage metadata labelKey = %q, want env", got)
 	}
+	if context := transportCommand.AddMessage.WorkflowContext; context == nil || context.WorkflowID != "workflow-a" || context.Revision.ResourceVersion != "rv-1" || len(context.Selection.NodeIDs) != 1 || context.Environment.BindingVersion != "env-1" {
+		t.Fatalf("AddMessage workflow context = %#v, want frozen workflow scope", context)
+	}
 
 	retryCommand, ok := req.Commands[1].(*assistantTransportRetryCommand)
 	if !ok {
@@ -289,6 +303,41 @@ func TestAssistantTransportRequestDecodesKnownCommands(t *testing.T) {
 	}
 	if childStop.ChildAgentID != "agent-1" {
 		t.Fatalf("childStop = %+v, want agent-1", childStop)
+	}
+}
+
+func TestAssistantTransportBindsWorkflowContextToTrustedServerScope(t *testing.T) {
+	server := &HTTPServer{workflowCommandScopeResolver: workflowCommandTestScopeResolver()}
+	pageContext := &appui.WorkflowTurnContextRequest{WorkflowID: "workflow-a"}
+	commands := []appui.TransportCommand{{Type: appui.TransportCommandTypeAddMessage, AddMessage: &appui.TransportAddMessageCommand{WorkflowContext: pageContext}}}
+	request := httptest.NewRequest("POST", "/api/v1/assistant/transport", nil)
+
+	untrusted := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{
+		Metadata: map[string]string{"workflowCanvasSessionId": "forged-canvas", "workflowId": "forged-workflow"},
+	})
+	bound, err := server.bindAssistantTransportWorkflowScope(untrusted, request, appui.AiopsTransportState{}, commands)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := commands[0].AddMessage.SessionID; got != "session-a" {
+		t.Fatalf("bound session = %q, want session-a", got)
+	}
+	execution, ok := tooling.ToolExecutionContextFrom(bound)
+	if !ok || execution.TenantID != "tenant-a" || execution.UserID != "actor-a" || execution.SessionID != "session-a" || execution.Metadata["workflowId"] != "workflow-a" || execution.Metadata["workflowCanvasSessionId"] != "canvas-a" {
+		t.Fatalf("trusted execution context = %#v, %v", execution, ok)
+	}
+}
+
+func TestAssistantTransportRejectsForgedWorkflowSessionAndMixedWorkflowScope(t *testing.T) {
+	server := &HTTPServer{workflowCommandScopeResolver: workflowCommandTestScopeResolver()}
+	request := httptest.NewRequest("POST", "/api/v1/assistant/transport", nil)
+	commands := []appui.TransportCommand{{Type: appui.TransportCommandTypeAddMessage, AddMessage: &appui.TransportAddMessageCommand{WorkflowContext: &appui.WorkflowTurnContextRequest{WorkflowID: "workflow-a"}}}}
+	if _, err := server.bindAssistantTransportWorkflowScope(context.Background(), request, appui.AiopsTransportState{SessionID: "forged-session"}, commands); err == nil {
+		t.Fatal("forged transport session was accepted")
+	}
+	commands = append(commands, appui.TransportCommand{Type: appui.TransportCommandTypeAddMessage, AddMessage: &appui.TransportAddMessageCommand{WorkflowContext: &appui.WorkflowTurnContextRequest{WorkflowID: "workflow-b"}}})
+	if _, err := server.bindAssistantTransportWorkflowScope(context.Background(), request, appui.AiopsTransportState{}, commands); err == nil {
+		t.Fatal("mixed workflow request was accepted")
 	}
 }
 

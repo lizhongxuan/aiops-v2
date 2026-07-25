@@ -7,6 +7,7 @@ import (
 
 	"aiops-v2/internal/auth"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/workfloweditor"
 )
 
 type settingsRepoStub struct {
@@ -149,6 +150,9 @@ func TestSettingsServiceRuntimeSettingsDefaultsAndPartialUpdate(t *testing.T) {
 	enabled := true
 	provider := "docker"
 	image := "python:3.12-bookworm"
+	rollout := store.DefaultRuntimeSettings().Workflow.Rollout
+	rollout.Stage = workfloweditor.WorkflowAgentStageReadOnly
+	rollout.RolloutPercentage = 100
 	updated, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
 		Tooling: &RuntimeToolingSettingsUpdate{
 			ReadOnlyRetryEnabled: &enabled,
@@ -156,6 +160,7 @@ func TestSettingsServiceRuntimeSettingsDefaultsAndPartialUpdate(t *testing.T) {
 		Workflow: &RuntimeWorkflowSettingsUpdate{
 			ValidationProvider: &provider,
 			ValidationImage:    &image,
+			Rollout:            &rollout,
 		},
 	})
 	if err != nil {
@@ -166,6 +171,9 @@ func TestSettingsServiceRuntimeSettingsDefaultsAndPartialUpdate(t *testing.T) {
 	}
 	if updated.Settings.Workflow.ValidationProvider != "docker" || updated.Settings.Workflow.ValidationImage != "python:3.12-bookworm" {
 		t.Fatalf("updated workflow = %+v, want docker/bookworm", updated.Settings.Workflow)
+	}
+	if updated.Settings.Workflow.Rollout.Stage != workfloweditor.WorkflowAgentStageReadOnly || len(updated.RestartRequiredKeys) != 1 || updated.RestartRequiredKeys[0] != "workflow.rollout" {
+		t.Fatalf("updated rollout = %+v restart = %v", updated.Settings.Workflow.Rollout, updated.RestartRequiredKeys)
 	}
 	if repo.runtime == nil || repo.runtime.Workflow.ValidationProvider != "docker" {
 		t.Fatalf("repo.runtime = %+v, want saved runtime settings", repo.runtime)
@@ -184,6 +192,9 @@ func TestSettingsServiceRuntimeSettingsNormalizesInvalidPartialUpdate(t *testing
 	route := "bad"
 	retries := 99
 	maxBackoff := -2
+	invalidRollout := store.DefaultRuntimeSettings().Workflow.Rollout
+	invalidRollout.Stage = workfloweditor.WorkflowAgentStageGeneral
+	invalidRollout.RolloutPercentage = 101
 	updated, err := svc.UpdateRuntimeSettings(context.Background(), RuntimeSettingsUpdate{
 		AgentRuntime: &RuntimeAgentSettingsUpdate{
 			IntentFrameRouting: &route,
@@ -192,6 +203,7 @@ func TestSettingsServiceRuntimeSettingsNormalizesInvalidPartialUpdate(t *testing
 			ReadOnlyRetryMaxPerTurn:   &retries,
 			ReadOnlyRetryBackoffMaxMs: &maxBackoff,
 		},
+		Workflow: &RuntimeWorkflowSettingsUpdate{Rollout: &invalidRollout},
 	})
 	if err != nil {
 		t.Fatalf("UpdateRuntimeSettings() error = %v", err)
@@ -201,6 +213,9 @@ func TestSettingsServiceRuntimeSettingsNormalizesInvalidPartialUpdate(t *testing
 	}
 	if updated.Settings.Tooling.ReadOnlyRetryMaxPerTurn != 10 || updated.Settings.Tooling.ReadOnlyRetryBackoffMaxMs != 2000 {
 		t.Fatalf("tooling = %+v, want normalized retry values", updated.Settings.Tooling)
+	}
+	if updated.Settings.Workflow.Rollout.Stage != workfloweditor.WorkflowAgentStageDisabled || updated.Settings.Workflow.Rollout.RolloutPercentage != 0 {
+		t.Fatalf("invalid rollout = %+v, want fail-closed disabled", updated.Settings.Workflow.Rollout)
 	}
 }
 

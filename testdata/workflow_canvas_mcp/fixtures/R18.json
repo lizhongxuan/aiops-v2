@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "R18",
+  "kind": "revision",
+  "data": {
+    "revision": {
+      "resourceVersion": 18,
+      "semanticHash": "sha256:fixture-r18-semantic",
+      "layoutHash": "sha256:fixture-r18-layout"
+    }
+  }
+}

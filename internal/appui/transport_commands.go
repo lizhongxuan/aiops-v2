@@ -64,6 +64,7 @@ type TransportAddMessageCommand struct {
 	ClientTurnID    string
 	Message         TransportUserMessage
 	Metadata        map[string]string
+	WorkflowContext *WorkflowTurnContextRequest
 }
 
 type TransportStopCommand struct {
@@ -261,7 +262,14 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		return state, TransportCommandResult{}, nil
 	}
 	messageText := strings.TrimSpace(command.Message.Text)
-	route := buildChatRuntimeTransportRoute(messageText, command.Metadata)
+	metadata := cloneStringMetadata(command.Metadata)
+	if workflowContext := command.WorkflowContext; workflowContext != nil {
+		metadata["source"] = "workflow_ai_chat"
+		metadata["aiops.workflowAgent.enabled"] = "true"
+		metadata["aiops.workflow.id"] = strings.TrimSpace(workflowContext.WorkflowID)
+		metadata["aiops.workflow.baseRevision"] = strings.TrimSpace(workflowContext.Revision.ResourceVersion)
+	}
+	route := buildChatRuntimeTransportRoute(messageText, metadata)
 	hostID := strings.TrimSpace(command.HostID)
 	if hostID == "" {
 		hostID = strings.TrimSpace(route.metadata["aiops.target.hostId"])
@@ -275,6 +283,7 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		ClientMessageID: strings.TrimSpace(command.ClientMessageID),
 		ClientTurnID:    strings.TrimSpace(command.ClientTurnID),
 		Metadata:        route.metadata,
+		WorkflowContext: command.WorkflowContext,
 	})
 	if err != nil {
 		return state, TransportCommandResult{}, err
@@ -292,6 +301,7 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 		now := time.Now().UTC().Format(time.RFC3339Nano)
 		turn.Status = AiopsTransportTurnStatusSubmitted
 		turn.StartedAt = firstNonEmptyString(turn.StartedAt, now)
+		turn.WorkflowContext = cloneWorkflowTurnContextRequest(command.WorkflowContext)
 		turn.User = &AiopsTransportMessage{
 			ID:        firstNonEmptyString(resp.ClientMessageID, command.SourceID, turnID+":user"),
 			Text:      messageText,
@@ -315,6 +325,18 @@ func (h *TransportCommandHandler) applyAddMessage(ctx context.Context, state Aio
 	}
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	return state, TransportCommandResult{SessionID: resp.SessionID, TurnID: resp.TurnID, Status: resp.Status}, nil
+}
+
+func cloneWorkflowTurnContextRequest(source *WorkflowTurnContextRequest) *WorkflowTurnContextRequest {
+	if source == nil {
+		return nil
+	}
+	cloned := *source
+	cloned.Selection.NodeIDs = append([]string{}, source.Selection.NodeIDs...)
+	cloned.Selection.EdgeIDs = append([]string{}, source.Selection.EdgeIDs...)
+	cloned.Selection.NeighborhoodIDs = append([]string{}, source.Selection.NeighborhoodIDs...)
+	cloned.Environment.CapabilityVersions = append([]string{}, source.Environment.CapabilityVersions...)
+	return &cloned
 }
 
 func buildChatRuntimeTransportRoute(messageText string, metadata map[string]string) hostOpsTransportRoute {
@@ -669,16 +691,26 @@ func markApprovalDecisionOnTurn(turn AiopsTransportTurn, approvalID string, reje
 		turn.Status = AiopsTransportTurnStatusWorking
 	}
 	turn.UpdatedAt = now
-	for idx := range turn.Process {
-		if strings.TrimSpace(turn.Process[idx].ApprovalID) != strings.TrimSpace(approvalID) {
-			continue
+	markBlock := func(block *AiopsProcessBlock) {
+		if block == nil || strings.TrimSpace(block.ApprovalID) != strings.TrimSpace(approvalID) {
+			return
 		}
 		if rejected {
-			turn.Process[idx].Status = AiopsTransportProcessStatusRejected
+			block.Status = AiopsTransportProcessStatusRejected
 		} else {
-			turn.Process[idx].Status = AiopsTransportProcessStatusRunning
+			block.Status = AiopsTransportProcessStatusRunning
 		}
-		turn.Process[idx].UpdatedAt = now
+		block.UpdatedAt = now
+	}
+	for idx := range turn.Process {
+		markBlock(&turn.Process[idx])
+	}
+	for id, block := range turn.BlocksByID {
+		if strings.TrimSpace(block.ApprovalID) != strings.TrimSpace(approvalID) {
+			continue
+		}
+		markBlock(&block.AiopsProcessBlock)
+		turn.BlocksByID[id] = block
 	}
 	return turn
 }

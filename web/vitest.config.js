@@ -41,8 +41,13 @@ export default defineConfig({
       "tests/react-route-smoke.spec.js",
       "tests/react-shell-snapshot.spec.js",
       "tests/runner-studio.spec.js",
+      "tests/workflow-studio.snapshot.spec.js",
       "tests/sidebar-and-layout.spec.js",
       "tests/tool-mcp-slimming.spec.js",
+      // These exercise real Node HTTP/process helpers and are run with
+      // `node --test` by scripts/run-workflow-canvas-e2e.sh.
+      "tests/helpers/recordedWorkflowModelServer.test.js",
+      "tests/helpers/workflowCanvasServerHarness.test.js",
     ],
   },
 });

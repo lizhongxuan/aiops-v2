@@ -72,11 +72,18 @@ func TestProfileFragmentsRenderOnlySelectedProfile(t *testing.T) {
 			profile: "workflow_agent",
 			wants: []string{
 				"## Profile Rules",
-				"Inspect the current Runner Workflow snapshot before proposing edits.",
-				"Separate current graph facts, assumptions, and requested changes.",
-				"Produce a workflow edit plan before any patch.",
-				"Propose one minimal workflow patch at a time and wait for confirmation before applying it.",
-				"After applying a patch, use workflow.describe and effect status before moving to the next patch.",
+				"immutable Workflow turn artifact",
+				"workflow.get_context",
+				"workflow.get_action_catalog",
+				"ask one concise clarification instead of guessing",
+				"capability_gap",
+				"typed WorkflowPlanIR",
+				"workflow.compile_plan",
+				"workflow.preview_patch",
+				"at most two repair rounds",
+				"Cancellation ends repair immediately",
+				"workflow.apply_patch",
+				"persisted receipt and workflow.validate as truth",
 				"Do not publish or execute workflows.",
 				"Do not run host commands.",
 			},
@@ -86,6 +93,8 @@ func TestProfileFragmentsRenderOnlySelectedProfile(t *testing.T) {
 				"Operate only within the bound host scope",
 				"Delegate clear sub-tasks",
 				"exec_command",
+				"script.python",
+				"workflow.describe",
 			},
 		},
 	}
@@ -121,7 +130,7 @@ func TestWorkflowAgentProfileAliasesNormalize(t *testing.T) {
 			if got := compiled.Envelope.Sections[2].ID; got != "profile.workflow_agent" {
 				t.Fatalf("profile section = %q, want profile.workflow_agent", got)
 			}
-			if !strings.Contains(CompiledPromptProfileText(compiled), "Inspect the current Runner Workflow snapshot before proposing edits.") {
+			if !strings.Contains(CompiledPromptProfileText(compiled), "workflow.get_action_catalog") {
 				t.Fatalf("workflow profile alias did not render workflow rules:\n%s", CompiledPromptProfileText(compiled))
 			}
 		})

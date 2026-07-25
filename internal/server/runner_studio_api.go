@@ -2,9 +2,12 @@ package server
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
+
+	"runner/workflow/edit"
 )
 
 const runnerStudioAPIPrefix = "/api/runner-studio"
@@ -17,9 +20,41 @@ func (s *HTTPServer) handleRunnerStudio(w http.ResponseWriter, r *http.Request) 
 	}
 	if s.runnerStudioHandler != nil {
 		s.serveEmbeddedRunnerStudio(w, r, targetPath)
+		if workflowID, ok := runnerStudioWorkflowIDForEventBinding(r.Method, r.URL.EscapedPath()); ok {
+			s.ensureWorkflowEventBindingForRequest(r, workflowID)
+		}
 		return
 	}
 	writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "embedded runner is not available"})
+}
+
+func (s *HTTPServer) ensureWorkflowEventBindingForRequest(request *http.Request, workflowID string) {
+	if s == nil || s.workflowEventBindings == nil || s.workflowCommandScopeResolver == nil || request == nil {
+		return
+	}
+	scope, err := s.workflowCommandScopeResolver.ResolveWorkflowCommandScope(request.Context(), request, workflowID)
+	if err != nil {
+		return
+	}
+	key := edit.WorkflowKey{TenantID: strings.TrimSpace(scope.TenantID), WorkflowID: strings.TrimSpace(workflowID)}
+	if key.Validate() == nil {
+		// Opening a Graph also selects the authoritative workspace projection.
+		// Ensure alone is insufficient after an A -> B -> A navigation because
+		// the process-lifetime subscription for A already exists while the
+		// broadcaster still projects B.
+		if err := s.workflowEventBindings.Refresh(key); err != nil {
+			log.Printf("workflow workspace projection refresh failed workflow=%q: %v", workflowID, err)
+		}
+	}
+}
+
+func runnerStudioWorkflowIDForEventBinding(method, path string) (string, bool) {
+	parts := splitRunnerStudioPath(strings.Trim(strings.TrimPrefix(path, runnerStudioAPIPrefix), "/"))
+	if method != http.MethodGet || len(parts) != 3 || parts[0] != "workflows" || parts[2] != "graph" {
+		return "", false
+	}
+	workflowID := strings.TrimSpace(parts[1])
+	return workflowID, workflowID != ""
 }
 
 func (s *HTTPServer) serveEmbeddedRunnerStudio(w http.ResponseWriter, r *http.Request, targetPath string) {
@@ -65,6 +100,8 @@ func runnerStudioTargetPath(method, path string) (string, error) {
 		return "/api/v1/workflows/" + parts[1] + "/validate", nil
 	case method == http.MethodPost && trimmed == "workflows/graph/dry-run":
 		return "/api/v1/workflows/graph/dry-run", nil
+	case method == http.MethodPost && trimmed == "workflow-published-run":
+		return "/api/v1/workflows/graph/runs", nil
 	case method == http.MethodPost && trimmed == "runs":
 		return "/api/v1/workflows/graph/runs", nil
 	case method == http.MethodGet && trimmed == "runs":

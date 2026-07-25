@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W6",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W6",
+      "name": "constrained-multi-port",
+      "features": [
+        "multi-port",
+        "hidden-end",
+        "locked-node",
+        "pinned-layout",
+        "verified-reference"
+      ],
+      "hiddenNodeIds": [
+        "end-hidden"
+      ],
+      "lockedNodeIds": [
+        "reference"
+      ],
+      "pinnedNodeIds": [
+        "reference"
+      ]
+    }
+  }
+}

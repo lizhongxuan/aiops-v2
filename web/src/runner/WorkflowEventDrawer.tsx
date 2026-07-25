@@ -63,7 +63,7 @@ export function WorkflowEventDrawer({
       <header>
         <div>
           <h2>事件</h2>
-          <span>{events.length} 条 Workflow AI 事件</span>
+          <span>{events.length} 条工作流 AI 事件</span>
         </div>
         <div className="workflow-event-header-actions">
           <button type="button" className="workflow-event-back-ai" onClick={onBackToAi}>
@@ -97,15 +97,45 @@ export function WorkflowEventDrawer({
             data-testid="workflow-event-row"
             onClick={() => onSelectNodeIds?.(event.visibleNodeIds || [])}
           >
-            <span>{workflowEventTimeLabel(event.createdAt)} · {event.actor || "system"} · {event.type}</span>
+            <span>{workflowEventTimeLabel(event.createdAt)} · {workflowEventActorLabel(event.actor)} · {workflowEventTypeLabel(event.type)}</span>
             <strong>{event.summary}</strong>
-            {event.planItemId ? <small>Plan item: {event.planItemId}</small> : null}
+            {event.planItemId ? <small>计划步骤：{event.planItemId}</small> : null}
             {event.visibleNodeIds?.length ? <small>{event.visibleNodeIds.join(", ")}</small> : null}
           </button>
         )) : (
-          <p className="workflow-event-empty">还没有 Workflow AI 修改事件。</p>
+          <p className="workflow-event-empty">还没有工作流 AI 修改事件。</p>
         )}
       </div>
     </aside>
   );
+}
+
+function workflowEventActorLabel(actor?: string) {
+  return ({
+    assistant: "AI 助手",
+    agent: "AI 助手",
+    tool: "工具执行",
+    user: "用户",
+    system: "系统",
+  } as Record<string, string>)[String(actor || "system").toLowerCase()] || "系统";
+}
+
+function workflowEventTypeLabel(type?: string) {
+  const normalized = String(type || "").toLowerCase();
+  const exact = ({
+    "workflow.ai.chat": "AI 对话",
+    "workflow.graph.node.added": "新增工作流步骤",
+    "workflow.graph.node.updated": "更新工作流步骤",
+    "workflow.graph.node.deleted": "删除工作流步骤",
+    "workflow.graph.edge.added": "新增工作流连线",
+    "workflow.graph.edge.updated": "更新工作流连线",
+    "workflow.graph.edge.deleted": "删除工作流连线",
+    "workflow.conflict": "修改发生冲突",
+  } as Record<string, string>)[normalized];
+  if (exact) return exact;
+  if (normalized.includes("conflict")) return "修改发生冲突";
+  if (normalized.includes("failed") || normalized.includes("error")) return "执行失败";
+  if (normalized.includes("run") || normalized.includes("started") || normalized.includes("completed")) return "运行状态变化";
+  if (normalized.includes("candidate") || normalized.includes("preview")) return "待确认修改已更新";
+  return "工作流事件";
 }

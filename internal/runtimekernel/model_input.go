@@ -1074,8 +1074,39 @@ func promptInputToolResultFromRuntime(result *ToolResult) *promptinput.ToolResul
 	}
 	return &promptinput.ToolResult{
 		ToolCallID: result.ToolCallID,
-		Content:    result.Content,
+		Content:    modelVisibleToolResultContent(result),
 	}
+}
+
+// modelVisibleToolResultContent keeps the concise result summary used by the
+// page while giving the next model iteration the canonical typed result it
+// needs for argument-scoped follow-up calls (for example Preview -> Apply).
+// Invalid structured data fails closed to the existing readable summary.
+func modelVisibleToolResultContent(result *ToolResult) string {
+	if result == nil || len(result.StructuredContent) == 0 || !json.Valid(result.StructuredContent) {
+		if result == nil {
+			return ""
+		}
+		return result.Content
+	}
+	var structured any
+	if err := json.Unmarshal(result.StructuredContent, &structured); err != nil {
+		return result.Content
+	}
+	payload := map[string]any{
+		"schemaVersion":     "aiops.model_tool_result.v1",
+		"summary":           result.Content,
+		"structuredContent": structured,
+		"isError":           result.IsError || strings.TrimSpace(result.Error) != "",
+	}
+	if value := strings.TrimSpace(result.Error); value != "" {
+		payload["error"] = value
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return result.Content
+	}
+	return string(raw)
 }
 
 func runtimeMessagesFromPromptInput(messages []promptinput.Message) []Message {

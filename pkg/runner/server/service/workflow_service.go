@@ -35,10 +35,13 @@ type workflowMeta struct {
 	PublishedAt         time.Time         `json:"published_at,omitempty"`
 	CreatedAt           time.Time         `json:"created_at,omitempty"`
 	UpdatedAt           time.Time         `json:"updated_at,omitempty"`
+	Deleted             bool              `json:"deleted,omitempty"`
 }
 
 type WorkflowService struct {
 	store              *workflowstore.Store
+	commitStore        *WorkflowCommitStore
+	tenantID           string
 	metaPath           string
 	historyPath        string
 	referenceChecker   WorkflowReferenceChecker
@@ -49,15 +52,25 @@ type WorkflowService struct {
 const workflowBundleFormatVersion = "runner.workflow.bundle/v1"
 
 func NewWorkflowService(dir string) *WorkflowService {
+	var commitStore *WorkflowCommitStore
+	if strings.TrimSpace(dir) != "" {
+		commitStore, _ = NewWorkflowCommitStore(filepath.Join(dir, ".transactions"))
+	}
 	return &WorkflowService{
 		store:              workflowstore.New(dir),
+		commitStore:        commitStore,
+		tenantID:           VisualWorkflowDefaultTenantID,
 		metaPath:           filepath.Join(dir, ".meta.json"),
 		historyPath:        filepath.Join(dir, ".history"),
 		referenceGuardMode: WorkflowReferenceGuardModeEnforce,
 	}
 }
 
-func (s *WorkflowService) List(_ context.Context, labels map[string]string) ([]*WorkflowRecord, error) {
+func (s *WorkflowService) List(ctx context.Context, labels map[string]string) ([]*WorkflowRecord, error) {
+	return s.listWorkflows(ctx, labels)
+}
+
+func (s *WorkflowService) listLegacyWorkflows(_ context.Context, labels map[string]string) ([]*WorkflowRecord, error) {
 	items, err := s.store.List()
 	if err != nil {
 		return nil, err
@@ -105,7 +118,11 @@ func (s *WorkflowService) List(_ context.Context, labels map[string]string) ([]*
 	return out, nil
 }
 
-func (s *WorkflowService) Get(_ context.Context, name string) (*WorkflowRecord, error) {
+func (s *WorkflowService) Get(ctx context.Context, name string) (*WorkflowRecord, error) {
+	return s.getWorkflow(ctx, name)
+}
+
+func (s *WorkflowService) getLegacyWorkflow(_ context.Context, name string) (*WorkflowRecord, error) {
 	wf, raw, err := s.store.Get(name)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -154,122 +171,12 @@ func (s *WorkflowService) Get(_ context.Context, name string) (*WorkflowRecord, 
 	return record, nil
 }
 
-func (s *WorkflowService) Create(_ context.Context, record *WorkflowRecord) error {
-	if record == nil {
-		return fmt.Errorf("%w: empty workflow record", ErrInvalid)
-	}
-	name := strings.TrimSpace(record.Name)
-	if name == "" {
-		return fmt.Errorf("%w: name is required", ErrInvalid)
-	}
-	raw := record.RawYAML
-	if len(raw) == 0 {
-		return fmt.Errorf("%w: yaml is required", ErrInvalid)
-	}
-	wf, err := workflow.Load(raw)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if err := wf.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if strings.TrimSpace(wf.Name) != name {
-		return fmt.Errorf("%w: workflow name mismatch", ErrInvalid)
-	}
-	if _, err := s.Get(context.Background(), name); err == nil {
-		return ErrAlreadyExists
-	} else if err != nil && err != ErrNotFound {
-		return err
-	}
-	if _, err := s.store.Put(name, raw); err != nil {
-		return err
-	}
-	if err := s.upsertMeta(name, record.Labels, strings.TrimSpace(record.SaveNote), WorkflowStatusDraft, time.Time{}, true); err != nil {
-		return err
-	}
-	return s.saveCurrentVersion(context.Background(), name, "create")
+func (s *WorkflowService) Create(ctx context.Context, record *WorkflowRecord) error {
+	return s.createWorkflow(ctx, record, "create", nil, false)
 }
 
 func (s *WorkflowService) Update(ctx context.Context, name string, record *WorkflowRecord) error {
-	if record == nil {
-		return fmt.Errorf("%w: empty workflow record", ErrInvalid)
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("%w: name is required", ErrInvalid)
-	}
-	raw := record.RawYAML
-	if len(raw) == 0 {
-		return fmt.Errorf("%w: yaml is required", ErrInvalid)
-	}
-	wf, err := workflow.Load(raw)
-	if err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if err := wf.Validate(); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if strings.TrimSpace(wf.Name) != name {
-		return fmt.Errorf("%w: workflow name mismatch", ErrInvalid)
-	}
-	existing, err := s.Get(ctx, name)
-	if err != nil {
-		return err
-	}
-	if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
-		return err
-	}
-	if _, err := s.store.Put(name, raw); err != nil {
-		return err
-	}
-	labels := record.Labels
-	if labels == nil {
-		labels = existing.Labels
-	}
-	saveNote := existing.SaveNote
-	if record.SaveNoteSet || strings.TrimSpace(record.SaveNote) != "" {
-		saveNote = strings.TrimSpace(record.SaveNote)
-	}
-	status := WorkflowStatusDraft
-	validatedGraphHash := ""
-	validatedLayoutHash := ""
-	validatedAt := time.Time{}
-	validatedBy := ""
-	dryRunGraphHash := ""
-	dryRunLayoutHash := ""
-	dryRunAt := time.Time{}
-	dryRunBy := ""
-	publishedGraphHash := strings.TrimSpace(existing.PublishedGraphHash)
-	if hashes, err := workflowYAMLGraphHashes(raw); err == nil && strings.TrimSpace(existing.ValidatedGraphHash) != "" && hashes.SemanticHash == existing.ValidatedGraphHash {
-		status = normalizeWorkflowStatus(existing.Status)
-		validatedGraphHash = existing.ValidatedGraphHash
-		validatedLayoutHash = hashes.LayoutHash
-		validatedAt = existing.ValidatedAt
-		validatedBy = existing.ValidatedBy
-		if strings.TrimSpace(existing.DryRunGraphHash) == hashes.SemanticHash {
-			dryRunGraphHash = existing.DryRunGraphHash
-			dryRunLayoutHash = hashes.LayoutHash
-			dryRunAt = existing.DryRunAt
-			dryRunBy = existing.DryRunBy
-		}
-		if status != WorkflowStatusPublished {
-			publishedGraphHash = ""
-		}
-	}
-	if err := s.upsertMetaWithHashes(name, labels, saveNote, status, existing.PublishedAt, false, workflowMetaHashFields{
-		ValidatedGraphHash:  validatedGraphHash,
-		ValidatedLayoutHash: validatedLayoutHash,
-		ValidatedAt:         validatedAt,
-		ValidatedBy:         validatedBy,
-		DryRunGraphHash:     dryRunGraphHash,
-		DryRunLayoutHash:    dryRunLayoutHash,
-		DryRunAt:            dryRunAt,
-		DryRunBy:            dryRunBy,
-		PublishedGraphHash:  publishedGraphHash,
-	}); err != nil {
-		return err
-	}
-	return s.saveCurrentVersion(context.Background(), name, "update")
+	return s.updateWorkflow(ctx, name, record, "update", nil, false)
 }
 
 func (s *WorkflowService) Publish(ctx context.Context, name string, opts WorkflowPublishOptions) (*WorkflowRecord, error) {
@@ -318,7 +225,7 @@ func (s *WorkflowService) Publish(ctx context.Context, name string, opts Workflo
 	if opts.SaveNoteSet || strings.TrimSpace(opts.SaveNote) != "" {
 		saveNote = strings.TrimSpace(opts.SaveNote)
 	}
-	if err := s.upsertMetaWithHashes(name, existing.Labels, saveNote, WorkflowStatusPublished, time.Now().UTC(), false, workflowMetaHashFields{
+	if err := s.upsertCommittedMeta(ctx, name, existing.Labels, saveNote, WorkflowStatusPublished, time.Now().UTC(), workflowMetaHashFields{
 		ValidatedGraphHash:  hashes.SemanticHash,
 		ValidatedLayoutHash: hashes.LayoutHash,
 		ValidatedAt:         existing.ValidatedAt,
@@ -331,14 +238,7 @@ func (s *WorkflowService) Publish(ctx context.Context, name string, opts Workflo
 	}); err != nil {
 		return nil, err
 	}
-	record, err := s.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.saveVersionSnapshot(record, "publish"); err != nil {
-		return nil, err
-	}
-	return record, nil
+	return s.Get(ctx, name)
 }
 
 func (s *WorkflowService) ValidateWorkflow(ctx context.Context, name string, opts WorkflowValidateOptions) (*WorkflowRecord, error) {
@@ -357,7 +257,7 @@ func (s *WorkflowService) ValidateWorkflow(ctx context.Context, name string, opt
 	if err != nil {
 		return nil, err
 	}
-	if err := s.upsertMetaWithHashes(name, existing.Labels, existing.SaveNote, WorkflowStatusValidated, existing.PublishedAt, false, workflowMetaHashFields{
+	if err := s.upsertCommittedMeta(ctx, name, existing.Labels, existing.SaveNote, WorkflowStatusValidated, existing.PublishedAt, workflowMetaHashFields{
 		ValidatedGraphHash:  hashes.SemanticHash,
 		ValidatedLayoutHash: hashes.LayoutHash,
 		ValidatedAt:         time.Now().UTC(),
@@ -392,7 +292,7 @@ func (s *WorkflowService) MarkDryRunPassed(ctx context.Context, name string, opt
 	if expected := strings.TrimSpace(opts.ExpectedGraphHash); expected != "" && expected != hashes.SemanticHash {
 		return nil, fmt.Errorf("%w: dry-run graph hash does not match saved workflow", ErrConflict)
 	}
-	if err := s.upsertMetaWithHashes(name, existing.Labels, existing.SaveNote, WorkflowStatusDryRunPassed, existing.PublishedAt, false, workflowMetaHashFields{
+	if err := s.upsertCommittedMeta(ctx, name, existing.Labels, existing.SaveNote, WorkflowStatusDryRunPassed, existing.PublishedAt, workflowMetaHashFields{
 		ValidatedGraphHash:  hashes.SemanticHash,
 		ValidatedLayoutHash: hashes.LayoutHash,
 		ValidatedAt:         existing.ValidatedAt,
@@ -408,7 +308,11 @@ func (s *WorkflowService) MarkDryRunPassed(ctx context.Context, name string, opt
 	return s.Get(ctx, name)
 }
 
-func (s *WorkflowService) ListVersions(_ context.Context, name string) ([]*WorkflowVersionRecord, error) {
+func (s *WorkflowService) ListVersions(ctx context.Context, name string) ([]*WorkflowVersionRecord, error) {
+	return s.listWorkflowVersions(ctx, name)
+}
+
+func (s *WorkflowService) listLegacyWorkflowVersions(_ context.Context, name string) ([]*WorkflowVersionRecord, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrInvalid)
@@ -437,7 +341,11 @@ func (s *WorkflowService) ListVersions(_ context.Context, name string) ([]*Workf
 	return out, nil
 }
 
-func (s *WorkflowService) GetVersion(_ context.Context, name, versionID string) (*WorkflowVersionRecord, error) {
+func (s *WorkflowService) GetVersion(ctx context.Context, name, versionID string) (*WorkflowVersionRecord, error) {
+	return s.getWorkflowVersion(ctx, name, versionID)
+}
+
+func (s *WorkflowService) getLegacyWorkflowVersion(_ context.Context, name, versionID string) (*WorkflowVersionRecord, error) {
 	name = strings.TrimSpace(name)
 	versionID = strings.TrimSpace(versionID)
 	if name == "" || versionID == "" {
@@ -454,36 +362,7 @@ func (s *WorkflowService) GetVersion(_ context.Context, name, versionID string) 
 }
 
 func (s *WorkflowService) Rollback(ctx context.Context, name, versionID string, opts WorkflowRollbackOptions) (*WorkflowRecord, error) {
-	name = strings.TrimSpace(name)
-	version, err := s.GetVersion(ctx, name, versionID)
-	if err != nil {
-		return nil, err
-	}
-	existing, err := s.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
-		return nil, err
-	}
-	if _, err := s.store.Put(name, version.RawYAML); err != nil {
-		return nil, err
-	}
-	saveNote := strings.TrimSpace(opts.SaveNote)
-	if saveNote == "" {
-		saveNote = "rollback to " + version.ID
-	}
-	if err := s.upsertMeta(name, existing.Labels, saveNote, WorkflowStatusDraft, existing.PublishedAt, false); err != nil {
-		return nil, err
-	}
-	record, err := s.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.saveVersionSnapshot(record, "rollback:"+version.ID); err != nil {
-		return nil, err
-	}
-	return record, nil
+	return s.rollbackWorkflow(ctx, name, versionID, opts)
 }
 
 func (s *WorkflowService) ExportBundle(ctx context.Context, name string) (*WorkflowBundle, error) {
@@ -515,111 +394,11 @@ func (s *WorkflowService) ExportBundle(ctx context.Context, name string) (*Workf
 }
 
 func (s *WorkflowService) ImportBundle(ctx context.Context, bundle *WorkflowBundle, opts WorkflowImportOptions) (*WorkflowRecord, error) {
-	if bundle == nil {
-		return nil, fmt.Errorf("%w: empty workflow bundle", ErrInvalid)
-	}
-	if bundle.BundleVersion != "" && bundle.BundleVersion != workflowBundleFormatVersion {
-		return nil, fmt.Errorf("%w: unsupported workflow bundle version %q", ErrInvalid, bundle.BundleVersion)
-	}
-	if strings.TrimSpace(bundle.YAML) == "" {
-		return nil, fmt.Errorf("%w: workflow bundle yaml is required", ErrInvalid)
-	}
-	raw := []byte(bundle.YAML)
-	wf, err := workflow.Load(raw)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	if err := wf.Validate(); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	name := strings.TrimSpace(bundle.Name)
-	if name == "" {
-		name = strings.TrimSpace(wf.Name)
-	}
-	if name == "" {
-		return nil, fmt.Errorf("%w: workflow bundle name is required", ErrInvalid)
-	}
-	if strings.TrimSpace(wf.Name) != name {
-		return nil, fmt.Errorf("%w: workflow name mismatch", ErrInvalid)
-	}
-
-	existing, err := s.Get(ctx, name)
-	exists := err == nil
-	if err != nil && err != ErrNotFound {
-		return nil, err
-	}
-	if exists && !opts.Overwrite {
-		return nil, ErrAlreadyExists
-	}
-
-	if err := validateWorkflowBundleVersions(name, bundle.Versions); err != nil {
-		return nil, err
-	}
-	if exists {
-		if err := s.ensureWorkflowVersionMutable(ctx, name); err != nil {
-			return nil, err
-		}
-	}
-	if _, err := s.store.Put(name, raw); err != nil {
-		return nil, err
-	}
-
-	saveNote := strings.TrimSpace(opts.SaveNote)
-	if saveNote == "" {
-		saveNote = strings.TrimSpace(bundle.SaveNote)
-	}
-	if saveNote == "" {
-		saveNote = "imported workflow bundle"
-	}
-	labels := copyStringMap(bundle.Labels)
-	if labels == nil && existing != nil {
-		labels = copyStringMap(existing.Labels)
-	}
-	if err := s.upsertMeta(name, labels, saveNote, WorkflowStatusDraft, time.Time{}, !exists); err != nil {
-		return nil, err
-	}
-
-	if err := s.replaceWorkflowHistoryFromBundle(name, bundle.Versions); err != nil {
-		return nil, err
-	}
-	record, err := s.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	if len(bundle.Versions) == 0 {
-		if err := s.saveVersionSnapshot(record, "import"); err != nil {
-			return nil, err
-		}
-	}
-	return record, nil
+	return s.importWorkflowBundle(ctx, bundle, opts)
 }
 
 func (s *WorkflowService) Delete(ctx context.Context, name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("%w: name is required", ErrInvalid)
-	}
-	if _, err := s.Get(ctx, name); err != nil {
-		return err
-	}
-	if err := s.ensureWorkflowDeleteAllowed(ctx, name); err != nil {
-		return err
-	}
-	path := filepath.Join(s.store.Dir, name+".yaml")
-	if err := os.Remove(path); err != nil {
-		if os.IsNotExist(err) {
-			return ErrNotFound
-		}
-		return err
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	metas, err := s.loadMetaNoLock()
-	if err != nil {
-		return err
-	}
-	delete(metas, name)
-	return s.saveMetaNoLock(metas)
+	return s.deleteWorkflow(ctx, name)
 }
 
 func (s *WorkflowService) Validate(_ context.Context, yamlContent []byte) error {
@@ -647,35 +426,6 @@ type workflowVersionFile struct {
 	CreatedAt   time.Time `json:"created_at,omitempty"`
 }
 
-func (s *WorkflowService) saveCurrentVersion(ctx context.Context, name, reason string) error {
-	record, err := s.Get(ctx, name)
-	if err != nil {
-		return err
-	}
-	return s.saveVersionSnapshot(record, reason)
-}
-
-func (s *WorkflowService) saveVersionSnapshot(record *WorkflowRecord, reason string) error {
-	if record == nil {
-		return fmt.Errorf("%w: empty workflow record", ErrInvalid)
-	}
-	now := time.Now().UTC()
-	version := workflowVersionFile{
-		ID:          workflowVersionID(now),
-		Name:        record.Name,
-		Description: record.Description,
-		Version:     record.Version,
-		Status:      normalizeWorkflowStatus(record.Status),
-		SaveNote:    record.SaveNote,
-		Reason:      strings.TrimSpace(reason),
-		Checksum:    workflowYAMLChecksum(record.RawYAML),
-		YAML:        string(record.RawYAML),
-		PublishedAt: record.PublishedAt,
-		CreatedAt:   now,
-	}
-	return s.writeVersionFile(record.Name, version)
-}
-
 func (s *WorkflowService) readVersionFile(path string) (*WorkflowVersionRecord, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -700,56 +450,12 @@ func (s *WorkflowService) readVersionFile(path string) (*WorkflowVersionRecord, 
 	}, nil
 }
 
-func (s *WorkflowService) writeVersionFile(name string, version workflowVersionFile) error {
-	version.ID = strings.TrimSpace(version.ID)
-	if version.ID == "" {
-		version.ID = workflowVersionID(time.Now().UTC())
-	}
-	version.Name = strings.TrimSpace(version.Name)
-	if version.Name == "" {
-		version.Name = strings.TrimSpace(name)
-	}
-	version.Status = normalizeWorkflowStatus(version.Status)
-	if strings.TrimSpace(version.Checksum) == "" {
-		version.Checksum = workflowYAMLChecksum([]byte(version.YAML))
-	}
-	if version.CreatedAt.IsZero() {
-		version.CreatedAt = time.Now().UTC()
-	}
-	dir := s.historyDir(name)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
-	payload, err := json.MarshalIndent(version, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, "workflow-version-*.json")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() { _ = os.Remove(tmpPath) }()
-	if _, err := tmp.Write(payload); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, s.versionFilePath(name, version.ID))
-}
-
 func (s *WorkflowService) historyDir(name string) string {
 	return filepath.Join(s.historyPath, url.PathEscape(strings.TrimSpace(name)))
 }
 
 func (s *WorkflowService) versionFilePath(name, versionID string) string {
 	return filepath.Join(s.historyDir(name), url.PathEscape(strings.TrimSpace(versionID))+".json")
-}
-
-func workflowVersionID(now time.Time) string {
-	return fmt.Sprintf("v%d", now.UnixNano())
 }
 
 func workflowYAMLChecksum(raw []byte) string {
@@ -769,46 +475,7 @@ type workflowMetaHashFields struct {
 	PublishedGraphHash  string
 }
 
-func (s *WorkflowService) upsertMeta(name string, labels map[string]string, saveNote, status string, publishedAt time.Time, isCreate bool) error {
-	return s.upsertMetaWithHashes(name, labels, saveNote, status, publishedAt, isCreate, workflowMetaHashFields{})
-}
-
-func (s *WorkflowService) upsertMetaWithHashes(name string, labels map[string]string, saveNote, status string, publishedAt time.Time, isCreate bool, hashes workflowMetaHashFields) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	metas, err := s.loadMetaNoLock()
-	if err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	meta, ok := metas[name]
-	if !ok {
-		meta = workflowMeta{Name: name, CreatedAt: now}
-	}
-	if isCreate {
-		meta.CreatedAt = now
-	}
-	meta.UpdatedAt = now
-	meta.Labels = copyStringMap(labels)
-	meta.SaveNote = saveNote
-	meta.Status = normalizeWorkflowStatus(status)
-	meta.PublishedAt = publishedAt
-	meta.ValidatedGraphHash = strings.TrimSpace(hashes.ValidatedGraphHash)
-	meta.ValidatedLayoutHash = strings.TrimSpace(hashes.ValidatedLayoutHash)
-	meta.ValidatedAt = hashes.ValidatedAt
-	meta.ValidatedBy = strings.TrimSpace(hashes.ValidatedBy)
-	meta.DryRunGraphHash = strings.TrimSpace(hashes.DryRunGraphHash)
-	meta.DryRunLayoutHash = strings.TrimSpace(hashes.DryRunLayoutHash)
-	meta.DryRunAt = hashes.DryRunAt
-	meta.DryRunBy = strings.TrimSpace(hashes.DryRunBy)
-	meta.PublishedGraphHash = strings.TrimSpace(hashes.PublishedGraphHash)
-	metas[name] = meta
-	return s.saveMetaNoLock(metas)
-}
-
 func (s *WorkflowService) loadMeta() (map[string]workflowMeta, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	return s.loadMetaNoLock()
 }
 
@@ -825,32 +492,6 @@ func (s *WorkflowService) loadMetaNoLock() (map[string]workflowMeta, error) {
 		return nil, err
 	}
 	return data, nil
-}
-
-func (s *WorkflowService) saveMetaNoLock(data map[string]workflowMeta) error {
-	if err := os.MkdirAll(filepath.Dir(s.metaPath), 0o755); err != nil {
-		return err
-	}
-	payload, err := json.MarshalIndent(data, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.metaPath), "wf-meta-*.json")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer func() {
-		_ = os.Remove(tmpPath)
-	}()
-	if _, err := tmp.Write(payload); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, s.metaPath)
 }
 
 func matchLabels(actual map[string]string, filter map[string]string) bool {
@@ -931,32 +572,6 @@ func validateWorkflowBundleVersions(workflowName string, versions []WorkflowBund
 		}
 		if strings.TrimSpace(wf.Name) != workflowName {
 			return fmt.Errorf("%w: workflow bundle version %q name mismatch", ErrInvalid, id)
-		}
-	}
-	return nil
-}
-
-func (s *WorkflowService) replaceWorkflowHistoryFromBundle(name string, versions []WorkflowBundleVersion) error {
-	dir := s.historyDir(name)
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	for _, version := range versions {
-		file := workflowVersionFile{
-			ID:          version.ID,
-			Name:        version.Name,
-			Description: version.Description,
-			Version:     version.Version,
-			Status:      version.Status,
-			SaveNote:    version.SaveNote,
-			Reason:      version.Reason,
-			Checksum:    version.Checksum,
-			YAML:        version.YAML,
-			PublishedAt: version.PublishedAt,
-			CreatedAt:   version.CreatedAt,
-		}
-		if err := s.writeVersionFile(name, file); err != nil {
-			return err
 		}
 	}
 	return nil

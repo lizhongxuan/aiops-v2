@@ -129,17 +129,18 @@ type AiopsTransportOpsRun struct {
 }
 
 type AiopsTransportTurn struct {
-	ID                      string                    `json:"id"`
-	ClientTurnID            string                    `json:"clientTurnId,omitempty"`
-	ClientMessageID         string                    `json:"clientMessageId,omitempty"`
-	AgentItems              []AiopsTransportAgentItem `json:"agentItems,omitempty"`
-	AgentItemsTruncated     bool                      `json:"agentItemsTruncated,omitempty"`
-	AgentItemsOriginalCount int                       `json:"agentItemsOriginalCount,omitempty"`
-	AgentItemsOriginalBytes int64                     `json:"agentItemsOriginalBytes,omitempty"`
-	AgentItemsHash          string                    `json:"agentItemsHash,omitempty"`
-	AgentItemsRef           string                    `json:"agentItemsRef,omitempty"`
-	User                    *AiopsTransportMessage    `json:"user,omitempty"`
-	Intent                  *AiopsTransportIntent     `json:"intent,omitempty"`
+	ID                      string                      `json:"id"`
+	ClientTurnID            string                      `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                      `json:"clientMessageId,omitempty"`
+	WorkflowContext         *WorkflowTurnContextRequest `json:"workflowContext,omitempty"`
+	AgentItems              []AiopsTransportAgentItem   `json:"agentItems,omitempty"`
+	AgentItemsTruncated     bool                        `json:"agentItemsTruncated,omitempty"`
+	AgentItemsOriginalCount int                         `json:"agentItemsOriginalCount,omitempty"`
+	AgentItemsOriginalBytes int64                       `json:"agentItemsOriginalBytes,omitempty"`
+	AgentItemsHash          string                      `json:"agentItemsHash,omitempty"`
+	AgentItemsRef           string                      `json:"agentItemsRef,omitempty"`
+	User                    *AiopsTransportMessage      `json:"user,omitempty"`
+	Intent                  *AiopsTransportIntent       `json:"intent,omitempty"`
 	// Process and Final are internal projection work fields. The wire transcript
 	// is exclusively BlockOrder + BlocksByID.
 	Process           []AiopsProcessBlock             `json:"-"`
@@ -375,6 +376,8 @@ type AiopsTransportArtifact struct {
 type AiopsTransportAgentUIArtifact struct {
 	ID              string           `json:"id"`
 	Type            string           `json:"type"`
+	Renderer        string           `json:"renderer,omitempty"`
+	SchemaVersion   string           `json:"schemaVersion,omitempty"`
 	Title           string           `json:"title,omitempty"`
 	TitleZh         string           `json:"titleZh,omitempty"`
 	Summary         string           `json:"summary,omitempty"`

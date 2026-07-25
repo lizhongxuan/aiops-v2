@@ -9,6 +9,7 @@ const (
 	ResourceTypePG       = "pg"
 	ResourceTypeIncident = "incident"
 	ResourceTypeSession  = "session"
+	ResourceTypeWorkflow = "workflow"
 
 	SessionResourceID = "session"
 )

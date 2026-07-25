@@ -492,6 +492,20 @@ func TestToolResultAgentItemDataPreservesInputSummary(t *testing.T) {
 	}
 }
 
+func TestToolResultAgentItemDataPreservesTypedStructuredContent(t *testing.T) {
+	typed := json.RawMessage(`{"kind":"receipt","schemaVersion":"aiops.workflow.edit.v2","transactionId":"txn-1","changeSetId":"change-1"}`)
+	data := toolResultAgentItemData("turn-1", ToolCall{ID: "call-apply", Name: "workflow.apply_patch"}, ToolResult{
+		ToolCallID: "call-apply", Content: "Workflow 修改已提交", StructuredContent: typed, IsError: false,
+	})
+
+	if got, ok := data["structuredContent"].(json.RawMessage); !ok || string(got) != string(typed) {
+		t.Fatalf("structuredContent = %#v, want exact typed receipt", data["structuredContent"])
+	}
+	if got, ok := data["isError"].(bool); !ok || got {
+		t.Fatalf("isError = %#v, want explicit false", data["isError"])
+	}
+}
+
 func TestToolResultAgentItemDataExtractsEvidenceRefsFromStructuredOutput(t *testing.T) {
 	tc := ToolCall{
 		ID:   "call-terminal",

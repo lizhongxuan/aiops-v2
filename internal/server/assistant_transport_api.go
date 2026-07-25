@@ -14,6 +14,7 @@ import (
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
+	"aiops-v2/internal/tooling"
 )
 
 const assistantTransportPollInterval = 10 * time.Millisecond
@@ -54,6 +55,11 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	requestContext, err := s.bindAssistantTransportWorkflowScope(r.Context(), r, req.State, commands)
+	if err != nil {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "workflow chat scope is not authorized"})
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -71,7 +77,7 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 	state := assistantTransportInitialState(req)
 	prev := state
 	for _, command := range commands {
-		next, _, applyErr := handler.Apply(r.Context(), assistantTransportCloneState(state), command)
+		next, _, applyErr := handler.Apply(requestContext, assistantTransportCloneState(state), command)
 		if applyErr != nil {
 			next.Status = appui.AiopsTransportStatusFailed
 			next.LastError = strings.TrimSpace(applyErr.Error())
@@ -109,6 +115,52 @@ func (s *HTTPServer) handleAssistantTransport(w http.ResponseWriter, r *http.Req
 		_ = encoder.WriteError(err.Error())
 		return
 	}
+}
+
+func (s *HTTPServer) bindAssistantTransportWorkflowScope(ctx context.Context, request *http.Request, state appui.AiopsTransportState, commands []appui.TransportCommand) (context.Context, error) {
+	var trusted *WorkflowCommandTrustedScope
+	workflowID := ""
+	for index := range commands {
+		command := &commands[index]
+		if command.Type != appui.TransportCommandTypeAddMessage || command.AddMessage == nil || command.AddMessage.WorkflowContext == nil {
+			continue
+		}
+		requestedWorkflowID := strings.TrimSpace(command.AddMessage.WorkflowContext.WorkflowID)
+		if s == nil || s.workflowCommandScopeResolver == nil || requestedWorkflowID == "" {
+			return ctx, fmt.Errorf("workflow chat scope resolver is not configured")
+		}
+		if workflowID != "" && workflowID != requestedWorkflowID {
+			return ctx, fmt.Errorf("one assistant transport request cannot span workflows")
+		}
+		scope, err := s.workflowCommandScopeResolver.ResolveWorkflowCommandScope(ctx, request, requestedWorkflowID)
+		if err != nil || strings.TrimSpace(scope.TenantID) == "" || strings.TrimSpace(scope.ActorID) == "" || strings.TrimSpace(scope.SessionID) == "" || strings.TrimSpace(scope.CanvasSessionID) == "" {
+			return ctx, fmt.Errorf("workflow chat scope is invalid")
+		}
+		if trusted != nil && *trusted != scope {
+			return ctx, fmt.Errorf("workflow chat trusted scope changed within request")
+		}
+		if sessionID := strings.TrimSpace(state.SessionID); sessionID != "" && sessionID != strings.TrimSpace(scope.SessionID) {
+			return ctx, fmt.Errorf("assistant transport session does not match workflow scope")
+		}
+		workflowID = requestedWorkflowID
+		trusted = &scope
+		command.AddMessage.SessionID = strings.TrimSpace(scope.SessionID)
+	}
+	if trusted == nil {
+		return ctx, nil
+	}
+	execution, _ := tooling.ToolExecutionContextFrom(ctx)
+	execution.TenantID = strings.TrimSpace(trusted.TenantID)
+	execution.UserID = strings.TrimSpace(trusted.ActorID)
+	execution.SessionID = strings.TrimSpace(trusted.SessionID)
+	if execution.Metadata == nil {
+		execution.Metadata = map[string]string{}
+	} else {
+		execution.Metadata = cloneTransportMetadata(execution.Metadata)
+	}
+	execution.Metadata["workflowId"] = workflowID
+	execution.Metadata["workflowCanvasSessionId"] = strings.TrimSpace(trusted.CanvasSessionID)
+	return tooling.ContextWithToolExecution(ctx, execution), nil
 }
 
 func assistantTransportShouldPoll(state appui.AiopsTransportState) bool {
@@ -616,7 +668,7 @@ func assistantTransportInitialState(req *assistantTransportRequest) appui.AiopsT
 	}
 	state := req.State
 	if strings.TrimSpace(state.SchemaVersion) == "" {
-		state = appui.NewAiopsTransportState(strings.TrimSpace(state.SessionID), strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)))
+		state = appui.NewAiopsTransportState(strings.TrimSpace(state.SessionID), strings.TrimSpace(firstAssistantTransportValue(state.ThreadID, req.ThreadID)))
 	}
 	if strings.TrimSpace(state.ThreadID) == "" {
 		state.ThreadID = strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.SessionID))
@@ -679,7 +731,7 @@ func assistantTransportCommandsFromRequest(req *assistantTransportRequest) ([]ap
 func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *assistantTransportRequest, state appui.AiopsTransportState) (appui.TransportCommand, error) {
 	switch command := raw.(type) {
 	case *assistantTransportAddMessageCommand:
-		text, sourceID, hostID, metadata, err := decodeAssistantTransportMessage(command.Message)
+		text, sourceID, hostID, metadata, workflowContext, err := decodeAssistantTransportMessage(command.Message)
 		if err != nil {
 			return appui.TransportCommand{}, err
 		}
@@ -693,7 +745,7 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 				SessionID:       state.SessionID,
 				SessionType:     sessionType,
 				Mode:            mode,
-				ThreadID:        strings.TrimSpace(firstAssistantTransportValue(req.ThreadID, state.ThreadID)),
+				ThreadID:        strings.TrimSpace(firstAssistantTransportValue(state.ThreadID, req.ThreadID)),
 				ParentID:        strings.TrimSpace(req.ParentID),
 				SourceID:        sourceID,
 				HostID:          strings.TrimSpace(hostID),
@@ -701,6 +753,7 @@ func assistantTransportCommandFromDecoded(raw assistantTransportCommand, req *as
 				ClientTurnID:    strings.TrimSpace(metadata["clientTurnId"]),
 				Message:         appui.TransportUserMessage{Text: text},
 				Metadata:        metadata,
+				WorkflowContext: workflowContext,
 			},
 		}, nil
 	case *assistantTransportRetryCommand:
@@ -837,13 +890,14 @@ func assistantTransportRuntimeControl(config map[string]any, key string) (string
 	return strings.TrimSpace(text), nil
 }
 
-func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID string, hostID string, metadata map[string]string, err error) {
+func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID string, hostID string, metadata map[string]string, workflowContext *appui.WorkflowTurnContextRequest, err error) {
 	var payload struct {
-		ID       string            `json:"id"`
-		Role     string            `json:"role"`
-		HostID   string            `json:"hostId"`
-		Metadata map[string]string `json:"metadata"`
-		Content  []struct {
+		ID              string                            `json:"id"`
+		Role            string                            `json:"role"`
+		HostID          string                            `json:"hostId"`
+		Metadata        map[string]string                 `json:"metadata"`
+		WorkflowContext *appui.WorkflowTurnContextRequest `json:"workflowContext,omitempty"`
+		Content         []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
@@ -853,7 +907,7 @@ func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID
 		} `json:"parts"`
 	}
 	if err = json.Unmarshal(raw, &payload); err != nil {
-		return "", "", "", nil, err
+		return "", "", "", nil, nil, err
 	}
 	parts := make([]string, 0, len(payload.Content)+len(payload.Parts))
 	for _, item := range payload.Content {
@@ -870,7 +924,7 @@ func decodeAssistantTransportMessage(raw json.RawMessage) (text string, sourceID
 			}
 		}
 	}
-	return strings.Join(parts, "\n"), strings.TrimSpace(payload.ID), strings.TrimSpace(payload.HostID), cloneTransportMetadata(payload.Metadata), nil
+	return strings.Join(parts, "\n"), strings.TrimSpace(payload.ID), strings.TrimSpace(payload.HostID), cloneTransportMetadata(payload.Metadata), payload.WorkflowContext, nil
 }
 
 func (s *HTTPServer) streamAssistantTransportState(
@@ -996,18 +1050,31 @@ func assistantTransportHasLocalApprovalDecision(state appui.AiopsTransportState,
 		return false
 	}
 	for _, block := range turn.Process {
-		approvalID := strings.TrimSpace(block.ApprovalID)
-		if approvalID == "" || !pendingIDs[approvalID] {
-			continue
+		if assistantTransportBlockHasLocalApprovalDecision(block, pendingIDs) {
+			return true
 		}
-		switch block.Status {
-		case appui.AiopsTransportProcessStatusRunning,
-			appui.AiopsTransportProcessStatusRejected,
-			appui.AiopsTransportProcessStatusFailed:
+	}
+	for _, block := range turn.BlocksByID {
+		if assistantTransportBlockHasLocalApprovalDecision(block.AiopsProcessBlock, pendingIDs) {
 			return true
 		}
 	}
 	return false
+}
+
+func assistantTransportBlockHasLocalApprovalDecision(block appui.AiopsProcessBlock, pendingIDs map[string]bool) bool {
+	approvalID := strings.TrimSpace(block.ApprovalID)
+	if approvalID == "" || !pendingIDs[approvalID] {
+		return false
+	}
+	switch block.Status {
+	case appui.AiopsTransportProcessStatusRunning,
+		appui.AiopsTransportProcessStatusRejected,
+		appui.AiopsTransportProcessStatusFailed:
+		return true
+	default:
+		return false
+	}
 }
 
 func assistantTransportPendingApprovalIDs(turn *runtimekernel.TurnSnapshot) map[string]bool {
@@ -1791,6 +1858,14 @@ func assistantTransportCloneChildAgent(child appui.AiopsTransportChildAgent) app
 
 func assistantTransportCloneTurn(turn appui.AiopsTransportTurn) appui.AiopsTransportTurn {
 	cloned := turn
+	if turn.WorkflowContext != nil {
+		contextCopy := *turn.WorkflowContext
+		contextCopy.Selection.NodeIDs = append([]string{}, turn.WorkflowContext.Selection.NodeIDs...)
+		contextCopy.Selection.EdgeIDs = append([]string{}, turn.WorkflowContext.Selection.EdgeIDs...)
+		contextCopy.Selection.NeighborhoodIDs = append([]string{}, turn.WorkflowContext.Selection.NeighborhoodIDs...)
+		contextCopy.Environment.CapabilityVersions = append([]string{}, turn.WorkflowContext.Environment.CapabilityVersions...)
+		cloned.WorkflowContext = &contextCopy
+	}
 	if turn.User != nil {
 		userCopy := *turn.User
 		cloned.User = &userCopy

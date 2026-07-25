@@ -42,6 +42,11 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	}
 	projectedTurn.ClientTurnID = turn.ClientTurnID
 	projectedTurn.ClientMessageID = turn.ClientMessageID
+	workflowContext, err := projectWorkflowTurnContext(turn)
+	if err != nil {
+		return next, fmt.Errorf("project workflow turn context: %w", err)
+	}
+	projectedTurn.WorkflowContext = workflowContext
 	agentItems := projectTransportAgentItems(turn.AgentItems)
 	projectedTurn.AgentItems = agentItems.Items
 	projectedTurn.AgentItemsTruncated = agentItems.Truncated
@@ -116,6 +121,34 @@ func (p *TransportProjector) ProjectTurnSnapshot(state AiopsTransportState, turn
 	next.UpdatedAt = firstNonEmptyString(transportTimestamp(turn.UpdatedAt), next.UpdatedAt)
 
 	return next, nil
+}
+
+// projectWorkflowTurnContext exposes only the immutable page-safe facts that
+// were frozen at Send time. Tenant, actor and session bindings remain private
+// to the trusted artifact and are never serialized into AssistantTransport.
+func projectWorkflowTurnContext(turn *runtimekernel.TurnSnapshot) (*WorkflowTurnContextRequest, error) {
+	artifact, ok := runtimekernel.TurnArtifactByKind(turn, WorkflowTurnContextArtifactKind)
+	if !ok {
+		return nil, nil
+	}
+	frozen, err := DecodeWorkflowTurnContext(artifact)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkflowTurnContextRequest{
+		WorkflowID: frozen.WorkflowKey.WorkflowID,
+		Revision:   frozen.Revision,
+		Selection: WorkflowTurnSelection{
+			NodeIDs:         append([]string{}, frozen.Selection.NodeIDs...),
+			EdgeIDs:         append([]string{}, frozen.Selection.EdgeIDs...),
+			NeighborhoodIDs: append([]string{}, frozen.Selection.NeighborhoodIDs...),
+		},
+		Environment: WorkflowTurnEnvironment{
+			Name:               frozen.Environment.Name,
+			BindingVersion:     frozen.Environment.BindingVersion,
+			CapabilityVersions: append([]string{}, frozen.Environment.CapabilityVersions...),
+		},
+	}, nil
 }
 
 func terminalControlFinal(items []agentstate.TurnItem, visibleFinal *AiopsTransportFinal) *AiopsTransportFinal {
@@ -2194,9 +2227,12 @@ func transportWorkflowEditorArtifactFromToolPayload(turnID, itemID string, tool 
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	status := firstNonEmptyString(jsonStringValueFromMap(payload, "status"), jsonStringValueFromMap(payload, "effect_status"), "ready")
+	renderer, schemaVersion := workflowEditorRendererTriplet(displayKind)
 	return AiopsTransportAgentUIArtifact{
 		ID:              "workflow-editor:" + turnID + ":" + firstNonEmptyString(strings.TrimSpace(itemID), "artifact"),
 		Type:            displayKind,
+		Renderer:        renderer,
+		SchemaVersion:   schemaVersion,
 		Title:           firstNonEmptyString(jsonStringValueFromMap(payload, "title"), workflowEditorCardTitle(displayKind)),
 		Summary:         firstNonEmptyString(jsonStringValueFromMap(payload, "summary"), jsonStringValueFromMap(payload, "description")),
 		Status:          status,
@@ -2205,10 +2241,170 @@ func transportWorkflowEditorArtifactFromToolPayload(turnID, itemID string, tool 
 		PermissionScope: firstNonEmptyString(jsonStringValueFromMap(payload, "permissionScope"), "draft"),
 		RedactionStatus: "redacted",
 		InlineData:      payload,
-		Actions:         asStringAnyMapList(payload["actions"]),
+		Actions:         workflowEditorArtifactActions(payload),
 		CreatedAt:       now,
 		UpdatedAt:       now,
 	}, true
+}
+
+func workflowEditorArtifactActions(payload map[string]any) []map[string]any {
+	actions := append([]map[string]any(nil), asStringAnyMapList(payload["actions"])...)
+	meta := asStringAnyMap(payload["_meta"])
+	if meta == nil {
+		return actions
+	}
+	metaActions, ok := workflowPreviewMetaActions(payload, meta["actions"])
+	if !ok {
+		return actions
+	}
+	return append(actions, metaActions...)
+}
+
+func workflowPreviewMetaActions(payload map[string]any, rawActions any) ([]map[string]any, bool) {
+	actualItems, ok := rawActions.([]any)
+	if !ok || len(actualItems) == 0 {
+		return nil, false
+	}
+	actual := make([]map[string]any, 0, len(actualItems))
+	for _, item := range actualItems {
+		action, ok := item.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		actual = append(actual, action)
+	}
+	expected, ok := expectedWorkflowPreviewMetaActions(payload)
+	if !ok || len(actual) != len(expected) {
+		return nil, false
+	}
+	actualJSON, actualErr := json.Marshal(actual)
+	expectedJSON, expectedErr := json.Marshal(expected)
+	if actualErr != nil || expectedErr != nil || string(actualJSON) != string(expectedJSON) {
+		return nil, false
+	}
+	return actual, true
+}
+
+func expectedWorkflowPreviewMetaActions(payload map[string]any) ([]map[string]any, bool) {
+	if schema, ok := workflowActionString(payload["schemaVersion"]); !ok || schema != "aiops.workflow.edit.v2" {
+		return nil, false
+	}
+	if _, ok := payload["isError"].(bool); !ok {
+		return nil, false
+	}
+	structured := asStringAnyMap(payload["structuredContent"])
+	if kind, ok := workflowActionString(structured["kind"]); !ok || kind != "preview" {
+		return nil, false
+	}
+	changeSet, candidate := asStringAnyMap(structured["changeSet"]), asStringAnyMap(structured["candidate"])
+	base := asStringAnyMap(changeSet["base"])
+	candidateID, candidateOK := workflowActionString(candidate["id"])
+	changeSetCandidateID, changeSetCandidateOK := workflowActionString(changeSet["candidateId"])
+	changeSetID, changeSetOK := workflowActionString(changeSet["id"])
+	currentChangeSetID, currentChangeSetOK := workflowActionString(candidate["currentChangeSetId"])
+	previewHash, previewOK := workflowActionString(changeSet["previewHash"])
+	currentPreviewHash, currentPreviewOK := workflowActionString(candidate["currentPreviewHash"])
+	expectedRevision, revisionOK := workflowActionString(base["resourceVersion"])
+	if !candidateOK || !changeSetCandidateOK || candidateID != changeSetCandidateID || !changeSetOK || !currentChangeSetOK || changeSetID != currentChangeSetID ||
+		!previewOK || !currentPreviewOK || previewHash != currentPreviewHash || !revisionOK {
+		return nil, false
+	}
+	operations, ok := changeSet["operations"].([]any)
+	if !ok {
+		return nil, false
+	}
+	binding := map[string]any{
+		"candidateId": candidateID, "changeSetId": changeSetID, "previewHash": previewHash, "expectedRevision": expectedRevision,
+	}
+	actions := make([]map[string]any, 0, len(operations)+1)
+	for index, rawOperation := range operations {
+		operation, ok := rawOperation.(map[string]any)
+		if !ok {
+			continue
+		}
+		nodeID, edgeID, ok := workflowPreviewPayloadOperationTarget(operation)
+		if !ok {
+			continue
+		}
+		target := map[string]any{
+			"candidateId": candidateID, "changeSetId": changeSetID, "previewHash": previewHash, "expectedRevision": expectedRevision, "operationIndex": index,
+		}
+		label := "定位节点"
+		if nodeID != "" {
+			target["nodeId"] = nodeID
+		} else {
+			target["edgeId"] = edgeID
+			label = "定位连线"
+		}
+		actions = append(actions, map[string]any{
+			"id": fmt.Sprintf("workflow-focus-operation-%d", index), "intent": "workflow.focus_object", "label": label, "mutation": false, "target": target,
+		})
+	}
+	actions = append(actions, map[string]any{
+		"id": "workflow-review-change", "intent": "workflow.review_change", "label": "审阅修改", "mutation": false, "target": binding,
+	})
+	return actions, true
+}
+
+func workflowPreviewPayloadOperationTarget(operation map[string]any) (nodeID, edgeID string, ok bool) {
+	op, valid := workflowActionString(operation["op"])
+	if !valid {
+		return "", "", false
+	}
+	switch op {
+	case "add_node":
+		node := asStringAnyMap(operation["node"])
+		nodeID, _ = workflowActionString(node["id"])
+		if nodeID == "" {
+			nodeID, _ = workflowActionString(operation["clientRef"])
+		}
+	case "update_node", "delete_node":
+		nodeID, _ = workflowActionString(operation["nodeId"])
+	case "add_edge":
+		edge := asStringAnyMap(operation["edge"])
+		edgeID, _ = workflowActionString(edge["id"])
+		if edgeID == "" {
+			edgeID, _ = workflowActionString(operation["clientRef"])
+		}
+	case "update_edge", "delete_edge":
+		edgeID, _ = workflowActionString(operation["edgeId"])
+	case "update_layout":
+		layout := asStringAnyMap(operation["layout"])
+		nodes, _ := layout["nodes"].([]any)
+		if len(nodes) != 1 {
+			return "", "", false
+		}
+		node, _ := nodes[0].(map[string]any)
+		nodeID, _ = workflowActionString(node["nodeId"])
+	default:
+		return "", "", false
+	}
+	if (nodeID == "") == (edgeID == "") {
+		return "", "", false
+	}
+	return nodeID, edgeID, true
+}
+
+func workflowActionString(value any) (string, bool) {
+	text, ok := value.(string)
+	return text, ok && text != "" && text == strings.TrimSpace(text)
+}
+
+func workflowEditorRendererTriplet(displayKind string) (renderer string, schemaVersion string) {
+	switch strings.TrimSpace(displayKind) {
+	case "workflow_edit_plan":
+		return "workflow.change.plan.v2", "aiops.workflow.plan.v1"
+	case "workflow_patch_preview":
+		return "workflow.change.preview.v2", "aiops.workflow.edit.v2"
+	case "workflow_patch_result":
+		return "workflow.change.receipt.v2", "aiops.workflow.edit.v2"
+	case "workflow_patch_validation":
+		return "workflow.change.validation.v2", "aiops.workflow.edit.v2"
+	case "workflow_conflict":
+		return "workflow.change.conflict.v2", "aiops.workflow.edit.v2"
+	default:
+		return "", ""
+	}
 }
 
 func isWorkflowEditorCardType(value string) bool {

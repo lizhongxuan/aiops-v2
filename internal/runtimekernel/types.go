@@ -256,6 +256,8 @@ type ToolResult struct {
 	ToolCallID          string                    `json:"toolCallId"`
 	TargetIdentityHash  string                    `json:"targetIdentityHash,omitempty"`
 	Content             string                    `json:"content"`
+	StructuredContent   json.RawMessage           `json:"structuredContent,omitempty"`
+	IsError             bool                      `json:"isError,omitempty"`
 	Summary             string                    `json:"summary,omitempty"`
 	Display             *ToolDisplayPayload       `json:"display,omitempty"`
 	Error               string                    `json:"error,omitempty"`
@@ -709,46 +711,49 @@ func (s CompactedSegment) Validate() error {
 
 // TurnSnapshot freezes the turn-level state at a stable boundary.
 type TurnSnapshot struct {
-	ID                      string                             `json:"id"`
-	ClientTurnID            string                             `json:"clientTurnId,omitempty"`
-	ClientMessageID         string                             `json:"clientMessageId,omitempty"`
-	SessionID               string                             `json:"sessionId"`
-	SessionType             SessionType                        `json:"sessionType"`
-	Mode                    Mode                               `json:"mode"`
-	Metadata                map[string]string                  `json:"metadata,omitempty"`
-	TaskDepth               taskdepth.Profile                  `json:"taskDepth,omitempty"`
-	SystemTurn              *SystemTurnRecord                  `json:"systemTurn,omitempty"`
-	Lifecycle               TurnLifecycleState                 `json:"lifecycle"`
-	ResumeState             TurnResumeState                    `json:"resumeState"`
-	Iteration               int                                `json:"iteration"`
-	StartedAt               time.Time                          `json:"startedAt"`
-	UpdatedAt               time.Time                          `json:"updatedAt"`
-	CompletedAt             *time.Time                         `json:"completedAt,omitempty"`
-	StablePromptHash        string                             `json:"stablePromptHash,omitempty"`
-	StableToolFingerprint   string                             `json:"stableToolFingerprint,omitempty"`
-	CanonicalRolloutHead    *CanonicalRolloutHeadRef           `json:"canonicalRolloutHead,omitempty"`
-	TurnAssembly            *agentassembly.TurnAssembly        `json:"turnAssembly,omitempty"`
-	TurnAssemblyShadow      *TurnAssemblyShadowTrace           `json:"turnAssemblyShadow,omitempty"`
-	SpecialInputReadPlan    *specialinputmemory.MemoryReadPlan `json:"specialInputReadPlan,omitempty"`
-	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef            `json:"toolSurfaceSnapshot,omitempty"`
-	GovernanceSnapshot      string                             `json:"governanceSnapshot,omitempty"`
-	TraceContext            TraceContextCarrier                `json:"traceContext,omitempty"`
-	PromptSections          []string                           `json:"promptSections,omitempty"`
-	LatestCheckpoint        *CheckpointMetadata                `json:"latestCheckpoint,omitempty"`
-	LatestStepReference     *StepReference                     `json:"latestStepReference,omitempty"`
-	PendingStepCause        *StepRevisionCause                 `json:"pendingStepCause,omitempty"`
-	Iterations              []IterationState                   `json:"iterations,omitempty"`
-	AgentItems              []agentstate.TurnItem              `json:"agentItems,omitempty"`
-	PendingApprovals        []PendingApproval                  `json:"pendingApprovals,omitempty"`
-	PendingEvidence         []PendingEvidence                  `json:"pendingEvidence,omitempty"`
-	PendingInputs           []PendingTurnInput                 `json:"pendingInputs,omitempty"`
-	HiddenTools             []string                           `json:"hiddenTools,omitempty"`
-	CompactedSegments       []CompactedSegment                 `json:"compactedSegments,omitempty"`
-	ExternalReferences      []ExternalReference                `json:"externalReferences,omitempty"`
-	ContextGovernanceEvents []ContextGovernanceEvent           `json:"contextGovernanceEvents,omitempty"`
-	OwnerWriteTraces        []OwnerWriteTrace                  `json:"ownerWriteTraces,omitempty"`
-	FinalOutput             string                             `json:"finalOutput,omitempty"`
-	Error                   string                             `json:"error,omitempty"`
+	ID                      string                                 `json:"id"`
+	ClientTurnID            string                                 `json:"clientTurnId,omitempty"`
+	ClientMessageID         string                                 `json:"clientMessageId,omitempty"`
+	SessionID               string                                 `json:"sessionId"`
+	SessionType             SessionType                            `json:"sessionType"`
+	Mode                    Mode                                   `json:"mode"`
+	Metadata                map[string]string                      `json:"metadata,omitempty"`
+	TrustedIdentity         *runtimecontract.TurnIdentity          `json:"trustedIdentity,omitempty"`
+	TurnArtifacts           []runtimecontract.TurnArtifactEnvelope `json:"turnArtifacts,omitempty"`
+	TaskDepth               taskdepth.Profile                      `json:"taskDepth,omitempty"`
+	SystemTurn              *SystemTurnRecord                      `json:"systemTurn,omitempty"`
+	ControlledToolTurn      *ControlledToolTurnRecord              `json:"controlledToolTurn,omitempty"`
+	Lifecycle               TurnLifecycleState                     `json:"lifecycle"`
+	ResumeState             TurnResumeState                        `json:"resumeState"`
+	Iteration               int                                    `json:"iteration"`
+	StartedAt               time.Time                              `json:"startedAt"`
+	UpdatedAt               time.Time                              `json:"updatedAt"`
+	CompletedAt             *time.Time                             `json:"completedAt,omitempty"`
+	StablePromptHash        string                                 `json:"stablePromptHash,omitempty"`
+	StableToolFingerprint   string                                 `json:"stableToolFingerprint,omitempty"`
+	CanonicalRolloutHead    *CanonicalRolloutHeadRef               `json:"canonicalRolloutHead,omitempty"`
+	TurnAssembly            *agentassembly.TurnAssembly            `json:"turnAssembly,omitempty"`
+	TurnAssemblyShadow      *TurnAssemblyShadowTrace               `json:"turnAssemblyShadow,omitempty"`
+	SpecialInputReadPlan    *specialinputmemory.MemoryReadPlan     `json:"specialInputReadPlan,omitempty"`
+	ToolSurfaceSnapshot     *ToolSurfaceSnapshotRef                `json:"toolSurfaceSnapshot,omitempty"`
+	GovernanceSnapshot      string                                 `json:"governanceSnapshot,omitempty"`
+	TraceContext            TraceContextCarrier                    `json:"traceContext,omitempty"`
+	PromptSections          []string                               `json:"promptSections,omitempty"`
+	LatestCheckpoint        *CheckpointMetadata                    `json:"latestCheckpoint,omitempty"`
+	LatestStepReference     *StepReference                         `json:"latestStepReference,omitempty"`
+	PendingStepCause        *StepRevisionCause                     `json:"pendingStepCause,omitempty"`
+	Iterations              []IterationState                       `json:"iterations,omitempty"`
+	AgentItems              []agentstate.TurnItem                  `json:"agentItems,omitempty"`
+	PendingApprovals        []PendingApproval                      `json:"pendingApprovals,omitempty"`
+	PendingEvidence         []PendingEvidence                      `json:"pendingEvidence,omitempty"`
+	PendingInputs           []PendingTurnInput                     `json:"pendingInputs,omitempty"`
+	HiddenTools             []string                               `json:"hiddenTools,omitempty"`
+	CompactedSegments       []CompactedSegment                     `json:"compactedSegments,omitempty"`
+	ExternalReferences      []ExternalReference                    `json:"externalReferences,omitempty"`
+	ContextGovernanceEvents []ContextGovernanceEvent               `json:"contextGovernanceEvents,omitempty"`
+	OwnerWriteTraces        []OwnerWriteTrace                      `json:"ownerWriteTraces,omitempty"`
+	FinalOutput             string                                 `json:"finalOutput,omitempty"`
+	Error                   string                                 `json:"error,omitempty"`
 }
 
 // Validate checks the turn snapshot.
@@ -771,10 +776,21 @@ func (s TurnSnapshot) Validate() error {
 	if !s.ResumeState.IsValid() {
 		return fmt.Errorf("invalid resume state %q", s.ResumeState)
 	}
+	if err := validateRuntimeTurnArtifacts(s.TurnArtifacts); err != nil {
+		return err
+	}
+	if s.TrustedIdentity != nil {
+		if err := s.TrustedIdentity.Validate(); err != nil || s.TrustedIdentity.SessionID != s.SessionID {
+			return fmt.Errorf("invalid trusted turn identity")
+		}
+	}
 	if s.SystemTurn != nil {
 		if err := s.SystemTurn.Validate(); err != nil {
 			return fmt.Errorf("system turn: %w", err)
 		}
+	}
+	if err := validateControlledToolTurnSnapshot(&s); err != nil {
+		return err
 	}
 	if s.Iteration < 0 {
 		return fmt.Errorf("iteration must be >= 0")
@@ -1143,6 +1159,7 @@ type TurnRequest struct {
 	PermissionProfile     string                                    `json:"permissionProfile,omitempty"`
 	RollbackPolicy        string                                    `json:"rollbackPolicy,omitempty"`
 	Metadata              map[string]string                         `json:"metadata,omitempty"`
+	TrustedIdentity       *runtimecontract.TurnIdentity             `json:"trustedIdentity,omitempty"`
 	ResourceBindings      []resourcebinding.ResourceBindingSnapshot `json:"resourceBindings,omitempty"`
 	ResourceRoleBindings  []resourcebinding.ResourceRoleBinding     `json:"resourceRoleBindings,omitempty"`
 	ResourceCapabilities  []resourcebinding.ResourceCapability      `json:"resourceCapabilities,omitempty"`
@@ -1150,6 +1167,7 @@ type TurnRequest struct {
 	SessionTargetSnapshot *resourcebinding.SessionTargetSnapshot    `json:"sessionTargetSnapshot,omitempty"`
 	RoleBindingConflicts  []resourcebinding.RoleBindingConflict     `json:"roleBindingConflicts,omitempty"`
 	SpecialInputReadPlan  *specialinputmemory.MemoryReadPlan        `json:"specialInputReadPlan,omitempty"`
+	TurnArtifacts         []runtimecontract.TurnArtifactEnvelope    `json:"turnArtifacts,omitempty"`
 }
 
 // Validate checks that the request uses canonical session and mode values.
@@ -1159,6 +1177,14 @@ func (r TurnRequest) Validate() error {
 	}
 	if !r.Mode.IsValid() {
 		return fmt.Errorf("invalid mode %q", r.Mode)
+	}
+	if err := validateRuntimeTurnArtifacts(r.TurnArtifacts); err != nil {
+		return err
+	}
+	if r.TrustedIdentity != nil {
+		if err := r.TrustedIdentity.Validate(); err != nil || (r.SessionID != "" && r.TrustedIdentity.SessionID != r.SessionID) {
+			return fmt.Errorf("invalid trusted turn identity")
+		}
 	}
 	return nil
 }

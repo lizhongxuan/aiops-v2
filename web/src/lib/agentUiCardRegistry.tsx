@@ -7,6 +7,7 @@ import { RCAReportArtifact } from "@/components/chat/RCAReportArtifact";
 import { TopologySliceArtifact } from "@/components/chat/TopologySliceArtifact";
 import { TraceSummaryArtifact } from "@/components/chat/TraceSummaryArtifact";
 import { VerificationResultArtifact } from "@/components/chat/VerificationResultArtifact";
+import { WorkflowChangeArtifact } from "@/components/chat/WorkflowChangeArtifact";
 import { WorkflowResultArtifact } from "@/components/chat/WorkflowResultArtifact";
 import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTypes";
 import { agentUiCardDefinitions, type AgentUiCardDisplay, type AgentUiCardLifecycle } from "./agentUiCardDefinitions";
@@ -22,6 +23,7 @@ export type AgentUiCardRegistryDefinition = {
   schemaVersion?: string;
   component?: string;
   fallback?: string;
+  strictContract?: boolean;
   display?: AgentUiCardDisplay;
   Renderer?: AgentUiCardRenderer;
 };
@@ -47,6 +49,11 @@ const DEFAULT_RENDERERS: Record<string, AgentUiCardRenderer> = {
   topology_slice: TopologySliceArtifact,
   rca_report: RCAReportArtifact,
   workflow_result: WorkflowResultArtifact,
+  workflow_edit_plan: WorkflowChangeArtifact,
+  workflow_patch_preview: WorkflowChangeArtifact,
+  workflow_patch_result: WorkflowChangeArtifact,
+  workflow_patch_validation: WorkflowChangeArtifact,
+  workflow_conflict: WorkflowChangeArtifact,
   verification_result: VerificationResultArtifact,
   experience_match: ExperienceMatchArtifact,
   ops_manual_match: OpsManualMatchArtifact,
@@ -93,12 +100,28 @@ export function lookupAgentUiCardRenderer(
 ): AgentUiCardLookupResult {
   const rendererID = artifactRendererID(artifact);
   const schemaVersion = artifactSchemaVersion(artifact);
-  const definition = rendererID
-    ? registry.renderers.get(rendererID) || registry.schemas.get(schemaKey(artifact.type, schemaVersion)) || registry.definitions.get(artifact.type)
-    : registry.schemas.get(schemaKey(artifact.type, schemaVersion)) || registry.definitions.get(artifact.type);
+  const definitionByType = registry.definitions.get(artifact.type);
+  const definitionByRenderer = rendererID ? registry.renderers.get(rendererID) : undefined;
+  const strictDefinition = definitionByType?.strictContract
+    ? definitionByType
+    : definitionByRenderer?.strictContract
+      ? definitionByRenderer
+      : undefined;
+  const definition = strictDefinition || (rendererID
+    ? definitionByRenderer || registry.schemas.get(schemaKey(artifact.type, schemaVersion)) || definitionByType
+    : registry.schemas.get(schemaKey(artifact.type, schemaVersion)) || definitionByType);
 
   if (!isValidPayload(artifact.payload)) {
     return { state: "invalid_payload", definition, reason: "卡片 payload 必须是对象。" };
+  }
+
+  if (strictDefinition && !matchesStrictContract(strictDefinition, artifact.type, rendererID, schemaVersion)) {
+    return {
+      state: "fallback_renderer",
+      definition: definitionByType || strictDefinition,
+      Renderer: SafeWorkflowContractFallbackArtifact,
+      reason: "Workflow 变更卡片契约不受支持，已使用局部安全展示。",
+    };
   }
 
   if (!definition) {
@@ -159,6 +182,29 @@ function JsonSummaryFallbackArtifact({ artifact }: { artifact: AiopsTransportAge
       )}
     </div>
   );
+}
+
+function SafeWorkflowContractFallbackArtifact() {
+  return (
+    <section className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" data-testid="workflow-change-contract-fallback">
+      <h3 className="font-medium">暂不支持此版本的 Workflow 变更卡片</h3>
+      <p className="mt-1 text-xs leading-5 text-amber-800">已隔离不兼容的数据；请刷新页面或重新生成修改预览。</p>
+    </section>
+  );
+}
+
+function matchesStrictContract(
+  definition: AgentUiCardRegistryDefinition,
+  artifactType: string,
+  rendererID: string,
+  schemaVersion: string,
+): boolean {
+  const artifactTypes = definition.artifactTypes?.length ? definition.artifactTypes : [definition.type];
+  return artifactTypes.includes(artifactType)
+    && Boolean(rendererID)
+    && rendererID === definition.renderer
+    && Boolean(schemaVersion)
+    && schemaVersion === definition.schemaVersion;
 }
 
 function artifactRendererID(artifact: AiopsTransportAgentUiArtifact): string {

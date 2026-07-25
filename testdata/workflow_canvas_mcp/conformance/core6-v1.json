@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "aiops.workflow.mcp.conformance.v1",
+  "tools": [
+    "workflow.get_context",
+    "workflow.get_action_catalog",
+    "workflow.compile_plan",
+    "workflow.preview_patch",
+    "workflow.apply_patch",
+    "workflow.validate"
+  ],
+  "unimplementedTools": [
+    "workflow.propose_patch",
+    "workflow.save_draft",
+    "workflow.undo_last_ai_patch"
+  ],
+  "forbiddenExactSchemas": [
+    "{\"type\":\"object\"}",
+    "{}"
+  ],
+  "forbiddenResultFragments": [
+    "\"status\":\"ok\""
+  ],
+  "protocolVersions": [
+    "2025-03-26",
+    "2025-06-18"
+  ]
+}

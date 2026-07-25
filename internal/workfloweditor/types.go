@@ -5,6 +5,7 @@ import (
 
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/workflowgen"
+	edit "runner/workflow/edit"
 	"runner/workflow/visual"
 )
 
@@ -82,11 +83,14 @@ type WorkflowEditPlanItem struct {
 type PatchOperationType string
 
 const (
-	PatchAddNode                PatchOperationType = "add_node"
-	PatchUpdateNode             PatchOperationType = "update_node"
-	PatchDeleteNode             PatchOperationType = "delete_node"
-	PatchAddEdge                PatchOperationType = "add_edge"
-	PatchDeleteEdge             PatchOperationType = "delete_edge"
+	PatchAddNode    PatchOperationType = PatchOperationType(edit.OperationAddNode)
+	PatchUpdateNode PatchOperationType = PatchOperationType(edit.OperationUpdateNode)
+	PatchDeleteNode PatchOperationType = PatchOperationType(edit.OperationDeleteNode)
+	PatchAddEdge    PatchOperationType = PatchOperationType(edit.OperationAddEdge)
+	PatchDeleteEdge PatchOperationType = PatchOperationType(edit.OperationDeleteEdge)
+
+	// The remaining v1 values are decode-only compatibility identifiers. The
+	// retired HTTP adapter and ValidateWorkflowPatch reject them for writes.
 	PatchUpdateWorkflowMetadata PatchOperationType = "update_workflow_metadata"
 	PatchUpdateInputs           PatchOperationType = "update_inputs"
 	PatchUpdateOutputs          PatchOperationType = "update_outputs"

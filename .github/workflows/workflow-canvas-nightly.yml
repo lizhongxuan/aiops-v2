@@ -1,0 +1,54 @@
+name: Workflow Canvas nightly
+
+on:
+  schedule:
+    - cron: "17 18 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: workflow-canvas-nightly
+  cancel-in-progress: false
+
+jobs:
+  recorded-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PLAYWRIGHT_RETRIES: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Initialize allowlisted evidence
+        run: scripts/workflow-canvas-ci-evidence.sh nightly chromium,firefox,webkit
+      - name: Install Workflow Canvas test dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Run full recorded, recovery, performance, and cross-browser matrix
+        run: scripts/workflow-canvas-ci-matrix.sh nightly
+      - name: Verify evidence is safe to upload
+        id: evidence_redaction
+        if: ${{ always() }}
+        run: scripts/check-workflow-evidence-redaction.sh "${RUNNER_TEMP}/workflow-canvas-evidence"
+      - name: Upload Nightly evidence
+        if: ${{ always() && steps.evidence_redaction.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-canvas-nightly-evidence
+          path: ${{ runner.temp }}/workflow-canvas-evidence
+          if-no-files-found: error
+          retention-days: 30

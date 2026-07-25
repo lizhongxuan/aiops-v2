@@ -146,8 +146,9 @@ func TestServiceApplyPatchCreatesUndoCheckpointAffectedNodesDescribeAndAudit(t *
 func TestServiceApplyPatchRejectsStaleRevision(t *testing.T) {
 	service, _, record := newWorkflowEditorTestService()
 	patch := WorkflowPatch{ID: "patch-stale", BaseRevision: "stale", Operations: []WorkflowPatchOperation{{
-		Op:     PatchUpdateWorkflowMetadata,
-		Fields: map[string]any{"title": "new"},
+		Op:     PatchUpdateNode,
+		NodeID: "collect",
+		Fields: map[string]any{"label": "new"},
 	}}}
 	_, err := service.ApplyPatch(testContext(), ApplyPatchRequest{
 		WorkflowID:         record.ID,
@@ -167,8 +168,9 @@ func TestServiceUndoLastAIPatchRejectsManualInterleaving(t *testing.T) {
 	service, store, record := newWorkflowEditorTestService()
 	session, _ := service.CreateSession(testContext(), CreateSessionRequest{DrawerSessionID: "drawer", WorkflowID: record.ID, BaseRevision: record.Revision})
 	patch := WorkflowPatch{ID: "patch-undo", BaseRevision: record.Revision, Operations: []WorkflowPatchOperation{{
-		Op:     PatchUpdateWorkflowMetadata,
-		Fields: map[string]any{"title": "new"},
+		Op:     PatchUpdateNode,
+		NodeID: "collect",
+		Fields: map[string]any{"label": "new"},
 	}}}
 	result, err := service.ApplyPatch(testContext(), ApplyPatchRequest{
 		WorkflowID:         record.ID,

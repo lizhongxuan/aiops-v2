@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"path/filepath"
+	"strings"
 
 	"runner/scriptstore"
 	"runner/server/api"
@@ -26,6 +28,7 @@ type RuntimeOptions struct {
 	Config                     config.Config
 	OpsManualRunRecordSink     service.OpsManualRunRecordSink
 	WorkflowReferenceGuardMode service.WorkflowReferenceGuardMode
+	WorkflowTenantID           string
 }
 
 type Runtime struct {
@@ -33,6 +36,7 @@ type Runtime struct {
 	runSvc            *service.RunService
 	workflowSvc       *service.WorkflowService
 	visualWorkflowSvc *service.VisualWorkflowService
+	workflowEdit      *WorkflowEditFacade
 }
 
 func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
@@ -69,11 +73,19 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 		OpsManualRunRecordSink: opts.OpsManualRunRecordSink,
 	}, workflowSvc, preprocessor, runStore, runQueue, eventHub, collector)
 	actionCatalog := service.NewActionCatalog()
+	workflowTenantID := strings.TrimSpace(opts.WorkflowTenantID)
+	if workflowTenantID == "" {
+		workflowTenantID = service.VisualWorkflowDefaultTenantID
+	}
+	workflowSvc.SetWorkflowTenantID(workflowTenantID)
 	visualWorkflowSvc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{
 		WorkflowService: workflowSvc,
+		CommitStore:     workflowSvc.WorkflowCommitStore(),
+		TenantID:        workflowTenantID,
 		RunService:      runSvc,
 		Preprocessor:    preprocessor,
 		ActionCatalog:   actionCatalog,
+		AllowedActions:  cfg.Security.AllowedActions,
 	})
 	dashboardSvc := service.NewDashboardService(runSvc, agentSvc)
 	systemSvc := service.NewSystemService(runSvc, agentSvc)
@@ -115,7 +127,32 @@ func NewRuntime(_ context.Context, opts RuntimeOptions) (*Runtime, error) {
 		UI:             uiHandler,
 	})
 
-	return &Runtime{Handler: router, runSvc: runSvc, workflowSvc: workflowSvc, visualWorkflowSvc: visualWorkflowSvc}, nil
+	workflowEdit, err := newWorkflowEditMutationFacade(
+		visualWorkflowSvc, cfg.Security.AllowedActions, workflowTenantID,
+		filepath.Join(cfg.Stores.WorkflowsDir, ".transactions"), workflowSvc.WorkflowCommitStore(),
+	)
+	if err != nil {
+		runSvc.Close()
+		return nil, fmt.Errorf("init workflow edit application: %w", err)
+	}
+	return &Runtime{
+		Handler: router, runSvc: runSvc, workflowSvc: workflowSvc, visualWorkflowSvc: visualWorkflowSvc,
+		workflowEdit: workflowEdit,
+	}, nil
+}
+
+func (r *Runtime) WorkflowEditFacade() *WorkflowEditFacade {
+	if r == nil {
+		return nil
+	}
+	return r.workflowEdit
+}
+
+func (r *Runtime) WorkflowEditApplication() *service.WorkflowEditApplication {
+	if r == nil || r.workflowEdit == nil {
+		return nil
+	}
+	return r.workflowEdit.Application()
 }
 
 func (r *Runtime) SubmitGraphRun(ctx context.Context, graph visual.Graph, vars map[string]any, triggeredBy, idempotencyKey string) (*service.RunResponse, error) {
@@ -139,6 +176,9 @@ func (r *Runtime) SetWorkflowReferenceChecker(checker service.WorkflowReferenceC
 		return
 	}
 	r.workflowSvc.SetWorkflowReferenceChecker(checker)
+	if r.workflowEdit != nil {
+		r.workflowEdit.SetWorkflowReferenceChecker(checker)
+	}
 }
 
 func (r *Runtime) SetWorkflowReferenceGuardMode(mode service.WorkflowReferenceGuardMode) {

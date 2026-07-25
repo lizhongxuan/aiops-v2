@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-disk-full",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "disk-full",
+      "stage": "store_write",
+      "action": "return-enospc"
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W2",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W2",
+      "name": "complete-branch",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start"
+        },
+        {
+          "id": "condition",
+          "type": "condition"
+        },
+        {
+          "id": "success",
+          "type": "action",
+          "actionRef": "fixture.success"
+        },
+        {
+          "id": "failure",
+          "type": "action",
+          "actionRef": "fixture.failure"
+        },
+        {
+          "id": "end-success",
+          "type": "end"
+        },
+        {
+          "id": "end-failure",
+          "type": "end"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "start",
+          "target": "condition"
+        },
+        {
+          "id": "e2",
+          "source": "condition",
+          "sourcePort": "true",
+          "target": "success"
+        },
+        {
+          "id": "e3",
+          "source": "condition",
+          "sourcePort": "false",
+          "target": "failure"
+        },
+        {
+          "id": "e4",
+          "source": "success",
+          "target": "end-success"
+        },
+        {
+          "id": "e5",
+          "source": "failure",
+          "target": "end-failure"
+        }
+      ]
+    }
+  }
+}

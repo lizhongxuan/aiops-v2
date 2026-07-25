@@ -82,6 +82,63 @@ func TestCloneRunStateClonesGraphState(t *testing.T) {
 	}
 }
 
+func TestCloneRunStateDetachesEmptyContainers(t *testing.T) {
+	input := RunState{
+		Args:      map[string]any{},
+		Resources: map[string]ResourceState{"resource": {Current: map[string]any{}, Desired: map[string]any{}, Diff: map[string]any{}}},
+		Steps:     []StepState{{Name: "step", Hosts: map[string]HostResult{}}},
+		Graph: &GraphRunState{
+			Nodes: map[string]NodeState{
+				"empty": {
+					ID:         "empty",
+					Hosts:      map[string]HostResult{},
+					Output:     map[string]any{},
+					Iterations: []NodeIterationState{{Index: 0, Nodes: map[string]NodeState{}}},
+				},
+				"host": {
+					ID: "host",
+					Hosts: map[string]HostResult{
+						"local": {Host: "local", Output: map[string]any{}},
+					},
+				},
+			},
+			Edges: map[string]EdgeState{},
+		},
+	}
+
+	cloned := CloneRunState(input)
+	cloned.Args["arg"] = "value"
+	cloned.Resources["new"] = ResourceState{ID: "new"}
+	resource := cloned.Resources["resource"]
+	resource.Current["current"] = true
+	resource.Desired["desired"] = true
+	resource.Diff["diff"] = true
+	cloned.Steps[0].Hosts["local"] = HostResult{Host: "local"}
+	cloned.Graph.Edges["edge"] = EdgeState{ID: "edge"}
+	emptyNode := cloned.Graph.Nodes["empty"]
+	emptyNode.Hosts["local"] = HostResult{Host: "local"}
+	emptyNode.Output["stdout"] = "ok"
+	emptyNode.Iterations[0].Nodes["child"] = NodeState{ID: "child"}
+	hostNode := cloned.Graph.Nodes["host"]
+	host := hostNode.Hosts["local"]
+	host.Output["stdout"] = "ok"
+
+	if len(input.Args) != 0 || len(input.Resources) != 1 || len(input.Steps[0].Hosts) != 0 || len(input.Graph.Edges) != 0 {
+		t.Fatalf("top-level empty containers share clone mutations: %+v", input)
+	}
+	inputResource := input.Resources["resource"]
+	if len(inputResource.Current) != 0 || len(inputResource.Desired) != 0 || len(inputResource.Diff) != 0 {
+		t.Fatalf("resource maps share clone mutations: %+v", inputResource)
+	}
+	inputEmptyNode := input.Graph.Nodes["empty"]
+	if len(inputEmptyNode.Hosts) != 0 || len(inputEmptyNode.Output) != 0 || len(inputEmptyNode.Iterations[0].Nodes) != 0 {
+		t.Fatalf("graph node empty containers share clone mutations: %+v", inputEmptyNode)
+	}
+	if got := len(input.Graph.Nodes["host"].Hosts["local"].Output); got != 0 {
+		t.Fatalf("host output shares clone mutations: %+v", input.Graph.Nodes["host"].Hosts["local"].Output)
+	}
+}
+
 func TestUpsertGraphNodeIterationHostResultPreservesChildStatus(t *testing.T) {
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 	run := RunState{

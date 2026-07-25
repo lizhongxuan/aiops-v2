@@ -39,6 +39,32 @@ describe("aiopsTransportRuntime", () => {
     expect(new Date(state.updatedAt).toString()).not.toBe("Invalid Date");
   });
 
+  it("normalizes nullable workflow selection lists from a resumed server turn", () => {
+    const state = normalizeAiopsTransportState({
+      ...createInitialAiopsTransportState("thread-workflow-context"),
+      turnOrder: ["turn-workflow"],
+      turns: {
+        "turn-workflow": {
+          id: "turn-workflow",
+          status: "completed",
+          workflowContext: {
+            workflowId: " workflow-a ",
+            revision: { resourceVersion: "rv-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+            selection: { nodeIds: null, edgeIds: null },
+            environment: { name: " staging ", bindingVersion: "env-1", capabilityVersions: null },
+          },
+        },
+      },
+    } as unknown as Partial<AiopsTransportState>);
+
+    expect(state.turns["turn-workflow"].workflowContext).toEqual({
+      workflowId: "workflow-a",
+      revision: { resourceVersion: "rv-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+      selection: { nodeIds: [], edgeIds: [] },
+      environment: { name: "staging", bindingVersion: "env-1" },
+    });
+  });
+
   it("normalizes special input context without requiring markdown inference", () => {
     const state = normalizeAiopsTransportState({
       ...createInitialAiopsTransportState("thread-special-input"),

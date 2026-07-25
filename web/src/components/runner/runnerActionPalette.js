@@ -37,6 +37,14 @@ export function isRunnerPaletteActionUseful(action = {}) {
   return RECOMMENDED_ACTIONS.has(actionIdentity(action));
 }
 
+export function isRunnerPaletteActionExecutionAvailable(action = {}) {
+  if (!action || typeof action !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(action, "access")) {
+    return Boolean(action.access && typeof action.access === "object" && action.access.allowed === true);
+  }
+  return action.execution_available === true;
+}
+
 export function getRunnerActionDescription(action = {}) {
   const definition = getNodeTypeDefinition(action);
   if (definition.key !== "action" && definition.description) return definition.description;
@@ -60,6 +68,7 @@ export function getRunnerPaletteActions(actions = []) {
   const seen = new Set();
   return [...actions]
     .filter(isRunnerPaletteActionUseful)
+    .filter(isRunnerPaletteActionExecutionAvailable)
     .filter((action) => {
       const key = actionIdentity(action) || getNodeTypeDefinition(action).key;
       if (seen.has(key)) return false;

@@ -2425,7 +2425,10 @@ func TestRunTurn_DoesNotPersistRunningFinalAssistantItemDuringStreaming(t *testi
 	var draftItem agentstate.TurnItem
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		session := kernel.sessions.Get("sess-streaming-final-running")
+		session, snapshotErr := kernel.sessions.GetSnapshot("sess-streaming-final-running")
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
 		if session != nil && session.CurrentTurn != nil {
 			if item, ok := findAgentItemByID(session.CurrentTurn.AgentItems, assistantMessageItemID("turn-streaming-final-running", 0)); ok {
 				draftItem = item
@@ -2435,7 +2438,10 @@ func TestRunTurn_DoesNotPersistRunningFinalAssistantItemDuringStreaming(t *testi
 		time.Sleep(10 * time.Millisecond)
 	}
 	if draftItem.ID == "" {
-		session := kernel.sessions.Get("sess-streaming-final-running")
+		session, snapshotErr := kernel.sessions.GetSnapshot("sess-streaming-final-running")
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
 		var items []agentstate.TurnItem
 		if session != nil && session.CurrentTurn != nil {
 			items = session.CurrentTurn.AgentItems
@@ -2511,7 +2517,10 @@ func TestRunTurn_ToolPreludeNeverAppearsAsRunningFinal(t *testing.T) {
 	var observedFinalOutput string
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		session := kernel.sessions.Get("sess-streaming-tool-prelude")
+		session, snapshotErr := kernel.sessions.GetSnapshot("sess-streaming-tool-prelude")
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
 		if session != nil && session.CurrentTurn != nil {
 			observedFinalOutput = session.CurrentTurn.FinalOutput
 			if item, ok := findAgentItemByID(session.CurrentTurn.AgentItems, assistantMessageItemID("turn-streaming-tool-prelude", 0)); ok {
@@ -2546,7 +2555,10 @@ func TestRunTurn_ToolPreludeNeverAppearsAsRunningFinal(t *testing.T) {
 		t.Fatalf("FinalOutput = %q while tool prelude was streaming, want empty", observedFinalOutput)
 	}
 
-	session := kernel.sessions.Get("sess-streaming-tool-prelude")
+	session, snapshotErr := kernel.sessions.GetSnapshot("sess-streaming-tool-prelude")
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("missing completed tool turn")
 	}
@@ -2745,10 +2757,14 @@ func TestRunTurn_AccumulatesAssistantTextAsUnclassifiedBeforeFinalCommit(t *test
 	}
 
 	var session *SessionState
+	var snapshotErr error
 	var answerItem agentstate.TurnItem
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		session = kernel.sessions.Get("sess-streaming-snapshot")
+		session, snapshotErr = kernel.sessions.GetSnapshot("sess-streaming-snapshot")
+		if snapshotErr != nil {
+			t.Fatal(snapshotErr)
+		}
 		if session != nil && session.CurrentTurn != nil {
 			answerItem = findAgentItem(session.CurrentTurn.AgentItems, agentstate.TurnItemTypeAssistantMessage)
 			if answerItem.ID != "" {
@@ -2791,7 +2807,10 @@ func TestRunTurn_AccumulatesAssistantTextAsUnclassifiedBeforeFinalCommit(t *test
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for streaming run to complete")
 	}
-	session = kernel.sessions.Get("sess-streaming-snapshot")
+	session, snapshotErr = kernel.sessions.GetSnapshot("sess-streaming-snapshot")
+	if snapshotErr != nil {
+		t.Fatal(snapshotErr)
+	}
 	if session == nil || session.CurrentTurn == nil {
 		t.Fatal("missing completed current turn")
 	}

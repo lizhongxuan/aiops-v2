@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-after-graph-commit",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "after-graph-commit",
+      "stage": "graph_committed",
+      "action": "drop-response"
+    }
+  }
+}

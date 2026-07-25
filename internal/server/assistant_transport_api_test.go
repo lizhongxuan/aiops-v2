@@ -500,6 +500,40 @@ func TestAssistantTransportAPIAddMessageStreamsTransportState(t *testing.T) {
 	}
 }
 
+func TestAssistantTransportSubsequentAddMessageKeepsStableStateThreadID(t *testing.T) {
+	const stableThreadID = "workflow:workflow-a"
+	const transientThreadID = "__LOCALID_ReQnEXB"
+	req := &assistantTransportRequest{
+		State:    appui.NewAiopsTransportState("workflow-session-a", stableThreadID),
+		ThreadID: transientThreadID,
+		Commands: []assistantTransportCommand{&assistantTransportAddMessageCommand{
+			CommandType: assistantTransportCommandAddMessage,
+			Message:     json.RawMessage(`{"role":"user","parts":[{"type":"text","text":"retry preview"}]}`),
+		}},
+	}
+
+	initial := assistantTransportInitialState(req)
+	if initial.ThreadID != stableThreadID {
+		t.Fatalf("initial.ThreadID = %q, want stable state thread %q", initial.ThreadID, stableThreadID)
+	}
+	commands, err := assistantTransportCommandsFromRequest(req)
+	if err != nil {
+		t.Fatalf("assistantTransportCommandsFromRequest() error = %v", err)
+	}
+	if len(commands) != 1 || commands[0].AddMessage == nil {
+		t.Fatalf("commands = %#v, want one add-message", commands)
+	}
+	if commands[0].AddMessage.ThreadID != stableThreadID {
+		t.Fatalf("AddMessage.ThreadID = %q, want stable state thread %q", commands[0].AddMessage.ThreadID, stableThreadID)
+	}
+
+	legacy := *req
+	legacy.State.SchemaVersion = ""
+	if got := assistantTransportInitialState(&legacy).ThreadID; got != stableThreadID {
+		t.Fatalf("legacy initial ThreadID = %q, want stable state thread %q", got, stableThreadID)
+	}
+}
+
 func TestAssistantTransportAPIRejectsSessionSourceWithoutSnapshots(t *testing.T) {
 	sessions := runtimekernel.NewSessionManager()
 	runtime := &assistantTransportAPITestRuntime{sessions: sessions, runCh: make(chan runtimekernel.TurnRequest, 1)}
@@ -1428,11 +1462,13 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 			"currentTurnId": "turn-approval-ack",
 			"turns": map[string]any{
 				"turn-approval-ack": map[string]any{
-					"id":     "turn-approval-ack",
-					"status": "blocked",
-					"process": []map[string]any{
-						{
+					"id":         "turn-approval-ack",
+					"status":     "blocked",
+					"blockOrder": []string{"cmd-approval-ack"},
+					"blocksById": map[string]any{
+						"cmd-approval-ack": map[string]any{
 							"id":         "cmd-approval-ack",
+							"type":       "approval",
 							"kind":       "command",
 							"status":     "blocked",
 							"command":    "ifconfig en0 down",
@@ -1486,7 +1522,8 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 	}
 	defer resp.Body.Close()
 
-	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	reader := bufio.NewReader(resp.Body)
+	line, err := reader.ReadString('\n')
 	if err != nil {
 		t.Fatalf("read first stream line: %v", err)
 	}
@@ -1506,6 +1543,17 @@ func TestAssistantTransportAPIApprovalDecisionAcksBeforeResumeCompletes(t *testi
 		t.Fatal("ResumeTurn was not started asynchronously")
 	}
 	close(runtime.release)
+	rest, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read resumed stream: %v", err)
+	}
+	stream := line + string(rest)
+	if !strings.Contains(string(rest), `"status":"completed"`) {
+		t.Fatalf("stream = %q, want terminal projection after asynchronous approval resume", stream)
+	}
+	if strings.Contains(string(rest), `"path":["pendingApprovals"],"value":{"approval-ack"`) {
+		t.Fatalf("stream = %q, stale pending approval was reprojected after local acceptance", stream)
+	}
 }
 
 func TestAssistantTransportAPIHostCommandApprovalDecisionAcksBeforeExecutionCompletes(t *testing.T) {

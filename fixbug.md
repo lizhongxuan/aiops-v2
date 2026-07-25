@@ -1,5 +1,32 @@
 # Fix Bug 记录
 
+## 2026-07-21 - Workflow 只读请求被 revision 哈希中的 `df` 误判为主机执行
+
+- 修复时间：2026-07-21
+- Bug 现象：真实 full-stack HARNESS-003 偶发把 `workflow.get_context` 只读请求终止为“缺少明确且已验证的执行目标”。本次触发 revision 为十六进制 digest，其中恰好包含字符对 `df`。
+- 根因：Intent classifier 对 `df/top/free` 等短命令使用任意子串匹配，同时 Workflow Agent 只在 metadata 禁用了 host tool，没有清理已经推导出的 `local_runtime/host_exec` typed intent；冻结的 Workflow artifact 也没有投影成 admission 可识别的 verified resource binding。
+- 修复方式：短 ASCII 命令改为完整 token 匹配，opaque ID/digest 不再参与子串命中；Workflow Agent 入口确定性移除 host-only scope/risk/capability 并重新计算 mutation policy；认证后的 tenant/workflow context 同时生成 verified `workflow` resource binding，写意图仍保留 `write` 风险和审批，主机执行继续禁止。
+- 验证结果：精确 digest 回归测试、Workflow route/Turn context/resource binding 定向测试通过；Root 相关全包与 vet 通过；真实 full-stack 重跑为 `3 passed / 33 planned skipped`，HARNESS-003 完成 `Workflow panel -> RuntimeKernel -> workflow.get_context -> final -> reload resume`。
+- 风险与后续：token classifier 仍是规则式预分类，只用于能力/风险候选，不得代替 ToolDispatcher 和 Workflow Application 的可信授权；未来增加短命令词时必须继续使用 token 边界测试。
+
+## 2026-07-21 - Workflow 真实浏览器回归暴露动作目录、快速删除与 Undo 候选契约分裂
+
+- 修复时间：2026-07-21
+- Bug 现象：Runner 动作面板会显示服务端实际不允许保存的 `tcp_ping`；用户快速从 Shell 节点切到 Python 节点后立即按 Delete，可能删掉上一个节点；History Undo 虽能返回合法 Candidate，前端却先以“无效预览”拒绝，修正预览解析后“放弃修改”仍没有请求服务端。
+- 根因：动作目录只依据 Catalog 项存在性，没有与 Runtime `allowed_actions` 做 fail-closed 交集；Inspector 用 passive effect 切换草稿，选择变更到 effect 执行间保留了旧节点的破坏性 callback；Undo 的服务端 inverse 对可选空字段和 `clientRef` 使用了内部合法表达，而浏览器只接受严格外部 Patch 表达，且 `validation.basis.semanticHash` 实际描述候选投影，Workspace 却把它错误地与 committed semanticHash 比较。
+- 修复方式：Runner API 明确投影规范化 `allowed_actions`，前端 Catalog 只展示同时有权限且可执行的动作；Inspector 在 layout effect 中同步切换节点草稿；Undo artifact 边界把服务端 inverse 规范化成严格请求形态并保留未知字段拒绝，Runner 后续 inverse 同时写稳定 `clientRef`；Candidate freshness 继续以不可变 `changeSet.base` 全 revision 和 validation basis resourceVersion 绑定，不再混淆候选与 committed semanticHash，且同步绑定失败会显示可恢复错误。
+- 验证结果：内置浏览器实测面板只剩 Shell/Python、Add/Move/Delete 均落到权威 revision，快速切换后立即 Delete 删除了当前 Python 而保留 Shell；History Undo 正确显示 4 个 ghost/diff 操作。Web 定向 Catalog/Inspector/Artifact/Workspace 测试与 typecheck 通过，其中 Workspace/Artifact 共 `28/28`；Runner API/Application/Edit 定向测试通过。最终全量三浏览器、Go 和门禁结果记录在 Workflow 实施 TODO。
+- 风险与后续：Undo/Redo Candidate 的最终 Apply 仍必须由同一 Transport turn 提供精确 Grant/Approval；History 面板不能自行签发批准。该完整高风险 Undo/Redo 旅程仍保持为未完成验收项。
+
+## 2026-07-21 - 动态 Workflow ResourceLock 接受非规范资源键
+
+- 修复时间：2026-07-21
+- Bug 现象：动态 Workflow MCP 调用传入带前导或尾随空白的资源锁键时，Dispatcher 会先 Trim 再接受并实际执行；调用参数本身并非 canonical key，却能进入与规范键相同的互斥区，破坏了“非规范 trusted scope 必须 fail closed”的安全契约。
+- 根因：`internal/runtimekernel/mutation_safety.go` 的动态 `ResourceLockResolver` 只校验了 Trim 后的结果，没有比较 resolver 原始返回值与规范化值，因此把输入纠正误当成了输入验证。
+- 修复方式：动态锁解析后同时校验原值、规范值和 trusted tenant/workflow binding；原始值与 canonical 表达不完全一致、为空或越过可信租户范围时在 acquire 和 handler 前拒绝。静态注册与动态 MCP adapter 共用同一 Dispatcher safety gate，annotation 仍仅是提示，不能覆盖授权或 verified approval。
+- 验证结果：新增的非规范空白键红测在修复前会实际调用 handler，修复后返回安全错误且 handler 未执行；已运行定向 workfloweditor/tooling race、runtimekernel/workfloweditor/tooling/mcp-runtime 全包非 race 和对应 `go vet`，均 exit 0；另有静态/动态 MCP、伪造 Grant/Approval/reference、跨租户锁、结果预算外置和 CommitStore 双实例 CAS 回归覆盖。
+- 风险与后续：全量 `internal/runtimekernel` race 仍会命中 3 个既有 streaming 测试对 `CurrentTurn/AgentItems` 的无锁读取，和本次动态锁调用链无重叠；最终总门禁前需独立修复或将其作为明确基线处理。
+
 ## 2026-07-03 12:48 - 特殊输入确认误拦截普通工作流确认
 
 - 修复时间：2026-07-03 12:48
@@ -272,3 +299,165 @@
 - 验证结果：新增测试先复现再修复；`go test ./... -count=1`、124 个 Vitest 文件/915 tests、typecheck、build、Playwright 23/23、artifact 顺序 screenshot 10/10、boundary/change-budget self-test 与固定基线 gate、`scripts/aichat-harness-hardening-gate.sh` 均以 exit code 0 通过。P0 self-opt run `self-opt-20260716T091424Z-1` 的真实 AIOps core 8/8、synthetic 5/5、selfopt 6/6，`overall=1`、`gate=pass`、`worse=0`，secret scan 通过。
 - 真实页面验收：终端 Playwright 与应用内浏览器均使用真实 provider 操作页面。普通咨询为 1 final/0 process/0 tool；单工具为 1 final/1 process group/1 tool；双工具为 1 final/1 process group/2 tools。刷新与历史恢复后正文和分组一致，浏览器 console 为 0 error/0 warning；运行中未出现未分类 final，完成后的过程默认折叠。
 - 剩余风险：前端 build 仍有既有的大 chunk 警告，`npm ci` 报告 16 个既有依赖审计项（4 high）；要求执行证据但未生成 VerificationReport 的只读主机回答会按设计显示可行动的 `needs_evidence` 限制卡。依赖升级不属于本计划范围。未变更 provider 协议、工具路由、permission、approval、evidence gate 或 ToolDispatcher；未记录凭据、主机敏感信息或完整高风险命令输出。
+
+## 2026-07-21 17:54 - Workflow 批量同类操作被误判为重复审批消费
+
+- 修复时间：2026-07-21 17:54（Asia/Shanghai）。
+- Bug 现象：一个合法 ChangeSet 含两个 `update_node` 等同类 operation 时，旧 HTTP 兼容 Apply 在审批消费阶段返回 duplicate operation，或用去重后的 kind 数错误执行最大操作数预算；真实批量修改无法原子应用。
+- 根因：审批 envelope 把 operation kind 集合同时当成“授权类别”和“实际操作数量”，同类 operation 既会触发重复值校验，又使数量预算失真。
+- 修复方式：审批绑定保存稳定排序且去重的 operation kind 集合，独立持久化 `OperationCount` 作为实际数量预算；读取旧 envelope 时保留兼容 fallback。兼容 HTTP 仍只生成一次 Preview → Approval → Apply/Receipt 原子事务，不拆分或重放子操作。
+- 验证结果：RED 稳定复现 `duplicate workflow approval consumption operation`；修复后 Runner approval/apply/legacy 定向 race、service 全包、旧 preview/apply → 新 manual → reload → replay 集成故事、root HTTP boundary 和 vet 均通过。
+- 风险与后续：旧 envelope 没有 `OperationCount` 时只能回退到 kind 数；新写入全部携带真实数量。operation kind 仍是授权范围而不是操作顺序，精确顺序由不可变 ChangeSet digest 约束。
+
+## 2026-07-21 17:54 - Workflow Agent 工具面与 typed 失败在 Runtime 链路中丢失
+
+- 修复时间：2026-07-21 17:54（Asia/Shanghai）。
+- Bug 现象：真实 Chat→RuntimeKernel→Dispatcher→Workflow MCP 故事中，`workflow.apply_patch` 因 permission scope 未被识别而不出现在工具面；workflow route 同时混入 public web/ops 工具。即使 handler 返回合法 typed DomainError/Receipt，Dispatcher、model feedback 或 AgentItem 仍会把它覆盖为 `side_effect_unknown` 或只保留 tool identity，导致模型和页面失去可恢复事实。
+- 根因：Workflow apply 使用了未纳入通用 argument-scoped 规则的自定义 permission scope；workflow profile metadata 只做增量合并而非权威收敛；mutation safety 把所有 `isError` 一律当成未知副作用；`failedToolResultForModel` 与 approval resume AgentItem 没有保留已校验的 `structuredContent/isError`。
+- 修复方式：Apply 使用通用 `argument_scoped` permission；workflow_agent profile 明确只启用 workflow_editor 并关闭 web/ops 检索。Dispatcher 先验证 structured result：合法 typed domain failure 原样传播，只有缺少可信结构的 mutation failure 才进入未知副作用保护；model feedback 与正常/审批恢复 AgentItem 统一写入 canonical structuredContent/isError。
+- 验证结果：新增工具面、profile、typed mutation failure、model result、AgentItem 单测均先红后绿；完整生产内存故事覆盖 read→preview→approval checkpoint→apply→Receipt→AiopsTransportState，以及 expired/revoked grant、伪最终 transaction、Secret 脱敏。三个相关包全量、三组 race、vet 和 diff-check 全部通过。
+- 风险与后续：typed result 只有在 output schema 验证通过后才被信任；无结构或非法结构的 mutation error 仍保守标记 side-effect unknown。页面 renderer 仍必须消费 typed artifact，不得重新解析 final 文本。
+
+## 2026-07-21 17:54 - Workflow WAL 恢复顺序与主进程事件投影未完整接线
+
+- 修复时间：2026-07-21 17:54（Asia/Shanghai）。
+- Bug 现象：WAL 文件枚举顺序不稳定时，事件恢复可能按目录顺序而不是 commit generation 投影；同时 Runner Event Facade、Replay、Outbox 和 AppSnapshot projector 虽已实现，主进程未创建 Facade，也没有在用户打开 Workflow 后激活订阅，页面无法收到真实 committed event。
+- 根因：恢复代码隐含依赖文件系统枚举顺序；事件模块只完成了组件级 API，production bootstrap 缺少 lifecycle owner 与 active WorkflowKey 的惰性绑定。
+- 修复方式：WAL recovery 在投影前按 immutable snapshot generation 稳定排序；主进程在 Runner Application 创建后打开唯一 WorkflowEventFacade，在 authoritative graph 首次打开或 manual command 成功后按 trusted WorkflowKey 惰性绑定现有 AppSnapshot broadcaster，关闭时按 subscription→facade→Runner 顺序释放。投影失败不篡改已提交 mutation response，下一次打开通过 durable replay 恢复。
+- 验证结果：乱序 WAL、replay/outbox、慢订阅、gap/snapshot resync、主 `/ws` AppSnapshot 投影、graph-open 单次绑定和 shutdown 的定向 race 测试均通过；Runner service/app、root appui/server、main wiring、vet 和 diff-check exit 0。
+- 风险与后续：订阅仅为当前进程投影，持久事实仍在 Runner Event Log/outbox；页面不得直接订阅 feature-local WebSocket/SSE/polling。后续前端 Provider 只消费现有 AssistantTransport/AppSnapshot 事实。
+
+## 2026-07-21 22:08 - 画布节点修改被重复编译投影误判为校验漂移
+
+- 修复时间：2026-07-21 22:08（Asia/Shanghai）。
+- Bug 现象：用户在节点配置中修改 Shell 脚本并点击保存，服务端返回 `compiled workflow does not match the validated graph`；页面正确显示“未保存”，刷新后修改丢失。新增节点和首次保存正常，因此只有已从 YAML 回读、同时带有 visual node 与 compiled workflow step 两份投影的 Graph 会稳定复现。
+- 根因：semantic hash 同时计算权威 visual node 的 `Step/Handler` 与 `Workflow.Steps/Handlers` 编译副本。画布先更新 node，下一次 compile 才重建副本，导致同一语义在 compile 前后得到不同 hash，并被 pre-commit gate 当成陈旧或篡改。
+- 修复方式：semantic hash 只以 typed visual node/edge contract 为权威输入，排除可由其确定性再生的 `Workflow.Steps/Handlers`；layout hash 和其他 Workflow contract 字段保持不变。新增真实 compile → parse → node edit → recompile round-trip 回归，并验证仅修改陈旧编译副本不改变 identity。
+- 验证结果：hash 定向测试、Apply/Manual race、Runner service 全包和 vet 均通过；部署后还必须用 browser-in-app 重复“编辑脚本→保存→刷新”验证持久化，未完成前不把手工编辑任务标为完成。
+- 风险与后续：任何新增的 compiled projection 都必须进入同一字段分类表；不能通过放宽 pre-commit 校验掩盖 identity 漂移。
+
+## 2026-07-21 22:08 - Workflow AI Stop 被活动流命令队列延迟，Follow AI 读取了错误状态源
+
+- 修复时间：2026-07-21 22:08（Asia/Shanghai）。
+- Bug 现象：真实 Workflow AI 回合生成中点击“停止”后，回答仍继续到正常完成；同时 AI 面板显示“正在处理”，Dock 却提示 Follow AI 仅在生成期间可用。
+- 根因：Stop 通过普通 `sendCommand(aiops.stop)` 进入当前活动流之后的命令队列，无法抢占正在执行的 run；Dock 又从 Workspace task 派生 generationActive，而不是读取页面唯一 AssistantTransport 的 activity。
+- 修复方式：Stop 直接调用唯一 Assistant runtime 的 `thread.cancelRun()`，由现有 Transport onCancel 投影 canceled；在既有 WorkflowTransportBoundary 内增加只读 activity context，Dock 与 Panel 共同消费同一 Transport busy/canStop 事实，不复制 task state。
+- 验证结果：新增红测先复现延迟 Stop 和双状态源，最终 Panel/Shell/Boundary/selectors/Page 六个文件 43 项定向测试、Web 全量 153 files/1095 tests、typecheck 与 build 通过；真实浏览器 Stop/Follow AI 仍需在新二进制部署后复验。
+- 风险与后续：取消只改变当前 run lifecycle，不得另行构造 completed final；任何新页面容器必须复用既有 Boundary，不能创建第二个 Assistant runtime/provider。
+
+## 2026-07-22 12:08 - History Candidate 无受控审批入口且 Apply 混淆 Runtime/Canvas 会话
+
+- 修复时间：2026-07-22 12:08（Asia/Shanghai）。
+- Bug 现象：History Undo/Redo 可以生成持久 Candidate，但页面无法通过正常 AssistantTransport 请求精确审批；补齐入口后，审批会成功而 Apply 返回 `workflow apply identity does not match trusted execution context`。
+- 根因：History 页面缺少只接受 Candidate selector 的服务端受控回合入口；Apply adapter 又把 Runtime session 当成 Canvas session 传入业务校验，而二者在真实页面本来就是不同身份。
+- 修复方式：新增严格的 Candidate Apply Approval endpoint，只从持久 Candidate 重建唯一 `workflow.apply_patch`，由 RuntimeKernel 创建 PendingApproval；浏览器只恢复对应 AssistantTransport。Apply 时 CanvasSession 只能取受信 Candidate，RuntimeSession 只用于执行/审批绑定。ActionToken、mutation hash、身份与审批字段均不下发浏览器。
+- 验证结果：Go 覆盖伪造、stale、重启、并发、拒绝、过期与幂等；`PW-012` 真实完成两次持久编辑→Undo→精确审批 Apply→刷新→Redo→再次精确审批 Apply→刷新，两次请求体均无 mutation authority 字段。证据：`${TMPDIR}/workflow-canvas-evidence/full-stack-20260722T040727Z-48763/`，94 个文本文件脱敏扫描通过。
+- 风险与后续：任何页面发起的 Apply 都只能选择服务端已有 Candidate，不能重新提交 changeSet/previewHash/expectedRevision；直接修改后的 Candidate 再授权仍由 PW-006 单独验收。
+
+## 2026-07-22 12:08 - Receipt 与 AppSnapshot 先后到达时已提交 Candidate 残留为 stale ghost
+
+- 修复时间：2026-07-22 12:08（Asia/Shanghai）。
+- Bug 现象：Apply 已产生新 revision 且画布显示提交后的内容，但旧 Candidate 状态仍显示“候选预览已阻止：stale candidate basis”，误导用户认为修改尚未保存，并阻断后续 Redo。
+- 根因：Workspace reducer 只在 `transaction.applied` 事件到达时清除 Candidate；Receipt 与 AppSnapshot 已经精确对账但事件投影延后或被 snapshot sequence 覆盖时，没有等价的确定性清理路径。
+- 修复方式：Reducer 在 Receipt 和 committed snapshot 任一顺序到达时，以同一 workflow、精确 changeSet 和 revisionAfter 三重匹配清除 Candidate/approval；不相关、conflict 或 rejected Receipt 保留 Candidate。事件路径继续幂等生效。
+- 验证结果：新增 reducer 双顺序与拒绝场景测试 7/7；`PW-012` 真实 Apply 后 Candidate ghost 消失，Undo/Redo 与两次刷新 revision 一致。
+- 风险与后续：只允许 exact receipt/revision 对账清理，不能因为任意 committed revision 变化而丢弃可重算的冲突 Candidate。
+
+## 2026-07-22 12:08 - 已请求审批无法停止且取消态被误报为过期
+
+- 修复时间：2026-07-22 12:08（Asia/Shanghai）。
+- Bug 现象：Workflow 工具流已经停在 requested approval 时，生成流不再 busy，页面因此隐藏“停止”；即使服务端取消，卡片仍可能按 expired 文案展示。
+- 根因：可停止性只看活动流 busy，没有把 pending/requested/blocked approval 纳入；UI 又把 canceled 复用为 expired 展示状态。
+- 修复方式：待审批状态始终提供停止；先取消活动 Assistant runtime，若流已阻塞结束则发送权威 `aiops.stop`，服务端持久化 canceled。Approval 卡新增独立 canceled 语义，移除确认/拒绝动作并明确“本次修改不会应用”。
+- 验证结果：Panel/selector/card 定向测试通过；`PW-014` 真实创建审批、停止、确认 canceled、刷新后仍 canceled，committed revision 未变化。证据：`${TMPDIR}/workflow-canvas-evidence/full-stack-20260722T040750Z-49372/`，78 个文本文件脱敏扫描通过。
+- 风险与后续：取消不得本地伪造终态或清除服务端 Candidate；用户后续仍可从持久 Candidate 发起新的精确审批。
+
+## 2026-07-22 13:18 - 受控单工具回合把结构化工具失败标记为已完成
+
+- 修复时间：2026-07-22 13:18（Asia/Shanghai）。
+- Bug 现象：服务端受控创建的单工具回合在 handler 返回合法 `isError=true` 的 typed DomainError 时，工具结果虽保留错误内容，但 Invocation、Tool AgentItem 和回合终态仍可能显示 completed；页面会把真实失败误报成成功。
+- 根因：受控回合的终态只检查 Go `error`，没有把已通过 schema 校验的 `RecordedToolResult.IsError` 纳入生命周期；通用 Runtime 写回 Invocation 时也遗漏了同一失败事实。
+- 修复方式：受控回合和通用工具结果落库统一将 `IsError` 视为失败终态，保留 canonical structured content 给模型和 Transport，同时将 Invocation、Tool AgentItem 与回合 phase 对齐为 failed/error；重放同一 tool call 只读取已记录结果，绝不重新执行 mutation。
+- 验证结果：新增 typed failure 与 replay 回归测试；`go test ./internal/runtimekernel` 和 `go test -race ./internal/runtimekernel` 分别通过（race 用时约 146 秒）。
+- 风险与后续：只有通过 output schema 验证的 typed error 可作为可信 DomainError；结构缺失或不合法的 mutation 失败仍必须进入 side-effect unknown 保护，页面不得从自由文本猜测成功/失败。
+
+## 2026-07-22 13:55 - Workflow Candidate 混用 Runtime 与 Canvas 会话导致修订/放弃被拒绝
+
+- 修复时间：2026-07-22 13:55（Asia/Shanghai）。
+- Bug 现象：Workflow Chat 能生成 Candidate，但用户随后在画布直接修订或放弃时返回 403；History 与 Agent Candidate 在同一页面表现不一致。
+- 根因：工具预览把 Runtime session 写进持久 Candidate 的 `CanvasSessionID`，而浏览器后续使用真实 `canvas-*` 会话；可信 Turn scope 只携带 Runtime session，没有独立冻结服务端 Canvas session。
+- 修复方式：Turn trusted scope、context binding、AssistantTransport metadata 与工具执行上下文分别携带 Canvas/Runtime 会话；Candidate 固定保存受信 CanvasSessionID，AgentSessionID 继续绑定 Runtime session，Apply/Revise/Abandon 不允许二者互相冒充；旧直接 Runtime artifact 只保留显式兼容 fallback。
+- 验证结果：AppUI scope、AssistantTransport 伪造覆盖、workflow.preview_patch 身份分离及 server/integration 全包测试通过；真实 `PW-022/025` 完成精确字段修订及 Candidate 保留/放弃，组合证据 118 个文本文件脱敏通过。
+- 风险与后续：任何新入口必须同时声明两类 session 身份及来源；浏览器不得提交或覆盖可信 Canvas/Runtime binding。
+
+## 2026-07-22 13:55 - 边上插入节点为无端口旧节点制造虚假 handle
+
+- 修复时间：2026-07-22 13:55（Asia/Shanghai）。
+- Bug 现象：关闭 Workflow Agent capability 后，用户从可见边插入动作节点，服务端返回 `INVALID_PATCH`；原图端点本身没有声明端口时稳定复现。
+- 根因：前端 graph adapter 无条件给原边端点写入 `next/in`，把 UI 便利默认值当成已声明的 typed port；服务端正确拒绝指向不存在 handle 的连线。
+- 修复方式：只有端点节点确实声明对应 port 时才写 `source_port/target_port`；新插入 catalog 节点继续保留自身声明的 `in/next`，不放宽服务端 Graph 校验。
+- 验证结果：adapter 定向测试 25/25 与 typecheck 通过；真实 `PW-026` 在 disabled rollout 下完成可见边插入、原子断线/加点/重连、持久化与校验，28 个证据文本脱敏通过。
+- 风险与后续：其他自动连线入口也必须从权威节点 port 声明派生 handle，不能用节点类型猜测并写回协议字段。
+
+## 2026-07-22 13:55 - 布局保存重编译镜像被误判为 Candidate 语义冲突
+
+- 修复时间：2026-07-22 13:55（Asia/Shanghai）。
+- Bug 现象：Agent Candidate 存在时，用户移动不相交节点后继续修订，服务端返回 `STALE_REVISION`、`conflictingPaths=["/graph"]`；semanticHash 未变化仍无法安全 rebase。
+- 根因：rebase invariant 虽已排除权威 Graph 的 position/viewport，却仍哈希 `Workflow.XRunnerUI/XRunnerGraph/Steps/Handlers` 编译镜像。布局持久化会重建这些副本及归一化元数据，导致镜像变化冒充未分类 Graph 漂移。
+- 修复方式：rebase invariant 排除可由 typed visual Graph 确定性生成的四类编译投影；语义仍由 semanticHash 约束，布局只允许已列出的 position/viewport 且必须与 Candidate touched path 不相交，Description 等未分类字段继续 fail closed。
+- 验证结果：新增完整 YAML compile→parse→布局修改→compile→parse 回归；安全 rebase、同字段/port/semantic/未分类冲突矩阵、Runner service 全包/race/vet 均通过。真实 `PW-008` 返回 rebased Candidate v2，和 `PW-017/022/025` 组合 4/4 通过。
+- 风险与后续：新增 compiled projection 必须同时进入 semantic hash 与 rebase invariant 的字段分类审计；不得通过忽略 `/graph` 冲突或放宽 touched path 来解决镜像漂移。
+
+## 2026-07-22 14:14 - Assistant UI 临时 Thread ID 污染 Workflow 稳定会话
+
+- 修复时间：2026-07-22 14:14（Asia/Shanghai）。
+- Bug 现象：一次 Workflow Preview 成功、下一次 typed Tool 失败后，第三次 Preview Tool 已真实生成新 Candidate，但画布仍停在旧 Candidate；刷新 Transport 数据能看到新 artifact，前端却没有 reconcile。
+- 根因：后续 add-message 把 Assistant UI 顶层 `__LOCALID_*` 临时 threadId 优先写回 Transport state，覆盖领域态稳定的 `workflow:<id>`。严格 selector 正确检测到 thread scope 不匹配并 fail closed，因此整轮 artifact 不进入 Workspace。
+- 修复方式：current schema 与 legacy initial-state 分支都以已有 `state.ThreadID` 为权威，顶层 request threadId 只在状态为空时 fallback；不放宽前端 workflow/thread/session 隔离规则。
+- 验证结果：Go 回归覆盖稳定 state + 临时 request ID 的后续消息，Web Panel 覆盖两个 distinct revision-one Candidate 依次 reconcile，Reducer 覆盖同 revision 不同 candidate/previewHash 的正确替换；定向 Go、Web 22 tests 与 typecheck 通过。
+- 风险与后续：框架本地 ID 只能参与尚未建立领域 thread 的首次初始化；一旦服务端已发布稳定 thread，所有后续命令、流式 delta 和 selector 必须保持该身份。
+
+## 2026-07-22 14:23 - 大型 Candidate 审阅导航把用户错误带离 Review 且无法定位布局操作
+
+- 修复时间：2026-07-22 14:23（Asia/Shanghai）。
+- Bug 现象：用户在 100 项 Candidate 中点击“上一项/下一项”或某条变更后，右侧 Dock 会从 Review 自动切到 Configuration；遇到 `update_layout` 时又没有可聚焦对象，连续审阅在后半段中断。
+- 根因：页面把所有 Workflow focus event 都解释成画布显式选择，没有区分事件来自 Review 还是 Canvas；Review 的定位器只识别 node/edge/update-node 等操作，没有为 `update_layout` 从 payload 选择稳定节点。
+- 修复方式：focus 事件保留来源语义：Review 发起的定位保持 Review tab，用户显式点击候选画布节点才进入 Configuration；`update_layout` 按 payload 中首个稳定节点精确聚焦，不从自由文本猜测对象。
+- 验证结果：RunnerStudioPage 与 WorkflowChangeReview 定向测试 30/30、typecheck 和语法检查通过；真实 `PW-028` 在 W4 的 500 节点/700 连线、100 项 Candidate、36 次真实 revise 下连续执行 99 次 Next 到 100/100，最终定位 `node-064`，committed Graph 始终不变并满足交互性能阈值。证据：`${TMPDIR}/workflow-canvas-evidence/full-stack-20260722T060944Z-31300/`，66 个文本文件脱敏扫描通过。
+- 风险与后续：后续新增可定位 operation 必须在 typed operation→对象映射中显式定义；不能再次把“定位对象”和“切换工作区标签”耦合，也不能用 operation 文案解析作为 fallback。
+
+## 2026-07-22 15:16 - 修订后的 Agent Candidate 无法按最后版本精确再授权
+
+- 修复时间：2026-07-22 15:16（Asia/Shanghai）。
+- Bug 现象：Agent 生成 Candidate v1 后，用户在 Inspector 和画布把它依次修订为 v2/v3；页面能显示最新版，却无法通过受控审批入口应用，或服务端错误地把 Candidate 新语义与旧 Base 语义比较后拒绝。
+- 根因：历史审批入口只接受 revision 1，且没有从持久 store 重建完整 parent/operation lineage；审批校验还错误要求 Candidate validation semantic hash 等于 committed base semantic hash，而合法语义修改本来就应产生新 hash。
+- 修复方式：只允许 `history-<64hex>/v1` 或 `candidate-<24hex>/v>=2` 的严格 selector；服务端从 store 重建同一身份、同一 base、连续 parent、normalized operation 前缀和完整 ValidationBasis，并对最新 Candidate 重算 PreviewHash。祖先统一投影 superseded，旧 revision 不能获得 Apply 资格。
+- 验证结果：正负 Go 用例覆盖断链、伪造、越权、非法/空 semantic hash 与 unsafe revision；`PW-006` 真实完成 v1→Inspector v2→ArrowRight v3→Meta+Enter 精确审批→Apply→刷新，只有 v3 被批准且脚本/位置均持久化。证据：`${TMPDIR}/workflow-canvas-evidence/full-stack-20260722T070614Z-6368/`，44 个文本文件脱敏扫描通过。
+- 风险与后续：浏览器永远只能提交 Candidate selector，不能提交 lineage、operations、hash 或任何 mutation authority；新增 Candidate 来源必须有独立、可审计的 ID 语法和同等重建校验。
+
+## 2026-07-22 15:16 - 同一 Runtime 审批在 blocked tool 与 approval block 上重复渲染
+
+- 修复时间：2026-07-22 15:16（Asia/Shanghai）。
+- Bug 现象：Apply 已只创建一个 PendingApproval，但页面同时在 blocked tool 行和 canonical approval 行各显示一张相同确认卡，用户会误以为需要确认两次。
+- 根因：每个 ordered block 都调用带 turn-level fallback 的 approval selector；没有 `approvalId` 的 blocked tool 因而取到本轮第一个 pending approval，随后显式 approval block 又按 ID 取到同一事实。
+- 修复方式：approvalId 存在时只由对应 block 消费；同一轮已有显式 approval owner 时，其他 block 禁止使用 fallback。为旧数据保留唯一恢复路径：只有 blocked tool、没有 approval block 时仍在该 tool 上显示一张可操作卡。
+- 验证结果：新增“tool + explicit approval = 1 card”和“tool-only recovery = 1 card”两条组件回归，Panel 16/16、typecheck 通过；最终 `PW-006` 真实页面只出现一张审批卡并成功确认。
+- 风险与后续：多个并行 approval 必须各自携带唯一 approvalId；turn-level fallback 仅用于单一 owner 的兼容恢复，不能作为常规 block 关联机制。
+
+## 2026-07-22 15:16 - 最终门禁被测试日志竞争和 Node/Vitest 重复收集干扰
+
+- 修复时间：2026-07-22 15:16（Asia/Shanghai）。
+- Bug 现象：Runner API race 在审计测试中报告并发读写 `bytes.Buffer`；Web 全量 1166 个断言全部通过，Vitest 却因两个 `node:test` helper 文件没有 Vitest suite 而退出 1。
+- 根因：审计 helper 把异步 RunService 与 HTTP 日志写入无锁 Buffer，同时测试读取 `String()`；另两个真实 Node HTTP/process helper 自测沿用 `.test.js` 命名，却未从 Vitest 收集范围排除。
+- 修复方式：审计 sink 改为读写共享 RWMutex 的 `lockedAuditLogBuffer`；Vitest 精确排除两项 Node helper，自测继续由 full-stack 启动器和显式 `node --test` 执行，未删除或跳过断言。
+- 验证结果：Runner API 及五包 race 全部通过；Node helper 8/8、Vitest 155 files/1166 tests、typecheck/build 均通过。
+- 风险与后续：任何异步日志捕获都必须让 Write/String 使用同一同步原语；新增非 Vitest 自测要使用明确命名或同步更新测试路由，避免同一文件被错误 runner 收集。
+
+## 2026-07-22 19:13 - 固定结构大纲挤压工作流画布且无法收起
+
+- 修复时间：2026-07-22 19:13（Asia/Shanghai）。
+- Bug 现象：桌面 Workflow 编辑器同时显示左侧结构大纲和右侧 ContextDock 时，中间画布被明显压缩；在 `1095×863` 真实页面中，结构大纲固定占用 `216px`，画布只剩 `429px`，用户没有释放空间的入口。
+- 根因：`WorkflowContextDock` 的桌面网格把 Outline 写死为 `216px`，没有折叠状态、恢复控制或对应 Canvas resize 通知；移动端虽隐藏 Outline，但桌面无法按任务需要调整这一列。
+- 修复方式：由唯一 `WorkflowContextDock` 持有桌面 Outline 折叠状态；网格列宽改由 CSS 变量控制，收起时精确变为 `0px`，大纲进入 `inert + aria-hidden + visibility:hidden`，保留不参与网格宽度的浮动恢复按钮。按钮使用原生 button、`aria-expanded/aria-controls` 和可见 focus ring，状态变化复用统一 Canvas resize 事件；移动端仍使用原有单列模式。
+- 验证结果：组件回归 red→green `10/10`、Web 全量 `155 files / 1168 tests`、typecheck、production build、展开/收起两张 Playwright screenshot baseline 通过；响应式 suite 在 Chromium/Firefox/WebKit `27/27`。重新部署后在 Codex 内置浏览器 `1095×863` 实测 Outline `216→0px`、Canvas `429→645px`，恢复后回到 `429px`，焦点保持在切换按钮，console log 与错误层均为 0。
+- 风险与后续：折叠选择当前只保留在本次页面生命周期，刷新后默认展开；若后续需要跨会话记忆，应使用版本化用户偏好 schema，不能散落未治理的 localStorage key。完整 200% zoom、读屏人工主路径仍归 T3.12 统一验收。

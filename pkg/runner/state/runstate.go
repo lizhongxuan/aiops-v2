@@ -9,13 +9,13 @@ import (
 func CloneRunState(input RunState) RunState {
 	out := input
 	out.Args = cloneMap(input.Args)
-	if len(input.Resources) > 0 {
+	if input.Resources != nil {
 		out.Resources = make(map[string]ResourceState, len(input.Resources))
 		for k, v := range input.Resources {
 			out.Resources[k] = cloneResource(v)
 		}
 	}
-	if len(input.Steps) > 0 {
+	if input.Steps != nil {
 		out.Steps = make([]StepState, 0, len(input.Steps))
 		for _, step := range input.Steps {
 			out.Steps = append(out.Steps, cloneStep(step))
@@ -486,7 +486,7 @@ func cloneResource(input ResourceState) ResourceState {
 
 func cloneStep(input StepState) StepState {
 	out := input
-	if len(input.Hosts) > 0 {
+	if input.Hosts != nil {
 		out.Hosts = make(map[string]HostResult, len(input.Hosts))
 		for host, res := range input.Hosts {
 			out.Hosts[host] = cloneHost(res)
@@ -500,13 +500,13 @@ func cloneGraph(input *GraphRunState) *GraphRunState {
 		return nil
 	}
 	out := *input
-	if len(input.Nodes) > 0 {
+	if input.Nodes != nil {
 		out.Nodes = make(map[string]NodeState, len(input.Nodes))
 		for id, node := range input.Nodes {
 			out.Nodes[id] = cloneNode(node)
 		}
 	}
-	if len(input.Edges) > 0 {
+	if input.Edges != nil {
 		out.Edges = make(map[string]EdgeState, len(input.Edges))
 		for id, edge := range input.Edges {
 			out.Edges[id] = edge
@@ -517,11 +517,11 @@ func cloneGraph(input *GraphRunState) *GraphRunState {
 
 func cloneNode(input NodeState) NodeState {
 	out := input
-	if len(input.Iterations) > 0 {
+	if input.Iterations != nil {
 		out.Iterations = make([]NodeIterationState, len(input.Iterations))
 		for i, iteration := range input.Iterations {
 			out.Iterations[i] = iteration
-			if len(iteration.Nodes) > 0 {
+			if iteration.Nodes != nil {
 				out.Iterations[i].Nodes = make(map[string]NodeState, len(iteration.Nodes))
 				for id, child := range iteration.Nodes {
 					out.Iterations[i].Nodes[id] = cloneNode(child)
@@ -535,7 +535,7 @@ func cloneNode(input NodeState) NodeState {
 }
 
 func cloneHostsMap(input map[string]HostResult) map[string]HostResult {
-	if len(input) == 0 {
+	if input == nil {
 		return nil
 	}
 	out := make(map[string]HostResult, len(input))
@@ -552,7 +552,7 @@ func cloneHost(input HostResult) HostResult {
 }
 
 func cloneMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
+	if input == nil {
 		return nil
 	}
 	out := make(map[string]any, len(input))

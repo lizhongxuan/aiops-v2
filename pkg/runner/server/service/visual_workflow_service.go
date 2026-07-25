@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -29,28 +28,44 @@ type RunnerEdge = visual.Edge
 type RunnerPosition = visual.Position
 
 type VisualWorkflowService struct {
-	workflowSvc *WorkflowService
-	runSvc      *RunService
-	pre         *Preprocessor
-	catalog     *ActionCatalog
+	workflowSvc    *WorkflowService
+	commitStore    *WorkflowCommitStore
+	tenantID       string
+	runSvc         *RunService
+	pre            *Preprocessor
+	catalog        *ActionCatalog
+	allowedActions []string
 }
 
 type VisualWorkflowServiceConfig struct {
 	WorkflowService *WorkflowService
+	CommitStore     *WorkflowCommitStore
+	TenantID        string
 	RunService      *RunService
 	Preprocessor    *Preprocessor
 	ActionCatalog   *ActionCatalog
+	AllowedActions  []string
 }
 
 type VisualWorkflowSaveOptions struct {
-	SaveNote    string `json:"save_note,omitempty"`
-	SaveNoteSet bool   `json:"-"`
+	SaveNote       string `json:"save_note,omitempty"`
+	SaveNoteSet    bool   `json:"-"`
+	labels         map[string]string
+	labelsSet      bool
+	operation      string
+	versions       []WorkflowBundleVersion
+	replaceHistory bool
+	rawYAML        []byte
 }
 
 type VisualWorkflowCreateOptions struct {
-	Labels      map[string]string `json:"labels,omitempty"`
-	SaveNote    string            `json:"save_note,omitempty"`
-	SaveNoteSet bool              `json:"-"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	SaveNote       string            `json:"save_note,omitempty"`
+	SaveNoteSet    bool              `json:"-"`
+	operation      string
+	versions       []WorkflowBundleVersion
+	replaceHistory bool
+	rawYAML        []byte
 }
 
 type VisualWorkflowRunOptions struct {
@@ -121,11 +136,6 @@ type VisualWorkflowDebugResult struct {
 	Error  string         `json:"error,omitempty"`
 }
 
-type WorkflowGraphHashes struct {
-	SemanticHash string `json:"semantic_hash"`
-	LayoutHash   string `json:"layout_hash"`
-}
-
 type VisualWorkflowPathSimulation struct {
 	ReachableNodeIDs  []string                      `json:"reachable_node_ids"`
 	SelectedEdgeIDs   []string                      `json:"selected_edge_ids"`
@@ -168,125 +178,32 @@ func NewVisualWorkflowService(cfg VisualWorkflowServiceConfig) *VisualWorkflowSe
 	if catalog == nil {
 		catalog = NewActionCatalog()
 	}
+	commitStore, tenantID := cfg.CommitStore, strings.TrimSpace(cfg.TenantID)
+	if cfg.WorkflowService != nil {
+		if commitStore == nil {
+			commitStore = cfg.WorkflowService.commitStore
+		}
+		if tenantID == "" {
+			tenantID = cfg.WorkflowService.tenantID
+		}
+	}
 	return &VisualWorkflowService{
-		workflowSvc: cfg.WorkflowService,
-		runSvc:      cfg.RunService,
-		pre:         cfg.Preprocessor,
-		catalog:     catalog,
+		workflowSvc:    cfg.WorkflowService,
+		commitStore:    commitStore,
+		tenantID:       tenantID,
+		runSvc:         cfg.RunService,
+		pre:            cfg.Preprocessor,
+		catalog:        catalog,
+		allowedActions: normalizeCatalogStringList(cfg.AllowedActions),
 	}
 }
 
 func (s *VisualWorkflowService) GetGraph(ctx context.Context, name string) (visual.Graph, error) {
-	if s == nil || s.workflowSvc == nil {
-		return visual.Graph{}, fmt.Errorf("%w: workflow service is not configured", ErrUnavailable)
-	}
-	record, err := s.workflowSvc.Get(ctx, name)
-	if err != nil {
-		return visual.Graph{}, err
-	}
-	graph, err := visual.ParseYAMLToGraph(record.RawYAML)
-	if err != nil {
-		return visual.Graph{}, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	graph = normalizeGraph(graph)
-	graph.UI = withGraphResourceVersion(graph.UI, graphResourceVersion(record.RawYAML))
-	return graph, nil
+	return s.getGraph(ctx, name)
 }
 
 func (s *VisualWorkflowService) SaveGraph(ctx context.Context, name string, graph visual.Graph) (*CompiledVisualWorkflow, error) {
 	return s.SaveGraphWithOptions(ctx, name, graph, VisualWorkflowSaveOptions{})
-}
-
-func (s *VisualWorkflowService) CreateGraph(ctx context.Context, graph visual.Graph, opts VisualWorkflowCreateOptions) (*CreatedVisualWorkflow, error) {
-	if s == nil || s.workflowSvc == nil {
-		return nil, fmt.Errorf("%w: workflow service is not configured", ErrUnavailable)
-	}
-	graph = normalizeGraph(graph)
-	name := strings.TrimSpace(graph.Workflow.Name)
-	if name == "" {
-		return nil, fmt.Errorf("%w: workflow name is required", ErrInvalid)
-	}
-	graph.Workflow.Name = name
-	graph.UI = withoutGraphResourceVersion(graph.UI)
-	compiled, err := s.Compile(ctx, graph)
-	if err != nil {
-		return nil, err
-	}
-	record := &WorkflowRecord{
-		Name:        name,
-		Description: compiled.Workflow.Description,
-		Version:     compiled.Workflow.Version,
-		RawYAML:     []byte(compiled.YAML),
-		Labels:      copyStringMap(opts.Labels),
-	}
-	if opts.SaveNoteSet || strings.TrimSpace(opts.SaveNote) != "" {
-		record.SaveNote = opts.SaveNote
-		record.SaveNoteSet = true
-	}
-	if err := s.workflowSvc.Create(ctx, record); err != nil {
-		return nil, err
-	}
-	createdRecord, err := s.workflowSvc.Get(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	createdGraph, err := s.GetGraph(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	return &CreatedVisualWorkflow{
-		Name:     name,
-		Status:   normalizeWorkflowStatus(createdRecord.Status),
-		Workflow: cloneWorkflow(compiled.Workflow),
-		Graph:    createdGraph,
-		YAML:     compiled.YAML,
-		Warnings: append([]VisualWorkflowIssue{}, compiled.Warnings...),
-	}, nil
-}
-
-func (s *VisualWorkflowService) SaveGraphWithOptions(ctx context.Context, name string, graph visual.Graph, opts VisualWorkflowSaveOptions) (*CompiledVisualWorkflow, error) {
-	if s == nil || s.workflowSvc == nil {
-		return nil, fmt.Errorf("%w: workflow service is not configured", ErrUnavailable)
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return nil, fmt.Errorf("%w: workflow name is required", ErrInvalid)
-	}
-	graph = normalizeGraph(graph)
-	if strings.TrimSpace(graph.Workflow.Name) == "" {
-		graph.Workflow.Name = name
-	}
-	if strings.TrimSpace(graph.Workflow.Name) != name {
-		return nil, fmt.Errorf("%w: workflow name mismatch", ErrInvalid)
-	}
-	expectedVersion := graphExpectedResourceVersion(graph)
-	if expectedVersion != "" {
-		current, err := s.workflowSvc.Get(ctx, name)
-		if err != nil {
-			return nil, err
-		}
-		if currentVersion := graphResourceVersion(current.RawYAML); currentVersion != expectedVersion {
-			return nil, fmt.Errorf("%w: workflow graph changed since it was loaded", ErrConflict)
-		}
-	}
-	graph.UI = withoutGraphResourceVersion(graph.UI)
-	compiled, err := s.Compile(ctx, graph)
-	if err != nil {
-		return nil, err
-	}
-	record := &WorkflowRecord{
-		Name:        name,
-		Description: compiled.Workflow.Description,
-		RawYAML:     []byte(compiled.YAML),
-	}
-	if opts.SaveNoteSet || strings.TrimSpace(opts.SaveNote) != "" {
-		record.SaveNote = opts.SaveNote
-		record.SaveNoteSet = true
-	}
-	if err := s.workflowSvc.Update(ctx, name, record); err != nil {
-		return nil, err
-	}
-	return compiled, nil
 }
 
 func graphResourceVersion(raw []byte) string {
@@ -329,149 +246,6 @@ func withoutGraphResourceVersion(ui map[string]any) map[string]any {
 		return nil
 	}
 	return out
-}
-
-func VisualWorkflowGraphHashes(graph visual.Graph) (WorkflowGraphHashes, error) {
-	graph = normalizeGraph(graph)
-	semanticGraph, err := cloneVisualGraphForHash(graph)
-	if err != nil {
-		return WorkflowGraphHashes{}, err
-	}
-	scrubVisualGraphSemanticHashInput(&semanticGraph)
-	semanticHash, err := canonicalWorkflowHash(semanticGraph)
-	if err != nil {
-		return WorkflowGraphHashes{}, err
-	}
-
-	layoutInput := visualGraphLayoutHashInput(graph)
-	layoutHash, err := canonicalWorkflowHash(layoutInput)
-	if err != nil {
-		return WorkflowGraphHashes{}, err
-	}
-	return WorkflowGraphHashes{SemanticHash: semanticHash, LayoutHash: layoutHash}, nil
-}
-
-func workflowYAMLGraphHashes(raw []byte) (WorkflowGraphHashes, error) {
-	graph, err := visual.ParseYAMLToGraph(raw)
-	if err != nil {
-		return WorkflowGraphHashes{}, fmt.Errorf("%w: %v", ErrInvalid, err)
-	}
-	return VisualWorkflowGraphHashes(graph)
-}
-
-func cloneVisualGraphForHash(graph visual.Graph) (visual.Graph, error) {
-	raw, err := json.Marshal(graph)
-	if err != nil {
-		return visual.Graph{}, err
-	}
-	var out visual.Graph
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return visual.Graph{}, err
-	}
-	return out, nil
-}
-
-func scrubVisualGraphSemanticHashInput(graph *visual.Graph) {
-	graph.Layout = visual.Layout{}
-	graph.UI = nil
-	graph.Workflow.Description = ""
-	graph.Workflow.XRunnerUI = nil
-	graph.Workflow.XRunnerGraph = nil
-	for i := range graph.Nodes {
-		node := &graph.Nodes[i]
-		node.Position = visual.Position{}
-		node.Label = ""
-		node.Collapsed = false
-		node.Ports = nil
-		node.UI = nil
-		node.State = nil
-		if node.Approval != nil {
-			node.Approval.UI = nil
-		}
-		if node.Subflow != nil {
-			node.Subflow.UI = nil
-		}
-		if node.Join != nil {
-			node.Join.UI = nil
-		}
-		if node.Loop != nil {
-			node.Loop.UI = nil
-		}
-		for j := range node.Inputs {
-			node.Inputs[j].UI = nil
-		}
-		for j := range node.Outputs {
-			node.Outputs[j].UI = nil
-		}
-	}
-	for i := range graph.Edges {
-		graph.Edges[i].SourcePort = ""
-		graph.Edges[i].TargetPort = ""
-		graph.Edges[i].UI = nil
-		graph.Edges[i].State = nil
-	}
-}
-
-type visualGraphLayoutHash struct {
-	Version string                      `json:"version"`
-	Layout  visual.Layout               `json:"layout,omitempty"`
-	Nodes   []visualGraphLayoutHashNode `json:"nodes,omitempty"`
-	Edges   []visualGraphLayoutHashEdge `json:"edges,omitempty"`
-	UI      map[string]any              `json:"ui,omitempty"`
-}
-
-type visualGraphLayoutHashNode struct {
-	ID        string          `json:"id"`
-	Position  visual.Position `json:"position"`
-	Label     string          `json:"label,omitempty"`
-	Collapsed bool            `json:"collapsed,omitempty"`
-	Ports     []visual.Port   `json:"ports,omitempty"`
-	UI        map[string]any  `json:"ui,omitempty"`
-}
-
-type visualGraphLayoutHashEdge struct {
-	ID         string         `json:"id"`
-	SourcePort string         `json:"source_port,omitempty"`
-	TargetPort string         `json:"target_port,omitempty"`
-	UI         map[string]any `json:"ui,omitempty"`
-}
-
-func visualGraphLayoutHashInput(graph visual.Graph) visualGraphLayoutHash {
-	out := visualGraphLayoutHash{
-		Version: strings.TrimSpace(graph.Version),
-		Layout:  graph.Layout,
-		UI:      withoutGraphResourceVersion(graph.UI),
-		Nodes:   make([]visualGraphLayoutHashNode, 0, len(graph.Nodes)),
-		Edges:   make([]visualGraphLayoutHashEdge, 0, len(graph.Edges)),
-	}
-	for _, node := range graph.Nodes {
-		out.Nodes = append(out.Nodes, visualGraphLayoutHashNode{
-			ID:        strings.TrimSpace(node.ID),
-			Position:  node.Position,
-			Label:     strings.TrimSpace(node.Label),
-			Collapsed: node.Collapsed,
-			Ports:     append([]visual.Port{}, node.Ports...),
-			UI:        cloneAnyMap(node.UI),
-		})
-	}
-	for _, edge := range graph.Edges {
-		out.Edges = append(out.Edges, visualGraphLayoutHashEdge{
-			ID:         strings.TrimSpace(edge.ID),
-			SourcePort: strings.TrimSpace(edge.SourcePort),
-			TargetPort: strings.TrimSpace(edge.TargetPort),
-			UI:         cloneAnyMap(edge.UI),
-		})
-	}
-	return out
-}
-
-func canonicalWorkflowHash(input any) (string, error) {
-	raw, err := json.Marshal(input)
-	if err != nil {
-		return "", err
-	}
-	sum := sha256.Sum256(raw)
-	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
 func (s *VisualWorkflowService) Compile(ctx context.Context, graph visual.Graph) (*CompiledVisualWorkflow, error) {
@@ -975,6 +749,16 @@ func (s *VisualWorkflowService) ListActions(ctx context.Context, filter ActionCa
 		return NewActionCatalog().List(ctx, filter)
 	}
 	return s.catalog.List(ctx, filter)
+}
+
+// AllowedActions returns the exact execution allowlist used to construct this
+// Runner runtime. Studio clients use it to avoid offering nodes that the
+// preprocessor will deterministically reject at save/run time.
+func (s *VisualWorkflowService) AllowedActions() []string {
+	if s == nil {
+		return nil
+	}
+	return append([]string(nil), s.allowedActions...)
 }
 
 func (s *VisualWorkflowService) catalogIssues(graph visual.Graph, wf workflow.Workflow) []VisualWorkflowIssue {

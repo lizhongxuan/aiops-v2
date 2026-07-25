@@ -1,11 +1,11 @@
 package app
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"runner/server/config"
@@ -76,9 +76,22 @@ func TestNewRuntimeBuildsHandlerWithoutListening(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); body == "" || !strings.Contains(body, "script.shell") {
-		t.Fatalf("action catalog body = %q, want script.shell", body)
-	} else if strings.Contains(body, "cmd.run") || strings.Contains(body, "shell.run") {
-		t.Fatalf("action catalog body = %q, should not include legacy shell actions", body)
+	var catalog struct {
+		Items []struct {
+			Action string `json:"action"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &catalog); err != nil {
+		t.Fatalf("decode action catalog: %v; body=%s", err, rec.Body.String())
+	}
+	actions := make(map[string]bool, len(catalog.Items))
+	for _, item := range catalog.Items {
+		actions[item.Action] = true
+	}
+	if !actions["script.shell"] {
+		t.Fatalf("action catalog items = %#v, want script.shell", actions)
+	}
+	if actions["cmd.run"] || actions["shell.run"] {
+		t.Fatalf("action catalog items = %#v, should not include legacy shell actions", actions)
 	}
 }

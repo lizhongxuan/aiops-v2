@@ -61,11 +61,61 @@ func makeTool(server mcp.ServerConfig, governance mcp.ServerGovernance, def Tool
 				return tooling.ToolResult{}, err
 			}
 			return tooling.ToolResult{
-				Content: result.Content,
-				Error:   result.Error,
+				Content:           mcpToolResultText(result),
+				StructuredContent: append(json.RawMessage(nil), result.StructuredContent...),
+				IsError:           result.IsError,
+				Error:             result.Error,
+				References:        mcpToolResultReferences(result.ContentBlocks),
 			}, nil
 		},
 	}
+}
+
+func mcpToolResultText(result ToolCallResult) string {
+	if result.Content != "" {
+		return result.Content
+	}
+	texts := make([]string, 0, len(result.ContentBlocks))
+	for _, raw := range result.ContentBlocks {
+		var block struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(raw, &block) == nil && block.Type == "text" && block.Text != "" {
+			texts = append(texts, block.Text)
+		}
+	}
+	return strings.Join(texts, "\n")
+}
+
+func mcpToolResultReferences(blocks []json.RawMessage) []tooling.ResultReference {
+	references := make([]tooling.ResultReference, 0)
+	for _, raw := range blocks {
+		var link struct {
+			Type        string `json:"type"`
+			URI         string `json:"uri"`
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			MIMEType    string `json:"mimeType"`
+			Size        int64  `json:"size"`
+		}
+		if json.Unmarshal(raw, &link) != nil || link.Type != "resource_link" || strings.TrimSpace(link.URI) == "" {
+			continue
+		}
+		if link.Size < 0 {
+			link.Size = 0
+		}
+		references = append(references, tooling.ResultReference{
+			Kind:        tooling.ResultReferenceKindMCPResource,
+			URI:         strings.TrimSpace(link.URI),
+			Title:       firstNonEmpty(link.Title, link.Name),
+			Summary:     strings.TrimSpace(link.Description),
+			ContentType: strings.TrimSpace(link.MIMEType),
+			Bytes:       link.Size,
+		})
+	}
+	return references
 }
 
 func mcpToolRisk(def ToolDefinition) tooling.ToolRiskLevel {

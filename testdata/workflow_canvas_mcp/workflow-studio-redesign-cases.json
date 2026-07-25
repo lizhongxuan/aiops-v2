@@ -1,0 +1,492 @@
+{
+  "schemaVersion": "aiops.workflow-studio-redesign.case-manifest/v1",
+  "source": "docs/2026-07-23-aiops-v2-workflow-studio-visual-interaction-redesign.zh.md",
+  "statusValues": [
+    "implemented",
+    "partial",
+    "blocked"
+  ],
+  "cases": [
+    {
+      "id": "UX-HDR-001",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "未检查时唯一 Primary 为检查工作流",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ]
+    },
+    {
+      "id": "UX-HDR-002",
+      "priority": "P0",
+      "owner": "workflow-environment-capability",
+      "status": "partial",
+      "expected": "环境 capability off 时为 0 CTA；on 时只显示可信配置入口",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts",
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx"
+      ],
+      "blocker": "真实环境绑定 provider、权限、审计和 mutation 尚不存在"
+    },
+    {
+      "id": "UX-HDR-003",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "环境已绑定时 Primary 为试运行当前草稿",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ]
+    },
+    {
+      "id": "UX-HDR-004",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "试运行通过时 Primary 为发布工作流",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ]
+    },
+    {
+      "id": "UX-HDR-005",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "已发布且无草稿变化时 Primary 为运行已发布版本",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ]
+    },
+    {
+      "id": "UX-HDR-006",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "已发布且有草稿变化时 Primary 为发布更改",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ]
+    },
+    {
+      "id": "UX-HDR-007",
+      "priority": "P0",
+      "owner": "workflow-candidate-actions",
+      "status": "implemented",
+      "expected": "Candidate Ready 时 Workspace Action Bar 是唯一动作 owner，确认层接管时背景 owner 不可交互",
+      "automation": [
+        "vitest:web/src/runner/WorkflowCandidateWorkspaceActionBar.test.tsx",
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts",
+        "playwright:web/tests/e2e/workflow-candidate-apply-dialog.spec.js"
+      ]
+    },
+    {
+      "id": "UX-HDR-008",
+      "priority": "P0",
+      "owner": "workflow-command-bar",
+      "status": "implemented",
+      "expected": "自动保存正常时常驻 Save 数量为 0",
+      "automation": [
+        "vitest:web/src/runner/WorkflowCommandBar.test.tsx",
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ]
+    },
+    {
+      "id": "UX-HDR-009",
+      "priority": "P0",
+      "owner": "workflow-save-recovery",
+      "status": "partial",
+      "expected": "保存失败只显示真实恢复动作，不显示成功状态且不挤压画布",
+      "automation": [
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ],
+      "blocker": "并非所有保存失败类型都有可信恢复 handler"
+    },
+    {
+      "id": "UX-HDR-010",
+      "priority": "P0",
+      "owner": "workflow-primary-selector",
+      "status": "implemented",
+      "expected": "任意状态实心 Primary 不超过 1；无真实恢复能力时允许为 0",
+      "automation": [
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts",
+        "vitest:web/src/runner/WorkflowCommandBar.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-IA-001",
+      "priority": "P0",
+      "owner": "workflow-context-dock",
+      "status": "implemented",
+      "expected": "Workflow Panel 一级入口仅为 AI 协作、变更、运行",
+      "automation": [
+        "vitest:web/src/runner/WorkflowContextDock.test.tsx",
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ]
+    },
+    {
+      "id": "UX-IA-002",
+      "priority": "P0",
+      "owner": "workflow-node-inspector",
+      "status": "implemented",
+      "expected": "节点配置只存在于 Node Sidebar 或 Mobile Sheet",
+      "automation": [
+        "vitest:web/src/runner/WorkflowEditorShell.test.tsx",
+        "playwright:web/tests/e2e/workflow-canvas-responsive.spec.js"
+      ]
+    },
+    {
+      "id": "UX-IA-003",
+      "priority": "P0",
+      "owner": "workflow-changes-panel",
+      "status": "implemented",
+      "expected": "持久事务只存在于变更的已保存修改区域",
+      "automation": [
+        "vitest:web/src/runner/WorkflowHistoryPanel.test.tsx",
+        "vitest:web/src/runner/WorkflowEditorShell.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-IA-004",
+      "priority": "P0",
+      "owner": "workflow-run-panel",
+      "status": "implemented",
+      "expected": "当前会话运行记录只存在于运行面板",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/runner/WorkflowEditorShell.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-IA-005",
+      "priority": "P1",
+      "owner": "workflow-more-menu",
+      "status": "implemented",
+      "expected": "More 按文件、辅助、管理分组",
+      "automation": [
+        "vitest:web/src/runner/WorkflowCommandBar.test.tsx",
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js"
+      ]
+    },
+    {
+      "id": "UX-IA-006",
+      "priority": "P0",
+      "owner": "workflow-more-menu",
+      "status": "implemented",
+      "expected": "More 不出现检查、试运行、变量和发布的重复入口",
+      "automation": [
+        "vitest:web/src/runner/WorkflowCommandBar.test.tsx",
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js"
+      ]
+    },
+    {
+      "id": "UX-IA-007",
+      "priority": "P0",
+      "owner": "workflow-presentation",
+      "status": "implemented",
+      "expected": "默认 DOM 不出现完整 hash、transactionId、Tool 名或 Raw JSON",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/runner/WorkflowAiTransportPanel.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-IA-008",
+      "priority": "P0",
+      "owner": "workflow-ai-panel",
+      "status": "implemented",
+      "expected": "AI 面板不出现 Workflow selector 和本次发送范围",
+      "automation": [
+        "vitest:web/src/runner/WorkflowAiTransportPanel.test.tsx",
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ]
+    },
+    {
+      "id": "UX-RUN-001",
+      "priority": "P0",
+      "owner": "workflow-environment-capability",
+      "status": "partial",
+      "expected": "草稿未绑定环境时 capability off 诚实阻断；on 时仅显示可信配置入口",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/runner/workspace/workflowWorkspaceSelectors.test.ts"
+      ],
+      "blocker": "真实环境绑定 provider 尚不存在"
+    },
+    {
+      "id": "UX-RUN-002",
+      "priority": "P0",
+      "owner": "workflow-run-contract",
+      "status": "implemented",
+      "expected": "草稿试运行请求绑定当前保存草稿、完整 ValidationBasis 和非生产环境",
+      "automation": [
+        "vitest:web/src/api/runnerStudioClient.test.js",
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-003",
+      "priority": "P0",
+      "owner": "workflow-run-contract",
+      "status": "implemented",
+      "expected": "已发布运行请求绑定 immutable published revision",
+      "automation": [
+        "vitest:web/src/api/runnerStudioClient.test.js",
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-004",
+      "priority": "P0",
+      "owner": "workflow-run-panel",
+      "status": "implemented",
+      "expected": "没有已发布版本时只显示说明，不显示禁用 CTA",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-005",
+      "priority": "P0",
+      "owner": "workflow-run-panel",
+      "status": "implemented",
+      "expected": "存在新草稿时旧发布版本运行目标仍明确且不会误运行草稿",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-006",
+      "priority": "P0",
+      "owner": "workflow-run-inspector",
+      "status": "implemented",
+      "expected": "运行成功后的变量、路径和日志在同一 RunInspector 中",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-007",
+      "priority": "P0",
+      "owner": "workflow-run-inspector",
+      "status": "implemented",
+      "expected": "无运行记录时空状态不占固定半屏",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/runner/WorkflowEditorShell.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-RUN-008",
+      "priority": "P1",
+      "owner": "workflow-run-panel",
+      "status": "implemented",
+      "expected": "完整 hash 默认不在 DOM，技术详情展开后才可复制",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-PW-001",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "桌面打开、切换、关闭三个 Workflow Tab 时 Canvas 几何差值为 0",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-responsive.spec.js",
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ]
+    },
+    {
+      "id": "UX-PW-002",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "环境 capability off 诚实阻断；on 时完成配置、试运行和日志旅程",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-mcp.spec.js"
+      ],
+      "blocker": "capability-on provider 尚不存在"
+    },
+    {
+      "id": "UX-PW-003",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "草稿试运行不能误触发已发布版本运行",
+      "automation": [
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ],
+      "blocker": "完整浏览器网络旅程尚未归档"
+    },
+    {
+      "id": "UX-PW-004",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "已发布且有新草稿时 Primary 为发布更改，旧版本运行目标明确",
+      "automation": [
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx"
+      ],
+      "blocker": "完整浏览器网络旅程尚未归档"
+    },
+    {
+      "id": "UX-PW-005",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "撤销最近持久事务只产生 Candidate，committed revision 不提前变化",
+      "automation": [
+        "vitest:web/src/runner/workspace/WorkflowWorkspaceProvider.test.tsx",
+        "vitest:web/src/runner/WorkflowHistoryPanel.test.tsx",
+        "playwright:web/tests/e2e/workflow-canvas-mcp.spec.js#PW-012"
+      ]
+    },
+    {
+      "id": "UX-PW-006",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "AI preset 随显式节点映射更新，已发送 Turn 的内部上下文冻结",
+      "automation": [
+        "vitest:web/src/runner/WorkflowAiTransportPanel.test.tsx"
+      ],
+      "blocker": "真实 Prompt Preset provider 尚不存在；capability-off 与 Turn 冻结已覆盖"
+    },
+    {
+      "id": "UX-PW-007",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "Workflow Panel 打开期间 Node Sidebar 保持 mounted，关闭后字段草稿仍在",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js",
+        "vitest:web/src/runner/WorkflowContextDock.test.tsx"
+      ]
+    },
+    {
+      "id": "UX-PW-008",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "运行失败显示真实恢复动作且 Canvas 和输入不丢失",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/pages/RunnerStudioPage.workflow.test.tsx",
+        "playwright:web/tests/e2e/workflow-studio-run-recovery.spec.js"
+      ]
+    },
+    {
+      "id": "UX-PW-009",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "历史冲突展示三方差异和真实推荐动作",
+      "automation": [
+        "vitest:web/src/runner/WorkflowHistoryPanel.test.tsx"
+      ],
+      "blocker": "真实 browser-in-app 冲突旅程尚未归档"
+    },
+    {
+      "id": "UX-PW-010",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "默认页面无 Tool 名、Raw JSON、Secret 和完整 Hash",
+      "automation": [
+        "vitest:web/src/runner/WorkflowRunPanel.test.tsx",
+        "vitest:web/src/runner/WorkflowAiTransportPanel.test.tsx"
+      ],
+      "blocker": "完整视觉与浏览器矩阵尚未归档"
+    },
+    {
+      "id": "UX-PW-011",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "390px 可完成选节点、AI 提问、审阅、应用和试运行",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-responsive.spec.js"
+      ],
+      "blocker": "当前覆盖布局与状态保持，完整 AI/Apply/Run 往返待补"
+    },
+    {
+      "id": "UX-PW-012",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "移动端 More 使用 Bottom Sheet，关闭后焦点回 Trigger",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-responsive.spec.js"
+      ]
+    },
+    {
+      "id": "UX-PW-013",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "纯键盘完成打开工作台、切 Tab、AI 输入、Apply、检查和 Undo",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js"
+      ],
+      "blocker": "当前覆盖 Workbench、Tab 和 More；完整 Apply/检查/Undo 生命周期待补"
+    },
+    {
+      "id": "UX-PW-014",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "partial",
+      "expected": "1440、1280、1095、1024、820、768、390、320 均有视觉截图",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-responsive.spec.js",
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ],
+      "blocker": "8 视口布局断言已覆盖，完整 15 状态乘 8 视口截图矩阵未归档"
+    },
+    {
+      "id": "UX-PW-015",
+      "priority": "P0",
+      "owner": "workflow-accessibility",
+      "status": "partial",
+      "expected": "200% zoom、reduced-motion、axe 和焦点顺序均通过",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js"
+      ],
+      "blocker": "reduced-motion、axe、焦点与 200% reflow 等价视口已覆盖；真实浏览器缩放和人工读屏待补"
+    },
+    {
+      "id": "UX-PW-016",
+      "priority": "P0",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "Drawer 打开后 React Flow camera 在 300ms 内让当前节点避开 Overlay",
+      "automation": [
+        "playwright:web/tests/workflow-studio.snapshot.spec.js"
+      ]
+    },
+    {
+      "id": "UX-PW-017",
+      "priority": "P1",
+      "owner": "workflow-playwright",
+      "status": "implemented",
+      "expected": "More 支持 ArrowUp、ArrowDown、Escape，关闭后回焦 Trigger",
+      "automation": [
+        "playwright:web/tests/e2e/workflow-canvas-accessibility.spec.js"
+      ]
+    },
+    {
+      "id": "UX-PW-018",
+      "priority": "P0",
+      "owner": "workflow-ai-capability",
+      "status": "partial",
+      "expected": "AI capability 关闭时导航和 Command Bar 无空位、无错误入口",
+      "automation": [
+        "vitest:web/src/runner/WorkflowContextDock.test.tsx",
+        "vitest:web/src/runner/WorkflowAiTransportPanel.test.tsx"
+      ],
+      "blocker": "完整浏览器证据待归档"
+    }
+  ]
+}

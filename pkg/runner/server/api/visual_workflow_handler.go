@@ -196,6 +196,27 @@ func (h *visualWorkflowHandler) SubmitRun(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if req.Target != nil {
+		resp, err := h.svc.SubmitPublishedRun(r.Context(), *req.Target, req.Vars, req.TriggeredBy, req.IdempotencyKey, service.VisualWorkflowRunOptions{
+			RiskAcknowledged: req.RiskAcknowledged,
+		})
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		auditLog(r, "workflow.published.run.submit", resp.RunID, map[string]any{
+			"run_id":            resp.RunID,
+			"workflow_name":     resp.WorkflowName,
+			"workflow_key":      req.Target.WorkflowKey,
+			"resource_version":  req.Target.ResourceVersion,
+			"semantic_hash":     req.Target.SemanticHash,
+			"idempotency_key":   req.IdempotencyKey,
+			"triggered_by":      req.TriggeredBy,
+			"risk_acknowledged": req.RiskAcknowledged,
+		})
+		writeJSON(w, http.StatusAccepted, resp)
+		return
+	}
 	resp, err := h.svc.SubmitGraphRunWithOptions(r.Context(), req.Graph, req.Vars, req.TriggeredBy, req.IdempotencyKey, service.VisualWorkflowRunOptions{
 		RiskAcknowledged: req.RiskAcknowledged,
 		NodeID:           req.NodeID,
@@ -244,6 +265,7 @@ func (h *visualWorkflowHandler) ActionCatalog(w http.ResponseWriter, r *http.Req
 			"custom_actions":       true,
 			"risk_metadata":        true,
 			"examples":             true,
+			"allowed_actions":      h.svc.AllowedActions(),
 		},
 		"items": h.svc.ListActions(r.Context(), filter),
 	})
@@ -307,14 +329,15 @@ func (h *visualWorkflowHandler) RejectNode(w http.ResponseWriter, r *http.Reques
 }
 
 type graphRunRequest struct {
-	WorkflowName     string         `json:"workflow_name"`
-	Graph            visual.Graph   `json:"graph"`
-	Vars             map[string]any `json:"vars"`
-	TriggeredBy      string         `json:"triggered_by"`
-	IdempotencyKey   string         `json:"idempotency_key"`
-	RiskAcknowledged bool           `json:"risk_acknowledged"`
-	NodeID           string         `json:"node_id"`
-	RunScope         string         `json:"run_scope"`
+	WorkflowName     string                              `json:"workflow_name"`
+	Graph            visual.Graph                        `json:"graph"`
+	Target           *service.WorkflowPublishedRunTarget `json:"target,omitempty"`
+	Vars             map[string]any                      `json:"vars"`
+	TriggeredBy      string                              `json:"triggered_by"`
+	IdempotencyKey   string                              `json:"idempotency_key"`
+	RiskAcknowledged bool                                `json:"risk_acknowledged"`
+	NodeID           string                              `json:"node_id"`
+	RunScope         string                              `json:"run_scope"`
 }
 
 type debugNodeRequest struct {
@@ -403,7 +426,14 @@ func decodeGraphRunRequest(r *http.Request) (graphRunRequest, error) {
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return graphRunRequest{}, err
 	}
-	if isEmptyVisualGraph(req.Graph) {
+	hasGraph, hasTarget := !isEmptyVisualGraph(req.Graph), req.Target != nil
+	if hasGraph == hasTarget {
+		return graphRunRequest{}, fmt.Errorf("exactly one of graph or immutable published target is required")
+	}
+	if hasTarget && strings.TrimSpace(req.NodeID) != "" {
+		return graphRunRequest{}, fmt.Errorf("immutable published workflow runs cannot select a draft node")
+	}
+	if !hasGraph && !hasTarget {
 		return graphRunRequest{}, fmt.Errorf("graph is required")
 	}
 	return req, nil

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "U-publish",
+  "kind": "principal",
+  "data": {
+    "principal": {
+      "id": "user-publish",
+      "roles": [
+        "workflow.publisher"
+      ],
+      "permissions": [
+        "workflow.read",
+        "workflow.edit",
+        "workflow.publish"
+      ]
+    }
+  }
+}

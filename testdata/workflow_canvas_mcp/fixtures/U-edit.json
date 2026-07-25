@@ -1,0 +1,17 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "U-edit",
+  "kind": "principal",
+  "data": {
+    "principal": {
+      "id": "user-edit",
+      "roles": [
+        "workflow.editor"
+      ],
+      "permissions": [
+        "workflow.read",
+        "workflow.edit"
+      ]
+    }
+  }
+}

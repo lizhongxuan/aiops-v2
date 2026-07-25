@@ -12,13 +12,14 @@ import (
 
 // Case is the on-disk JSON format for one agent evaluation case.
 type Case struct {
-	ID                string     `json:"id"`
-	Category          string     `json:"category"`
-	RootCauseCategory string     `json:"rootCauseCategory,omitempty"`
-	Priority          string     `json:"priority,omitempty"`
-	Input             string     `json:"input"`
-	Expected          Expected   `json:"expected"`
-	ScoreRules        ScoreRules `json:"scoreRules,omitempty"`
+	ID                 string                     `json:"id"`
+	Category           string                     `json:"category"`
+	RootCauseCategory  string                     `json:"rootCauseCategory,omitempty"`
+	Priority           string                     `json:"priority,omitempty"`
+	Input              string                     `json:"input"`
+	Expected           Expected                   `json:"expected"`
+	ScoreRules         ScoreRules                 `json:"scoreRules,omitempty"`
+	WorkflowGeneration *WorkflowGenerationFixture `json:"workflowGeneration,omitempty"`
 }
 
 // ScoreRules configures case-level scoring behavior.
@@ -245,18 +246,188 @@ type ReportSummary struct {
 
 // Report is the JSON score report emitted by the runner.
 type Report struct {
-	RunID              string            `json:"runId"`
-	RunPhase           string            `json:"runPhase,omitempty"`
-	Agent              string            `json:"agent,omitempty"`
-	CasesDir           string            `json:"casesDir,omitempty"`
-	OutputDir          string            `json:"outputDir,omitempty"`
-	Repetitions        int               `json:"repetitions"`
-	Metadata           map[string]string `json:"metadata,omitempty"`
-	StartedAt          time.Time         `json:"startedAt"`
-	CompletedAt        time.Time         `json:"completedAt"`
-	Summary            ReportSummary     `json:"summary"`
-	Cases              []CaseScore       `json:"cases"`
-	BaselineComparison *ComparisonReport `json:"baselineComparison,omitempty"`
+	RunID              string                    `json:"runId"`
+	RunPhase           string                    `json:"runPhase,omitempty"`
+	Agent              string                    `json:"agent,omitempty"`
+	CasesDir           string                    `json:"casesDir,omitempty"`
+	OutputDir          string                    `json:"outputDir,omitempty"`
+	Repetitions        int                       `json:"repetitions"`
+	Metadata           map[string]string         `json:"metadata,omitempty"`
+	StartedAt          time.Time                 `json:"startedAt"`
+	CompletedAt        time.Time                 `json:"completedAt"`
+	Summary            ReportSummary             `json:"summary"`
+	Cases              []CaseScore               `json:"cases"`
+	BaselineComparison *ComparisonReport         `json:"baselineComparison,omitempty"`
+	WorkflowGeneration *WorkflowGenerationReport `json:"workflowGeneration,omitempty"`
+}
+
+type WorkflowGenerationFixture struct {
+	SchemaVersion         string                                 `json:"schemaVersion"`
+	RequiredNodeTypes     []string                               `json:"requiredNodeTypes,omitempty"`
+	AllowedNodeTypes      []string                               `json:"allowedNodeTypes,omitempty"`
+	RequiredActions       []string                               `json:"requiredActions,omitempty"`
+	AllowedActions        []string                               `json:"allowedActions,omitempty"`
+	ArgumentSchemas       map[string]WorkflowEvalArgumentSchema  `json:"argumentSchemas,omitempty"`
+	RequiredPorts         map[string]WorkflowEvalPortExpectation `json:"requiredPorts,omitempty"`
+	RequiredPaths         []string                               `json:"requiredPaths,omitempty"`
+	ForbiddenPaths        []string                               `json:"forbiddenPaths,omitempty"`
+	ForbiddenPlaceholders []string                               `json:"forbiddenPlaceholders,omitempty"`
+	Validation            WorkflowEvalValidationExpectation      `json:"validation"`
+	Risk                  WorkflowEvalRiskExpectation            `json:"risk"`
+	Invariants            []WorkflowEvalInvariant                `json:"invariants,omitempty"`
+	Budgets               WorkflowEvalBudgets                    `json:"budgets"`
+	RequireDeterministic  bool                                   `json:"requireDeterministic,omitempty"`
+	PerformanceFixture    string                                 `json:"performanceFixture,omitempty"`
+	RecordedAttempts      []WorkflowGenerationAttempt            `json:"recordedAttempts,omitempty"`
+}
+type WorkflowEvalArgumentSchema struct {
+	Required             []string          `json:"required,omitempty"`
+	Properties           map[string]string `json:"properties"`
+	AdditionalProperties bool              `json:"additionalProperties"`
+}
+type WorkflowEvalPortExpectation struct {
+	Inputs  []string `json:"inputs,omitempty"`
+	Outputs []string `json:"outputs,omitempty"`
+}
+type WorkflowEvalValidationExpectation struct {
+	FirstPreviewStatus string `json:"firstPreviewStatus"`
+	FinalStatus        string `json:"finalStatus"`
+	RateEligible       bool   `json:"rateEligible"`
+}
+type WorkflowEvalRiskExpectation struct {
+	Level            string `json:"level"`
+	RequiresApproval bool   `json:"requiresApproval"`
+	MustBeGranted    bool   `json:"mustBeGranted,omitempty"`
+}
+type WorkflowEvalInvariant struct {
+	Kind       string   `json:"kind"`
+	Path       string   `json:"path,omitempty"`
+	Name       string   `json:"name,omitempty"`
+	Source     string   `json:"source,omitempty"`
+	SourcePort string   `json:"sourcePort,omitempty"`
+	Target     string   `json:"target,omitempty"`
+	TargetPort string   `json:"targetPort,omitempty"`
+	NodeIDs    []string `json:"nodeIds,omitempty"`
+}
+type WorkflowEvalBudgets struct {
+	MaxRepairCount     int   `json:"maxRepairCount"`
+	MaxFirstFeedbackMS int64 `json:"maxFirstFeedbackMs"`
+	MaxPreviewP95MS    int64 `json:"maxPreviewP95Ms"`
+	MaxValidateP95MS   int64 `json:"maxValidateP95Ms"`
+	MaxInputTokens     int   `json:"maxInputTokens"`
+	MaxContextTokens   int   `json:"maxContextTokens"`
+}
+type WorkflowGenerationAttempt struct {
+	SchemaVersion string                `json:"schemaVersion"`
+	PlanHash      string                `json:"planHash,omitempty"`
+	CompileHash   string                `json:"compileHash,omitempty"`
+	Baseline      *WorkflowEvalSnapshot `json:"baseline,omitempty"`
+	FirstPreview  WorkflowEvalSnapshot  `json:"firstPreview"`
+	Final         WorkflowEvalSnapshot  `json:"final"`
+	Metrics       WorkflowEvalMetrics   `json:"metrics"`
+	SemanticFacts map[string]bool       `json:"semanticFacts,omitempty"`
+	TextContent   []string              `json:"textContent,omitempty"`
+}
+type WorkflowEvalSnapshot struct {
+	Graph      WorkflowEvalGraph      `json:"graph"`
+	Validation WorkflowEvalValidation `json:"validation"`
+	Risk       string                 `json:"risk"`
+	Approval   WorkflowEvalApproval   `json:"approval"`
+}
+type WorkflowEvalGraph struct {
+	Nodes []WorkflowEvalNode `json:"nodes"`
+	Edges []WorkflowEvalEdge `json:"edges"`
+}
+type WorkflowEvalNode struct {
+	ID          string             `json:"id"`
+	Type        string             `json:"type"`
+	Label       string             `json:"label,omitempty"`
+	Action      string             `json:"action,omitempty"`
+	Args        map[string]any     `json:"args,omitempty"`
+	InputPorts  []string           `json:"inputPorts,omitempty"`
+	OutputPorts []string           `json:"outputPorts,omitempty"`
+	Position    map[string]float64 `json:"position,omitempty"`
+	Reference   string             `json:"reference,omitempty"`
+	Pinned      bool               `json:"pinned,omitempty"`
+}
+type WorkflowEvalEdge struct {
+	ID         string `json:"id"`
+	Source     string `json:"source"`
+	SourcePort string `json:"sourcePort,omitempty"`
+	Target     string `json:"target"`
+	TargetPort string `json:"targetPort,omitempty"`
+}
+type WorkflowEvalValidation struct {
+	Status      string   `json:"status"`
+	Valid       bool     `json:"valid"`
+	Diagnostics []string `json:"diagnostics,omitempty"`
+}
+type WorkflowEvalApproval struct {
+	Required bool `json:"required"`
+	Granted  bool `json:"granted"`
+}
+type WorkflowEvalMetrics struct {
+	FirstFeedbackMS int64 `json:"firstFeedbackMs"`
+	PreviewMS       int64 `json:"previewMs"`
+	ValidateMS      int64 `json:"validateMs"`
+	RepairCount     int   `json:"repairCount"`
+	InputTokens     int   `json:"inputTokens"`
+	OutputTokens    int   `json:"outputTokens"`
+	ContextTokens   int   `json:"contextTokens"`
+}
+type WorkflowGenerationCaseScore struct {
+	CaseID            string                      `json:"caseId"`
+	Passed            bool                        `json:"passed"`
+	MeanScore         float64                     `json:"meanScore"`
+	ScoreVariance     float64                     `json:"scoreVariance"`
+	AttemptScores     []float64                   `json:"attemptScores"`
+	Checks            []CheckResult               `json:"checks"`
+	PlaceholderCount  int                         `json:"placeholderCount"`
+	FirstPreviewValid int                         `json:"firstPreviewValid"`
+	FinalValid        int                         `json:"finalValid"`
+	RateEligible      int                         `json:"rateEligible"`
+	FailedIterations  []int                       `json:"failedIterations,omitempty"`
+	Attempts          []WorkflowGenerationAttempt `json:"-"`
+}
+type WorkflowGenerationMetrics struct {
+	MeanScore                float64 `json:"meanScore"`
+	ScoreVariance            float64 `json:"scoreVariance"`
+	FirstPreviewValidRate    float64 `json:"firstPreviewValidRate"`
+	FinalValidRate           float64 `json:"finalValidRate"`
+	PlaceholderCount         int     `json:"placeholderCount"`
+	PreviewP95MS             int64   `json:"previewP95Ms"`
+	ValidateP95MS            int64   `json:"validateP95Ms"`
+	FirstFeedbackP95MS       int64   `json:"firstFeedbackP95Ms"`
+	MaxRepairCount           int     `json:"maxRepairCount"`
+	MeanInputTokens          float64 `json:"meanInputTokens"`
+	MeanOutputTokens         float64 `json:"meanOutputTokens"`
+	MeanContextTokens        float64 `json:"meanContextTokens"`
+	GraphCopiesInTextContent int     `json:"graphCopiesInTextContent"`
+}
+type WorkflowGenerationGate struct {
+	Passed                     bool     `json:"passed"`
+	FinalValidThreshold        float64  `json:"finalValidThreshold"`
+	FirstPreviewValidThreshold float64  `json:"firstPreviewValidThreshold"`
+	PlaceholderThreshold       int      `json:"placeholderThreshold"`
+	Failures                   []string `json:"failures,omitempty"`
+}
+type WorkflowGenerationFailureSample struct {
+	CaseID       string   `json:"caseId"`
+	Iteration    int      `json:"iteration"`
+	FailedChecks []string `json:"failedChecks"`
+}
+type WorkflowGenerationReport struct {
+	SchemaVersion  string                            `json:"schemaVersion"`
+	Mode           string                            `json:"mode"`
+	Repetitions    int                               `json:"repetitions"`
+	Gate           WorkflowGenerationGate            `json:"gate"`
+	Metrics        WorkflowGenerationMetrics         `json:"metrics"`
+	Cases          []WorkflowGenerationCaseScore     `json:"cases"`
+	FailureSamples []WorkflowGenerationFailureSample `json:"failureSamples,omitempty"`
+}
+type WorkflowGenerationScoreOptions struct {
+	Mode    string
+	Secrets []string
 }
 
 // ComparisonCase captures baseline-vs-current movement for one case.

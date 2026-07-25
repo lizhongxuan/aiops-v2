@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W5",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W5",
+      "name": "connector-configuration-required",
+      "configurationState": "configuration_required",
+      "secretRefs": [],
+      "nodes": [
+        {
+          "id": "connector",
+          "type": "action",
+          "actionRef": "fixture.cloud-connector",
+          "args": {
+            "secretRef": null
+          }
+        }
+      ]
+    }
+  }
+}

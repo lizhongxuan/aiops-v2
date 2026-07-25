@@ -1,0 +1,61 @@
+{
+  "id": "GEN-003",
+  "category": "workflow_generation",
+  "priority": "P1",
+  "input": "Run two read-only inspections in parallel, join after both complete, then end.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "parallel", "action", "join", "end"],
+    "requiredActions": ["service.inspect"],
+    "allowedActions": ["service.inspect"],
+    "argumentSchemas": {
+      "service.inspect": { "required": ["serviceRef"], "properties": { "serviceRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": {
+      "parallel": { "inputs": ["in"], "outputs": ["left", "right"] },
+      "join": { "inputs": ["left", "right"], "outputs": ["next"] }
+    },
+    "requiredPaths": ["/graph/nodes/*/id", "/graph/edges/*/sourcePort"],
+    "forbiddenPaths": ["/graph/nodes/*/args/password"],
+    "forbiddenPlaceholders": ["script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "fact", "name": "join_waits_for_all" },
+      { "kind": "edge", "source": "join", "sourcePort": "next", "target": "end", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "parallel", "type": "parallel", "inputPorts": ["in"], "outputPorts": ["left", "right"] },
+            { "id": "inspect-left", "type": "action", "action": "service.inspect", "args": { "serviceRef": "service://left" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+            { "id": "inspect-right", "type": "action", "action": "service.inspect", "args": { "serviceRef": "service://right" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+            { "id": "join", "type": "join", "inputPorts": ["left", "right"], "outputPorts": ["next"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "parallel", "targetPort": "in" },
+            { "id": "e2", "source": "parallel", "sourcePort": "left", "target": "inspect-left", "targetPort": "in" },
+            { "id": "e3", "source": "parallel", "sourcePort": "right", "target": "inspect-right", "targetPort": "in" },
+            { "id": "e4", "source": "inspect-left", "sourcePort": "success", "target": "join", "targetPort": "left" },
+            { "id": "e5", "source": "inspect-right", "sourcePort": "success", "target": "join", "targetPort": "right" },
+            { "id": "e6", "source": "join", "sourcePort": "next", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 64, "previewMs": 92, "validateMs": 28, "repairCount": 0, "inputTokens": 1100, "outputTokens": 840, "contextTokens": 1940 },
+      "semanticFacts": { "join_waits_for_all": true }
+    }]
+  }
+}

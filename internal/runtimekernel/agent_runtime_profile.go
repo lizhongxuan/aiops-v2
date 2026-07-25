@@ -166,23 +166,18 @@ func WorkflowAgentRuntimeProfile() AgentRuntimeProfile {
 	profile.Profile = RuntimePromptProfileWorkflowAgent
 	profile.AgentKind = "workflow_planner"
 	profile.SessionType = SessionTypeWorkspace
-	profile.Mode = ModePlan
+	profile.Mode = ModeExecute
 	profile.AllowedActions = []string{
-		"create_workflow_from_requirement",
-		"inspect_workflow",
-		"inspect_workflow_step",
-		"inspect_action_catalog",
-		"create_workflow_edit_plan",
-		"propose_workflow_patch",
-		"validate_workflow_patch",
-		"preview_workflow_patch",
-		"describe_workflow_after_patch",
-		"detect_noop_or_duplicate_patch",
-		"apply_confirmed_workflow_patch",
-		"undo_last_ai_patch",
-		"save_workflow_draft",
-		"propose_ops_manual_candidate",
-		"propose_ops_manual_update",
+		"read_frozen_workflow_context",
+		"search_action_catalog",
+		"produce_typed_plan_ir",
+		"compile_workflow_plan",
+		"preview_workflow_candidate",
+		"validate_workflow_candidate",
+		"repair_diagnostic_plan_paths_within_budget",
+		"apply_reviewed_workflow_candidate",
+		"ask_required_clarification",
+		"report_capability_gap",
 	}
 	profile.ForbiddenActions = []string{
 		"publish_workflow",
@@ -196,6 +191,10 @@ func WorkflowAgentRuntimeProfile() AgentRuntimeProfile {
 		"bypass_workflow_review",
 		"mark_ops_manual_verified",
 		"ordinary_chat_add_workflow",
+		"invent_action_or_placeholder",
+		"start_secondary_model_lifecycle",
+		"exceed_workflow_repair_budget",
+		"continue_workflow_mutation_after_cancel",
 	}
 	return profile
 }

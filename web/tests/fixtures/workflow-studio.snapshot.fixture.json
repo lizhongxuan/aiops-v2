@@ -1,0 +1,89 @@
+{
+  "schemaVersion": "aiops.workflow-studio.snapshot-fixture/v1",
+  "workflow": {
+    "name": "capacity-inspection",
+    "title": "主机容量巡检",
+    "status": "draft",
+    "version": "rev-snapshot-1",
+    "updated_at": "2026-07-21T08:00:00Z",
+    "validation_result": {
+      "valid": true,
+      "errors": [],
+      "warnings": []
+    },
+    "graph": {
+      "version": "v1",
+      "workflow": {
+        "name": "capacity-inspection",
+        "title": "主机容量巡检",
+        "inventory": {
+          "groups": {
+            "production": {
+              "hosts": ["host-01", "host-02"]
+            }
+          }
+        }
+      },
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start",
+          "label": "Start",
+          "position": { "x": 80, "y": 180 },
+          "ports": [{ "id": "next", "type": "output", "label": "下一步" }],
+          "ui": {
+            "host_groups": [{ "label": "production", "hosts": ["host-01", "host-02"] }]
+          }
+        },
+        {
+          "id": "check-capacity",
+          "type": "action",
+          "label": "检查磁盘容量",
+          "position": { "x": 380, "y": 180 },
+          "ports": [
+            { "id": "in", "type": "input" },
+            { "id": "next", "type": "output", "label": "下一步" }
+          ],
+          "step": {
+            "name": "检查磁盘容量",
+            "action": "script.python",
+            "targets": ["production"],
+            "args": { "script": "print({'free_percent': 42})" }
+          },
+          "inputs": [{ "key": "threshold", "value_source": { "type": "literal", "value": 20 } }],
+          "outputs": [{ "key": "free_percent", "type": "number" }]
+        },
+        {
+          "id": "capacity-ok",
+          "type": "condition",
+          "label": "容量是否充足",
+          "position": { "x": 680, "y": 180 },
+          "ports": [
+            { "id": "in", "type": "input" },
+            { "id": "if", "type": "output", "label": "IF" },
+            { "id": "else", "type": "output", "label": "ELSE" }
+          ],
+          "condition": { "if": "{{steps.check-capacity.outputs.free_percent}} > 20", "else": true },
+          "step": { "name": "容量是否充足", "action": "condition.evaluate" }
+        },
+        {
+          "id": "end",
+          "type": "end",
+          "label": "End",
+          "position": { "x": 980, "y": 180 },
+          "ports": [{ "id": "in", "type": "input" }],
+          "ui": {}
+        }
+      ],
+      "edges": [
+        { "id": "start-check", "source": "start", "source_port": "next", "target": "check-capacity", "target_port": "in", "kind": "next" },
+        { "id": "check-condition", "source": "check-capacity", "source_port": "next", "target": "capacity-ok", "target_port": "in", "kind": "next" },
+        { "id": "condition-end", "source": "capacity-ok", "source_port": "if", "target": "end", "target_port": "in", "kind": "if" }
+      ]
+    }
+  },
+  "actions": [
+    { "action": "script.python", "label": "Python Script", "category": "script", "description": "运行 Python 脚本" },
+    { "action": "condition.evaluate", "label": "Condition", "category": "control", "description": "条件分支" }
+  ]
+}

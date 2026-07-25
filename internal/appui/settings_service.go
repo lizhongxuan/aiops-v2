@@ -179,7 +179,7 @@ func runtimeSettingsPayload(settings store.RuntimeSettings) RuntimeSettingsPaylo
 	return RuntimeSettingsPayload{
 		Settings:            settings,
 		Defaults:            store.DefaultRuntimeSettings(),
-		RestartRequiredKeys: []string{},
+		RestartRequiredKeys: []string{"workflow.rollout"},
 		UpdatedAt:           updatedAt,
 	}
 }
@@ -220,6 +220,11 @@ func mergeRuntimeSettingsUpdate(base store.RuntimeSettings, update RuntimeSettin
 		}
 		if update.Workflow.ValidationImage != nil {
 			next.Workflow.ValidationImage = strings.TrimSpace(*update.Workflow.ValidationImage)
+		}
+		if update.Workflow.Rollout != nil {
+			next.Workflow.Rollout = *update.Workflow.Rollout
+			next.Workflow.Rollout.AllowTenants = append([]string{}, update.Workflow.Rollout.AllowTenants...)
+			next.Workflow.Rollout.DenyTenants = append([]string{}, update.Workflow.Rollout.DenyTenants...)
 		}
 	}
 	if update.OpsManual != nil && update.OpsManual.AutoRetrieval != nil {

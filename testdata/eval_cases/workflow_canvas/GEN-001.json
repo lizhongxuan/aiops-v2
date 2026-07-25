@@ -1,0 +1,53 @@
+{
+  "id": "GEN-001",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Create a three-step workflow that inspects a host and then ends.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["host.inspect"],
+    "allowedActions": ["host.inspect"],
+    "argumentSchemas": {
+      "host.inspect": { "required": ["targetRef"], "properties": { "targetRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": {
+      "inspect": { "inputs": ["in"], "outputs": ["success"] }
+    },
+    "requiredPaths": ["/graph/nodes/*/id", "/graph/edges/*/sourcePort"],
+    "forbiddenPaths": ["/graph/nodes/*/args/password"],
+    "forbiddenPlaceholders": ["script.python", "<todo>"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "edge", "source": "inspect", "sourcePort": "success", "target": "end", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "planHash": "gen001-plan-v1",
+      "compileHash": "gen001-compile-v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "inspect", "type": "action", "action": "host.inspect", "args": { "targetRef": "host://selected" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "inspect", "targetPort": "in" },
+            { "id": "e2", "source": "inspect", "sourcePort": "success", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 45, "previewMs": 70, "validateMs": 18, "repairCount": 0, "inputTokens": 820, "outputTokens": 510, "contextTokens": 1330 }
+    }]
+  }
+}

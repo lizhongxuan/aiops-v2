@@ -1,0 +1,21 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W3",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W3",
+      "name": "complex-control-flow",
+      "features": [
+        "parallel",
+        "join",
+        "loop",
+        "approval",
+        "subflow",
+        "verified-reference"
+      ],
+      "nodeCount": 14,
+      "edgeCount": 18
+    }
+  }
+}

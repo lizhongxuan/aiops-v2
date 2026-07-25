@@ -20,7 +20,7 @@ import (
 )
 
 func TestVisualWorkflowRoutesCompileAndCatalog(t *testing.T) {
-	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{AllowedActions: []string{"script.python", "script.shell", "script.python"}})
 	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
 
 	body := map[string]any{"graph": sampleAPIGraph()}
@@ -50,6 +50,10 @@ func TestVisualWorkflowRoutesCompileAndCatalog(t *testing.T) {
 	}
 	if catalog.Version != "v1" || catalog.Capabilities["schema"] != "json_schema" {
 		t.Fatalf("catalog metadata mismatch: version=%q capabilities=%+v", catalog.Version, catalog.Capabilities)
+	}
+	allowed, ok := catalog.Capabilities["allowed_actions"].([]any)
+	if !ok || len(allowed) != 2 || allowed[0] != "script.python" || allowed[1] != "script.shell" {
+		t.Fatalf("catalog allowed_actions must expose the normalized runtime policy: %+v", catalog.Capabilities)
 	}
 	if !apiCatalogHasAction(catalog.Items, "script.shell") {
 		t.Fatalf("catalog filter mismatch: %+v", catalog.Items)
@@ -121,7 +125,7 @@ func TestVisualWorkflowActionCatalogReturnsStructuredIOSchema(t *testing.T) {
 	}
 }
 
-func TestVisualWorkflowAIDraftRouteGeneratesHostResourceWorkflow(t *testing.T) {
+func TestVisualWorkflowAIDraftRouteRejectsRetiredTemplateGeneration(t *testing.T) {
 	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{})
 	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
 
@@ -137,36 +141,14 @@ func TestVisualWorkflowAIDraftRouteGeneratesHostResourceWorkflow(t *testing.T) {
 			},
 		},
 	})
-	if code != http.StatusOK {
-		t.Fatalf("ai draft status = %d payload=%s", code, payload)
+	if code != http.StatusBadRequest {
+		t.Fatalf("retired ai draft status = %d, want 400 payload=%s", code, payload)
 	}
-	var response struct {
-		GraphPatch struct {
-			Operations []map[string]any `json:"operations"`
-		} `json:"graph_patch"`
-		CandidateGraph visual.Graph   `json:"candidate_graph"`
-		DiffSummary    map[string]any `json:"diff_summary"`
+	if !bytes.Contains(payload, []byte("AssistantTransport")) || !bytes.Contains(payload, []byte("action catalog")) {
+		t.Fatalf("payload = %s, want migration guidance without a locally generated candidate", payload)
 	}
-	if err := json.Unmarshal(payload, &response); err != nil {
-		t.Fatalf("decode ai draft response: %v", err)
-	}
-	if len(response.GraphPatch.Operations) == 0 {
-		t.Fatalf("graph patch should describe generated operations: %+v", response)
-	}
-	if response.CandidateGraph.Workflow.Name != "host-resource-check" {
-		t.Fatalf("workflow name = %q", response.CandidateGraph.Workflow.Name)
-	}
-	if len(response.CandidateGraph.Nodes) < 3 || len(response.CandidateGraph.Edges) < 2 {
-		t.Fatalf("candidate graph too small: nodes=%d edges=%d", len(response.CandidateGraph.Nodes), len(response.CandidateGraph.Edges))
-	}
-	if !graphHasAction(response.CandidateGraph, "script.shell") {
-		t.Fatalf("candidate graph should include script.shell resource check node: %+v", response.CandidateGraph.Nodes)
-	}
-	if err := visual.ValidateGraph(response.CandidateGraph); err != nil {
-		t.Fatalf("candidate graph should be valid for save/apply: %v", err)
-	}
-	if response.DiffSummary["semantic_changes"] == nil {
-		t.Fatalf("diff summary should include semantic changes: %+v", response.DiffSummary)
+	if bytes.Contains(payload, []byte("candidate_graph")) || bytes.Contains(payload, []byte("graph_patch")) {
+		t.Fatalf("retired endpoint must not fabricate a candidate: %s", payload)
 	}
 }
 
@@ -632,6 +614,109 @@ func TestVisualWorkflowRouteSubmitRequiresRiskAcknowledgement(t *testing.T) {
 	})
 	if code != http.StatusAccepted {
 		t.Fatalf("acknowledged high-risk submit status = %d payload=%s", code, payload)
+	}
+}
+
+func TestVisualWorkflowPublishedRunTargetFailsClosedWithoutImmutableStore(t *testing.T) {
+	runSvc := service.NewRunService(service.RunServiceConfig{MaxConcurrentRuns: 1}, nil, nil, state.NewInMemoryRunStore(), queue.NewMemoryQueue(4), events.NewHub(), metrics.NewCollector())
+	defer runSvc.Close()
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{RunService: runSvc})
+	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
+
+	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows/graph/runs", map[string]any{
+		"target": map[string]any{
+			"workflowKey":     map[string]any{"tenantId": service.VisualWorkflowDefaultTenantID, "workflowId": "api-graph"},
+			"resourceVersion": "sha256:immutable-revision",
+			"semanticHash":    "sha256:immutable-semantic",
+		},
+		"triggered_by": "sre",
+	})
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("published target without immutable store status = %d, want 503 payload=%s", code, payload)
+	}
+}
+
+func TestVisualWorkflowPublishedRunRejectsClientGraph(t *testing.T) {
+	runSvc := service.NewRunService(service.RunServiceConfig{MaxConcurrentRuns: 1}, nil, nil, state.NewInMemoryRunStore(), queue.NewMemoryQueue(4), events.NewHub(), metrics.NewCollector())
+	defer runSvc.Close()
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{RunService: runSvc})
+	router := NewRouter(RouterOptions{VisualWorkflow: NewVisualWorkflowHandler(svc)})
+
+	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows/graph/runs", map[string]any{
+		"target": map[string]any{
+			"workflowKey":     map[string]any{"tenantId": service.VisualWorkflowDefaultTenantID, "workflowId": "api-graph"},
+			"resourceVersion": "sha256:immutable-revision",
+			"semanticHash":    "sha256:immutable-semantic",
+		},
+		"graph": sampleAPIGraph(),
+	})
+	if code != http.StatusBadRequest {
+		t.Fatalf("published target with client graph status = %d, want 400 payload=%s", code, payload)
+	}
+}
+
+func TestVisualWorkflowPublishedRunExecutesImmutableRevisionInsteadOfCurrentDraft(t *testing.T) {
+	workflowSvc := service.NewWorkflowService(t.TempDir())
+	runSvc := service.NewRunService(service.RunServiceConfig{MaxConcurrentRuns: 1}, nil, nil, state.NewInMemoryRunStore(), queue.NewMemoryQueue(4), events.NewHub(), metrics.NewCollector())
+	defer runSvc.Close()
+	svc := service.NewVisualWorkflowService(service.VisualWorkflowServiceConfig{WorkflowService: workflowSvc, RunService: runSvc})
+	router := NewRouter(RouterOptions{Workflow: NewWorkflowHandler(workflowSvc), VisualWorkflow: NewVisualWorkflowHandler(svc)})
+
+	graph := sampleAPIGraph()
+	if _, err := svc.CreateGraph(t.Context(), graph, service.VisualWorkflowCreateOptions{}); err != nil {
+		t.Fatalf("create graph: %v", err)
+	}
+	if _, err := workflowSvc.ValidateWorkflow(t.Context(), graph.Workflow.Name, service.WorkflowValidateOptions{Actor: "sre"}); err != nil {
+		t.Fatalf("validate graph: %v", err)
+	}
+	current, err := svc.GetGraph(t.Context(), graph.Workflow.Name)
+	if err != nil {
+		t.Fatalf("get validated graph: %v", err)
+	}
+	if _, err := svc.DryRunWithOptions(t.Context(), current, nil, service.VisualWorkflowDryRunOptions{WorkflowName: graph.Workflow.Name, TriggeredBy: "sre"}); err != nil {
+		t.Fatalf("dry-run graph: %v", err)
+	}
+	published, err := workflowSvc.Publish(t.Context(), graph.Workflow.Name, service.WorkflowPublishOptions{})
+	if err != nil {
+		t.Fatalf("publish graph: %v", err)
+	}
+	publishedGraph, err := svc.GetGraph(t.Context(), graph.Workflow.Name)
+	if err != nil {
+		t.Fatalf("get published graph: %v", err)
+	}
+	publishedResourceVersion, _ := publishedGraph.UI["resource_version"].(string)
+	if publishedResourceVersion == "" || published.PublishedGraphHash == "" {
+		t.Fatalf("published identity is incomplete: resource=%q semantic=%q", publishedResourceVersion, published.PublishedGraphHash)
+	}
+
+	draft := publishedGraph
+	draft.Nodes[1].Step.Args["name"] = "draft-only.invalid"
+	if _, err := svc.SaveGraph(t.Context(), graph.Workflow.Name, draft); err != nil {
+		t.Fatalf("save newer draft: %v", err)
+	}
+
+	code, payload := serveJSON(t, router, http.MethodPost, "/api/v1/workflows/graph/runs", map[string]any{
+		"target": map[string]any{
+			"workflowKey":     map[string]any{"tenantId": service.VisualWorkflowDefaultTenantID, "workflowId": graph.Workflow.Name},
+			"resourceVersion": publishedResourceVersion,
+			"semanticHash":    published.PublishedGraphHash,
+		},
+		"idempotency_key": "published-run-1",
+		"triggered_by":    "sre",
+	})
+	if code != http.StatusAccepted {
+		t.Fatalf("published run status = %d payload=%s", code, payload)
+	}
+	var submitted service.RunResponse
+	if err := json.Unmarshal(payload, &submitted); err != nil {
+		t.Fatalf("decode published run: %v", err)
+	}
+	executed, err := svc.GetRunGraph(t.Context(), submitted.RunID)
+	if err != nil {
+		t.Fatalf("get submitted published graph: %v", err)
+	}
+	if got := executed.Nodes[1].Step.Args["name"]; got != "localhost" {
+		t.Fatalf("published run executed argument = %v, want immutable published value localhost", got)
 	}
 }
 

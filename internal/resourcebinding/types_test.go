@@ -20,6 +20,7 @@ func TestResourceRefIdentityHashStableAcrossDisplayName(t *testing.T) {
 func TestResourceRefNormalizesCommonTypes(t *testing.T) {
 	tests := []ResourceRef{
 		{Type: ResourceTypeHost, ID: "host-a"},
+		{Type: ResourceTypeWorkflow, ID: "workflow-a"},
 		{Type: ResourceTypeService, ID: "svc-a"},
 		{Type: ResourceTypeDatabase, ID: "db-a"},
 		{Type: ResourceTypeIncident, ID: "inc-a"},

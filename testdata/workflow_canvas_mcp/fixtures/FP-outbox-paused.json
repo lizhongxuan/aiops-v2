@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-outbox-paused",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "outbox-paused",
+      "stage": "outbox_publish",
+      "action": "pause"
+    }
+  }
+}

@@ -73,6 +73,63 @@ describe("canvasGraphAdapter", () => {
     expect(graph.nodes).toHaveLength(2);
   });
 
+  it("atomically inserts a free-placement catalog node before the unique terminal edge", () => {
+    const source = {
+      version: "v1",
+      workflow: { name: "terminal-insert" },
+      nodes: [
+        { id: "start", type: "start", position: { x: 0, y: 0 } },
+        { id: "check", type: "action", position: { x: 260, y: 0 }, step: { action: "cmd.run" } },
+        { id: "end", type: "end", position: { x: 780, y: 0 } },
+      ],
+      edges: [
+        { id: "start-check", source: "start", target: "check", kind: "next" },
+        { id: "check-end", source: "check", target: "end", kind: "next", source_port: "next", target_port: "in" },
+      ],
+    };
+
+    const next = addCatalogActionNode(
+      source,
+      { action: "notify.send", label: "Notify" },
+      { x: 520, y: 0 },
+      { preservePosition: true, requireSafeInsertion: true },
+    );
+
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "check", "end", "notify-send"]);
+    expect(next.edges).toEqual([
+      source.edges[0],
+      expect.objectContaining({ source: "check", target: "notify-send", kind: "next" }),
+      expect.objectContaining({ source: "notify-send", target: "end", kind: "next" }),
+    ]);
+    expect(next.edges.some((edge) => edge.id === "check-end")).toBe(false);
+    expect(source.nodes).toHaveLength(3);
+    expect(source.edges).toHaveLength(2);
+  });
+
+  it("fails closed when free placement cannot identify one safe terminal edge", () => {
+    const source = {
+      workflow: { name: "ambiguous-terminal" },
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "left", type: "action" },
+        { id: "right", type: "action" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { id: "left-end", source: "left", target: "end", kind: "next" },
+        { id: "right-end", source: "right", target: "end", kind: "next" },
+      ],
+    };
+
+    expect(() => addCatalogActionNode(
+      source,
+      { action: "notify.send", label: "Notify" },
+      { x: 520, y: 0 },
+      { requireSafeInsertion: true },
+    )).toThrow("唯一");
+    expect(source.nodes.map((node) => node.id)).toEqual(["start", "left", "right", "end"]);
+  });
+
   it("hides terminal end nodes from the flow canvas while preserving the backend graph", () => {
     const flow = graphToFlowModel({
       version: "v1",
@@ -233,6 +290,31 @@ describe("canvasGraphAdapter", () => {
     expect(removeGraphNode(source, "start")).toBe(source);
   });
 
+  it("bridges a simple chain when deleting its middle action node", () => {
+    const source = {
+      workflow: { name: "delete-chain" },
+      nodes: [
+        { id: "start", type: "start" },
+        { id: "probe", type: "action" },
+        { id: "verify", type: "action" },
+        { id: "end", type: "end" },
+      ],
+      edges: [
+        { id: "start-probe", source: "start", target: "probe", kind: "next", source_port: "next", target_port: "in" },
+        { id: "probe-verify", source: "probe", target: "verify", kind: "next", source_port: "next", target_port: "in" },
+        { id: "verify-end", source: "verify", target: "end", kind: "next" },
+      ],
+    };
+
+    const next = removeGraphNode(source, "probe", { bridgeSimpleChain: true });
+
+    expect(next.nodes.map((node) => node.id)).toEqual(["start", "verify", "end"]);
+    expect(next.edges).toEqual([
+      source.edges[2],
+      expect.objectContaining({ source: "start", target: "verify", kind: "next", source_port: "next", target_port: "in" }),
+    ]);
+  });
+
   it("converts backend graph into flow canvas nodes and semantic handles", () => {
     const flow = graphToFlowModel(graph, { selectedNodeId: "start" });
 
@@ -359,7 +441,6 @@ describe("canvasGraphAdapter", () => {
         source: "start",
         target: "notify-send",
         kind: "next",
-        source_port: "next",
         target_port: "in",
       }),
       expect.objectContaining({
@@ -367,9 +448,12 @@ describe("canvasGraphAdapter", () => {
         target: "pre-check",
         kind: "next",
         source_port: "next",
-        target_port: "in",
       }),
     ]));
+    const startToInserted = next.edges.find((edge) => edge.source === "start" && edge.target === "notify-send");
+    const insertedToTarget = next.edges.find((edge) => edge.source === "notify-send" && edge.target === "pre-check");
+    expect(startToInserted).not.toHaveProperty("source_port");
+    expect(insertedToTarget).not.toHaveProperty("target_port");
     expect(graph.edges).toHaveLength(1);
   });
 

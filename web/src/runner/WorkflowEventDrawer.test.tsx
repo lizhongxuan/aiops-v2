@@ -38,6 +38,11 @@ describe("WorkflowEventDrawer", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0].textContent).toContain("新事件");
     expect(rows[1].textContent).toContain("旧事件");
+    expect(rows[0].textContent).toContain("工具执行 · 新增工作流步骤");
+    expect(rows[1].textContent).toContain("AI 助手 · AI 对话");
+    expect(container.textContent).not.toContain("workflow.graph.node.added");
+    expect(container.textContent).not.toContain("workflow.ai.chat");
+    expect(container.textContent).not.toContain("assistant");
 
     await act(async () => {
       Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("返回 AI"))?.click();

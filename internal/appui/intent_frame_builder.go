@@ -305,7 +305,8 @@ func intentRequestsHostRuntime(lower string, metadata map[string]any) bool {
 	if metadataBoolAny(metadata, "aiops.intent.hostRuntime") {
 		return true
 	}
-	if containsAnyIntentMarker(lower, "本机", "主机", "执行命令", "运行命令", "host", "runtime", "shell") {
+	if containsAnyIntentMarker(lower, "本机", "主机", "执行命令", "运行命令") ||
+		containsAnyASCIIIntentToken(lower, "host", "hostname", "runtime", "shell") {
 		return true
 	}
 	hasReadOperation := containsAnyIntentMarker(lower,
@@ -315,11 +316,15 @@ func intentRequestsHostRuntime(lower string, metadata map[string]any) bool {
 	if !hasReadOperation {
 		return false
 	}
-	return containsAnyIntentMarker(lower,
+	if containsAnyIntentMarker(lower,
 		"cpu", "处理器", "内存", "memory", "磁盘", "disk", "负载", "load",
 		"进程", "process", "端口", "port", "网络", "network", "系统状态",
-		"资源", "resource", "uptime", "top", "df", "free", "vm_stat", "lscpu",
-	)
+		"资源", "resource") {
+		return true
+	}
+	// Short command names must be complete tokens. Opaque resource versions and
+	// ids are valid user input and may contain byte pairs such as "df".
+	return containsAnyASCIIIntentToken(lower, "uptime", "top", "df", "free", "vm_stat", "lscpu")
 }
 
 func intentMentionsMutation(lower string) bool {
@@ -341,6 +346,34 @@ func containsAnyIntentMarker(text string, markers ...string) bool {
 		}
 	}
 	return false
+}
+
+func containsAnyASCIIIntentToken(text string, tokens ...string) bool {
+	for _, token := range tokens {
+		token = strings.ToLower(strings.TrimSpace(token))
+		if token == "" {
+			continue
+		}
+		for start := 0; start <= len(text)-len(token); {
+			index := strings.Index(text[start:], token)
+			if index < 0 {
+				break
+			}
+			index += start
+			beforeOK := index == 0 || !asciiIntentWordByte(text[index-1])
+			after := index + len(token)
+			afterOK := after == len(text) || !asciiIntentWordByte(text[after])
+			if beforeOK && afterOK {
+				return true
+			}
+			start = index + len(token)
+		}
+	}
+	return false
+}
+
+func asciiIntentWordByte(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= '0' && value <= '9' || value == '_'
 }
 
 func metadataIntentKind(metadata map[string]any) runtimecontract.IntentKind {

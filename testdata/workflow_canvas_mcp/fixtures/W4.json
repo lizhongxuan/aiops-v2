@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W4",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W4",
+      "name": "large-deterministic-graph"
+    },
+    "recipe": {
+      "kind": "seeded-dag",
+      "seed": 17,
+      "nodeCount": 500,
+      "edgeCount": 700,
+      "diagnosticCount": 20
+    }
+  }
+}

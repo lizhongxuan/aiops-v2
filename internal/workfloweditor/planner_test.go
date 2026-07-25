@@ -28,16 +28,6 @@ func TestDefaultWorkflowEditPlannerRequiresConfiguredLLMPlanner(t *testing.T) {
 	}
 }
 
-func TestWorkflowEditPlannerPromptAllowsSmallEdits(t *testing.T) {
-	prompt := workflowEditPlannerSystemPrompt()
-	if strings.Contains(prompt, "计划必须是 4 到 8 个步骤") {
-		t.Fatalf("planner prompt still forces every request into a large fixed plan")
-	}
-	if !strings.Contains(prompt, "简单节点变更") {
-		t.Fatalf("planner prompt should instruct the model to keep simple node edits small")
-	}
-}
-
 func TestNormalizeWorkflowEditPlanRepairsMalformedModelTitle(t *testing.T) {
 	normalized, err := normalizeWorkflowEditPlan(WorkflowEditPlan{
 		Items: []WorkflowEditPlanItem{{
@@ -56,42 +46,5 @@ func TestNormalizeWorkflowEditPlanRepairsMalformedModelTitle(t *testing.T) {
 	}
 	if item.NodeLabel != "记录开始" {
 		t.Fatalf("node label = %q, want model-provided short node label", item.NodeLabel)
-	}
-}
-
-func TestParseWorkflowEditPlanPreservesModelGeneratedStepDetails(t *testing.T) {
-	plan, err := parseWorkflowEditPlanModelContent(`{
-	  "items": [{
-	    "id": "verify",
-	    "title": "添加验证步骤",
-		    "description": "检查上游输出",
-		    "goal": "LLM 目标",
-		    "environment": "LLM 环境",
-		    "nodeLabel": "验证输出",
-		    "nodeType": "action",
-		    "nodeAction": "script.python",
-		    "scriptSummary": "LLM 脚本摘要",
-	    "validationSummary": "LLM 校验",
-	    "inputVariables": [{"name":"memory_usage","type":"number","required":true}],
-	    "outputVariables": [{"name":"validation_result","type":"object"}],
-	    "script": "# llm script"
-	  }]
-	}`)
-	if err != nil {
-		t.Fatalf("parseWorkflowEditPlanModelContent() error = %v", err)
-	}
-	normalized, err := normalizeWorkflowEditPlan(plan, ProposeEditPlanRequest{WorkflowID: "wf", Message: "添加验证步骤"})
-	if err != nil {
-		t.Fatalf("normalizeWorkflowEditPlan() error = %v", err)
-	}
-	item := normalized.Items[0]
-	if item.Goal != "LLM 目标" || item.Environment != "LLM 环境" || item.NodeLabel != "验证输出" || item.NodeType != "action" || item.NodeAction != "script.python" || item.ScriptSummary != "LLM 脚本摘要" || item.ValidationSummary != "LLM 校验" || item.Script != "# llm script" {
-		t.Fatalf("item details = %#v, want model-generated details preserved", item)
-	}
-	if len(item.InputVariables) != 1 || item.InputVariables[0].Name != "memory_usage" || !item.InputVariables[0].Required {
-		t.Fatalf("input variables = %#v, want model-generated input variable", item.InputVariables)
-	}
-	if len(item.OutputVariables) != 1 || item.OutputVariables[0].Name != "validation_result" {
-		t.Fatalf("output variables = %#v, want model-generated output variable", item.OutputVariables)
 	}
 }

@@ -12,7 +12,9 @@
     "test:watch": "vitest",
     "test:ui": "playwright test",
     "test:ui:snapshots": "playwright test react-shell-snapshot.spec.js --project=chromium",
-    "test:ui:snapshots:update": "playwright test react-shell-snapshot.spec.js --project=chromium --update-snapshots"
+    "test:ui:snapshots:update": "playwright test react-shell-snapshot.spec.js --project=chromium --update-snapshots",
+    "test:ui:workflow-snapshots": "playwright test workflow-studio.snapshot.spec.js --project=chromium",
+    "test:ui:workflow-snapshots:update": "playwright test workflow-studio.snapshot.spec.js --project=chromium --update-snapshots"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.11.5",
@@ -24,6 +26,7 @@
     "@xyflow/react": "^12.9.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "elkjs": "0.12.0",
     "highlight.js": "^11.11.1",
     "lucide-react": "^0.553.0",
     "markdown-it": "^14.1.1",
@@ -39,6 +42,7 @@
     "zustand": "^5.0.8"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@playwright/test": "^1.58.2",
     "@tailwindcss/vite": "^4.1.17",
     "@types/node": "^24.10.1",

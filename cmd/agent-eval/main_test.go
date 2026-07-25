@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"aiops-v2/internal/eval"
+	"aiops-v2/internal/modelrouter"
+	"github.com/cloudwego/eino/components/model"
+	"github.com/cloudwego/eino/schema"
 )
 
 func TestRunCLIExecutesMockEvalSavesBaselineAndPrintsSummary(t *testing.T) {
@@ -331,6 +334,336 @@ func TestRunCLIReturnsErrorForUnsupportedAgent(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unsupported agent "real"`) {
 		t.Fatalf("stderr missing unsupported-agent detail:\n%s", stderr.String())
+	}
+}
+
+func TestWorkflowLiveAttemptJSONSchemaDefinesExactStructuralTypes(t *testing.T) {
+	root := workflowLiveAttemptJSONSchema()
+	assertSchemaType(t, root, "object")
+	assertAdditionalProperties(t, root, false)
+	assertRequiredSchemaFields(t, root, "schemaVersion", "planHash", "compileHash", "firstPreview", "final", "metrics", "semanticFacts", "textContent")
+
+	rootProperties := schemaProperties(t, root)
+	if got := schemaString(t, schemaObject(t, rootProperties["schemaVersion"]), "const"); got != eval.WorkflowGenerationOutputSchemaVersion {
+		t.Fatalf("schemaVersion const = %q, want %q", got, eval.WorkflowGenerationOutputSchemaVersion)
+	}
+	final := schemaObject(t, rootProperties["final"])
+	assertAdditionalProperties(t, final, false)
+	assertRequiredSchemaFields(t, final, "graph", "validation", "risk", "approval")
+	finalProperties := schemaProperties(t, final)
+	assertSchemaType(t, schemaObject(t, finalProperties["risk"]), "string")
+
+	graph := schemaObject(t, finalProperties["graph"])
+	assertAdditionalProperties(t, graph, false)
+	graphProperties := schemaProperties(t, graph)
+	nodes := schemaObject(t, graphProperties["nodes"])
+	assertSchemaType(t, nodes, "array")
+	node := schemaObject(t, nodes["items"])
+	assertAdditionalProperties(t, node, false)
+	nodeProperties := schemaProperties(t, node)
+	assertSchemaType(t, schemaObject(t, nodeProperties["id"]), "string")
+	assertSchemaType(t, schemaObject(t, nodeProperties["type"]), "string")
+	if _, exists := nodeProperties["kind"]; exists {
+		t.Fatal("node schema unexpectedly permits legacy kind field")
+	}
+	args := schemaObject(t, nodeProperties["args"])
+	assertSchemaType(t, args, "object")
+	if allowed, ok := args["additionalProperties"].(bool); !ok || !allowed {
+		t.Fatalf("args.additionalProperties = %#v, want true for contract-defined Catalog keys", args["additionalProperties"])
+	}
+
+	validation := schemaObject(t, finalProperties["validation"])
+	assertAdditionalProperties(t, validation, false)
+	diagnostics := schemaObject(t, schemaProperties(t, validation)["diagnostics"])
+	assertSchemaType(t, diagnostics, "array")
+	assertSchemaType(t, schemaObject(t, diagnostics["items"]), "string")
+
+	metrics := schemaObject(t, rootProperties["metrics"])
+	assertAdditionalProperties(t, metrics, false)
+	for name, property := range schemaProperties(t, metrics) {
+		if got := schemaString(t, schemaObject(t, property), "type"); got != "integer" {
+			t.Fatalf("metrics.%s type = %q, want integer", name, got)
+		}
+	}
+	semanticFacts := schemaObject(t, rootProperties["semanticFacts"])
+	assertSchemaType(t, schemaObject(t, semanticFacts["additionalProperties"]), "boolean")
+}
+
+func TestBuildAgentInjectsWorkflowJSONSchemaResponseFormat(t *testing.T) {
+	t.Setenv("AIOPS_LIVE_MODEL_BASE_URL", "https://model.invalid/v1")
+	t.Setenv("AIOPS_LIVE_MODEL_API_KEY", "test-only-key")
+	t.Setenv("AIOPS_LIVE_MODEL_MODEL", "test-model")
+
+	var captured modelrouter.OpenAIConfig
+	agent, err := buildAgentWithLiveModelFactory(context.Background(), "live-model", eval.ServerAgentConfig{}, func(_ context.Context, config modelrouter.OpenAIConfig) (modelrouter.ChatModel, error) {
+		captured = config
+		return &capturingWorkflowLiveChatModel{response: validWorkflowLiveAttemptJSON(t)}, nil
+	})
+	if err != nil {
+		t.Fatalf("buildAgentWithLiveModelFactory() error = %v", err)
+	}
+	if _, ok := agent.(workflowLiveModelAgent); !ok {
+		t.Fatalf("agent type = %T, want workflowLiveModelAgent", agent)
+	}
+	if captured.Provider != "openai" || captured.MaxTokens != 64000 {
+		t.Fatalf("captured model config = provider %q maxTokens %d", captured.Provider, captured.MaxTokens)
+	}
+	responseFormat := schemaObject(t, captured.ExtraFields["response_format"])
+	if got := schemaString(t, responseFormat, "type"); got != "json_schema" {
+		t.Fatalf("response_format.type = %q, want json_schema", got)
+	}
+	jsonSchema := schemaObject(t, responseFormat["json_schema"])
+	if got := schemaString(t, jsonSchema, "name"); got != "workflow_generation_attempt" {
+		t.Fatalf("json_schema.name = %q, want workflow_generation_attempt", got)
+	}
+	if strict, ok := jsonSchema["strict"].(bool); !ok || strict {
+		t.Fatalf("json_schema.strict = %#v, want false for dynamic Catalog args", jsonSchema["strict"])
+	}
+	responseSchema := schemaObject(t, jsonSchema["schema"])
+	assertAdditionalProperties(t, responseSchema, false)
+	assertSchemaType(t, responseSchema, "object")
+}
+
+func TestWorkflowLiveModelAgentProvidesSchemaInEveryPrompt(t *testing.T) {
+	model := &capturingWorkflowLiveChatModel{response: validWorkflowLiveAttemptJSON(t)}
+	agent := workflowLiveModelAgent{model: model}
+	workflowFixture := &eval.WorkflowGenerationFixture{SchemaVersion: "fixture.v1"}
+
+	for _, caseID := range []string{"schema-request-1", "schema-request-2"} {
+		if _, err := agent.Run(context.Background(), eval.Case{ID: caseID, Input: "generate workflow", WorkflowGeneration: workflowFixture}); err != nil {
+			t.Fatalf("Run(%s) error = %v", caseID, err)
+		}
+	}
+	if len(model.requests) != 2 {
+		t.Fatalf("captured requests = %d, want 2", len(model.requests))
+	}
+	for index, request := range model.requests {
+		if len(request) != 2 || request[0].Role != schema.System {
+			t.Fatalf("request %d messages = %#v, want system + user", index, request)
+		}
+		prompt := request[0].Content
+		for _, required := range []string{
+			"OUTPUT JSON SCHEMA:",
+			`"nodes":{"items"`,
+			`"risk":{"description"`,
+			`"diagnostics":{"description"`,
+			`"additionalProperties":false`,
+		} {
+			if !strings.Contains(prompt, required) {
+				t.Fatalf("request %d prompt missing %q", index, required)
+			}
+		}
+	}
+}
+
+func TestDecodeWorkflowLiveAttemptRejectsWrongShapesAndUnknownFields(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   string
+	}{
+		{
+			name: "unknown node kind",
+			mutate: func(attempt map[string]any) {
+				nodes := liveAttemptNodes(t, attempt)
+				nodes[0]["kind"] = "start"
+			},
+			want: `unknown field "kind"`,
+		},
+		{
+			name: "nodes object",
+			mutate: func(attempt map[string]any) {
+				liveAttemptGraph(t, attempt)["nodes"] = map[string]any{"n1": map[string]any{"id": "n1", "type": "start"}}
+			},
+			want: "cannot unmarshal object",
+		},
+		{
+			name: "numeric node id",
+			mutate: func(attempt map[string]any) {
+				liveAttemptNodes(t, attempt)[0]["id"] = 1
+			},
+			want: "cannot unmarshal number",
+		},
+		{
+			name: "risk object",
+			mutate: func(attempt map[string]any) {
+				liveAttemptSnapshot(t, attempt)["risk"] = map[string]any{"level": "low"}
+			},
+			want: "cannot unmarshal object",
+		},
+		{
+			name: "diagnostics object",
+			mutate: func(attempt map[string]any) {
+				validation := schemaObject(t, liveAttemptSnapshot(t, attempt)["validation"])
+				validation["diagnostics"] = map[string]any{"message": "invalid"}
+			},
+			want: "cannot unmarshal object",
+		},
+		{
+			name: "unknown top level field",
+			mutate: func(attempt map[string]any) {
+				attempt["unexpected"] = true
+			},
+			want: `unknown field "unexpected"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attempt := validWorkflowLiveAttemptObject()
+			tt.mutate(attempt)
+			encoded, err := json.Marshal(attempt)
+			if err != nil {
+				t.Fatalf("marshal malformed attempt: %v", err)
+			}
+			if _, err := decodeWorkflowLiveAttempt(string(encoded)); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("decode error = %v, want detail %q", err, tt.want)
+			}
+		})
+	}
+	valid := validWorkflowLiveAttemptJSON(t)
+	if _, err := decodeWorkflowLiveAttempt(valid + ` {}`); err == nil || !strings.Contains(err.Error(), "trailing data") {
+		t.Fatalf("trailing data error = %v", err)
+	}
+}
+
+type capturingWorkflowLiveChatModel struct {
+	response string
+	requests [][]*schema.Message
+}
+
+func (m *capturingWorkflowLiveChatModel) Generate(_ context.Context, messages []*schema.Message, _ ...model.Option) (*schema.Message, error) {
+	m.requests = append(m.requests, append([]*schema.Message(nil), messages...))
+	return schema.AssistantMessage(m.response, nil), nil
+}
+
+func (*capturingWorkflowLiveChatModel) Stream(context.Context, []*schema.Message, ...model.Option) (*schema.StreamReader[*schema.Message], error) {
+	return nil, nil
+}
+
+func (*capturingWorkflowLiveChatModel) BindTools([]*schema.ToolInfo) error {
+	return nil
+}
+
+func validWorkflowLiveAttemptObject() map[string]any {
+	snapshot := func() map[string]any {
+		return map[string]any{
+			"graph": map[string]any{
+				"nodes": []any{map[string]any{"id": "n1", "type": "start"}},
+				"edges": []any{},
+			},
+			"validation": map[string]any{"status": "valid", "valid": true, "diagnostics": []any{}},
+			"risk":       "low",
+			"approval":   map[string]any{"required": false, "granted": false},
+		}
+	}
+	return map[string]any{
+		"schemaVersion": eval.WorkflowGenerationOutputSchemaVersion,
+		"planHash":      "plan-v1",
+		"compileHash":   "compile-v1",
+		"firstPreview":  snapshot(),
+		"final":         snapshot(),
+		"metrics": map[string]any{
+			"firstFeedbackMs": 0,
+			"previewMs":       0,
+			"validateMs":      0,
+			"repairCount":     0,
+			"inputTokens":     0,
+			"outputTokens":    0,
+			"contextTokens":   0,
+		},
+		"semanticFacts": map[string]any{},
+		"textContent":   []any{},
+	}
+}
+
+func validWorkflowLiveAttemptJSON(t *testing.T) string {
+	t.Helper()
+	encoded, err := json.Marshal(validWorkflowLiveAttemptObject())
+	if err != nil {
+		t.Fatalf("marshal valid workflow attempt: %v", err)
+	}
+	return string(encoded)
+}
+
+func liveAttemptSnapshot(t *testing.T, attempt map[string]any) map[string]any {
+	t.Helper()
+	return schemaObject(t, attempt["final"])
+}
+
+func liveAttemptGraph(t *testing.T, attempt map[string]any) map[string]any {
+	t.Helper()
+	return schemaObject(t, liveAttemptSnapshot(t, attempt)["graph"])
+}
+
+func liveAttemptNodes(t *testing.T, attempt map[string]any) []map[string]any {
+	t.Helper()
+	raw, ok := liveAttemptGraph(t, attempt)["nodes"].([]any)
+	if !ok {
+		t.Fatalf("nodes = %#v, want []any", liveAttemptGraph(t, attempt)["nodes"])
+	}
+	nodes := make([]map[string]any, len(raw))
+	for index, node := range raw {
+		nodes[index] = schemaObject(t, node)
+	}
+	return nodes
+}
+
+func schemaObject(t *testing.T, value any) map[string]any {
+	t.Helper()
+	object, ok := value.(map[string]any)
+	if !ok {
+		t.Fatalf("schema value = %#v, want object", value)
+	}
+	return object
+}
+
+func schemaProperties(t *testing.T, object map[string]any) map[string]any {
+	t.Helper()
+	return schemaObject(t, object["properties"])
+}
+
+func schemaString(t *testing.T, object map[string]any, field string) string {
+	t.Helper()
+	value, ok := object[field].(string)
+	if !ok {
+		t.Fatalf("schema %s = %#v, want string", field, object[field])
+	}
+	return value
+}
+
+func assertSchemaType(t *testing.T, object map[string]any, want string) {
+	t.Helper()
+	if got := schemaString(t, object, "type"); got != want {
+		t.Fatalf("schema type = %q, want %q", got, want)
+	}
+}
+
+func assertAdditionalProperties(t *testing.T, object map[string]any, want bool) {
+	t.Helper()
+	got, ok := object["additionalProperties"].(bool)
+	if !ok || got != want {
+		t.Fatalf("additionalProperties = %#v, want %t", object["additionalProperties"], want)
+	}
+}
+
+func assertRequiredSchemaFields(t *testing.T, object map[string]any, want ...string) {
+	t.Helper()
+	raw, ok := object["required"].([]string)
+	if !ok {
+		t.Fatalf("required = %#v, want []string", object["required"])
+	}
+	wantSet := make(map[string]bool, len(want))
+	for _, field := range want {
+		wantSet[field] = true
+	}
+	if len(raw) != len(wantSet) {
+		t.Fatalf("required = %#v, want exactly %#v", raw, want)
+	}
+	for _, field := range raw {
+		if !wantSet[field] {
+			t.Fatalf("required contains unexpected field %q; all = %#v", field, raw)
+		}
 	}
 }
 

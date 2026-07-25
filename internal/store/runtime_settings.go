@@ -3,6 +3,8 @@ package store
 import (
 	"strings"
 	"time"
+
+	"aiops-v2/internal/workfloweditor"
 )
 
 const (
@@ -41,9 +43,10 @@ type RuntimeToolingSettings struct {
 }
 
 type RuntimeWorkflowSettings struct {
-	ReferenceGuardMode string `json:"referenceGuardMode"`
-	ValidationProvider string `json:"validationProvider"`
-	ValidationImage    string `json:"validationImage"`
+	ReferenceGuardMode string                               `json:"referenceGuardMode"`
+	ValidationProvider string                               `json:"validationProvider"`
+	ValidationImage    string                               `json:"validationImage"`
+	Rollout            workfloweditor.WorkflowRolloutConfig `json:"rollout"`
 }
 
 type RuntimeOpsManualSettings struct {
@@ -78,6 +81,7 @@ func DefaultRuntimeSettings() RuntimeSettings {
 			ReferenceGuardMode: RuntimeWorkflowReferenceGuardEnforce,
 			ValidationProvider: RuntimeWorkflowValidationStatic,
 			ValidationImage:    "python:3.12-slim",
+			Rollout:            defaultWorkflowRolloutConfig(),
 		},
 		OpsManual: RuntimeOpsManualSettings{
 			AutoRetrieval: false,
@@ -114,11 +118,38 @@ func NormalizeRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	} else {
 		settings.Workflow.ValidationImage = strings.TrimSpace(settings.Workflow.ValidationImage)
 	}
+	settings.Workflow.Rollout = normalizeWorkflowRolloutConfig(settings.Workflow.Rollout)
 	return settings
 }
 
 func cloneRuntimeSettings(settings RuntimeSettings) RuntimeSettings {
 	return NormalizeRuntimeSettings(settings)
+}
+
+func defaultWorkflowRolloutConfig() workfloweditor.WorkflowRolloutConfig {
+	return workfloweditor.WorkflowRolloutConfig{
+		SchemaVersion:     workfloweditor.WorkflowRolloutSchemaVersion,
+		Stage:             workfloweditor.WorkflowAgentStageDisabled,
+		SaltVersion:       "workflow-rollout-disabled-v1",
+		RolloutPercentage: 0,
+		AllowTenants:      []string{},
+		DenyTenants:       []string{},
+		Features:          workfloweditor.WorkflowRolloutFeatures{},
+	}
+}
+
+// normalizeWorkflowRolloutConfig is deliberately fail-closed. Legacy settings
+// files have a zero rollout value, while malformed or future rollout values
+// must never be repaired into an enabled stage. A valid value is preserved
+// exactly (apart from ownership-safe slice copies) so tenant hashes and audit
+// records stay stable across persistence round trips.
+func normalizeWorkflowRolloutConfig(config workfloweditor.WorkflowRolloutConfig) workfloweditor.WorkflowRolloutConfig {
+	if err := config.Validate(); err != nil {
+		return defaultWorkflowRolloutConfig()
+	}
+	config.AllowTenants = append([]string{}, config.AllowTenants...)
+	config.DenyTenants = append([]string{}, config.DenyTenants...)
+	return config
 }
 
 func normalizeRuntimeEnum(value string, fallback string, allowed ...string) string {

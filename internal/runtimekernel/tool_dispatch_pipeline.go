@@ -15,7 +15,22 @@ import (
 	"aiops-v2/internal/tooling"
 )
 
+type controlledApprovalRequestContextKey struct{}
+
+func contextWithControlledApprovalRequest(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, controlledApprovalRequestContextKey{}, true)
+}
+
+func controlledApprovalRequestFromContext(ctx context.Context) bool {
+	requested, _ := ctx.Value(controlledApprovalRequestContextKey{}).(bool)
+	return requested
+}
+
 func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode, parentSpanID string, approved bool, authorization *VerifiedActionToken) (result DispatchResult) {
+	approvalRequestOnly := controlledApprovalRequestFromContext(ctx)
 	var resourceLockTraces []promptinput.ResourceLockTrace
 	decisionTrace := d.dispatchDecisionTrace(tc)
 	defer func() {
@@ -116,6 +131,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		return result
 	}
 	if len(toolEvent.UpdatedInput) > 0 {
+		if approvalRequestOnly && toolArgumentsHash(toolEvent.UpdatedInput) != decisionTrace.ArgumentsHash {
+			errMsg := "controlled tool arguments cannot be rewritten before approval"
+			return d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "controlled_arguments_rewritten", desc.Metadata)
+		}
 		tc.Arguments = append(json.RawMessage(nil), toolEvent.UpdatedInput...)
 		toolEvent.Arguments = tc.Arguments
 	}
@@ -163,8 +182,30 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		return result
 	}
 
-	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc)
+	ctx, tc.Arguments = enrichToolExecutionContext(ctx, sessionID, turnID, tc, desc, authorization)
 	toolEvent.Arguments = tc.Arguments
+	dynamicResourceScope := desc.Metadata.ResourceLockResolver != nil && !toolExecutionIsClearlyReadOnly(desc, executor, tc.Arguments)
+	if dynamicResourceScope {
+		resolved, err := bindResolvedToolResourceLocks(ctx, tc, desc, executor)
+		if err != nil {
+			decision := ToolResourceLockDecision{Action: "denied", Reason: err.Error()}
+			errMsg := resourceLockFailurePayload(tc.Name, decision)
+			result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "runtime", "tool_failed", desc.Metadata)
+			if d.spanSource != nil && toolSpanID != "" {
+				d.spanSource.FailSpan(toolSpanID, errMsg)
+			}
+			return result
+		}
+		desc = resolved
+		toolEvent.Tool = desc.Metadata
+		if explicitApproval {
+			execCtx, _ := tooling.ToolExecutionContextFrom(ctx)
+			resolvedTargets := pendingApprovalTargetRefs(execCtx.HostID, pendingApprovalResourceScopes(desc.Metadata))
+			if strings.Join(uniqueSortedTraceStrings(resolvedTargets), "\x00") != strings.Join(uniqueSortedTraceStrings(authorization.token.TargetRefs), "\x00") {
+				return approvalContextStaleDispatchResult(tc, newApprovalContextStaleError("target"))
+			}
+		}
+	}
 
 	if !approved && d.hasSessionApprovalGrant(tc, desc) {
 		approved = true
@@ -361,6 +402,36 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		return result
 	}
 
+	// A controlled approval request is an admission operation, never an
+	// execution operation. All ordinary schema, scope, role, permission,
+	// policy, hook, dynamic-target, and mutation-safety checks above still run.
+	// Only a later DispatchApproved call carrying a freshly verified
+	// ActionToken may cross this boundary.
+	if approvalRequestOnly {
+		postChecks := normalizedPostCheckRefs(desc.Metadata)
+		rollback := ""
+		if desc.Metadata.Rollback != nil {
+			rollback = strings.TrimSpace(desc.Metadata.Rollback.Reference)
+		}
+		return DispatchResult{
+			ToolCallID: tc.ID,
+			Blocked:    true,
+			Reason:     "explicit approval is required for this controlled tool call",
+			Metadata:   desc.Metadata,
+			Outcome:    "approval_needed",
+			Source:     "runtime_controlled",
+			Approval: &tooling.PermissionApprovalPayload{
+				Command:        approvalCommandForToolCall(tc),
+				Reason:         "explicit approval is required for this controlled tool call",
+				Risk:           string(desc.Metadata.EffectiveGovernance(0).RiskLevel),
+				Source:         "runtime_controlled",
+				ExpectedEffect: "execute " + firstNonEmpty(tc.Name, desc.Metadata.Name) + " with the exact approved arguments",
+				Rollback:       rollback,
+				Validation:     strings.Join(postChecks, "; "),
+			},
+		}
+	}
+
 	if releaseLocks, traces, lockErr := d.acquireToolResourceLocks(ctx, sessionID, turnID, tc, desc, executor); lockErr != "" {
 		resourceLockTraces = append(resourceLockTraces, traces...)
 		result := d.emitToolFailed(sessionID, turnID, tc, lockErr, "runtime", "tool_failed", desc.Metadata)
@@ -411,9 +482,9 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if toolResult.ToolCallID == "" {
 		toolResult.ToolCallID = tc.ID
 	}
-	if toolResult.Error != "" {
-		errMsg := mutationFailureErrorMessage(tc, desc, executor, toolResult.Error)
-		result := d.emitToolFailed(sessionID, turnID, tc, errMsg, "tool", "tool_failed", desc.Metadata)
+	if toolResult.ExecutionFailed() {
+		errMsg := toolResultFailureErrorMessage(tc, desc, executor, toolResult)
+		result := d.emitStructuredToolFailed(sessionID, turnID, tc, errMsg, toolResult, desc.Metadata)
 		result.Attempts = append(result.Attempts, retryAttempts...)
 		if d.spanSource != nil && toolSpanID != "" {
 			d.spanSource.FailSpan(toolSpanID, errMsg)
@@ -451,6 +522,18 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 			toolEvent.Result = &toolResult
 		}
 	}
+	if toolResult.ExecutionFailed() {
+		errMsg := toolResultFailureErrorMessage(tc, desc, executor, toolResult)
+		result := d.emitStructuredToolFailed(sessionID, turnID, tc, errMsg, toolResult, desc.Metadata)
+		result.Attempts = append(result.Attempts, retryAttempts...)
+		return result
+	}
+	if err := tooling.ValidateToolResult(desc.OutputSchema, toolResult); err != nil {
+		errMsg := "tool output schema validation failed: " + err.Error()
+		result := d.emitStructuredToolFailed(sessionID, turnID, tc, errMsg, toolResult, desc.Metadata)
+		result.Attempts = append(result.Attempts, retryAttempts...)
+		return result
+	}
 	content := toolResult.Content
 	outputSummary, resultForEvent, outputPreview, rawRef, resultBytes, resultTruncated := summarizeToolLifecycleResultForEvent(turnID, tc.ID, content)
 
@@ -471,6 +554,10 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 	if len(outputPreview) > 0 {
 		completedPayloadMap["outputPreview"] = outputPreview
 	}
+	if len(toolResult.StructuredContent) > 0 {
+		completedPayloadMap["structuredContent"] = toolResult.StructuredContent
+	}
+	completedPayloadMap["isError"] = toolResult.IsError
 	completedPayload, _ := json.Marshal(completedPayloadMap)
 	d.projector.Emit(LifecycleEvent{
 		Type:      EventToolCompleted,
@@ -495,5 +582,21 @@ func (d *ToolDispatcher) dispatch(ctx context.Context, sessionID, turnID string,
 		Source:      "tool",
 		HiddenTools: append([]string(nil), toolEvent.HideTools...),
 		Attempts:    append([]ToolAttemptState(nil), retryAttempts...),
+	}
+}
+
+func (d *ToolDispatcher) emitStructuredToolFailed(sessionID, turnID string, tc ToolCall, errMsg string, toolResult tooling.ToolResult, meta tooling.ToolMetadata) DispatchResult {
+	payload := map[string]any{"id": tc.ID, "toolName": tc.Name, "error": errMsg, "isError": toolResult.IsError}
+	if len(toolResult.StructuredContent) > 0 {
+		payload["structuredContent"] = toolResult.StructuredContent
+	}
+	failPayload, _ := json.Marshal(payload)
+	d.projector.Emit(LifecycleEvent{Type: EventToolFailed, SessionID: sessionID, TurnID: turnID, Timestamp: time.Now(), Payload: failPayload})
+	if toolResult.ToolCallID == "" {
+		toolResult.ToolCallID = tc.ID
+	}
+	return DispatchResult{
+		ToolCallID: tc.ID, Content: toolResult.Content, Error: errMsg, Metadata: meta,
+		Result: toolResult, Outcome: "tool_failed", Source: "tool",
 	}
 }

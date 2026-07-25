@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
 	"runner/logging"
 	"runner/workflow"
-	"go.uber.org/zap"
 )
 
 type Summary struct {
@@ -21,6 +21,49 @@ type Summary struct {
 
 type Store struct {
 	Dir string
+}
+
+func ListCurrentTransactionSnapshots(root string) ([]TransactionSnapshot, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(root))
+	if err != nil {
+		return nil, err
+	}
+	versionDir := filepath.Join(absolute, workflowNamespaceVersion)
+	if info, err := os.Lstat(versionDir); err == nil && (info.Mode()&os.ModeSymlink != 0 || !info.IsDir()) {
+		return nil, fmt.Errorf("workflow transaction namespace root is not a real directory")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	entries, err := os.ReadDir(versionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []TransactionSnapshot{}, nil
+		}
+		return nil, err
+	}
+	out := make([]TransactionSnapshot, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("workflow transaction namespace %q is a symlink", entry.Name())
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(versionDir, entry.Name())
+		if info, err := os.Lstat(dir); err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return nil, fmt.Errorf("invalid workflow transaction namespace %q", entry.Name())
+		}
+		namespace := &WorkflowNamespace{root: absolute, dir: dir}
+		snapshot, found, err := LoadCurrentTransactionSnapshot(namespace)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			out = append(out, snapshot)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CommittedAt.After(out[j].CommittedAt) })
+	return out, nil
 }
 
 func New(dir string) *Store {
@@ -98,11 +141,6 @@ func (s *Store) Get(name string) (workflow.Workflow, []byte, error) {
 }
 
 func (s *Store) Put(name string, raw []byte) (workflow.Workflow, error) {
-	logging.L().Debug("workflow put", zap.String("name", name), zap.Int("yaml_len", len(raw)))
-	if err := s.ensureDir(); err != nil {
-		return workflow.Workflow{}, err
-	}
-
 	wf, err := workflow.Load(raw)
 	if err != nil {
 		return workflow.Workflow{}, err
@@ -119,17 +157,10 @@ func (s *Store) Put(name string, raw []byte) (workflow.Workflow, error) {
 		return workflow.Workflow{}, fmt.Errorf("workflow name mismatch: %s vs %s", wf.Name, name)
 	}
 
-	path, err := s.path(name)
-	if err != nil {
+	if _, err := s.path(name); err != nil {
 		return workflow.Workflow{}, err
 	}
-
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		return workflow.Workflow{}, err
-	}
-
-	logging.L().Debug("workflow put done", zap.String("name", name))
-	return wf, nil
+	return wf, fmt.Errorf("legacy workflow writes are disabled; use the transaction CommitStore")
 }
 
 func (s *Store) ensureDir() error {

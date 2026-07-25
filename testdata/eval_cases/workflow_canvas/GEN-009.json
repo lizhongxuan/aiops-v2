@@ -1,0 +1,71 @@
+{
+  "id": "GEN-009",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Change the label of the visible W6 inspection node without losing hidden End, ports, pinned layout, or verified reference.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["reference.inspect"],
+    "allowedActions": ["reference.inspect"],
+    "argumentSchemas": {
+      "reference.inspect": { "required": ["referenceRef"], "properties": { "referenceRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "inspect": { "inputs": ["in"], "outputs": ["success"] } },
+    "requiredPaths": ["/graph/nodes/1/reference", "/graph/nodes/1/pinned", "/graph/nodes/2/id"],
+    "forbiddenPaths": ["/graph/nodes/*/args/password"],
+    "forbiddenPlaceholders": ["script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/action" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/inputPorts" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/outputPorts" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/position" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/reference" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/pinned" },
+      { "kind": "preserve_path", "path": "/graph/nodes/2" },
+      { "kind": "preserve_path", "path": "/graph/edges" },
+      { "kind": "fact", "name": "verified_reference_locked" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "baseline": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "inspect", "type": "action", "label": "Inspect", "action": "reference.inspect", "args": { "referenceRef": "reference://verified/manual-17" }, "inputPorts": ["in"], "outputPorts": ["success"], "position": { "x": 220, "y": 40 }, "reference": "reference://verified/manual-17", "pinned": true },
+            { "id": "hidden-end", "type": "end", "inputPorts": ["in"], "position": { "x": 440, "y": 40 }, "pinned": true }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "inspect", "targetPort": "in" },
+            { "id": "e2", "source": "inspect", "sourcePort": "success", "target": "hidden-end", "targetPort": "in" }
+          ]
+        }
+      },
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "inspect", "type": "action", "label": "Inspect production", "action": "reference.inspect", "args": { "referenceRef": "reference://verified/manual-17" }, "inputPorts": ["in"], "outputPorts": ["success"], "position": { "x": 220, "y": 40 }, "reference": "reference://verified/manual-17", "pinned": true },
+            { "id": "hidden-end", "type": "end", "inputPorts": ["in"], "position": { "x": 440, "y": 40 }, "pinned": true }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "inspect", "targetPort": "in" },
+            { "id": "e2", "source": "inspect", "sourcePort": "success", "target": "hidden-end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 44, "previewMs": 67, "validateMs": 18, "repairCount": 0, "inputTokens": 1010, "outputTokens": 570, "contextTokens": 1580 },
+      "semanticFacts": { "verified_reference_locked": true }
+    }]
+  }
+}
