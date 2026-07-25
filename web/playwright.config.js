@@ -1,6 +1,7 @@
 import { defineConfig } from "@playwright/test";
 
 const workerCount = Number.parseInt(process.env.PLAYWRIGHT_WORKERS || "1", 10);
+const retryCount = Number.parseInt(process.env.PLAYWRIGHT_RETRIES || "0", 10);
 const baseURL = process.env.PLAYWRIGHT_BASE_URL || "http://127.0.0.1:53173";
 const shouldStartWebServer = !process.env.PLAYWRIGHT_BASE_URL && process.env.PLAYWRIGHT_SKIP_WEB_SERVER !== "1";
 
@@ -21,11 +22,13 @@ export default defineConfig({
     "react-route-smoke.spec.js",
     "react-shell-snapshot.spec.js",
     "runner-studio.spec.js",
+    "workflow-studio.snapshot.spec.js",
     "tool-mcp-slimming.spec.js",
   ],
   timeout: 30000,
   workers: Number.isFinite(workerCount) && workerCount > 0 ? workerCount : 1,
-  snapshotPathTemplate: "{testDir}/__screenshots__/{testFilePath}/{arg}{ext}",
+  retries: Number.isFinite(retryCount) && retryCount >= 0 ? retryCount : 0,
+  snapshotPathTemplate: "{testDir}/__screenshots__/{testFilePath}/{projectName}/{arg}{ext}",
   expect: {
     toHaveScreenshot: {
       maxDiffPixelRatio: 0.01,
@@ -49,6 +52,14 @@ export default defineConfig({
     {
       name: "chromium",
       use: { browserName: "chromium" },
+    },
+    {
+      name: "firefox",
+      use: { browserName: "firefox" },
+    },
+    {
+      name: "webkit",
+      use: { browserName: "webkit" },
     },
   ],
 });

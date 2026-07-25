@@ -13,16 +13,11 @@ import (
 )
 
 var allowedPatchOps = map[PatchOperationType]bool{
-	PatchAddNode:                true,
-	PatchUpdateNode:             true,
-	PatchDeleteNode:             true,
-	PatchAddEdge:                true,
-	PatchDeleteEdge:             true,
-	PatchUpdateWorkflowMetadata: true,
-	PatchUpdateInputs:           true,
-	PatchUpdateOutputs:          true,
-	PatchUpdateInventory:        true,
-	PatchBindOpsManualCandidate: true,
+	PatchAddNode:    true,
+	PatchUpdateNode: true,
+	PatchDeleteNode: true,
+	PatchAddEdge:    true,
+	PatchDeleteEdge: true,
 }
 
 func RevisionDigest(graph visual.Graph) string {
@@ -52,9 +47,7 @@ func ValidateWorkflowPatch(req ValidatePatchRequest) WorkflowPatchValidation {
 	}
 	for i, op := range patch.Operations {
 		if op.Op == PatchReplaceFullGraph {
-			if !req.AllowFullGraphReplacement || strings.TrimSpace(req.SecondConfirmationID) == "" {
-				errors = append(errors, fmt.Sprintf("operation %d replace_full_graph requires explicit allow flag and second confirmation", i))
-			}
+			errors = append(errors, fmt.Sprintf("operation %d replace_full_graph is retired; use canonical typed operations", i))
 			continue
 		}
 		if !allowedPatchOps[op.Op] {
@@ -68,6 +61,13 @@ func ValidateWorkflowPatch(req ValidatePatchRequest) WorkflowPatchValidation {
 		case PatchUpdateNode, PatchDeleteNode:
 			if strings.TrimSpace(op.NodeID) == "" {
 				errors = append(errors, fmt.Sprintf("operation %d %s requires node_id", i, op.Op))
+			}
+			if op.Op == PatchUpdateNode {
+				for field := range op.Fields {
+					if field != "label" && field != "type" {
+						errors = append(errors, fmt.Sprintf("operation %d update_node field %q is not part of the compatibility contract", i, field))
+					}
+				}
 			}
 		case PatchAddEdge:
 			if op.Edge == nil || strings.TrimSpace(op.Edge.ID) == "" || strings.TrimSpace(op.Edge.Source) == "" || strings.TrimSpace(op.Edge.Target) == "" {
@@ -129,7 +129,11 @@ func ApplyPatchToGraph(graph visual.Graph, patch WorkflowPatch) (visual.Graph, P
 			if idx < 0 {
 				return graph, effect, fmt.Errorf("node %q not found", op.NodeID)
 			}
-			if applyNodeFields(&next.Nodes[idx], op.Fields) {
+			updated, updateErr := applyNodeFields(&next.Nodes[idx], op.Fields)
+			if updateErr != nil {
+				return graph, effect, updateErr
+			}
+			if updated {
 				changed = true
 			}
 			effect.AffectedNodes = appendUnique(effect.AffectedNodes, op.NodeID)
@@ -173,38 +177,6 @@ func ApplyPatchToGraph(graph visual.Graph, patch WorkflowPatch) (visual.Graph, P
 			next.Edges = append(next.Edges[:idx], next.Edges[idx+1:]...)
 			effect.AffectedEdges = appendUnique(effect.AffectedEdges, op.EdgeID)
 			changed = true
-		case PatchUpdateWorkflowMetadata:
-			if next.UI == nil {
-				next.UI = map[string]any{}
-			}
-			for key, value := range op.Fields {
-				if !reflect.DeepEqual(next.UI[key], value) {
-					next.UI[key] = value
-					changed = true
-				}
-			}
-		case PatchBindOpsManualCandidate:
-			if next.UI == nil {
-				next.UI = map[string]any{}
-			}
-			if !reflect.DeepEqual(next.UI["ops_manual_candidate"], op.Metadata) {
-				next.UI["ops_manual_candidate"] = op.Metadata
-				changed = true
-			}
-		case PatchUpdateInputs, PatchUpdateOutputs, PatchUpdateInventory:
-			metadataOnly = false
-			if next.UI == nil {
-				next.UI = map[string]any{}
-			}
-			next.UI[string(op.Op)] = op.Fields
-			changed = true
-		case PatchReplaceFullGraph:
-			metadataOnly = false
-			if op.Graph == nil {
-				return graph, effect, fmt.Errorf("replace_full_graph requires graph")
-			}
-			next = CloneGraph(*op.Graph)
-			changed = true
 		default:
 			return graph, effect, fmt.Errorf("unsupported operation %q", op.Op)
 		}
@@ -227,32 +199,33 @@ func ApplyPatchToGraph(graph visual.Graph, patch WorkflowPatch) (visual.Graph, P
 	return next, effect, nil
 }
 
-func applyNodeFields(node *visual.Node, fields map[string]any) bool {
+func applyNodeFields(node *visual.Node, fields map[string]any) (bool, error) {
 	changed := false
 	for key, value := range fields {
 		switch key {
 		case "label":
-			if label, ok := value.(string); ok && node.Label != label {
+			label, ok := value.(string)
+			if !ok {
+				return false, fmt.Errorf("update_node label must be a string")
+			}
+			if node.Label != label {
 				node.Label = label
 				changed = true
 			}
 		case "type":
-			if raw, ok := value.(string); ok && string(node.Type) != raw {
+			raw, ok := value.(string)
+			if !ok {
+				return false, fmt.Errorf("update_node type must be a string")
+			}
+			if string(node.Type) != raw {
 				node.Type = visual.NodeType(raw)
 				changed = true
 			}
 		default:
-			if node.UI == nil {
-				node.UI = map[string]any{}
-			}
-			key = strings.TrimPrefix(key, "ui.")
-			if !reflect.DeepEqual(node.UI[key], value) {
-				node.UI[key] = value
-				changed = true
-			}
+			return false, fmt.Errorf("update_node field %q is not supported", key)
 		}
 	}
-	return changed
+	return changed, nil
 }
 
 func nodeIndex(nodes []visual.Node, id string) int {

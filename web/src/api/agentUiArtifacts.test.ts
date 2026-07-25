@@ -153,6 +153,35 @@ describe("normalizeAgentUIArtifact", () => {
     ]);
   });
 
+  it("allows only the registered workflow action intents", () => {
+    const allowedIntents = [
+      "workflow.focus_object",
+      "workflow.review_change",
+      "workflow.apply_candidate",
+      "workflow.discard_candidate",
+      "workflow.retry_from_current",
+      "workflow.undo_transaction",
+      "workflow.open_configuration",
+    ];
+    const artifact = normalizeAgentUIArtifact({
+      type: "workflow_patch_preview",
+      title: "Workflow patch preview",
+      actions: [
+        ...allowedIntents.map((intent) => ({ id: intent, label: intent, intent })),
+        { id: "unknown-workflow-action", label: "Unknown", intent: "workflow.delete_everything" },
+      ],
+    });
+
+    expect(artifact.actions.slice(0, allowedIntents.length)).toEqual(
+      allowedIntents.map((intent) => ({ id: intent, label: intent, intent })),
+    );
+    expect(artifact.actions.at(-1)).toMatchObject({
+      intent: "workflow.delete_everything",
+      disabled: true,
+      disabledReason: "未知动作 intent：workflow.delete_everything",
+    });
+  });
+
   it("preserves a normalized MCP card for Coroot chart artifacts", () => {
     const artifact = normalizeAgentUIArtifact({
       id: "coroot-nginx-latency",

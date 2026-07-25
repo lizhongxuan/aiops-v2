@@ -93,6 +93,22 @@ func (r *Runtime) Connect(ctx context.Context, serverID string) error {
 		r.registry.SetServerStatus(serverID, mcp.ServerStatus{State: mcp.ServerStateFailed, LastError: err.Error()})
 		return err
 	}
+	if lifecycle, ok := client.(LifecycleClient); ok {
+		request := DefaultInitializeRequest()
+		session, initErr := lifecycle.Initialize(ctx, request)
+		if initErr == nil && !session.Legacy && !isSupportedMCPProtocolVersion(session.ProtocolVersion) {
+			initErr = fmt.Errorf("mcp runtime: unsupported negotiated protocol version %q", session.ProtocolVersion)
+		}
+		if initErr == nil {
+			initErr = lifecycle.NotifyInitialized(ctx)
+		}
+		if initErr != nil {
+			_ = client.Close(context.Background())
+			r.registry.OnServerDisconnected(serverID)
+			r.registry.SetServerStatus(serverID, mcp.ServerStatus{State: mcp.ServerStateFailed, LastError: initErr.Error()})
+			return initErr
+		}
+	}
 	r.mu.Lock()
 	if previous := r.clients[serverID]; previous != nil {
 		_ = previous.Close(ctx)
@@ -101,6 +117,15 @@ func (r *Runtime) Connect(ctx context.Context, serverID string) error {
 	r.mu.Unlock()
 
 	return r.refresh(ctx, cfg, client)
+}
+
+func isSupportedMCPProtocolVersion(version string) bool {
+	for _, supported := range supportedMCPProtocolVersions {
+		if version == supported {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) Disconnect(ctx context.Context, serverID string) error {

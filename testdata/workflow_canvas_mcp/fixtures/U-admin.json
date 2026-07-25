@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "U-admin",
+  "kind": "principal",
+  "data": {
+    "principal": {
+      "id": "user-admin",
+      "roles": [
+        "workflow.admin"
+      ],
+      "permissions": [
+        "workflow.read",
+        "workflow.edit",
+        "workflow.publish",
+        "workflow.execute",
+        "workflow.admin"
+      ]
+    }
+  }
+}

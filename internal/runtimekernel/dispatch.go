@@ -48,8 +48,9 @@ type ToolPermissionChecker interface {
 
 // ToolDescriptor carries the unified metadata used across policy, hooks, and permissions.
 type ToolDescriptor struct {
-	Metadata    tooling.ToolMetadata
-	InputSchema json.RawMessage
+	Metadata     tooling.ToolMetadata
+	InputSchema  json.RawMessage
+	OutputSchema json.RawMessage
 }
 
 // EventEmitter is the interface for emitting lifecycle events.
@@ -256,6 +257,14 @@ type DispatchResult struct {
 //  5. Return result
 func (d *ToolDispatcher) Dispatch(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
 	return d.dispatch(ctx, sessionID, turnID, tc, sessionType, mode, "", false, nil)
+}
+
+// RequestApproval evaluates the same dispatcher pipeline as Dispatch but
+// fails closed before resource locking or execution. It is intended for
+// server-owned controlled turns that must materialize a durable approval gate
+// even when a lower-level checker currently returns allow.
+func (d *ToolDispatcher) RequestApproval(ctx context.Context, sessionID, turnID string, tc ToolCall, sessionType SessionType, mode Mode) DispatchResult {
+	return d.dispatch(contextWithControlledApprovalRequest(ctx), sessionID, turnID, tc, sessionType, mode, "", false, nil)
 }
 
 // DispatchApproved executes a tool call after an explicit approval/resume decision.
@@ -750,146 +759,14 @@ func toolExecutionRequiresMutationSafety(desc ToolDescriptor, executor ToolExecu
 	return false
 }
 
-func (d *ToolDispatcher) evaluateMutationSafetyGuard(tc ToolCall, desc ToolDescriptor, executor ToolExecutor, sessionType SessionType, approved bool) (string, bool) {
-	if !toolExecutionRequiresMutationSafety(desc, executor, tc.Arguments) {
-		return "", false
-	}
-	missing := make([]string, 0, 4)
-	if len(desc.Metadata.ResourceLocks) == 0 {
-		missing = append(missing, "resourceLocks")
-	}
-	if !toolIdempotencyDeclared(desc.Metadata) {
-		missing = append(missing, "idempotency")
-	}
-	if !d.mutationApprovalBoundaryPresent(desc, executor, approved) {
-		missing = append(missing, "approvalScope")
-	}
-	if sessionType == SessionTypeHost && len(normalizedPostCheckRefs(desc.Metadata)) == 0 {
-		missing = append(missing, "postCheckRefs")
-	}
-	if len(missing) == 0 {
-		return "", false
-	}
-	toolName := firstNonEmpty(tc.Name, desc.Metadata.Name, "tool")
-	payload := map[string]any{
-		"errorType":      "mutation_safety_guard",
-		"toolName":       toolName,
-		"reason":         "denied: mutation_safety_guard missing " + strings.Join(missing, ", "),
-		"missing":        missing,
-		"requiredAction": "declare resourceLocks, idempotency, approval boundary, and host mutation postCheckRefs before executing this mutation",
-	}
-	data, _ := json.Marshal(payload)
-	return string(data), true
-}
-
-func toolIdempotencyDeclared(meta tooling.ToolMetadata) bool {
-	strategy := strings.TrimSpace(string(meta.Idempotency.Strategy))
-	switch tooling.ToolIdempotencyStrategy(strategy) {
-	case tooling.ToolIdempotencyStrategyArgumentsHash:
-		return true
-	case tooling.ToolIdempotencyStrategyExplicitKey:
-		return len(nonEmptyStrings(meta.Idempotency.KeyFields)) > 0
-	}
-	return len(nonEmptyStrings(meta.Idempotency.KeyFields)) > 0
-}
-
-func (d *ToolDispatcher) mutationApprovalBoundaryPresent(desc ToolDescriptor, executor ToolExecutor, approved bool) bool {
-	if approved {
-		return true
-	}
-	governance := desc.Metadata.EffectiveGovernance(0)
-	if governance.RequiresApproval {
-		return true
-	}
-	if _, ok := executor.(ToolPermissionChecker); ok {
-		return true
-	}
-	return d != nil && (d.permissions != nil || d.policy != nil)
-}
-
-func normalizedPostCheckRefs(meta tooling.ToolMetadata) []string {
-	return nonEmptyStrings(meta.Idempotency.PostCheckRefs)
-}
-
-func nonEmptyStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed == "" {
-			continue
-		}
-		if _, ok := seen[trimmed]; ok {
-			continue
-		}
-		seen[trimmed] = struct{}{}
-		out = append(out, trimmed)
-	}
-	return out
-}
-
-func mutationFailureErrorMessage(tc ToolCall, desc ToolDescriptor, executor ToolExecutor, errText string) string {
-	errText = strings.TrimSpace(errText)
-	if errText == "" || strings.Contains(strings.ToLower(errText), "side_effect_unknown") {
-		return errText
-	}
-	if !toolExecutionRequiresMutationSafety(desc, executor, tc.Arguments) {
-		return errText
-	}
-	refs := normalizedPostCheckRefs(desc.Metadata)
-	postChecks := "unspecified"
-	if len(refs) > 0 {
-		postChecks = strings.Join(refs, "; ")
-	}
-	toolName := firstNonEmpty(tc.Name, desc.Metadata.Name, "tool")
-	return fmt.Sprintf("side_effect_unknown: mutating tool %s failed after start: %s; postCheckRequired=true; postCheckRefs=%s", toolName, errText, postChecks)
-}
-
-func (d *ToolDispatcher) acquireToolResourceLocks(
-	ctx context.Context,
-	sessionID string,
-	turnID string,
-	tc ToolCall,
-	desc ToolDescriptor,
-	executor ToolExecutor,
-) (func(), []promptinput.ResourceLockTrace, string) {
-	if d == nil || d.resourceLockGate == nil || len(desc.Metadata.ResourceLocks) == 0 {
-		return nil, nil, ""
-	}
-	if toolExecutionIsClearlyReadOnly(desc, executor, tc.Arguments) {
-		return nil, nil, ""
-	}
-	execCtx, _ := tooling.ToolExecutionContextFrom(ctx)
-	req := ToolResourceLockRequest{
-		SessionID: sessionID,
-		TurnID:    turnID,
-		OwnerID:   toolResourceLockOwnerID(sessionID, turnID, tc, execCtx),
-		ToolCall:  tc,
-		Tool:      desc.Metadata,
-		Keys:      append([]tooling.ToolResourceLockKey(nil), desc.Metadata.ResourceLocks...),
-		Context:   execCtx,
-	}
-	decision, release, err := d.resourceLockGate.AcquireToolResourceLocks(ctx, req)
-	if err != nil {
-		decision = ToolResourceLockDecision{Action: "denied", Reason: err.Error()}
-		return nil, toolResourceLockTrace(req, decision), resourceLockFailurePayload(tc.Name, decision)
-	}
-	decision = normalizeToolResourceLockDecision(decision)
-	traces := toolResourceLockTrace(req, decision)
-	if decision.Action != "acquired" {
-		return nil, traces, resourceLockFailurePayload(tc.Name, decision)
-	}
-	return release, traces, ""
-}
-
 func toolExecutionFailureText(result tooling.ToolResult, err error) string {
 	if err != nil {
 		return err.Error()
 	}
-	return strings.TrimSpace(result.Error)
+	if result.ExecutionFailed() {
+		return result.FailureText()
+	}
+	return ""
 }
 
 func classifyToolExecutionFailure(desc ToolDescriptor, failureText string) string {

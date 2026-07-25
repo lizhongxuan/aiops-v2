@@ -1,0 +1,33 @@
+{
+  "id": "GEN-011",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Optimize alerting, but no threshold, target, or objective is supplied.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": [],
+    "allowedActions": [],
+    "argumentSchemas": {},
+    "requiredPorts": {},
+    "requiredPaths": [],
+    "forbiddenPaths": ["/graph/nodes/*/args/threshold", "/graph/nodes/*/args/environmentRef"],
+    "forbiddenPlaceholders": ["guessed-production-threshold", "script.python"],
+    "validation": { "firstPreviewStatus": "clarification_required", "finalStatus": "clarification_required", "rateEligible": false },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [{ "kind": "fact", "name": "asked_for_threshold_and_target" }],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "clarification_required", "valid": false } },
+      "final": {
+        "graph": { "nodes": [], "edges": [] },
+        "validation": { "status": "clarification_required", "valid": false, "diagnostics": ["threshold and target are required"] },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 25, "previewMs": 25, "validateMs": 0, "repairCount": 0, "inputTokens": 610, "outputTokens": 190, "contextTokens": 800 },
+      "semanticFacts": { "asked_for_threshold_and_target": true }
+    }]
+  }
+}

@@ -452,6 +452,7 @@ func (k *RuntimeKernel) markTurnCanceledRecorded(ctx context.Context, session *S
 	}
 	now := time.Now()
 	checkpoint := newCheckpointMetadata(session.ID, snapshot.ID, snapshot.Iteration, nextCheckpointSequence(snapshot), "turn_cancelled", TurnLifecycleCanceled, TurnResumeStateNone)
+	recordWorkflowRepairCancellation(snapshot, reason, now)
 	candidate := *snapshot
 	candidate.AgentItems = append([]agentstate.TurnItem(nil), snapshot.AgentItems...)
 	candidate.Lifecycle = TurnLifecycleCanceled
@@ -943,6 +944,8 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if err := req.Validate(); err != nil {
 		return TurnResult{}, fmt.Errorf("invalid resume request: %w", err)
 	}
+	unlockTurn := lockControlledTurnOperation(req.SessionID, req.TurnID)
+	defer unlockTurn()
 
 	session := k.sessions.Get(req.SessionID)
 	if session == nil {
@@ -959,6 +962,11 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if snapshot == nil || snapshot.ID != req.TurnID {
 		return TurnResult{}, fmt.Errorf("turn %q is not suspended", req.TurnID)
 	}
+	if snapshot.ControlledToolTurn != nil {
+		if err := validateControlledToolTurnSnapshot(snapshot); err != nil {
+			return TurnResult{}, err
+		}
+	}
 	if err := ValidateTurnRecoveryPreconditions(snapshot); err != nil {
 		return TurnResult{}, err
 	}
@@ -969,7 +977,7 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 	if err != nil {
 		return TurnResult{}, err
 	}
-	snapshot.Metadata = mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata)
+	snapshot.Metadata = preserveWorkflowRepairBudgetMetadata(snapshot.Metadata, mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata))
 	if len(snapshot.TraceContext) > 0 {
 		runCtx = k.runtimeObserver().ContextWithTraceContext(runCtx, snapshot.TraceContext)
 	}
@@ -1028,14 +1036,6 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		recordRejectedApproval(session, approval, req.Decision, decisionReason, now)
 		return k.completeDeniedApprovalTurn(ctx, session, snapshot, approval, decisionReason, now)
 	}
-	agentKind := modelrouter.AgentKindWorker
-	if session.Type == SessionTypeWorkspace {
-		agentKind = modelrouter.AgentKindPlanner
-	}
-	chatModel, modelErr := k.modelRouter.GetModel(agentKind, modelrouter.ProviderConfig{})
-	if modelErr != nil {
-		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
-	}
 	if pendingCancelReason != "" {
 		if _, cancelErr := k.markTurnCanceledRecorded(ctx, session, snapshot, pendingCancelReason); cancelErr != nil {
 			return TurnResult{}, cancelErr
@@ -1084,6 +1084,9 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if blocked != nil {
 			return *blocked, nil
 		}
+		if snapshot.ControlledToolTurn != nil {
+			return k.completeControlledToolTurn(runCtx, session, snapshot)
+		}
 	} else {
 		if snapshot.LatestCheckpoint != nil && strings.EqualFold(strings.TrimSpace(snapshot.LatestCheckpoint.Kind), "model_timeout") {
 			snapshot.PendingStepCause = &StepRevisionCause{Kind: StepRevisionKindModelRetryResumed, CheckpointID: snapshot.LatestCheckpoint.ID}
@@ -1091,6 +1094,18 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		if err := k.markSnapshotResuming(session, snapshot, "resume_checkpoint"); err != nil {
 			return TurnResult{}, err
 		}
+	}
+
+	agentKind := modelrouter.AgentKindWorker
+	if session.Type == SessionTypeWorkspace {
+		agentKind = modelrouter.AgentKindPlanner
+	}
+	if k.modelRouter == nil {
+		return TurnResult{}, fmt.Errorf("get model: model router is required")
+	}
+	chatModel, modelErr := k.modelRouter.GetModel(agentKind, modelrouter.ProviderConfig{})
+	if modelErr != nil {
+		return TurnResult{}, fmt.Errorf("get model: %w", modelErr)
 	}
 
 	resumeReq := TurnRequest{
@@ -1102,6 +1117,8 @@ func (k *RuntimeKernel) ResumeTurn(ctx context.Context, req ResumeRequest) (Turn
 		ClientMessageID: snapshot.ClientMessageID,
 		HostID:          session.HostID,
 		Metadata:        mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata),
+		TrustedIdentity: cloneTrustedTurnIdentity(snapshot.TrustedIdentity),
+		TurnArtifacts:   cloneRuntimeTurnArtifacts(snapshot.TurnArtifacts),
 	}
 	agentOutput, blocked, runErr := k.runHostIterationLoop(runCtx, chatModel, agentKind, resumeReq, session, req.TurnID, hooks.TurnEvent{}, "")
 	if runErr != nil {
@@ -1984,7 +2001,8 @@ func (k *RuntimeKernel) runHostIterationLoop(
 	publicWebDispatchesInitialized := false
 	previousPromptInputTrace := latestModelInputPromptTrace(snapshot)
 	var lastReasoningPersist time.Time
-	turnMetadata := k.applyProgressiveToolPackMetadata(mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata), req.Input, req.SessionType, req.Mode, session)
+	mergedTurnMetadata := preserveWorkflowRepairBudgetMetadata(snapshot.Metadata, mergeResumeTurnMetadata(snapshot.Metadata, req.Metadata))
+	turnMetadata := k.applyProgressiveToolPackMetadata(mergedTurnMetadata, req.Input, req.SessionType, req.Mode, session)
 	turnMetadata = applyDefaultRuntimePromptProfile(turnMetadata, req.SessionType, session.HostID)
 	req.Metadata = turnMetadata
 	snapshot.Metadata = turnMetadata
@@ -1998,10 +2016,12 @@ func (k *RuntimeKernel) runHostIterationLoop(
 		IntentFrame:           req.IntentFrame,
 		PermissionProfile:     req.PermissionProfile,
 		Metadata:              turnMetadata,
+		TrustedIdentity:       cloneTrustedTurnIdentity(req.TrustedIdentity),
 		ResourceBindings:      req.ResourceBindings,
 		ResourceRoleBindings:  req.ResourceRoleBindings,
 		SessionTargetSnapshot: req.SessionTargetSnapshot,
 		RoleBindingConflicts:  req.RoleBindingConflicts,
+		TurnArtifacts:         cloneRuntimeTurnArtifacts(req.TurnArtifacts),
 	}
 	var admissionContext RuntimeTurnContext
 	var admissionFacts runtimecontract.AdmissionFacts
@@ -2153,7 +2173,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 				TargetTokens: thresholds.EffectiveContextWindow,
 			}
 			turnContext.ToolPolicyHash = surfacePolicy.Hash
-			assembly, assemblyErr := buildRuntimeTurnAssembly(runtimeTurnAssemblyInput{
+			assembly, assemblyErr := assembleRuntimeTurn(runtimeTurnAssemblyInput{
 				TurnContext:            turnContext,
 				CompileContext:         compileCtx,
 				ToolSurfacePolicy:      surfacePolicy,
@@ -3028,6 +3048,10 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if strings.TrimSpace(dispatchResult.Metadata.Name) == "" {
 				dispatchResult.Metadata = toolMetadataForToolCall(dispatchTools, tc)
 			}
+			repairBudgetResult := dispatchResult.Result
+			if repairBudgetResult.Error == "" {
+				repairBudgetResult.Error = dispatchResult.Error
+			}
 			appendResourceLockTraces(snapshot, dispatchResult.ResourceLocks)
 			appendToolAttemptStates(snapshot, tc.ID, dispatchResult.Attempts)
 			recordRejectedToolCallFromDispatch(session, turnID, tc, dispatchResult, time.Now())
@@ -3136,11 +3160,22 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			if err := k.recordCanonicalTransportProjection(ctx, snapshot, TurnLifecycleRunning, snapshot.ResumeState, checkpoint.ID, nil); err != nil {
 				return nil, fmt.Errorf("record tool-result projection source: %w", err)
 			}
+			repairDecision := observeWorkflowRepairBudget(snapshot, workflowRepairBudgetObservation{
+				Iteration: iteration, ToolCallID: tc.ID, Metadata: dispatchResult.Metadata, Result: repairBudgetResult,
+				PromptTokens: providerResponse.Usage.PromptTokens, CompletionTokens: providerResponse.Usage.CompletionTokens,
+				TotalTokens: providerResponse.Usage.TotalTokens, ModelDuration: modelCallDuration, ObservedAt: time.Now(),
+			})
+			if repairDecision.Exhausted {
+				return k.blockWorkflowRepairBudget(session, snapshot, tc, repairDecision)
+			}
 			k.persistTurnSnapshot(session, snapshot)
 			return nil, nil
 		}
 
 		for i := 0; i < len(assistantMsg.ToolCalls); {
+			if err := ctx.Err(); err != nil {
+				return "", nil, err
+			}
 			tc := assistantMsg.ToolCalls[i]
 			if canDispatchToolCallInParallel(dispatchTools, tc) && toolDispatches < defaultMaxToolDispatchesPerTurn {
 				remaining := defaultMaxToolDispatchesPerTurn - toolDispatches
@@ -3208,11 +3243,14 @@ func (k *RuntimeKernel) runHostIterationLoop(
 						wg.Add(1)
 						go func(index int, call ToolCall) {
 							defer wg.Done()
-							dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+							dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForSnapshot(req.HostID, turnMetadata, snapshot))
 							results[index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, call, req.SessionType, req.Mode, turnSpanID)
 						}(task.index, task.call)
 					}
 					wg.Wait()
+					if err := ctx.Err(); err != nil {
+						return "", nil, err
+					}
 					for _, deferred := range deferredReuses {
 						if reused, ok := coveredReadReuseFromBatchResult(dispatchTools, batch, results, deferred); ok {
 							results[deferred.index] = reused
@@ -3222,7 +3260,7 @@ func (k *RuntimeKernel) runHostIterationLoop(
 						if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{fallbackCall}); err != nil {
 							return "", nil, fmt.Errorf("record deferred tool dispatch: %w", err)
 						}
-						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+						dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForSnapshot(req.HostID, turnMetadata, snapshot))
 						results[deferred.index] = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, fallbackCall, req.SessionType, req.Mode, turnSpanID)
 						dispatchedBatchCalls = append(dispatchedBatchCalls, fallbackCall)
 					}
@@ -3259,10 +3297,13 @@ func (k *RuntimeKernel) runHostIterationLoop(
 			} else if reused, ok := maybeReuseCoveredReadResult(snapshot, dispatchTools, tc); ok {
 				dispatchResult = reused
 			} else {
+				if err := ctx.Err(); err != nil {
+					return "", nil, err
+				}
 				if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
 					return "", nil, fmt.Errorf("record tool dispatch: %w", err)
 				}
-				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(req.HostID, turnMetadata))
+				dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForSnapshot(req.HostID, turnMetadata, snapshot))
 				dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, turnID, tc, req.SessionType, req.Mode, turnSpanID)
 				if countsTowardToolBudget(tc) {
 					toolDispatches++
@@ -4369,6 +4410,17 @@ func shouldFeedToolFailureBackToModel(result DispatchResult) bool {
 }
 
 func failedToolResultForModel(tc ToolCall, result DispatchResult) tooling.ToolResult {
+	// A tool that returned a valid typed domain error completed its protocol
+	// exchange and already supplied the recovery contract. Preserve it for the
+	// next model step and transport instead of replacing it with a generic error
+	// classifier envelope.
+	if result.Result.IsError && len(result.Result.StructuredContent) > 0 && json.Valid(result.Result.StructuredContent) {
+		preserved := result.Result
+		if preserved.ToolCallID == "" {
+			preserved.ToolCallID = tc.ID
+		}
+		return preserved
+	}
 	toolName := strings.TrimSpace(tc.Name)
 	if toolName == "" {
 		toolName = "tool"
@@ -4995,6 +5047,17 @@ func (k *RuntimeKernel) currentApprovalResumeWorld(session *SessionState, snapsh
 	})
 	decision := dispatcher.dispatchDecisionTrace(toolCall)
 	meta := toolMetadataForToolCall(compileCtx.AssembledTools, toolCall)
+	if desc, executor, found := dispatcher.lookup.LookupTool(toolCall.Name); found && desc.Metadata.ResourceLockResolver != nil {
+		resolveCtx := tooling.ContextWithToolExecution(context.Background(), toolExecutionContextForSnapshot(session.HostID, metadata, snapshot))
+		resolveCtx, resolvedArgs := enrichToolExecutionContext(resolveCtx, session.ID, snapshot.ID, toolCall, desc, nil)
+		resolvedCall := toolCall
+		resolvedCall.Arguments = resolvedArgs
+		resolvedDesc, resolveErr := bindResolvedToolResourceLocks(resolveCtx, resolvedCall, desc, executor)
+		if resolveErr != nil {
+			return approvalCurrentWorld{}, resolveErr
+		}
+		meta = resolvedDesc.Metadata
+	}
 	resourceScopes := pendingApprovalResourceScopes(meta)
 	currentTargets := pendingApprovalTargetRefs(session.HostID, resourceScopes)
 	if len(currentTargets) == 0 {
@@ -5143,7 +5206,7 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 		rememberSessionApprovalGrant(session, toolCall, execution.approvalID)
 	}
 	k.commitSnapshotResuming(session, snapshot, checkpoint)
-	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+	dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForSnapshot(session.HostID, snapshot.Metadata, snapshot))
 	markToolInvocationRunning(snapshot, toolCall.ID)
 	k.persistTurnSnapshot(session, snapshot)
 	result := execution.dispatcher.DispatchApproved(dispatchCtx, session.ID, snapshot.ID, toolCall, session.Type, session.Mode, execution.authorization)
@@ -5179,9 +5242,9 @@ func (k *RuntimeKernel) resumePendingToolCall(ctx context.Context, session *Sess
 		agentstate.TurnItemTypeToolResult,
 		toolResultItemStatus(recordedResult),
 		truncateString(recordedResult.Content, 240),
-		map[string]string{"toolCallId": toolCall.ID, "toolName": toolCall.Name},
+		toolResultAgentItemData(snapshot.ID, toolCall, recordedResult),
 	))
-	if recordedResult.Error != "" {
+	if recordedResult.IsError || recordedResult.Error != "" {
 		markToolInvocationFailed(snapshot, toolCall.ID, failureKindForDispatchResult(result))
 	} else if recordedResult.Outcome.Normalize() == tooling.ToolResultOutcomePartial {
 		markToolInvocationPartial(snapshot, toolCall.ID)
@@ -5245,7 +5308,7 @@ func (k *RuntimeKernel) drainRemainingToolCallsAfterResume(
 			if err := k.recordCanonicalToolDispatch(ctx, snapshot, []ToolCall{tc}); err != nil {
 				return nil, fmt.Errorf("record resumed tool dispatch: %w", err)
 			}
-			dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForDispatch(session.HostID, snapshot.Metadata))
+			dispatchCtx := tooling.ContextWithToolExecution(ctx, toolExecutionContextForSnapshot(session.HostID, snapshot.Metadata, snapshot))
 			dispatchResult = dispatcher.DispatchWithParentSpan(dispatchCtx, session.ID, snapshot.ID, tc, session.Type, session.Mode, "")
 		}
 		if dispatchResult.ToolCallID == "" {
@@ -5352,6 +5415,10 @@ func toolResultAgentItemData(turnID string, tc ToolCall, result ToolResult) map[
 	}
 	if result.Error != "" {
 		payload["error"] = result.Error
+	}
+	if len(result.StructuredContent) > 0 {
+		payload["structuredContent"] = append(json.RawMessage(nil), result.StructuredContent...)
+		payload["isError"] = result.IsError
 	}
 	if result.Display != nil {
 		payload["displayKind"] = result.Display.Type
@@ -5473,6 +5540,24 @@ func assistantMessageEvidenceRefsFromSnapshot(snapshot *TurnSnapshot) []string {
 		return nil
 	}
 	var refs []string
+	// Server-frozen turn artifacts (for example an exact workflow candidate
+	// and its base revision) are durable pre-change evidence. Their content is
+	// digest-bound before admission, so only the inert artifact identity is
+	// carried into the rollback contract.
+	for _, artifact := range snapshot.TurnArtifacts {
+		if artifact.Validate() == nil {
+			refs = append(refs, artifact.ID)
+		}
+	}
+	// Runtime-materialized references (for example a signed
+	// workflow.get_context resource at the committed revision) are valid
+	// pre-change evidence even when the tool's human-readable Content does not
+	// embed a legacy evidenceRefs field.
+	for _, ref := range snapshot.ExternalReferences {
+		if id := strings.TrimSpace(ref.ID); id != "" {
+			refs = append(refs, id)
+		}
+	}
 	for _, item := range snapshot.AgentItems {
 		switch item.Type {
 		case agentstate.TurnItemTypeEvidence:
@@ -5481,10 +5566,16 @@ func assistantMessageEvidenceRefsFromSnapshot(snapshot *TurnSnapshot) []string {
 			}
 		case agentstate.TurnItemTypeToolResult:
 			var payload struct {
-				EvidenceRefs []string `json:"evidenceRefs"`
+				EvidenceRefs       []string            `json:"evidenceRefs"`
+				ExternalReferences []ExternalReference `json:"externalReferences"`
 			}
 			if len(item.Payload.Data) > 0 && json.Unmarshal(item.Payload.Data, &payload) == nil {
 				refs = append(refs, payload.EvidenceRefs...)
+				for _, ref := range payload.ExternalReferences {
+					if id := strings.TrimSpace(ref.ID); id != "" {
+						refs = append(refs, id)
+					}
+				}
 			}
 		}
 	}
@@ -5818,6 +5909,8 @@ func (k *RuntimeKernel) materializeToolResult(session *SessionState, snapshot *T
 		ToolCallID:         tc.ID,
 		TargetIdentityHash: frozenResourceTargetIdentityHashFromSnapshot(snapshot),
 		Content:            toolResult.Content,
+		StructuredContent:  append(json.RawMessage(nil), toolResult.StructuredContent...),
+		IsError:            toolResult.IsError,
 		Display:            copyToolDisplay(toolResult.Display),
 		Error:              toolResult.Error,
 		Outcome:            toolResult.Outcome,
@@ -6438,6 +6531,8 @@ func (k *RuntimeKernel) ensureCurrentTurnSnapshot(session *SessionState, req Tur
 		SessionType:          req.SessionType,
 		Mode:                 req.Mode,
 		Metadata:             cloneTurnMetadata(req.Metadata),
+		TrustedIdentity:      cloneTrustedTurnIdentity(req.TrustedIdentity),
+		TurnArtifacts:        cloneRuntimeTurnArtifacts(req.TurnArtifacts),
 		SpecialInputReadPlan: req.SpecialInputReadPlan,
 		Lifecycle:            TurnLifecycleRunning,
 		ResumeState:          TurnResumeStateNone,
@@ -7575,7 +7670,7 @@ func (l assembledToolLookup) LookupTool(name string) (ToolDescriptor, ToolExecut
 	if !ok {
 		return ToolDescriptor{}, nil, false
 	}
-	return ToolDescriptor{Metadata: toolDef.Metadata(), InputSchema: toolDef.InputSchema()}, toolExecutorAdapter{tool: toolDef}, true
+	return ToolDescriptor{Metadata: toolDef.Metadata(), InputSchema: toolDef.InputSchema(), OutputSchema: toolDef.OutputSchema()}, toolExecutorAdapter{tool: toolDef}, true
 }
 
 type toolExecutorAdapter struct {
@@ -7587,12 +7682,5 @@ func (a toolExecutorAdapter) CheckPermissions(ctx context.Context, args json.Raw
 }
 
 func (a toolExecutorAdapter) Execute(ctx context.Context, args json.RawMessage) (tooling.ToolResult, error) {
-	result, err := a.tool.Execute(ctx, args)
-	if err != nil {
-		return tooling.ToolResult{}, err
-	}
-	if result.Error != "" {
-		return tooling.ToolResult{}, errors.New(result.Error)
-	}
-	return result, nil
+	return a.tool.Execute(ctx, args)
 }

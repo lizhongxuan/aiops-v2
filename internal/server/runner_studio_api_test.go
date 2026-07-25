@@ -1,14 +1,177 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"aiops-v2/internal/appui"
+	"aiops-v2/internal/runtimekernel"
+	"golang.org/x/net/websocket"
+	"runner/server/service"
+	"runner/workflow/edit"
+	"runner/workflow/visual"
 )
+
+func TestRunnerStudioGraphBindingSurvivesBroadcastBeforeWebSocketSubscribe(t *testing.T) {
+	source := &runnerStudioLateSubscriberWorkflowSource{events: make(chan edit.WorkflowDomainEvent)}
+	srv := NewHTTPServer(
+		appui.NewServices(websocketAPITestRuntime{}, runtimekernel.NewSessionManager()),
+		WithRunnerStudioHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ui":{"resource_version":"rv-late-subscriber"}}`))
+		})),
+		withWorkflowCommandApplication(nil, WorkflowCommandScopeResolverFunc(func(context.Context, *http.Request, string) (WorkflowCommandTrustedScope, error) {
+			return WorkflowCommandTrustedScope{TenantID: "tenant-a", ActorID: "user-a", CanvasSessionID: "canvas-a", SessionID: "session-a"}, nil
+		})),
+		WithWorkflowEventSource(context.Background(), source),
+		WithAppWebSocketHeartbeat(time.Hour),
+	)
+	defer srv.CloseWorkflowEventBindings()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	response, err := ts.Client().Get(ts.URL + "/api/runner-studio/workflows/workflow-late-subscriber/graph")
+	if err != nil {
+		t.Fatalf("GET graph: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("graph status = %d, want 200", response.StatusCode)
+	}
+
+	conn, err := websocket.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/ws", "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+	encoded, err := json.Marshal(initial.Config[appui.WorkflowWorkspaceSnapshotKey])
+	if err != nil {
+		t.Fatalf("marshal workflow workspace: %v", err)
+	}
+	var projection appui.WorkflowEventProjection
+	if err := json.Unmarshal(encoded, &projection); err != nil {
+		t.Fatalf("decode workflow workspace: %v", err)
+	}
+	if projection.Committed == nil || projection.Committed.WorkflowKey.WorkflowID != "workflow-late-subscriber" || projection.Committed.Revision.ResourceVersion != "rv-late-subscriber" {
+		t.Fatalf("initial workflow workspace = %+v, want late-bound authoritative revision", projection)
+	}
+}
+
+func TestRunnerStudioGraphOpenReactivatesExistingWorkflowProjection(t *testing.T) {
+	source := &runnerStudioLateSubscriberWorkflowSource{events: make(chan edit.WorkflowDomainEvent)}
+	srv := NewHTTPServer(
+		appui.NewServices(websocketAPITestRuntime{}, runtimekernel.NewSessionManager()),
+		WithRunnerStudioHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ui":{"resource_version":"rv-reactivated"}}`))
+		})),
+		withWorkflowCommandApplication(nil, WorkflowCommandScopeResolverFunc(func(context.Context, *http.Request, string) (WorkflowCommandTrustedScope, error) {
+			return WorkflowCommandTrustedScope{TenantID: "tenant-a", ActorID: "user-a", CanvasSessionID: "canvas-a", SessionID: "session-a"}, nil
+		})),
+		WithWorkflowEventSource(context.Background(), source),
+		WithAppWebSocketHeartbeat(time.Hour),
+	)
+	defer srv.CloseWorkflowEventBindings()
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	for _, workflowID := range []string{"workflow-a", "workflow-b", "workflow-a"} {
+		response, err := ts.Client().Get(ts.URL + "/api/runner-studio/workflows/" + workflowID + "/graph")
+		if err != nil {
+			t.Fatalf("GET graph %s: %v", workflowID, err)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("graph %s status = %d, want 200", workflowID, response.StatusCode)
+		}
+	}
+
+	conn, err := websocket.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/ws", "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial: %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+	encoded, err := json.Marshal(initial.Config[appui.WorkflowWorkspaceSnapshotKey])
+	if err != nil {
+		t.Fatalf("marshal workflow workspace: %v", err)
+	}
+	var projection appui.WorkflowEventProjection
+	if err := json.Unmarshal(encoded, &projection); err != nil {
+		t.Fatalf("decode workflow workspace: %v", err)
+	}
+	if projection.Committed == nil || projection.Committed.WorkflowKey.WorkflowID != "workflow-a" {
+		t.Fatalf("active workflow workspace = %+v, want workflow-a after A -> B -> A", projection)
+	}
+}
+
+type runnerStudioLateSubscriberWorkflowSource struct {
+	events chan edit.WorkflowDomainEvent
+}
+
+func (s *runnerStudioLateSubscriberWorkflowSource) Recover(context.Context, edit.WorkflowKey) error {
+	return nil
+}
+
+func (s *runnerStudioLateSubscriberWorkflowSource) Replay(context.Context, edit.WorkflowKey, uint64, int) (service.WorkflowEventReplay, error) {
+	return service.WorkflowEventReplay{LatestSequence: 3}, nil
+}
+
+func (s *runnerStudioLateSubscriberWorkflowSource) Snapshot(_ context.Context, key edit.WorkflowKey) (service.WorkflowEditSnapshot, error) {
+	return service.WorkflowEditSnapshot{
+		Key:      key,
+		Revision: edit.Revision{ResourceVersion: "rv-late-subscriber", SemanticHash: "semantic-late-subscriber", LayoutHash: "layout-late-subscriber"},
+		Graph:    visual.Graph{},
+	}, nil
+}
+
+func (s *runnerStudioLateSubscriberWorkflowSource) Subscribe(context.Context, edit.WorkflowKey, uint64) (<-chan edit.WorkflowDomainEvent, func(), error) {
+	return s.events, func() {}, nil
+}
+
+func TestStateEndpointProjectsWorkflowPromptPresetCapabilityOff(t *testing.T) {
+	srv := NewHTTPServer(appui.NewServices(websocketAPITestRuntime{}, runtimekernel.NewSessionManager()))
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+
+	srv.Handler().ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("state status = %d payload=%s", response.Code, response.Body.String())
+	}
+	var snapshot struct {
+		Config map[string]json.RawMessage `json:"config"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &snapshot); err != nil {
+		t.Fatalf("decode state snapshot: %v", err)
+	}
+	var capability appui.WorkflowPromptPresetCapability
+	if err := json.Unmarshal(snapshot.Config["workflowPromptPresetCapability"], &capability); err != nil {
+		t.Fatalf("decode prompt preset capability: %v", err)
+	}
+	if capability.SchemaVersion != appui.WorkflowPromptPresetCapabilitySchemaVersion ||
+		capability.Status != "off" ||
+		capability.Reason != "provider_unavailable" ||
+		capability.HandlerAvailable ||
+		capability.Presets == nil ||
+		len(capability.Presets) != 0 {
+		t.Fatalf("state prompt preset capability must fail closed: %#v", capability)
+	}
+}
 
 func TestRunnerStudioAPIRoutesToEmbeddedRunnerAPI(t *testing.T) {
 	type seenRequest struct {
@@ -140,6 +303,13 @@ func TestRunnerStudioAPIRoutesToEmbeddedRunnerAPI(t *testing.T) {
 			path:       "/api/runner-studio/workflows/pg-restore/publish",
 			wantMethod: http.MethodPost,
 			wantPath:   "/api/v1/workflows/pg-restore/publish",
+		},
+		{
+			name:       "immutable published workflow run",
+			method:     http.MethodPost,
+			path:       "/api/runner-studio/workflow-published-run",
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/v1/workflows/graph/runs",
 		},
 		{
 			name:       "graph compile",

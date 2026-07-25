@@ -215,6 +215,10 @@ func TestChatRuntimeToolSurfaceWorkflowAgentEnablesOnlyWorkflowEditorPack(t *tes
 		"aiops.workflowAgent.enabled": "true",
 		"aiops.workflow.id":           "workflow",
 		"aiops.workflow.baseRevision": "rev",
+		"enableToolPack":              "public_web,ops_manual_flow",
+		"enableTool":                  "web_search,search_ops_manuals",
+		"aiops.webSearch.policy":      string(runtimekernel.WebSearchEnabled),
+		"aiops.weblearn.enabled":      "true",
 	}}
 	applyChatRuntimeToolSurfaceMetadata(&req, ChatRuntimeRoute{Mode: ChatRouteAdvisory})
 	applyWorkflowAgentRuntimeMetadata(&req)
@@ -225,8 +229,11 @@ func TestChatRuntimeToolSurfaceWorkflowAgentEnablesOnlyWorkflowEditorPack(t *tes
 	if req.Metadata["aiops.tool.execCommandAllowed"] != "false" || req.Metadata["aiops.tool.hostMutationAllowed"] != "false" {
 		t.Fatalf("metadata = %#v, want host exec/mutation disabled", req.Metadata)
 	}
-	if !strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
-		t.Fatalf("enableToolPack = %q, want workflow_editor", req.Metadata["enableToolPack"])
+	if req.Metadata["enableToolPack"] != "workflow_editor" || req.Metadata["enableTool"] != "" {
+		t.Fatalf("workflow tool surface = packs:%q tools:%q, want the authoritative workflow_editor-only surface", req.Metadata["enableToolPack"], req.Metadata["enableTool"])
+	}
+	if req.Metadata["aiops.webSearch.policy"] != string(runtimekernel.WebSearchDisabled) || req.Metadata["aiops.weblearn.enabled"] != "false" {
+		t.Fatalf("workflow web policy = %q/%q, want disabled", req.Metadata["aiops.webSearch.policy"], req.Metadata["aiops.weblearn.enabled"])
 	}
 
 	registry := tooling.NewRegistry()

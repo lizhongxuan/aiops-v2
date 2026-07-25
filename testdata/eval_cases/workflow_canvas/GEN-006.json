@@ -1,0 +1,51 @@
+{
+  "id": "GEN-006",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Inspect the selected host with a real read-only Catalog action; do not use a generic script.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["host.processes.inspect"],
+    "allowedActions": ["host.processes.inspect"],
+    "argumentSchemas": {
+      "host.processes.inspect": { "required": ["targetRef", "limit"], "properties": { "targetRef": "string", "limit": "integer" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "inspect": { "inputs": ["in"], "outputs": ["success", "failure"] } },
+    "requiredPaths": ["/graph/nodes/1/args/targetRef", "/graph/nodes/1/args/limit"],
+    "forbiddenPaths": ["/graph/nodes/*/args/command", "/graph/nodes/*/args/script"],
+    "forbiddenPlaceholders": ["script.python", "exec arbitrary command"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "edge", "source": "inspect", "sourcePort": "failure", "target": "end-failure", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "inspect", "type": "action", "action": "host.processes.inspect", "args": { "targetRef": "host://selected", "limit": 20 }, "inputPorts": ["in"], "outputPorts": ["success", "failure"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] },
+            { "id": "end-failure", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "inspect", "targetPort": "in" },
+            { "id": "e2", "source": "inspect", "sourcePort": "success", "target": "end", "targetPort": "in" },
+            { "id": "e3", "source": "inspect", "sourcePort": "failure", "target": "end-failure", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 48, "previewMs": 76, "validateMs": 20, "repairCount": 0, "inputTokens": 880, "outputTokens": 590, "contextTokens": 1470 }
+    }]
+  }
+}

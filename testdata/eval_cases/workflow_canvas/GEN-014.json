@@ -1,0 +1,52 @@
+{
+  "id": "GEN-014",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Run the complete versioned generation contract and report preview/final validity without placeholders.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["workflow.contract.check"],
+    "allowedActions": ["workflow.contract.check"],
+    "argumentSchemas": {
+      "workflow.contract.check": { "required": ["contractVersion"], "properties": { "contractVersion": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "check": { "inputs": ["in"], "outputs": ["success"] } },
+    "requiredPaths": ["/graph/nodes/1/args/contractVersion", "/graph/edges/*/sourcePort"],
+    "forbiddenPaths": ["/graph/nodes/*/args/script", "/graph/nodes/*/args/password"],
+    "forbiddenPlaceholders": ["script.python", "<todo>", "replace_me"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "fact", "name": "versioned_contract_complete" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "planHash": "complete-suite-plan-v1",
+      "compileHash": "complete-suite-compile-v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "check", "type": "action", "action": "workflow.contract.check", "args": { "contractVersion": "v1" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "check", "targetPort": "in" },
+            { "id": "e2", "source": "check", "sourcePort": "success", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 52, "previewMs": 78, "validateMs": 21, "repairCount": 0, "inputTokens": 920, "outputTokens": 560, "contextTokens": 1480 },
+      "semanticFacts": { "versioned_contract_complete": true }
+    }]
+  }
+}

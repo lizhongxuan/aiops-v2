@@ -1,0 +1,96 @@
+{
+  "id": "GEN-013",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Compile the same fixed Plan IR repeatedly and keep the normalized graph deterministic.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["service.read"],
+    "allowedActions": ["service.read"],
+    "argumentSchemas": {
+      "service.read": { "required": ["serviceRef"], "properties": { "serviceRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "read": { "inputs": ["in"], "outputs": ["success"] } },
+    "requiredPaths": ["/graph/nodes/*/id", "/graph/edges/*/id"],
+    "forbiddenPaths": ["/graph/nodes/*/args/script"],
+    "forbiddenPlaceholders": ["script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [{ "kind": "acyclic" }, { "kind": "all_paths_end" }],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "requireDeterministic": true,
+    "recordedAttempts": [
+      {
+        "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+        "planHash": "fixed-plan-ir-v1",
+        "compileHash": "fixed-compile-v1",
+        "firstPreview": { "validation": { "status": "valid", "valid": true } },
+        "final": {
+          "graph": {
+            "nodes": [
+              { "id": "start", "type": "start", "outputPorts": ["next"] },
+              { "id": "read", "type": "action", "action": "service.read", "args": { "serviceRef": "service://fixed" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+              { "id": "end", "type": "end", "inputPorts": ["in"] }
+            ],
+            "edges": [
+              { "id": "e1", "source": "start", "sourcePort": "next", "target": "read", "targetPort": "in" },
+              { "id": "e2", "source": "read", "sourcePort": "success", "target": "end", "targetPort": "in" }
+            ]
+          },
+          "validation": { "status": "valid", "valid": true },
+          "risk": "low",
+          "approval": { "required": false, "granted": false }
+        },
+        "metrics": { "firstFeedbackMs": 47, "previewMs": 72, "validateMs": 19, "repairCount": 0, "inputTokens": 870, "outputTokens": 500, "contextTokens": 1370 }
+      },
+      {
+        "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+        "planHash": "fixed-plan-ir-v1",
+        "compileHash": "fixed-compile-v1",
+        "firstPreview": { "validation": { "status": "valid", "valid": true } },
+        "final": {
+          "graph": {
+            "nodes": [
+              { "id": "start", "type": "start", "outputPorts": ["next"] },
+              { "id": "read", "type": "action", "action": "service.read", "args": { "serviceRef": "service://fixed" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+              { "id": "end", "type": "end", "inputPorts": ["in"] }
+            ],
+            "edges": [
+              { "id": "e1", "source": "start", "sourcePort": "next", "target": "read", "targetPort": "in" },
+              { "id": "e2", "source": "read", "sourcePort": "success", "target": "end", "targetPort": "in" }
+            ]
+          },
+          "validation": { "status": "valid", "valid": true },
+          "risk": "low",
+          "approval": { "required": false, "granted": false }
+        },
+        "metrics": { "firstFeedbackMs": 46, "previewMs": 71, "validateMs": 18, "repairCount": 0, "inputTokens": 870, "outputTokens": 500, "contextTokens": 1370 }
+      },
+      {
+        "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+        "planHash": "fixed-plan-ir-v1",
+        "compileHash": "fixed-compile-v1",
+        "firstPreview": { "validation": { "status": "valid", "valid": true } },
+        "final": {
+          "graph": {
+            "nodes": [
+              { "id": "start", "type": "start", "outputPorts": ["next"] },
+              { "id": "read", "type": "action", "action": "service.read", "args": { "serviceRef": "service://fixed" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+              { "id": "end", "type": "end", "inputPorts": ["in"] }
+            ],
+            "edges": [
+              { "id": "e1", "source": "start", "sourcePort": "next", "target": "read", "targetPort": "in" },
+              { "id": "e2", "source": "read", "sourcePort": "success", "target": "end", "targetPort": "in" }
+            ]
+          },
+          "validation": { "status": "valid", "valid": true },
+          "risk": "low",
+          "approval": { "required": false, "granted": false }
+        },
+        "metrics": { "firstFeedbackMs": 48, "previewMs": 73, "validateMs": 20, "repairCount": 0, "inputTokens": 870, "outputTokens": 500, "contextTokens": 1370 }
+      }
+    ]
+  }
+}

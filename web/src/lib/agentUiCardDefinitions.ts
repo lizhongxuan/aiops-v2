@@ -1,3 +1,5 @@
+import { WORKFLOW_CHANGE_ARTIFACT_CONTRACTS } from "@/transport/aiopsTransportTypes";
+
 export const AGENT_UI_ARTIFACT_TYPES = [
   "coroot_chart",
   "trace_summary",
@@ -51,8 +53,30 @@ export type AgentUiCardDefinition = {
   schemaVersion?: string;
   component?: string;
   fallback?: string;
+  strictContract?: boolean;
   display?: AgentUiCardDisplay;
 };
+
+const WORKFLOW_CHANGE_LABELS = {
+  plan: "修改计划",
+  preview: "待确认修改",
+  receipt: "修改已保存",
+  validation: "检查结果",
+  conflict: "画布已发生变化",
+} as const;
+
+const WORKFLOW_CHANGE_CARD_DEFINITIONS: AgentUiCardDefinition[] = WORKFLOW_CHANGE_ARTIFACT_CONTRACTS.map((contract) => ({
+  type: contract.type,
+  label: WORKFLOW_CHANGE_LABELS[contract.kind],
+  lifecycle: "active",
+  renderer: contract.renderer,
+  artifactTypes: [contract.type],
+  schemaVersion: contract.schemaVersion,
+  component: "WorkflowChangeArtifact",
+  fallback: "safe_summary",
+  strictContract: true,
+  display: { icon: contract.kind === "conflict" ? "activity" : "list-checks", selfRendered: true, suppressInlineData: true, hideFooter: true },
+}));
 
 // Keep this built-in type set aligned with web/src/lib/agentUiCardDefinitions.ts and internal/appui/ui_card_service.go.
 export const agentUiCardDefinitions: AgentUiCardDefinition[] = [
@@ -83,12 +107,9 @@ export const agentUiCardDefinitions: AgentUiCardDefinition[] = [
   { type: "rca_report", label: "根因分析", lifecycle: "active", display: { icon: "git-branch", suppressInlineData: true } },
   { type: "workflow_result", label: "Workflow 结果", lifecycle: "active", display: { icon: "list-checks" } },
   { type: "workflow_context", label: "Workflow 上下文", lifecycle: "active", fallback: "json_summary", display: { icon: "list-checks" } },
-  { type: "workflow_edit_plan", label: "Workflow 编辑计划", lifecycle: "active", fallback: "json_summary", display: { icon: "list-checks" } },
-  { type: "workflow_patch_preview", label: "Workflow Patch 预览", lifecycle: "active", fallback: "json_summary", display: { icon: "list-checks" } },
+  ...WORKFLOW_CHANGE_CARD_DEFINITIONS.slice(0, 2),
   { type: "workflow_patch_apply", label: "Workflow Patch 审批", lifecycle: "active", fallback: "json_summary", display: { icon: "shield-check" } },
-  { type: "workflow_patch_result", label: "Workflow Patch 结果", lifecycle: "active", fallback: "json_summary", display: { icon: "check-circle" } },
-  { type: "workflow_patch_validation", label: "Workflow Patch 校验", lifecycle: "active", fallback: "json_summary", display: { icon: "check-circle" } },
-  { type: "workflow_conflict", label: "Workflow 冲突", lifecycle: "active", fallback: "json_summary", display: { icon: "activity" } },
+  ...WORKFLOW_CHANGE_CARD_DEFINITIONS.slice(2),
   { type: "workflow_manual_candidate", label: "运维手册候选", lifecycle: "active", fallback: "json_summary", display: { icon: "shield-check" } },
   { type: "workflow_tool_timeline", label: "Workflow 工具时间线", lifecycle: "active", fallback: "json_summary", display: { icon: "activity" } },
   { type: "verification_result", label: "验证结果", lifecycle: "active", display: { icon: "check-circle" } },

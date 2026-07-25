@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "U-view",
+  "kind": "principal",
+  "data": {
+    "principal": {
+      "id": "user-view",
+      "roles": [
+        "workflow.viewer"
+      ],
+      "permissions": [
+        "workflow.read"
+      ]
+    }
+  }
+}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,15 +224,34 @@ func TestVisualWorkflowAuditPublishRequiresValidatedGraphHash(t *testing.T) {
 	}
 }
 
-func captureAPIAuditLogs(t *testing.T) (*bytes.Buffer, func()) {
+type lockedAuditLogBuffer struct {
+	mu  sync.RWMutex
+	buf bytes.Buffer
+}
+
+func (b *lockedAuditLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedAuditLogBuffer) Sync() error { return nil }
+
+func (b *lockedAuditLogBuffer) String() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	return b.buf.String()
+}
+
+func captureAPIAuditLogs(t *testing.T) (*lockedAuditLogBuffer, func()) {
 	t.Helper()
-	var buf bytes.Buffer
+	buf := &lockedAuditLogBuffer{}
 	encCfg := zap.NewProductionEncoderConfig()
 	encCfg.TimeKey = "ts"
-	core := zapcore.NewCore(zapcore.NewJSONEncoder(encCfg), zapcore.AddSync(&buf), zap.InfoLevel)
+	core := zapcore.NewCore(zapcore.NewJSONEncoder(encCfg), buf, zap.InfoLevel)
 	prev := logging.L()
 	logging.SetLogger(zap.New(core))
-	return &buf, func() { logging.SetLogger(prev) }
+	return buf, func() { logging.SetLogger(prev) }
 }
 
 func auditHeaders() map[string]string {

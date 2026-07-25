@@ -21,7 +21,7 @@ describe("runnerActionPalette", () => {
       { action: "variable.aggregate", label: "Variable Aggregator", category: "control", description: "Aggregate variables." },
       { action: "wait.event", label: "Wait For Event", category: "control", description: "Not ready for useful canvas runs." },
       { action: "workflow.run", label: "Subflow", category: "control", description: "Needs a child workflow." },
-    ];
+    ].map((action) => ({ ...action, access: { allowed: true } }));
 
     expect(getRunnerPaletteActions(actions).map((action) => action.action)).toEqual([
       "script.shell",
@@ -31,6 +31,32 @@ describe("runnerActionPalette", () => {
       "builtin.dns_resolve",
       "condition.evaluate",
     ]);
+  });
+
+  it("fails closed for missing or denied workflow action access", () => {
+    const actions = [
+      { action: "script.shell", access: { allowed: true } },
+      {
+        action: "builtin.tcp_ping",
+        access: {
+          allowed: false,
+          reason: "action is not enabled by Runner security policy",
+          requiredPermissions: ["workflow.action.use"],
+        },
+      },
+      { action: "builtin.dns_resolve" },
+      { action: "script.python", access: { allowed: "true" } },
+    ];
+
+    expect(getRunnerPaletteActions(actions).map((action) => action.action)).toEqual(["script.shell"]);
+  });
+
+  it("accepts legacy raw actions only after the page explicitly marks them execution-available", () => {
+    expect(getRunnerPaletteActions([
+      { action: "script.shell", execution_available: true },
+      { action: "script.python", execution_available: false },
+      { action: "http.request" },
+    ]).map((action) => action.action)).toEqual(["script.shell"]);
   });
 
   it("uses functional descriptions instead of raw category names for cards", () => {

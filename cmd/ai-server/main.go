@@ -59,7 +59,6 @@ import (
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
 	"aiops-v2/internal/tooling"
-	"aiops-v2/internal/workfloweditor"
 )
 
 func main() {
@@ -160,11 +159,6 @@ func run() error {
 	// ---------------------------------------------------------------------------
 	mcpRegistry := mcp.NewRegistry()
 	mcpRegistry.SetGovernance(governance)
-	mcpRuntime := mcpruntime.New(mcpruntime.RuntimeOptions{
-		Registry:           mcpRegistry,
-		ClientFactory:      mcpruntime.DefaultClientFactory{},
-		GovernanceProvider: agentMCPCatalogGovernanceProvider{repo: dataStore},
-	})
 	toolAssembler := tooling.NewAssembler(toolRegistry, mcpRegistry)
 	agentFactory := agentmgr.NewAgentFactory(toolAssembler, compiler, router, policyEngine)
 	agentRegistry := agents.NewRegistry()
@@ -278,12 +272,40 @@ func run() error {
 	if err := opsmanualtools.RegisterBuiltins(toolRegistry, opsManualDomainService); err != nil {
 		return fmt.Errorf("init ops manual tools: %w", err)
 	}
+	authManager := auth.NewManager(nil)
+	settingsService := appui.NewSettingsService(dataStore, authManager)
+	runnerRuntime, err := runnerembed.NewRuntime(ctx, runnerembed.Options{
+		DataDir:                    dataDir,
+		WorkflowReferenceGuardMode: workflowReferenceGuardModeFromRuntimeSettings(runtimeDebugRuntimeSettings(settingsService, context.Background())),
+	})
+	if err != nil {
+		return fmt.Errorf("init runner runtime: %w", err)
+	}
+	if registrar, ok := settingsService.(appui.RuntimeSettingsListenerRegistrar); ok {
+		registrar.AddRuntimeSettingsListener(func(settings store.RuntimeSettings) {
+			runnerRuntime.SetWorkflowReferenceGuardMode(workflowReferenceGuardModeFromRuntimeSettings(settings))
+		})
+	}
+	runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
+	runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
+	workflowApplication, err := registerWorkflowControlPlane(mcpRegistry, runnerRuntime, secretDir, runtimeDebugRuntimeSettings(settingsService, context.Background()))
+	if err != nil {
+		return err
+	}
+	workflowObserver := wireWorkflowObservability(workflowApplication, otelProvider)
+	_ = workflowObserver
+	workflowEvents, err := runnerRuntime.OpenWorkflowEventFacade()
+	if err != nil {
+		return fmt.Errorf("init workflow event facade: %w", err)
+	}
+	mcpRuntime := mcpruntime.New(mcpruntime.RuntimeOptions{
+		Registry:           mcpRegistry,
+		ClientFactory:      mcpruntime.DefaultClientFactory{},
+		GovernanceProvider: agentMCPCatalogGovernanceProvider{repo: dataStore},
+	})
 	if err := mcpRuntime.Start(ctx); err != nil {
 		return fmt.Errorf("start mcp runtime: %w", err)
 	}
-
-	authManager := auth.NewManager(nil)
-	settingsService := appui.NewSettingsService(dataStore, authManager)
 	runtimeFeatureFlags := func(ctx context.Context) featureflag.Flags {
 		if provider, ok := settingsService.(appui.RuntimeSettingsProvider); ok {
 			return featureflag.FromRuntimeSettings(provider.Snapshot(ctx))
@@ -341,25 +363,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("init web assets: %w", err)
 	}
-	runnerRuntime, err := runnerembed.NewRuntime(ctx, runnerembed.Options{
-		DataDir:                    dataDir,
-		WorkflowReferenceGuardMode: workflowReferenceGuardModeFromRuntimeSettings(runtimeDebugRuntimeSettings(settingsService, context.Background())),
-	})
-	if err != nil {
-		return fmt.Errorf("init runner runtime: %w", err)
-	}
-	if registrar, ok := settingsService.(appui.RuntimeSettingsListenerRegistrar); ok {
-		registrar.AddRuntimeSettingsListener(func(settings store.RuntimeSettings) {
-			runnerRuntime.SetWorkflowReferenceGuardMode(workflowReferenceGuardModeFromRuntimeSettings(settings))
-		})
-	}
-	runnerRuntime.SetWorkflowReferenceChecker(opsManualWorkflowReferenceChecker{repo: dataStore})
-	runnerRuntime.SetOpsManualRunRecordSink(opsManualRunRecordSink{repo: dataStore})
 	httpOptions := []server.HTTPServerOption{
 		server.WithWebAssets(webAssets),
 		server.WithTerminalManager(terminalManager),
 		server.WithPromptTraceService(newAIServerPromptTraceService(dataDir, kernel)),
-		server.WithWorkflowEditorService(workfloweditor.NewService(nil, workfloweditor.WithEditPlanner(workfloweditor.ModelRouterWorkflowEditPlanner{Router: router}))),
+		server.WithWorkflowEditApplication(workflowApplication, newWorkflowCommandScopeResolver(authManager, runnerservice.VisualWorkflowDefaultTenantID)),
+		server.WithWorkflowCandidateApplyApproval(workflowApplication, kernel),
+		server.WithWorkflowEventSource(ctx, workflowEvents),
 	}
 	httpOptions = append(httpOptions, server.WithRunnerStudioHandler(runnerRuntime.Handler))
 	hostAgentTokenStore := appui.NewLocalHostAgentTokenStore(secretDir)
@@ -439,6 +449,10 @@ func run() error {
 		log.Printf("http shutdown: %v", err)
 	}
 	grpcAPIServer.GracefulStop()
+	httpServer.CloseWorkflowEventBindings()
+	if err := workflowEvents.Shutdown(shutdownCtx); err != nil {
+		log.Printf("workflow event shutdown: %v", err)
+	}
 
 	if err := runnerRuntime.Close(shutdownCtx); err != nil {
 		log.Printf("runner runtime shutdown: %v", err)

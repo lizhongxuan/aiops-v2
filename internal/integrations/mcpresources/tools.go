@@ -39,19 +39,26 @@ type MCPResourceArtifact struct {
 }
 
 func NewListTool(registry *mcp.Registry) tooling.Tool {
-	return newTool("list_mcp_resources", "List readable MCP resources exposed by connected servers", listSchema, func(_ context.Context, input json.RawMessage) (any, []tooling.ResultReference, error) {
+	return newTool("list_mcp_resources", "List readable MCP resources exposed by connected servers", listSchema, func(ctx context.Context, input json.RawMessage) (any, []tooling.ResultReference, error) {
 		var req struct {
 			Server string `json:"server,omitempty"`
+			Cursor string `json:"cursor,omitempty"`
+			Limit  int    `json:"limit,omitempty"`
 		}
 		if len(input) > 0 {
 			if err := json.Unmarshal(input, &req); err != nil {
 				return nil, nil, err
 			}
 		}
-		resources := registry.ListResources(req.Server)
+		page, err := registry.ListResourcesScoped(ctx, mcp.ResourceListRequest{ServerID: req.Server, Cursor: req.Cursor, Limit: req.Limit})
+		if err != nil {
+			return nil, nil, err
+		}
 		return envelope("list_mcp_resources", map[string]any{
-			"server":    strings.TrimSpace(req.Server),
-			"resources": resources,
+			"server":       strings.TrimSpace(req.Server),
+			"resources":    page.Resources,
+			"nextCursor":   page.NextCursor,
+			"capabilities": page.Capabilities,
 		}), nil, nil
 	})
 }
@@ -118,6 +125,7 @@ func NewReadToolWithOptions(registry *mcp.Registry, opts ReadToolOptions) toolin
 			ContentType: read.Ref.ContentType,
 			Digest:      read.Ref.Digest,
 			Bytes:       read.Ref.Bytes,
+			Version:     content.Version,
 			Range:       read.Ref.Range,
 		}
 		artifactRef := ""
@@ -151,6 +159,7 @@ func NewReadToolWithOptions(registry *mcp.Registry, opts ReadToolOptions) toolin
 			"page":         read.Page,
 			"digest":       read.Ref.Digest,
 			"bytes":        read.Ref.Bytes,
+			"version":      content.Version,
 			"refs": []map[string]any{{
 				"kind":        string(ref.Kind),
 				"uri":         content.URI,
@@ -159,6 +168,7 @@ func NewReadToolWithOptions(registry *mcp.Registry, opts ReadToolOptions) toolin
 				"artifactRef": artifactRef,
 				"digest":      ref.Digest,
 				"bytes":       ref.Bytes,
+				"version":     ref.Version,
 				"range":       read.Ref.Range,
 			}},
 		}), []tooling.ResultReference{ref}, nil
@@ -237,7 +247,7 @@ func envelope(tool string, data map[string]any) map[string]any {
 	}
 }
 
-var listSchema = json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"Optional MCP server id"}}}`)
+var listSchema = json.RawMessage(`{"type":"object","properties":{"server":{"type":"string","description":"Optional MCP server id"},"cursor":{"type":"string","description":"Opaque provider pagination cursor"},"limit":{"type":"integer","minimum":1,"maximum":200}}}`)
 
 var readSchema = json.RawMessage(`{
 	"type":"object",

@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "G-expired",
+  "kind": "grant",
+  "data": {
+    "grant": {
+      "id": "grant-expired",
+      "state": "expired",
+      "riskCeiling": "low",
+      "allowedOperations": [
+        "update_field"
+      ]
+    }
+  }
+}

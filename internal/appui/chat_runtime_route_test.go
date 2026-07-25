@@ -261,12 +261,23 @@ func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
 	route := BuildChatRuntimeRoute("@local 修改当前 Workflow 的执行步骤", mentions, UserEvidenceExtraction{})
 	req := runtimekernel.TurnRequest{
 		Input: "@local 修改当前 Workflow 的执行步骤",
+		IntentFrame: &runtimecontract.IntentFrame{
+			Kind:       runtimecontract.IntentKindChange,
+			DataScopes: []runtimecontract.DataScope{runtimecontract.DataScopeLocalRuntime},
+			RiskBudget: []runtimecontract.ActionRisk{runtimecontract.ActionRiskWrite, runtimecontract.ActionRiskHostExec},
+			Capabilities: []runtimecontract.CapabilityCandidate{{
+				Name: "host_runtime_inspection", Risks: []runtimecontract.ActionRisk{runtimecontract.ActionRiskHostExec},
+			}},
+		},
 		Metadata: map[string]string{
 			"aiops.workflowAgent.enabled":   "true",
 			"aiops.workflow.sessionIntent":  "edit",
 			"aiops.workflow.id":             "workflow",
 			"aiops.workflow.baseRevision":   "rev",
 			"aiops.workflow.selectedNodeId": "execute",
+			"enableToolPack":                "host_ops,public_web",
+			"aiops.webSearch.policy":        string(runtimekernel.WebSearchEnabled),
+			"aiops.weblearn.enabled":        "true",
 		},
 	}
 
@@ -278,8 +289,8 @@ func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
 	if req.HostID != "" {
 		t.Fatalf("HostID = %q, want empty for workflow agent drawer route", req.HostID)
 	}
-	if req.SessionType != runtimekernel.SessionTypeWorkspace || req.Mode != runtimekernel.ModePlan {
-		t.Fatalf("request session/mode = %s/%s, want workspace/plan", req.SessionType, req.Mode)
+	if req.SessionType != runtimekernel.SessionTypeWorkspace || req.Mode != runtimekernel.ModeExecute {
+		t.Fatalf("request session/mode = %s/%s, want workspace/execute so reviewed apply can reach Runtime approval", req.SessionType, req.Mode)
 	}
 	for key, want := range map[string]string{
 		"profile":                          runtimekernel.RuntimePromptProfileWorkflowAgent,
@@ -292,8 +303,17 @@ func TestWorkflowAgentRuntimeMetadataWinsOverOrdinaryHostRoute(t *testing.T) {
 			t.Fatalf("metadata[%s] = %q, want %q; metadata=%#v", key, got, want, req.Metadata)
 		}
 	}
-	if !strings.Contains(req.Metadata["enableToolPack"], "workflow_editor") {
-		t.Fatalf("enableToolPack = %q, want workflow_editor", req.Metadata["enableToolPack"])
+	if req.Metadata["enableToolPack"] != "workflow_editor" {
+		t.Fatalf("enableToolPack = %q, want authoritative workflow_editor-only surface", req.Metadata["enableToolPack"])
+	}
+	if req.Metadata["aiops.webSearch.policy"] != string(runtimekernel.WebSearchDisabled) || req.Metadata["aiops.weblearn.enabled"] != "false" {
+		t.Fatalf("workflow route retained public-web state: %#v", req.Metadata)
+	}
+	if req.IntentFrame == nil || runtimecontract.ContainsActionRisk(req.IntentFrame.RiskBudget, runtimecontract.ActionRiskHostExec) || !runtimecontract.ContainsActionRisk(req.IntentFrame.RiskBudget, runtimecontract.ActionRiskWrite) {
+		t.Fatalf("workflow route retained host execution intent or lost write intent: %#v", req.IntentFrame)
+	}
+	if req.Metadata[runtimecontract.MetadataIntentRiskBudget] != string(runtimecontract.ActionRiskWrite) {
+		t.Fatalf("workflow intent metadata risk = %q, want write", req.Metadata[runtimecontract.MetadataIntentRiskBudget])
 	}
 }
 

@@ -9,6 +9,8 @@ import (
 	agentuipkg "aiops-v2/internal/agentui"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/workfloweditor"
+	runnerservice "runner/server/service"
 )
 
 // SnapshotBuilder projects runtime sessions into first-party Web DTOs.
@@ -17,7 +19,53 @@ type SnapshotBuilder struct {
 	settings SettingsRepository
 }
 
-const serverLocalHostID = "server-local"
+const (
+	serverLocalHostID                           = "server-local"
+	WorkflowPromptPresetCapabilitySchemaVersion = "aiops.workflow.prompt-presets.v1"
+)
+
+// WorkflowPromptPreset is a server-owned shortcut contract. Presets are
+// executable only when an explicit provider supplies every field.
+type WorkflowPromptPreset struct {
+	ID                 string `json:"id"`
+	Label              string `json:"label"`
+	Intent             string `json:"intent"`
+	SelectionPolicy    string `json:"selectionPolicy"`
+	RequiredPermission string `json:"requiredPermission"`
+	Rollout            string `json:"rollout"`
+	HandlerCapability  string `json:"handlerCapability"`
+}
+
+type WorkflowPromptPresetCapability struct {
+	SchemaVersion    string                 `json:"schemaVersion"`
+	Status           string                 `json:"status"`
+	Reason           string                 `json:"reason"`
+	Permission       string                 `json:"permission"`
+	Rollout          string                 `json:"rollout"`
+	HandlerAvailable bool                   `json:"handlerAvailable"`
+	Presets          []WorkflowPromptPreset `json:"presets"`
+}
+
+func disabledWorkflowPromptPresetCapability() WorkflowPromptPresetCapability {
+	return WorkflowPromptPresetCapability{
+		SchemaVersion: WorkflowPromptPresetCapabilitySchemaVersion,
+		Status:        "off", Reason: "provider_unavailable", Permission: "unavailable",
+		Rollout: "off", Presets: []WorkflowPromptPreset{},
+	}
+}
+
+func validateWorkflowPromptPresetCapability(capability WorkflowPromptPresetCapability) error {
+	if capability.SchemaVersion != WorkflowPromptPresetCapabilitySchemaVersion {
+		return fmt.Errorf("unsupported workflow prompt preset schema %q", capability.SchemaVersion)
+	}
+	if capability.Status != "off" && capability.Status != "on" {
+		return fmt.Errorf("unsupported workflow prompt preset status %q", capability.Status)
+	}
+	if capability.Status == "off" && (capability.HandlerAvailable || len(capability.Presets) != 0) {
+		return fmt.Errorf("disabled workflow prompt preset capability cannot expose handlers or presets")
+	}
+	return nil
+}
 
 func NewSnapshotBuilder(hosts ...HostRepository) *SnapshotBuilder {
 	var repo HostRepository
@@ -34,6 +82,7 @@ func NewSnapshotBuilderWithSettings(hosts HostRepository, settings SettingsRepos
 func (b *SnapshotBuilder) BuildStateSnapshot(session *runtimekernel.SessionState) StateSnapshot {
 	snapshot := defaultStateSnapshot()
 	b.applyLLMConfig(&snapshot)
+	b.applyWorkflowCapabilities(&snapshot)
 	selectedHostID := ""
 	if session != nil {
 		snapshot.SessionID = session.ID
@@ -76,6 +125,32 @@ func (b *SnapshotBuilder) applyLLMConfig(snapshot *StateSnapshot) {
 	if model := strings.TrimSpace(cfg.Model); model != "" {
 		snapshot.Config["model"] = model
 	}
+}
+
+func (b *SnapshotBuilder) applyWorkflowCapabilities(snapshot *StateSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	settings := store.DefaultRuntimeSettings()
+	if b != nil && b.settings != nil {
+		if current, err := b.settings.GetRuntimeSettings(); err == nil && current != nil {
+			settings = store.NormalizeRuntimeSettings(*current)
+		}
+	}
+	capabilities, err := workfloweditor.EvaluateWorkflowRollout(settings.Workflow.Rollout, runnerservice.VisualWorkflowDefaultTenantID)
+	if err != nil {
+		// Never omit an invalid projection: clients must receive an explicit,
+		// typed disabled decision instead of inferring authorization locally.
+		capabilities, _ = workfloweditor.EvaluateWorkflowRollout(store.DefaultRuntimeSettings().Workflow.Rollout, runnerservice.VisualWorkflowDefaultTenantID)
+	}
+	if snapshot.Config == nil {
+		snapshot.Config = map[string]any{}
+	}
+	snapshot.Config["workflowCapabilities"] = capabilities
+	// Prompt Presets are a distinct capability. Runner Action Catalog entries
+	// and visible tool names are not prompt definitions and must not turn this
+	// projection on implicitly.
+	snapshot.Config["workflowPromptPresetCapability"] = disabledWorkflowPromptPresetCapability()
 }
 
 func buildAgentItemEvents(turn *runtimekernel.TurnSnapshot) []AgentEvent {

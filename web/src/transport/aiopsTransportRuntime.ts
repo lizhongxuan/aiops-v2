@@ -6,6 +6,7 @@ import type {
   AiopsTransportHostMission,
   AiopsTransportState,
   AiopsTransportTurn,
+  AiopsWorkflowTurnContextRequest,
 } from "./aiopsTransportTypes";
 import { isRawTransportErrorMessage, toUserFacingTransportErrorMessage } from "./transportErrorMessage";
 
@@ -617,10 +618,46 @@ function normalizeTurn(turn: AiopsTransportTurn): AiopsTransportTurn {
   );
   return {
     ...turn,
+    workflowContext: normalizeWorkflowTurnContext(turn.workflowContext),
     process,
     timeline,
     final: turn.final && finalText ? { ...turn.final, text: finalText } : undefined,
     blocksById,
+  };
+}
+
+function normalizeWorkflowTurnContext(value: unknown): AiopsWorkflowTurnContextRequest | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const context = value as Record<string, unknown>;
+  const workflowId = stringOrUndefined(context.workflowId);
+  const revision = context.revision && typeof context.revision === "object" && !Array.isArray(context.revision)
+    ? context.revision as Record<string, unknown>
+    : {};
+  const resourceVersion = stringOrUndefined(revision.resourceVersion);
+  const semanticHash = stringOrUndefined(revision.semanticHash);
+  const layoutHash = stringOrUndefined(revision.layoutHash);
+  const environment = context.environment && typeof context.environment === "object" && !Array.isArray(context.environment)
+    ? context.environment as Record<string, unknown>
+    : {};
+  const bindingVersion = stringOrUndefined(environment.bindingVersion);
+  if (!workflowId || !resourceVersion || !semanticHash || !layoutHash || !bindingVersion) return undefined;
+  const selection = context.selection && typeof context.selection === "object" && !Array.isArray(context.selection)
+    ? context.selection as Record<string, unknown>
+    : {};
+  const environmentName = stringOrUndefined(environment.name);
+  return {
+    workflowId,
+    revision: { resourceVersion, semanticHash, layoutHash },
+    selection: {
+      nodeIds: normalizeStringList(selection.nodeIds),
+      edgeIds: normalizeStringList(selection.edgeIds),
+      ...(Array.isArray(selection.neighborhoodIds) ? { neighborhoodIds: normalizeStringList(selection.neighborhoodIds) } : {}),
+    },
+    environment: {
+      ...(environmentName ? { name: environmentName } : {}),
+      bindingVersion,
+      ...(Array.isArray(environment.capabilityVersions) ? { capabilityVersions: normalizeStringList(environment.capabilityVersions) } : {}),
+    },
   };
 }
 

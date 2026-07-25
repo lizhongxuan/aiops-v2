@@ -1,0 +1,61 @@
+{
+  "id": "GEN-005",
+  "category": "workflow_generation",
+  "priority": "P1",
+  "input": "Create an approved subflow invocation and aggregate its typed output before ending.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "approval", "subflow", "aggregate", "end"],
+    "requiredActions": ["workflow.invoke"],
+    "allowedActions": ["workflow.invoke"],
+    "argumentSchemas": {
+      "workflow.invoke": { "required": ["workflowRef", "inputRef"], "properties": { "workflowRef": "string", "inputRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": {
+      "approval": { "inputs": ["in"], "outputs": ["approved", "rejected"] },
+      "subflow": { "inputs": ["in"], "outputs": ["result"] },
+      "aggregate": { "inputs": ["items"], "outputs": ["next"] }
+    },
+    "requiredPaths": ["/graph/nodes/2/args/workflowRef", "/graph/nodes/2/args/inputRef"],
+    "forbiddenPaths": ["/graph/nodes/*/args/secret"],
+    "forbiddenPlaceholders": ["workflow://replace_me", "script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "high", "requiresApproval": true, "mustBeGranted": true },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "fact", "name": "subflow_io_types_match" },
+      { "kind": "edge", "source": "subflow", "sourcePort": "result", "target": "aggregate", "targetPort": "items" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "approval", "type": "approval", "inputPorts": ["in"], "outputPorts": ["approved", "rejected"] },
+            { "id": "subflow", "type": "subflow", "action": "workflow.invoke", "args": { "workflowRef": "workflow://verified/inspect", "inputRef": "vars://target" }, "inputPorts": ["in"], "outputPorts": ["result"] },
+            { "id": "aggregate", "type": "aggregate", "inputPorts": ["items"], "outputPorts": ["next"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] },
+            { "id": "end-rejected", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "approval", "targetPort": "in" },
+            { "id": "e2", "source": "approval", "sourcePort": "approved", "target": "subflow", "targetPort": "in" },
+            { "id": "e3", "source": "approval", "sourcePort": "rejected", "target": "end-rejected", "targetPort": "in" },
+            { "id": "e4", "source": "subflow", "sourcePort": "result", "target": "aggregate", "targetPort": "items" },
+            { "id": "e5", "source": "aggregate", "sourcePort": "next", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "high",
+        "approval": { "required": true, "granted": true }
+      },
+      "metrics": { "firstFeedbackMs": 74, "previewMs": 108, "validateMs": 34, "repairCount": 1, "inputTokens": 1250, "outputTokens": 930, "contextTokens": 2180 },
+      "semanticFacts": { "subflow_io_types_match": true }
+    }]
+  }
+}

@@ -1,11 +1,16 @@
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { AppShellChromeProvider as BaseAppShellChromeProvider } from "@/app/AppShellChromeContext";
+import { AppShellChromeProvider as BaseAppShellChromeProvider, useAppShellChrome } from "@/app/AppShellChromeContext";
 import { createAiopsQueryClient } from "@/app/queryClient";
+import { RunnerStudioPage, workflowOperationForCandidateGraphChange } from "@/pages/RunnerStudioPage";
+import { workflowCommandForGraphChange } from "@/runner/WorkflowEditorShell";
+import { WorkflowTransportBoundary } from "@/runner/transport/WorkflowTransportBoundary";
+import { createInitialAiopsTransportState } from "@/transport/aiopsTransportRuntime";
+import { resetAiopsTransportStateCacheForTest, setCachedAiopsTransportState } from "@/transport/aiopsTransportStateCache";
 import { AppRouter } from "@/router";
 
 function AppShellChromeProvider({ children }: { children: ReactNode }) {
@@ -14,6 +19,22 @@ function AppShellChromeProvider({ children }: { children: ReactNode }) {
       <BaseAppShellChromeProvider>{children}</BaseAppShellChromeProvider>
     </QueryClientProvider>
   );
+}
+
+function DirectPageChromeProvider({ children }: { children: ReactNode }) {
+  return (
+    <QueryClientProvider client={createAiopsQueryClient()}>
+      <BaseAppShellChromeProvider>
+        <RegisteredHeader />
+        {children}
+      </BaseAppShellChromeProvider>
+    </QueryClientProvider>
+  );
+}
+
+function RegisteredHeader() {
+  const { headerContent } = useAppShellChrome();
+  return <>{headerContent}</>;
 }
 
 const workflowGraph = {
@@ -30,6 +51,11 @@ const workflowGraph = {
   ],
 };
 
+const PUBLISHED_RESOURCE_VERSION = `sha256:${"1".repeat(64)}`;
+const PUBLISHED_SEMANTIC_HASH = `sha256:${"2".repeat(64)}`;
+const CURRENT_RESOURCE_VERSION = `sha256:${"3".repeat(64)}`;
+const CURRENT_SEMANTIC_HASH = `sha256:${"4".repeat(64)}`;
+
 function workflowFixture(name: string, title = name, status = "draft", updatedAt = "2026-07-06T04:20:00Z") {
   return {
     name,
@@ -40,6 +66,79 @@ function workflowFixture(name: string, title = name, status = "draft", updatedAt
     graph: { ...workflowGraph, workflow: { name, title } },
     validation_result: { valid: true, errors: [], warnings: [] },
   };
+}
+
+function cacheWorkflowCandidate(
+  workflowId = "redis-memory",
+  operations: Array<{ op: "update_node"; nodeId: string; set: Record<string, string> }> = [
+    { op: "update_node", nodeId: "check", set: { label: "候选容量检查" } },
+  ],
+) {
+  const workflowKey = { tenantId: "tenant-a", workflowId };
+  const state = createInitialAiopsTransportState(`workflow:${workflowId}`);
+  state.sessionId = "session-candidate-switch";
+  state.updatedAt = "2026-07-21T08:00:00Z";
+  state.turnOrder = ["turn-candidate-switch"];
+  state.turns["turn-candidate-switch"] = {
+    id: "turn-candidate-switch",
+    status: "completed",
+    workflowContext: {
+      workflowId,
+      revision: { resourceVersion: "rev-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+      selection: { nodeIds: [], edgeIds: [] },
+      environment: { name: "staging", bindingVersion: "env-1" },
+    },
+    blockOrder: ["candidate-artifact-block"],
+    blocksById: {
+      "candidate-artifact-block": {
+        id: "candidate-artifact-block",
+        type: "artifact",
+        kind: "assistant",
+        status: "completed",
+        artifact: {
+          id: "candidate-artifact-switch",
+          type: "workflow_patch_preview",
+          renderer: "workflow.change.preview.v2",
+          schemaVersion: "aiops.workflow.edit.v2",
+          inlineData: {
+            schemaVersion: "aiops.workflow.edit.v2",
+            isError: false,
+            content: [{ type: "text", text: "更新检查节点" }],
+            structuredContent: {
+              kind: "preview",
+              changeSet: {
+                schemaVersion: "aiops.workflow.edit.v2",
+                id: "change-switch-1",
+                workflowKey,
+                candidateId: "candidate-switch-1",
+                candidateRevision: 1,
+                actor: "agent",
+                intent: "更新检查节点",
+                base: { resourceVersion: "rev-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+                operations,
+                previewHash: "preview-switch-1",
+                validation: { kind: "validation", basis: workflowBasis(), valid: true, diagnostics: [] },
+                state: "previewed",
+                createdAt: "2026-07-21T07:59:00Z",
+                expiresAt: "2026-07-22T07:59:00Z",
+              },
+              candidate: {
+                id: "candidate-switch-1",
+                workflowKey,
+                currentChangeSetId: "change-switch-1",
+                currentRevision: 1,
+                currentPreviewHash: "preview-switch-1",
+                state: "ready",
+                expiresAt: "2026-07-22T07:59:00Z",
+              },
+              diff: { touchedPaths: ["nodes/check/label"] },
+            },
+          },
+        },
+      },
+    },
+  };
+  setCachedAiopsTransportState(`workflow:${workflowId}`, state);
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -72,6 +171,13 @@ function click(element: Element | null | undefined) {
   element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
 }
 
+function clickRadixTab(element: Element | null | undefined) {
+  if (!element) throw new Error("Missing tab element");
+  element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0, buttons: 1 }));
+  element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, button: 0 }));
+  element.dispatchEvent(new MouseEvent("click", { bubbles: true, button: 0 }));
+}
+
 function doubleClick(element: Element | null | undefined) {
   if (!element) throw new Error("Missing double-clickable element");
   element.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
@@ -89,30 +195,20 @@ function changeInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
-function keyDown(element: Element, key: string) {
-  element.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+function changeSelect(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+  setter?.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
 }
 
-function canvasNodePosition(container: ParentNode, nodeId: string) {
-  const node = container.querySelector(`[data-testid="rf__node-${nodeId}"]`) as HTMLElement | null;
-  const transform = node?.style.transform || "";
-  const match = transform.match(/translate\(([-\d.]+)px,\s*([-\d.]+)px\)/);
-  return {
-    x: match ? Number(match[1]) : 0,
-    y: match ? Number(match[2]) : 0,
-  };
-}
-
-describe("RunnerStudioPage Workflow AI", () => {
+describe("RunnerStudioPage workflow UI", () => {
   let container: HTMLDivElement;
   let root: Root;
-  let workflowAiChatClientTurnId = "";
-  let workflowAiChatStateFactory: (() => unknown) | undefined;
 
   beforeEach(() => {
-    workflowAiChatClientTurnId = "";
-    workflowAiChatStateFactory = undefined;
     globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    if (!globalThis.CSS) Object.defineProperty(globalThis, "CSS", { configurable: true, value: {} });
+    if (!globalThis.CSS.escape) Object.defineProperty(globalThis.CSS, "escape", { configurable: true, value: (value: string) => String(value).replace(/[^a-zA-Z0-9_-]/g, "\\$&") });
     globalThis.ResizeObserver = class ResizeObserver {
       observe() {}
       unobserve() {}
@@ -136,151 +232,12 @@ describe("RunnerStudioPage Workflow AI", () => {
       if (path === "/api/runner-studio/actions") {
         return jsonResponse({ items: [] });
       }
-      if (path === "/api/v1/chat/message") {
-        const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
-        workflowAiChatClientTurnId = String(body.clientTurnId || "");
-        return jsonResponse({
-          accepted: true,
-          sessionId: "drawer-redis-memory-chat-v2",
-          turnId: "turn-chat",
-          status: "accepted",
-        });
-      }
-      if (path === "/api/v1/state") {
-        if (workflowAiChatStateFactory) {
-          return jsonResponse(workflowAiChatStateFactory());
-        }
-        return jsonResponse({
-          schemaVersion: "aiops.transport.v2",
-          sessionId: "drawer-redis-memory-chat-v2",
-          threadId: "drawer-redis-memory-chat-v2",
-          status: "idle",
-          currentTurnId: "turn-chat",
-          turns: {
-            "turn-chat": {
-              id: "turn-chat",
-              user: { clientTurnId: workflowAiChatClientTurnId, text: "你好" },
-              status: "completed",
-              final: {
-                id: "final-chat",
-                text: "你好，我是 Workflow AI。你可以直接和我对话；只有你明确要求创建或修改工作流时，我才会先生成计划。",
-                status: "completed",
-              },
-            },
-          },
-          turnOrder: ["turn-chat"],
-          cards: [],
-        });
-      }
-      if (path === "/api/runner-studio/workflow-ai/sessions") {
-        return jsonResponse({ id: "drawer-redis-memory", workflowId: "redis-memory", baseRevision: "rev-1", activeRevision: "rev-1", status: "active" });
-      }
-      if (path === "/api/runner-studio/workflow-ai/plan") {
-        const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
-        const message = String(body.message || "");
-        if (message.includes("记录开始")) {
-          return jsonResponse({
-            id: "plan-log-node",
-            workflowId: "redis-memory",
-            message,
-            items: [{
-              id: "record-start",
-              title: "添加“记录开始”日志节点并连接至 Start",
-              description: "在 Start 后新增一个短日志节点，记录工作流开始事件并继续向下游传递上下文。",
-              goal: "记录工作流开始事件。",
-              environment: "读取 Start 输出和当前 Workflow 上下文。",
-              nodeLabel: "记录开始",
-              nodeType: "action",
-              nodeAction: "script.python",
-              scriptSummary: "写入开始事件，并输出 workflow_started 标记。",
-              validationSummary: "确认输出 workflow_started=true。",
-              inputVariables: [{ name: "workflow_context", type: "object" }],
-              outputVariables: [{ name: "workflow_started", type: "object" }],
-              script: "print({'workflow_started': True})",
-              status: "pending",
-            }],
-          });
-        }
-        return jsonResponse({
-          id: "plan-api",
-          workflowId: "redis-memory",
-          message: "添加验证步骤",
-          items: [
-            {
-              id: "item-api",
-              title: "添加验证步骤",
-              description: "在收集节点之后加入验证节点，检查输出是否可用于后续判断。",
-              goal: "LLM 目标：验证收集结果是否满足后续判断条件。",
-              environment: "LLM 环境：读取 collect 输出和当前 Workflow 上下文。",
-              nodeLabel: "验证输出",
-              nodeType: "action",
-              nodeAction: "script.python",
-              scriptSummary: "LLM 脚本：校验 memory_usage 字段并输出 validation_result。",
-              validationSummary: "LLM 校验：validation_result.ok 必须为 true。",
-              inputVariables: [{ name: "memory_usage", type: "number", required: true }],
-              outputVariables: [{ name: "validation_result", type: "object" }],
-              script: "# LLM generated validation script\nprint({'validation_result': {'ok': True}})",
-              status: "pending",
-            },
-            { id: "item-audit", title: "记录验证结果", description: "把验证结果写入运行记录，方便事件列表和复盘查看。", status: "pending" },
-          ],
-        });
-      }
-      if (path === "/api/runner-studio/workflow-ai/validate") {
-        return jsonResponse({ valid: true, errors: [], warnings: [] });
-      }
-      if (path === "/api/runner-studio/workflow-ai/preview") {
-        return jsonResponse({
-          patchId: "patch-api",
-          graph: {
-            ...workflowGraph,
-            nodes: workflowGraph.nodes.map((node) => node.id === "check" ? { ...node, ui: { ai_note: "添加验证步骤" } } : node),
-          },
-          effect: { status: "changed", affectedNodes: ["check"] },
-        });
-      }
-      if (path === "/api/runner-studio/workflow-ai/effect") {
-        return jsonResponse({ status: "changed", affectedNodes: ["check"] });
-      }
-      if (path === "/api/runner-studio/workflow-ai/apply") {
-        return jsonResponse({
-          patchId: "patch-api",
-          workflowId: "redis-memory",
-          revisionBefore: "rev-1",
-          revisionAfter: "rev-2",
-          effect: { status: "changed", affectedNodes: ["check"] },
-          undoCheckpoint: { id: "undo-api", patchId: "patch-api", revisionBefore: "rev-1", revisionAfter: "rev-2" },
-          describe: { summary: "redis-memory has 3 nodes and 2 edges", nodeCount: 3, edgeCount: 2 },
-        });
-      }
-      if (path === "/api/runner-studio/workflow-ai/undo") {
-        return jsonResponse({
-          workflowId: "redis-memory",
-          revisionBefore: "rev-2",
-          revisionAfter: "rev-1",
-          undoCheckpoint: { id: "undo-api", patchId: "patch-api" },
-          describe: { summary: "redis-memory has 3 nodes and 2 edges", nodeCount: 3, edgeCount: 2 },
-        });
-      }
-      if (path === "/api/runner-studio/workflow-ai/create-draft") {
-        return jsonResponse({
-          workflowId: "redis-memory-draft",
-          revision: "rev-create",
-          graph: {
-            ...workflowGraph,
-            workflow: { name: "redis-memory-draft", title: "每天巡检 Redis 内存" },
-          },
-          validation: { valid: true, errors: [], warnings: [] },
-          describe: { summary: "redis-memory-draft has 3 nodes and 2 edges", nodeCount: 3, edgeCount: 2 },
-          published: false,
-          executed: false,
-        });
-      }
       if (path === "/api/runner-studio/workflows/redis-memory") {
         return jsonResponse({ name: "redis-memory" });
       }
       return jsonResponse({ error: `unexpected ${path}` }, 404);
     });
+    resetAiopsTransportStateCacheForTest();
     localStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
@@ -290,6 +247,7 @@ describe("RunnerStudioPage Workflow AI", () => {
   afterEach(() => {
     act(() => root.unmount());
     vi.restoreAllMocks();
+    resetAiopsTransportStateCacheForTest();
     container.remove();
     localStorage.clear();
   });
@@ -382,13 +340,31 @@ describe("RunnerStudioPage Workflow AI", () => {
     await act(async () => click(createButton));
 
     expect(container.querySelector('[data-testid="workflow-manager-modal"]')).toBeNull();
-    const topbar = await waitForElement<HTMLElement>(container, '[data-testid="runner-studio-topbar"]');
-    expect(topbar.textContent).toContain("新建工作流");
-    expect(topbar.textContent).toContain("draft");
+    const commandBar = await waitForElement<HTMLElement>(container, '[data-testid="workflow-command-bar"]');
+    expect(commandBar.textContent).toContain("新建工作流");
+    expect(commandBar.textContent).not.toContain("draft");
+    expect(commandBar.querySelector('[data-testid="runner-save-state"]')).toBeNull();
     expect(container.querySelector('[data-testid="runner-studio-canvas"]')).toBeTruthy();
   });
 
-  it("lets users edit the workflow title from the top bar", async () => {
+  it("does not revive AI draft generation from the legacy create query", async () => {
+    await act(async () => {
+      root.render(
+        <AppShellChromeProvider>
+          <MemoryRouter initialEntries={["/runner?workflow_ai=create&prompt=legacy"]}>
+            <AppRouter />
+          </MemoryRouter>
+        </AppShellChromeProvider>,
+      );
+    });
+
+    expect(await waitForElement(container, '[data-testid="runner-create-workflow"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="workflow-ai-drawer"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-ai-transport-panel"]')).toBeNull();
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).includes("/workflow-ai/"))).toBe(false);
+  });
+
+  it("renders the route workflow as static Command Bar identity with one Back action", async () => {
     await act(async () => {
       root.render(
         <AppShellChromeProvider>
@@ -399,18 +375,13 @@ describe("RunnerStudioPage Workflow AI", () => {
       );
     });
 
-    const titleButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-workflow-title-display"]');
-    expect(titleButton.textContent).toContain("Redis Memory");
+    const commandBar = await waitForElement<HTMLElement>(container, '[data-testid="workflow-command-bar"]');
+    expect(commandBar.textContent).toContain("Redis Memory");
+    expect(container.querySelector('[data-testid="runner-workflow-title-input"]')).toBeNull();
+    expect(commandBar.querySelectorAll('[data-testid="runner-back-to-library"]')).toHaveLength(1);
 
-    await act(async () => click(titleButton));
-    const titleInput = await waitForElement<HTMLInputElement>(container, '[data-testid="runner-workflow-title-input"]');
-    await act(async () => {
-      changeInput(titleInput, "每天早上8点巡检Redis内存");
-      keyDown(titleInput, "Enter");
-    });
-
-    expect((await waitForElement(container, '[data-testid="runner-workflow-title-display"]')).textContent).toContain("每天早上8点巡检Redis内存");
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).toContain("未保存");
+    await act(async () => click(commandBar.querySelector('[data-testid="runner-back-to-library"]')));
+    expect(await waitForElement(container, '[data-testid="runner-workflow-library"]')).toBeTruthy();
   });
 
   it("adds a default local target to existing runnable nodes that were missing targets", async () => {
@@ -429,7 +400,7 @@ describe("RunnerStudioPage Workflow AI", () => {
     expect(targetLabelsInput.value).toBe("local");
   });
 
-  it("keeps run detail focused and makes verbose sections collapsible", async () => {
+  it("keeps a node run in the current-session Run inspector instead of a separate history panel", async () => {
     const runId = "run-detail-ui";
     (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((input, init) => {
       const path = String(input);
@@ -490,54 +461,77 @@ describe("RunnerStudioPage Workflow AI", () => {
       );
     });
 
-    await waitForElement(container, '[data-testid="canvas-node-check"]');
+    await act(async () => doubleClick(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    const inspector = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel"]');
     await act(async () => {
-      click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-run"]'));
+      click(inspector.querySelector('[data-testid="runner-node-panel-run"]'));
       await new Promise((resolve) => setTimeout(resolve, 800));
     });
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-run-details"]')));
-    const historyRow = await waitForElement<HTMLButtonElement>(container, `[data-testid="runner-run-history-row-${runId}"]`);
-    expect(historyRow.textContent).toContain("成功");
-    expect(historyRow.textContent).not.toContain("success");
-    expect(await waitForElement(container, `[data-testid="runner-run-record-status-${runId}"]`)).toBeTruthy();
-    await act(async () => click(historyRow));
+    const runRequest = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/runner-studio/runs");
+    expect(JSON.parse(String(runRequest?.[1]?.body || "{}"))).toMatchObject({
+      workflow_name: "redis-memory",
+      node_id: "check",
+      run_scope: "single_node",
+    });
 
-    const detail = await waitForElement<HTMLElement>(container, '[data-testid="runner-run-detail-panel"]');
-    const activeStatus = await waitForElement(container, '[data-testid="runner-run-active-status"]');
-    expect(activeStatus.textContent).toContain("成功");
-    expect(activeStatus.textContent).not.toContain("success");
-    expect(detail.textContent).not.toContain("运行追溯");
-    expect(detail.textContent).not.toContain("运行概览");
-    expect(container.querySelector('[data-testid="runner-run-traceability"]')).toBeNull();
-    expect(container.querySelector('[data-testid="runner-run-overview"]')).toBeNull();
-    expect(detail.textContent).toContain("节点");
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-context-tab-run"]')));
+    const runPanel = await waitForElement<HTMLElement>(container, '[data-testid="workflow-context-panel-run"]');
+    const sessionInspector = await waitForElement<HTMLElement>(runPanel, '[data-testid="workflow-run-inspector"]');
+    expect(sessionInspector.textContent).toContain("当前会话");
+    expect(sessionInspector.textContent).toContain("节点 check");
+    expect(runPanel.querySelector('[data-testid="workflow-history-panel"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-run-history-panel"]')).toBeNull();
+
+    const sessionRow = await waitForElement<HTMLButtonElement>(sessionInspector, "ol button");
+    await act(async () => click(sessionRow));
+    const detail = await waitForElement<HTMLElement>(sessionInspector, '[data-testid="workflow-run-details"]');
     expect(detail.textContent).toContain("check");
-    expect(detail.textContent).toContain("成功");
-    const startRunNode = await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-run-node-start"]');
-    expect(startRunNode.textContent).toContain("成功");
-    expect(startRunNode.textContent).not.toContain("success");
-    expect(await waitForElement(container, '[data-testid="runner-run-node-status-icon-start"]')).toBeTruthy();
-
-    const variableInspector = await waitForElement<HTMLDetailsElement>(container, '[data-testid="runner-variable-inspector"]');
-    expect(variableInspector.tagName).toBe("DETAILS");
-    expect(variableInspector.open).toBe(false);
-    expect(variableInspector.querySelector("summary")?.textContent).toContain("变量检查器");
-
-    const runLogs = await waitForElement<HTMLDetailsElement>(container, '[data-testid="runner-run-logs"]');
-    expect(runLogs.tagName).toBe("DETAILS");
-    expect(runLogs.open).toBe(false);
-    expect(runLogs.querySelector("summary")?.textContent).toContain("stdout / stderr / SSE");
-    await act(async () => click(startRunNode));
-    expect(runLogs.querySelector("summary")?.textContent).toContain("当前节点暂无日志");
-    expect(runLogs.textContent).not.toContain("hello");
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-run-node-check"]')));
-    expect(runLogs.querySelector("summary")?.textContent).toContain("1 条日志");
-    expect(runLogs.textContent).toContain("hello");
+    expect(detail.textContent).toContain("打印hello");
   });
 
-  it("opens Workflow AI as a direct chat drawer, confirms the whole plan once, and applies visible graph changes", async () => {
+  it("retries a failed current-session run with the exact original target", async () => {
+    const runIds = ["run-retry-source", "run-retry-result"];
+    const runRequests: Record<string, unknown>[] = [];
+    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows") {
+        return jsonResponse({
+          workflows: [workflowFixture("redis-memory", "Redis Memory")],
+        });
+      }
+      if (path === "/api/runner-studio/actions") return jsonResponse({ items: [] });
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") {
+        const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
+        return jsonResponse({
+          ...workflowFixture("redis-memory", "Redis Memory"),
+          version: "rev-2",
+          graph: body.graph || workflowGraph,
+        });
+      }
+      if (path === "/api/runner-studio/runs") {
+        runRequests.push(JSON.parse(String(init?.body || "{}")));
+        const runId = runIds[Math.min(runRequests.length - 1, runIds.length - 1)];
+        return jsonResponse({ run_id: runId, status: "running" });
+      }
+      if (path === `/api/runner-studio/runs/${runIds[0]}/events/history`) {
+        return jsonResponse([
+          { type: "run_start", run_id: runIds[0], status: "running", timestamp: "2026-07-08T03:00:00Z" },
+          { type: "node.failed", run_id: runIds[0], node_id: "check", status: "failed", error: "remote unavailable", timestamp: "2026-07-08T03:00:01Z" },
+          { type: "run.failed", run_id: runIds[0], status: "failed", error: "remote unavailable", timestamp: "2026-07-08T03:00:01Z" },
+        ]);
+      }
+      if (path === `/api/runner-studio/runs/${runIds[1]}/events/history`) {
+        return jsonResponse([
+          { type: "run_start", run_id: runIds[1], status: "running", timestamp: "2026-07-08T03:01:00Z" },
+          { type: "step_finish", run_id: runIds[1], node_id: "check", status: "success", timestamp: "2026-07-08T03:01:01Z" },
+          { type: "run_finish", run_id: runIds[1], status: "success", timestamp: "2026-07-08T03:01:01Z" },
+        ]);
+      }
+      return jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
     await act(async () => {
       root.render(
         <AppShellChromeProvider>
@@ -548,206 +542,589 @@ describe("RunnerStudioPage Workflow AI", () => {
       );
     });
 
-    const topbar = await waitForElement<HTMLElement>(container, '[data-testid="runner-studio-topbar"]');
-    const actionLabels = Array.from(topbar.querySelectorAll("button")).map((button) => button.textContent?.trim());
-    expect(actionLabels).not.toContain("事件");
-    expect(actionLabels.indexOf("运行详情")).toBeLessThan(actionLabels.indexOf("AI"));
-    expect(actionLabels.indexOf("AI")).toBeLessThan(actionLabels.indexOf("更多"));
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-more"]')));
-    expect(container.querySelector('[data-testid="runner-toolbar-more-menu"]')?.textContent).not.toContain("AI");
+    await act(async () => doubleClick(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    const inspector = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel"]');
+    await act(async () => {
+      click(inspector.querySelector('[data-testid="runner-node-panel-run"]'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    });
 
-    const aiButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]');
-    expect(aiButton.textContent).toBe("AI");
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-context-tab-run"]')));
+    const sessionInspector = await waitForElement<HTMLElement>(container, '[data-testid="workflow-run-inspector"]');
+    await act(async () => click(await waitForElement(sessionInspector, "ol button")));
+    const retry = await waitForElement<HTMLButtonElement>(sessionInspector, '[data-testid="workflow-run-retry"]');
 
+    await act(async () => {
+      click(retry);
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    });
+
+    expect(runRequests).toHaveLength(2);
+    expect(runRequests[1]).toEqual(runRequests[0]);
+    expect(runRequests[1]).toMatchObject({
+      workflow_name: "redis-memory",
+      node_id: "check",
+      run_scope: "single_node",
+      triggered_by: "ui",
+      risk_acknowledged: true,
+    });
+  });
+
+  it("opens only the authoritative AssistantTransport panel without changing the graph", async () => {
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    const beforeNodeIds = Array.from(container.querySelectorAll('[data-testid^="canvas-node-"]'))
+      .map((node) => node.getAttribute("data-testid"));
+    const aiButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-workbench-trigger"]');
     await act(async () => click(aiButton));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    expect(drawer.querySelector('[data-testid="workflow-ai-context-card"]')).toBeNull();
-    expect(drawer.querySelector('[data-testid="workflow-ai-updated-label"]')?.textContent).toContain("修改");
-    expect(drawer.textContent).toContain("你可以直接问我");
-    expect(drawer.textContent).not.toContain("涉及修改时我会先生成计划");
 
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "添加验证步骤");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-    expect(await waitForElement(container, '[data-testid="workflow-ai-plan-card"]')).toBeTruthy();
-    expect(drawer.textContent).toContain("记录验证结果");
-    expect(drawer.textContent).not.toContain("生成一个最小 Workflow patch");
-    expect(drawer.textContent).toContain("回复「确认」开始");
-    expect(drawer.textContent).not.toContain("确认计划并开始修改");
-    expect(container.querySelector('[data-testid="workflow-ai-result-card"]')).toBeNull();
-    expect(drawer.textContent).not.toContain("Start");
-    expect(drawer.textContent).not.toContain("Apply");
-
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "确认");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    expect(await waitForElement(container, '[data-testid="workflow-ai-result-card"]')).toBeTruthy();
-    const stepHistory = container.querySelectorAll('[data-testid="workflow-ai-step-history-card"]');
-    expect(stepHistory.length).toBeGreaterThanOrEqual(2);
-    expect(stepHistory[0].textContent).toContain("完成步骤 1/");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("添加验证步骤");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("LLM 目标：验证收集结果");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("memory_usage:number 必填");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("目标");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("环境");
-    expect(Array.from(stepHistory).map((item) => item.textContent).join("\n")).toContain("脚本");
-    const generatedNode = await waitForElement(container, '[data-testid="canvas-node-ai-step-item-api"]');
-    expect(generatedNode.textContent).toContain("验证输出");
-    expect(generatedNode.textContent).not.toContain("添加验证步骤");
-    expect(container.querySelector('[data-testid="canvas-node-ai-step-item-api"]')?.className).toContain("ai-highlighted");
-    expect(await waitForElement(container, '[data-testid="canvas-node-ai-step-item-audit"]')).toBeTruthy();
-    const firstStepPosition = canvasNodePosition(container, "ai-step-item-api");
-    const secondStepPosition = canvasNodePosition(container, "ai-step-item-audit");
-    expect(secondStepPosition.x).toBeGreaterThan(firstStepPosition.x);
-    expect(secondStepPosition.y).toBeGreaterThanOrEqual(firstStepPosition.y);
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).toContain("未保存");
-    expect(container.querySelector('[data-testid="workflow-ai-undo-toast"]')).toBeNull();
-    const resultCard = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-result-card"]');
-    expect(resultCard.textContent).toContain("已完成修改");
-    expect(resultCard.textContent).toContain("撤销");
-
-    await act(async () => doubleClick(container.querySelector('[data-testid="canvas-node-ai-step-item-api"]')));
-    const nodeTabs = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel-tabs"]');
-    expect(nodeTabs.textContent).toContain("脚本");
-    expect(nodeTabs.textContent).toContain("输入输出");
-    expect(nodeTabs.querySelector("button")?.textContent).toBe("脚本");
-    const targetLabelsInput = await waitForElement<HTMLInputElement>(container, '[data-testid="runner-node-target-labels-input"]');
-    expect(targetLabelsInput.value).toBe("local");
-    await act(async () => click(container.querySelector('[data-testid="runner-node-panel-tab-io"]')));
-    const ioTab = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-io-tab"]');
-    expect(ioTab.textContent).toContain("输入变量");
-    expect(ioTab.textContent).toContain("输出变量");
-    expect((ioTab.querySelector('input[aria-label="输入变量名"]') as HTMLInputElement).value).toBe("memory_usage");
-    expect((ioTab.querySelector('input[aria-label="输出变量名"]') as HTMLInputElement).value).toBe("validation_result");
-    await act(async () => click(container.querySelector('[data-testid="runner-node-panel-tab-script"]')));
-    expect(container.querySelector('[data-testid="runner-node-settings"]')).toBeNull();
-    const scriptTab = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-script-tab"]');
-    expect(scriptTab.textContent).toContain("脚本上下文");
-    expect(scriptTab.textContent).not.toContain("查看和编辑当前节点真正执行的脚本内容");
-    expect(scriptTab.textContent).not.toContain("策略：");
-    const scriptEditor = await waitForElement<HTMLTextAreaElement>(container, '[data-testid="runner-node-script-editor"]');
-    expect(scriptEditor.value).toContain("# LLM generated validation script");
-    expect(scriptEditor.value).toContain("validation_result");
-    expect(scriptEditor.value).not.toContain("PGBACKREST_STANZA");
-    expect(scriptEditor.rows).toBe(9);
-
-    expect(container.querySelector('[data-testid="runner-toolbar-events"]')).toBeNull();
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    await act(async () => click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("事件"))));
-    const eventDrawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-event-drawer"]');
+    const panel = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-transport-panel"]');
+    expect(container.querySelectorAll('[data-testid="workflow-context-dock"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="workflow-context-tab-ai"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(panel.textContent).toContain("AI 协作");
     expect(container.querySelector('[data-testid="workflow-ai-drawer"]')).toBeNull();
-    expect(eventDrawer.textContent).toContain("workflow.ai.plan.confirmed");
-    expect(eventDrawer.textContent).toContain("workflow.ai.step.generating");
-    expect(eventDrawer.textContent).toContain("workflow.graph.node.added");
-    expect(eventDrawer.textContent).toContain("workflow.graph.edge.added");
-    expect(eventDrawer.textContent).toContain("workflow.node.script.generated");
-    expect(eventDrawer.textContent).toContain("workflow.ai.step.completed");
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-event-filter-ai"]')));
-    expect(eventDrawer.textContent).toContain("workflow.graph.node.added");
-    expect(eventDrawer.textContent).toContain("workflow.graph.edge.added");
-    expect(eventDrawer.textContent).toContain("workflow.node.script.generated");
-    const nodeEventRow = Array.from(eventDrawer.querySelectorAll('[data-testid="workflow-event-row"]')).find((row) => row.textContent?.includes("workflow.graph.node.added") && row.textContent?.includes("验证输出"));
-    await act(async () => click(nodeEventRow));
     expect(container.querySelector('[data-testid="workflow-event-drawer"]')).toBeNull();
-    expect((await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel-title"]')).textContent).toContain("验证输出");
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).includes("/workflow-ai/"))).toBe(false);
+    expect(Array.from(container.querySelectorAll('[data-testid^="canvas-node-"]')).map((node) => node.getAttribute("data-testid")))
+      .toEqual(beforeNodeIds);
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    await act(async () => click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("事件"))));
-    expect(await waitForElement<HTMLElement>(container, '[data-testid="workflow-event-drawer"]')).toBeTruthy();
-    await act(async () => click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("返回 AI"))));
-    expect(container.querySelector('[data-testid="workflow-event-drawer"]')).toBeNull();
-    expect(await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]')).toBeTruthy();
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    await act(async () => click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "撤销")));
-    expect(container.querySelector('[data-testid="workflow-ai-result-card"]')).toBeNull();
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(expect.stringContaining("/api/runner-studio/ai/draft"), expect.anything());
+    await act(async () => click(container.querySelector('[data-testid="workflow-context-drawer-close"]')));
+    expect(container.querySelector('[data-testid="workflow-ai-transport-panel"]')).not.toBeNull();
+    expect((container.querySelector('[data-testid="workflow-context-dock"]') as HTMLElement).hidden).toBe(true);
+    expect(container.querySelector('[data-testid="workflow-workbench-trigger"]')).not.toBeNull();
   });
 
-  it("cancels a pending workflow ai plan from the composer without changing the graph", async () => {
+  it("locks Workflow AI to the workflow opened by the route instead of offering a second workflow selector", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    const otherGraph = { ...workflowGraph, workflow: { name: "other-workflow", title: "Other Workflow" } };
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows") {
+        return jsonResponse({ workflows: [workflowFixture("redis-memory", "Redis Memory"), workflowFixture("other-workflow", "Other Workflow")] });
+      }
+      if (path === "/api/runner-studio/workflows/other-workflow/graph") return jsonResponse({ graph: otherGraph });
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
+        <DirectPageChromeProvider>
           <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
           </MemoryRouter>
-        </AppShellChromeProvider>,
+        </DirectPageChromeProvider>,
+      );
+    });
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    const panel = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-transport-panel"]');
+    expect(panel.querySelector('[data-testid="workflow-scope-workflow"]')).toBeNull();
+    expect(panel.querySelector('[aria-label="本次发送范围"]')).toBeNull();
+    expect((await waitForElement(container, '[data-testid="workflow-command-bar"]')).textContent).toContain("Redis Memory");
+  });
+
+  it("requires an explicit keep or discard choice before switching away from an active Candidate", async () => {
+    cacheWorkflowCandidate();
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    const otherGraph = { ...workflowGraph, workflow: { name: "other-workflow", title: "Other Workflow" } };
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows") {
+        return jsonResponse({ workflows: [workflowFixture("redis-memory", "Redis Memory"), workflowFixture("other-workflow", "Other Workflow")] });
+      }
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflows/other-workflow/graph") return jsonResponse({ graph: otherGraph });
+      if (path === "/api/runner-studio/workflow-candidate-actions" && init?.method === "POST") {
+        return jsonResponse({
+          kind: "candidate_discarded",
+          schemaVersion: "aiops.workflow.edit.v2",
+          candidate: {
+            id: "candidate-switch-1",
+            workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+            currentChangeSetId: "change-switch-1",
+            currentRevision: 1,
+            currentPreviewHash: "preview-switch-1",
+            state: "abandoned",
+            expiresAt: "2026-07-22T07:59:00Z",
+          },
+        });
+      }
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+              <Route path="/runner" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
       );
     });
 
-    await waitForElement(container, '[data-testid="canvas-node-start"]');
-    const initialNodeCount = container.querySelectorAll('[data-testid^="canvas-node-"]').length;
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "添加验证步骤");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-    expect(await waitForElement(container, '[data-testid="workflow-ai-plan-card"]')).toBeTruthy();
-    expect(container.querySelectorAll('[data-testid^="canvas-node-"]').length).toBe(initialNodeCount);
+    await waitForElement(container, '[data-testid="workflow-change-review"]');
+    const backButton = await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-back-to-library"]');
+    await act(async () => click(backButton));
+    const dialog = await waitForElement<HTMLElement>(container, '[data-testid="workflow-candidate-switch-confirm"]');
+    expect(dialog.textContent).toContain("保留还是放弃");
+    expect(dialog.textContent).toContain("工作流列表");
+    expect(container.querySelector('[data-testid="workflow-command-bar"]')?.textContent).toContain("Redis Memory");
 
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "取消");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
+    await act(async () => click(dialog.querySelector('[data-testid="workflow-candidate-switch-keep"]')));
+    expect(container.querySelector('[data-testid="workflow-candidate-switch-confirm"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-command-bar"]')?.textContent).toContain("Redis Memory");
+    expect(container.querySelector('[data-testid="workflow-change-review"]')).toBeTruthy();
 
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("已取消本次计划");
-    expect(container.querySelectorAll('[data-testid^="canvas-node-"]').length).toBe(initialNodeCount);
-    expect(container.querySelector('[data-testid="canvas-node-ai-step-item-api"]')).toBeNull();
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).not.toContain("未保存");
-    await act(async () => click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("事件"))));
-    const eventDrawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-event-drawer"]');
-    expect(eventDrawer.textContent).toContain("workflow.ai.plan.cancelled");
-    expect(eventDrawer.textContent).not.toContain("workflow.graph.node.added");
+    await act(async () => click(await waitForElement(container, '[data-testid="runner-back-to-library"]')));
+    const discardDialog = await waitForElement<HTMLElement>(container, '[data-testid="workflow-candidate-switch-confirm"]');
+    await act(async () => {
+      click(discardDialog.querySelector('[data-testid="workflow-candidate-switch-discard"]'));
+      await flush();
+    });
+    expect(await waitForElement(container, '[data-testid="runner-workflow-library"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="workflow-command-bar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-candidate-switch-confirm"]')).toBeNull();
+
+    const discardCalls = vi.mocked(globalThis.fetch).mock.calls.filter(([input]) => String(input) === "/api/runner-studio/workflow-candidate-actions");
+    expect(discardCalls).toHaveLength(1);
+    expect(JSON.parse(String(discardCalls[0][1]?.body))).toEqual({
+      schemaVersion: "aiops.workflow.edit.v2",
+      workflowId: "redis-memory",
+      candidateId: "candidate-switch-1",
+      candidateRevision: 1,
+      changeSetId: "change-switch-1",
+      previewHash: "preview-switch-1",
+      expected: { resourceVersion: "rev-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+      idempotencyKey: expect.any(String),
+      action: "discard",
+    });
   });
 
-  it("answers read-only workflow questions through Workflow AI chat without generating an edit plan", async () => {
+  it("keeps Changes navigation visible without an outline and keeps node operations separate from workflow tabs", async () => {
+    cacheWorkflowCandidate("redis-memory", [
+      { op: "update_node", nodeId: "check", set: { label: "候选容量检查" } },
+      { op: "update_node", nodeId: "end", set: { label: "候选结束节点" } },
+    ]);
+
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
+        <DirectPageChromeProvider>
           <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
           </MemoryRouter>
-        </AppShellChromeProvider>,
+        </DirectPageChromeProvider>,
       );
     });
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "解释一下，当前工作流做了什么？");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
+    const review = await waitForElement<HTMLElement>(container, '[data-testid="workflow-change-review"]');
+    const changesTab = await waitForElement<HTMLElement>(container, '[data-testid="workflow-context-tab-changes"]');
+    expect(changesTab.getAttribute("aria-selected")).toBe("true");
 
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("你好，我是 Workflow AI");
-    expect(answer.textContent).not.toContain("Workflow AI 回复");
-    expect(answer.textContent).not.toContain("只读说明");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(drawer.textContent).not.toContain("正在生成修改计划");
-    expect(drawer.textContent).not.toContain("确认计划并开始修改");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/v1/chat/message",
-      expect.objectContaining({
-        body: expect.stringContaining('"source":"workflow_ai_chat"'),
-      }),
-    );
-    const chatRequest = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/v1/chat/message");
-    const chatBody = JSON.parse(String(chatRequest?.[1]?.body || "{}"));
-    expect(chatBody.content).toContain("当前可见节点：Start、检查内存。");
-    expect(chatBody.content).toContain("当前可见连线：Start -> 检查内存。");
-    expect(chatBody.content).not.toContain("检查内存 -> End");
-    expect(chatBody.content).not.toContain("不要使用 emoji");
-    expect(chatBody.content).not.toContain("禁止说");
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.anything(),
-    );
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).not.toContain("未保存");
+    await act(async () => click(review.querySelector('[data-testid="workflow-review-next"]')));
+    expect(review.textContent).toContain("2 / 2");
+    expect(changesTab.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="workflow-context-outline"]')).toBeNull();
+
+    await act(async () => click(review.querySelector('[data-testid="workflow-review-previous"]')));
+    expect(review.textContent).toContain("1 / 2");
+    expect(changesTab.getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => click(review.querySelector("ol li:nth-child(2) button")));
+    expect(review.textContent).toContain("2 / 2");
+    expect(changesTab.getAttribute("aria-selected")).toBe("true");
+
+    await act(async () => click(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    expect(container.querySelector('[data-testid="workflow-context-tab-configuration"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-node-sidebar"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflow-context-tab-changes"]')?.getAttribute("aria-selected")).toBe("true");
+  });
+
+  it("fails closed when the server omits or malforms the Workflow AI capability while keeping manual editing available", async () => {
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowCapabilities: { workflow_agent_ui: true } } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    expect(await waitForElement(container, '[data-testid="runner-studio-canvas"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="workflow-workbench-trigger"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="workflow-context-tab-ai"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-ai-transport-panel"]')).toBeNull();
+    const commandBar = await waitForElement<HTMLElement>(container, '[data-testid="workflow-command-bar"]');
+    expect(container.querySelector('[data-testid="workflow-primary-action"]')).toBeNull();
+    expect(commandBar.textContent).toContain("检查依据未同步");
+  });
+
+  it("keeps node configuration independent from the collapsible workflow drawer and preserves its draft", async () => {
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+    const workflowDrawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-context-dock"]');
+    expect(container.querySelectorAll('[data-testid="workflow-context-dock"]')).toHaveLength(1);
+    expect(workflowDrawer.hidden).toBe(true);
+    await act(async () => doubleClick(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    const inspector = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel"]');
+    const nodeSidebar = await waitForElement<HTMLElement>(container, '[data-testid="workflow-node-sidebar"]');
+    expect(container.querySelector('[data-testid="runner-node-panel-modal"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-context-tab-configuration"]')).toBeNull();
+    expect(nodeSidebar.getAttribute("aria-hidden")).not.toBe("true");
+    expect(workflowDrawer.hidden).toBe(true);
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-tab-script"]')));
+    const editor = await waitForElement<HTMLTextAreaElement>(inspector, '[data-testid="runner-node-script-editor"]');
+    await act(async () => changeTextarea(editor, "print('dock draft')"));
+
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    expect(workflowDrawer.hidden).toBe(false);
+    expect(container.querySelector('[data-testid="workflow-context-tab-ai"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="runner-node-panel"]')).not.toBeNull();
+    expect(nodeSidebar.getAttribute("aria-hidden")).toBe("true");
+    expect(nodeSidebar.hasAttribute("inert")).toBe(true);
+    expect((container.querySelector('[data-testid="runner-node-script-editor"]') as HTMLTextAreaElement).value).toBe("print('dock draft')");
+
+    await act(async () => click(container.querySelector('[data-testid="workflow-context-drawer-close"]')));
+    expect(workflowDrawer.hidden).toBe(true);
+    expect(nodeSidebar.getAttribute("aria-hidden")).not.toBe("true");
+    expect(nodeSidebar.hasAttribute("inert")).toBe(false);
+    expect((container.querySelector('[data-testid="runner-node-script-editor"]') as HTMLTextAreaElement).value).toBe("print('dock draft')");
+
+    await act(async () => {
+      click(inspector.querySelector('[data-testid="runner-node-panel-run"]'));
+      await flush();
+    });
+    expect(workflowDrawer.hidden).toBe(true);
+    expect(container.querySelector('[data-testid="workflow-context-tab-run"]')?.getAttribute("aria-selected")).not.toBe("true");
+
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-close"]')));
+    expect(container.querySelector('[data-testid="workflow-node-sidebar"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-node-panel"]')).toBeNull();
+
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    expect(workflowDrawer.hidden).toBe(false);
+    await act(async () => clickRadixTab(await waitForElement(container, '[data-testid="workflow-context-tab-run"]')));
+    expect(container.querySelector('[data-testid="workflow-context-tab-run"]')?.getAttribute("aria-selected")).toBe("true");
+    expect(container.querySelector('[data-testid="runner-run-drawer"]')).toBeNull();
+  });
+
+  it("locates a blocking diagnostic and focuses its exact Inspector field", async () => {
+    const projected = {
+      ...workspaceProjection(),
+      validationArtifacts: [{
+        artifactId: "validation-script-required",
+        basis: workflowBasis(),
+        status: "saved_with_issues" as const,
+        diagnostics: [{
+          code: "ACTION_ARGUMENT_REQUIRED",
+          severity: "error",
+          message: "raw server validation detail",
+          nodeId: "check",
+          field: "args.script",
+        }],
+        issuedAt: "2026-07-21T00:00:02Z",
+      }],
+    };
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      if (String(input) === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${String(input)}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: projected, workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-context-tab-changes"]')));
+    const issue = await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-validation-issue-committed-0"]');
+    expect(issue.dataset.workflowNodeId).toBe("check");
+    expect(issue.dataset.workflowField).toBe("args.script");
+    await act(async () => {
+      click(issue);
+      await new Promise<void>((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve())));
+    });
+
+    const editor = await waitForElement<HTMLTextAreaElement>(container, '[data-testid="runner-node-script-editor"]');
+    expect(container.querySelector('[data-testid="workflow-context-tab-configuration"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-node-sidebar"]')).not.toBeNull();
+    expect((container.querySelector('[data-testid="workflow-context-dock"]') as HTMLElement).hidden).toBe(true);
+    expect(container.querySelector('[data-testid="runner-node-panel-title"]')?.textContent).toContain("检查内存");
+    expect(container.querySelector('[data-testid="runner-node-panel-tab-script"]')?.className).toContain("active");
+    expect(editor.dataset.workflowDiagnosticFocus).toBe("args.script");
+    expect(document.activeElement).toBe(editor);
+  });
+
+  it("renders authoritative lifecycle facts and submits dry-run without sending the Graph", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflow-dry-run") return jsonResponse({ status: "dry_run_passed" });
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    const header = await waitForElement<HTMLElement>(container, '[data-testid="workflow-lifecycle-header"]');
+    const commandBar = await waitForElement<HTMLElement>(header, '[data-testid="workflow-command-bar"]');
+    expect(header.dataset.placement).toBe("topbar");
+    expect(container.querySelector('[data-testid="runner-studio-shell"] [data-testid="workflow-lifecycle-header"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-studio-shell"] .runner-studio-workspace')?.classList.contains("with-lifecycle-header")).toBe(false);
+    expect(commandBar.textContent).toContain("Redis Memory");
+    expect(commandBar.textContent).toContain("静态检查通过");
+    expect(container.querySelectorAll('[data-testid="workflow-command-bar"]')).toHaveLength(1);
+    expect(container.querySelectorAll('[data-testid="workflow-primary-action"]')).toHaveLength(1);
+    expect(container.querySelector('[data-testid="runner-toolbar-save"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-toolbar-run"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-toolbar-run-details"]')).toBeNull();
+    expect(container.querySelector('[data-testid="runner-toolbar-ai-generate"]')).toBeNull();
+    expect(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')).toBeTruthy();
+    const primary = await waitForElement<HTMLButtonElement>(header, '[data-testid="workflow-primary-action"]');
+    expect(primary.dataset.action).toBe("dry_run");
+    await act(async () => {
+      click(primary);
+      await flush();
+    });
+
+    const request = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/runner-studio/workflow-dry-run");
+    expect(request).toBeTruthy();
+    const body = JSON.parse(String(request?.[1]?.body || "{}"));
+    expect(body).toEqual({
+      schemaVersion: "aiops.workflow.edit.v2",
+      workflowId: "redis-memory",
+      expectedBasis: workflowBasis(),
+      environment: "staging",
+    });
+    expect(body).not.toHaveProperty("graph");
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input).includes("/workflows/graph/dry-run"))).toBe(false);
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input) === "/api/runner-studio/workflow-published-run")).toBe(false);
+  });
+
+  it("checks only the exact saved revision projected into the Primary target", async () => {
+    const projected = {
+      ...workspaceProjection(),
+      validationArtifacts: [],
+    };
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflows/redis-memory/validate") {
+        return jsonResponse({ valid: true, status: "validated", validated_graph_hash: "semantic-1" });
+      }
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: projected, workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    const primary = await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-primary-action"]');
+    expect(primary.dataset.action).toBe("check");
+    await act(async () => {
+      click(primary);
+      await flush();
+    });
+
+    const request = vi.mocked(globalThis.fetch).mock.calls.find(([input]) =>
+      String(input) === "/api/runner-studio/workflows/redis-memory/validate");
+    const body = JSON.parse(String(request?.[1]?.body || "{}"));
+    expect(body).toEqual({
+      expected_resource_version: "rev-1",
+      expected_semantic_hash: "semantic-1",
+    });
+    expect(body).not.toHaveProperty("graph");
+  });
+
+  it("keeps More limited to low-frequency non-lifecycle actions", async () => {
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    const trigger = await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-action-menu-trigger"]');
+    await act(async () => {
+      trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true }));
+      await flush();
+    });
+    const menu = await waitForElement<HTMLElement>(document, '[data-testid="workflow-action-menu"]');
+    const actionIds = [...menu.querySelectorAll<HTMLElement>("[data-action]")]
+      .map((item) => item.dataset.action);
+
+    expect(actionIds.length).toBeGreaterThan(0);
+    expect(actionIds.every((id) => ["import", "export", "manual", "shortcuts", "duplicate", "delete"].includes(String(id)))).toBe(true);
+    expect(actionIds).not.toEqual(expect.arrayContaining(["validate", "dry-run", "run", "variables", "publish"]));
+    expect(menu.textContent).not.toContain("检查工作流");
+    expect(menu.textContent).not.toContain("试运行");
+    expect(menu.textContent).not.toContain("发布工作流");
+    expect(menu.textContent).not.toContain("运行已发布版本");
+  });
+
+  it("runs only the exact immutable published target and never sends the current draft Graph", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflow-published-run") return jsonResponse({ run_id: "run-published-1", status: "running" }, 202);
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: publishedWorkspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-context-tab-run"]')));
+    const publishedTarget = await waitForElement<HTMLButtonElement>(container, '[data-testid="workflow-run-published"]');
+    await act(async () => {
+      click(publishedTarget);
+      await flush();
+    });
+
+    const request = vi.mocked(globalThis.fetch).mock.calls.find(([input]) =>
+      String(input) === "/api/runner-studio/workflow-published-run");
+    expect(request).toBeTruthy();
+    expect(request?.[1]?.method).toBe("POST");
+    const body = JSON.parse(String(request?.[1]?.body || "{}"));
+    expect(body.target).toEqual({
+      workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+      resourceVersion: PUBLISHED_RESOURCE_VERSION,
+      semanticHash: PUBLISHED_SEMANTIC_HASH,
+    });
+    expect(body.target.resourceVersion).not.toBe(CURRENT_RESOURCE_VERSION);
+    expect(body).not.toHaveProperty("graph");
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input) === "/api/runner-studio/workflow-dry-run")).toBe(false);
+    expect(vi.mocked(globalThis.fetch).mock.calls.some(([input]) => String(input) === "/api/runner-studio/runs")).toBe(false);
+  });
+
+  it("retries a failed published run against the same immutable revision target", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    const runIds = ["run-published-failed", "run-published-retry"];
+    const publishedRequests: Record<string, unknown>[] = [];
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
+      const path = String(input);
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflow-published-run") {
+        publishedRequests.push(JSON.parse(String(init?.body || "{}")));
+        return jsonResponse({ run_id: runIds[Math.min(publishedRequests.length - 1, 1)], status: "running" }, 202);
+      }
+      if (path === `/api/runner-studio/runs/${runIds[0]}/events/history`) {
+        return jsonResponse([
+          { type: "run_start", run_id: runIds[0], status: "running", timestamp: "2026-07-08T03:00:00Z" },
+          { type: "run.failed", run_id: runIds[0], status: "failed", error: "remote unavailable", timestamp: "2026-07-08T03:00:01Z" },
+        ]);
+      }
+      if (path === `/api/runner-studio/runs/${runIds[1]}/events/history`) {
+        return jsonResponse([
+          { type: "run_start", run_id: runIds[1], status: "running", timestamp: "2026-07-08T03:01:00Z" },
+          { type: "run_finish", run_id: runIds[1], status: "success", timestamp: "2026-07-08T03:01:01Z" },
+        ]);
+      }
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
+    });
+
+    await act(async () => {
+      root.render(
+        <DirectPageChromeProvider>
+          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: publishedWorkspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
+          </MemoryRouter>
+        </DirectPageChromeProvider>,
+      );
+    });
+
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-workbench-trigger"]')));
+    await act(async () => click(await waitForElement(container, '[data-testid="workflow-context-tab-run"]')));
+    await act(async () => {
+      click(await waitForElement(container, '[data-testid="workflow-run-published"]'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    });
+    const sessionInspector = await waitForElement<HTMLElement>(container, '[data-testid="workflow-run-inspector"]');
+    await act(async () => click(await waitForElement(sessionInspector, "ol button")));
+    await act(async () => {
+      click(await waitForElement(sessionInspector, '[data-testid="workflow-run-retry"]'));
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    });
+
+    expect(publishedRequests).toHaveLength(2);
+    expect(publishedRequests[1]?.target).toEqual(publishedRequests[0]?.target);
+    expect(publishedRequests[1]?.target).toEqual({
+      workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+      resourceVersion: PUBLISHED_RESOURCE_VERSION,
+      semanticHash: PUBLISHED_SEMANTIC_HASH,
+    });
+    expect(publishedRequests[1]).not.toHaveProperty("graph");
+    expect(publishedRequests[1]?.idempotency_key).not.toBe(publishedRequests[0]?.idempotency_key);
   });
 
   it("keeps the script tab active when the selected node is refreshed", async () => {
@@ -767,437 +1144,378 @@ describe("RunnerStudioPage Workflow AI", () => {
     expect(await waitForElement(container, '[data-testid="runner-node-script-tab"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="runner-node-settings"]')).toBeNull();
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-workflow-title-display"]')));
+    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="canvas-node-check"]')));
 
     expect(await waitForElement(container, '[data-testid="runner-node-script-tab"]')).toBeTruthy();
     expect(container.querySelector('[data-testid="runner-node-settings"]')).toBeNull();
     expect(container.querySelector('[data-testid="runner-node-panel-tab-script"]')?.className).toContain("active");
   });
 
-  it("passes exact visible graph context to chat when the workflow has no End node", async () => {
-    const startOnlyGraph = {
-      ...workflowGraph,
-      workflow: { name: "start-only", title: "Start Only" },
-      nodes: [workflowGraph.nodes[0]],
-      edges: [],
-    };
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((input, init) => {
+  it("submits Inspector edits as typed commands and waits for authoritative reconciliation", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
       const path = String(input);
-      if (path === "/api/runner-studio/workflows") {
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflow-commands") {
         return jsonResponse({
-          workflows: [{
-            name: "start-only",
-            title: "Start Only",
-            status: "draft",
-            version: "rev-start-only",
-            updated_at: "2026-07-06T04:20:00Z",
-            graph: startOnlyGraph,
-            validation_result: { valid: true, errors: [], warnings: [] },
-          }],
-        });
-      }
-      if (path === "/api/runner-studio/actions") return jsonResponse({ items: [] });
-      if (path === "/api/v1/chat/message") {
-        const body = typeof init?.body === "string" ? JSON.parse(init.body) : {};
-        workflowAiChatClientTurnId = String(body.clientTurnId || "");
-        return jsonResponse({ accepted: true, sessionId: "drawer-start-only-0-chat-v2", turnId: "turn-chat", status: "accepted" });
-      }
-      if (path === "/api/v1/state") {
-        return jsonResponse({
-          schemaVersion: "aiops.transport.v2",
-          sessionId: "drawer-start-only-0-chat-v2",
-          threadId: "drawer-start-only-0-chat-v2",
-          status: "idle",
-          currentTurnId: "turn-chat",
-          turns: {
-            "turn-chat": {
-              id: "turn-chat",
-              user: { clientTurnId: workflowAiChatClientTurnId, text: "解释一下当前工作流" },
-              status: "completed",
-              final: { id: "final-chat", text: "当前只有 Start 一个节点，还没有完整编排。", status: "completed" },
+          receipt: {
+            transactionId: "txn-inspector-1",
+            changeSetId: "change-inspector-1",
+            workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+            status: "verifying",
+            revisionBefore: { resourceVersion: "rev-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+            revisionAfter: { resourceVersion: "rev-2", semanticHash: "semantic-2", layoutHash: "layout-1" },
+            validation: {
+              basis: {
+                resourceVersion: "rev-2",
+                semanticHash: "semantic-2",
+                catalogVersion: "catalog-1",
+                actionSchemaDigest: "actions-1",
+                referenceSnapshotHash: "refs-1",
+                environmentBindingVersion: "env-1",
+              },
+              valid: true,
+              diagnostics: [],
             },
           },
-          turnOrder: ["turn-chat"],
-          cards: [],
         });
       }
-      if (path === "/api/runner-studio/workflows/start-only") return jsonResponse({ name: "start-only" });
-      return jsonResponse({ error: `unexpected ${path}` }, 404);
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
     });
 
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/start-only"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "解释一下当前工作流");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("当前只有 Start 一个节点");
-    const chatRequest = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/v1/chat/message");
-    const chatBody = JSON.parse(String(chatRequest?.[1]?.body || "{}"));
-    expect(chatBody.content).toContain("当前对象：Start Only（draft），1 个节点、0 条连线。");
-    expect(chatBody.content).toContain("当前可见节点：Start。");
-    expect(chatBody.content).toContain("当前可见连线：无。");
-    expect(chatBody.content).toContain("没有列出的节点不要假设存在");
-    expect(chatBody.content).not.toContain("End");
-    expect(chatBody.content).not.toContain("Start -> End");
-  });
-
-  it("handles greetings as normal Workflow AI chat without generating a plan", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
+        <DirectPageChromeProvider>
           <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
           </MemoryRouter>
-        </AppShellChromeProvider>,
+        </DirectPageChromeProvider>,
       );
     });
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "你好");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
+    await act(async () => click(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    const inspector = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel"]');
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-tab-script"]')));
+    const editor = await waitForElement<HTMLTextAreaElement>(inspector, '[data-testid="runner-node-script-editor"]');
+    await act(async () => changeTextarea(editor, "print('server authoritative')"));
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-apply"]')));
+    await flush();
 
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("你好，我是 Workflow AI");
-    expect(answer.textContent).not.toContain("Workflow AI 回复");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(container.textContent).not.toContain("正在生成修改计划");
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).not.toContain("未保存");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/v1/chat/message",
-      expect.objectContaining({
-        body: expect.stringContaining('"source":"workflow_ai_chat"'),
-      }),
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.anything(),
-    );
+    const commandCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input) === "/api/runner-studio/workflow-commands");
+    expect(commandCall).toBeTruthy();
+    const body = JSON.parse(String(commandCall?.[1]?.body || "{}"));
+    expect(body).toMatchObject({
+      schemaVersion: "aiops.workflow.edit.v2",
+      workflowId: "redis-memory",
+      expectedRevision: "rev-1",
+      command: { kind: "update_node", nodeId: "check", nodePatch: { step: { args: { script: "print('server authoritative')" } } } },
+    });
+    expect(body).not.toHaveProperty("graph");
+    expect((inspector.querySelector('[data-testid="runner-node-script-editor"]') as HTMLTextAreaElement).value).toBe("print('server authoritative')");
+    expect((await waitForElement(container, '[data-testid="workflow-save-status"]')).textContent).toContain("正在应用");
+    expect(container.querySelector('[data-testid="runner-workspace-command-state"]')).toBeNull();
   });
 
-  it("treats negative edit wording as normal chat instead of generating a plan", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "你好，先别修改工作流。");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).not.toContain("Workflow AI 回复");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(container.textContent).not.toContain("正在生成修改计划");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/v1/chat/message",
-      expect.objectContaining({
-        body: expect.stringContaining('"source":"workflow_ai_chat"'),
-      }),
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.anything(),
-    );
-  });
-
-  it("treats optimization advice questions as chat instead of keyword-forced plan mode", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "你帮我看看这个工作流还有哪些地方可以优化？先给建议。");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).not.toContain("Workflow AI 回复");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/v1/chat/message",
-      expect.objectContaining({
-        body: expect.stringContaining('"source":"workflow_ai_chat"'),
-      }),
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.anything(),
-    );
-  });
-
-  it("routes simple one-node edits through plan review instead of local direct edits", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "把 Start 后面添加一个日志节点，节点名称叫「记录开始」，不要生成完整运维流程。");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    expect(await waitForElement(container, '[data-testid="workflow-ai-plan-card"]')).toBeTruthy();
-    expect(container.querySelector('[data-testid="workflow-ai-result-card"]')).toBeNull();
-    expect(container.querySelector('[data-testid="workflow-ai-step-history-card"]')).toBeNull();
-    const generatedNode = Array.from(container.querySelectorAll('[data-testid^="canvas-node-ai-step-"]'))
-      .find((node) => node.textContent?.includes("记录开始"));
-    expect(generatedNode).toBeFalsy();
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).not.toContain("未保存");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.objectContaining({ method: "POST" }),
-    );
-  });
-
-  it("still generates a plan when an explicit create request says not to edit the canvas directly", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "生成一个 PostgreSQL 备份工作流，先生成计划，不要直接改画布。");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    expect(await waitForElement(container, '[data-testid="workflow-ai-plan-card"]')).toBeTruthy();
-    expect(drawer.textContent).toContain("修改计划");
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/v1/chat/message",
-      expect.anything(),
-    );
-  });
-
-  it("waits for the matching chat turn instead of using stale assistant cards", async () => {
-    let stateCalls = 0;
-    workflowAiChatStateFactory = () => {
-      stateCalls += 1;
-      const base = {
-        schemaVersion: "aiops.transport.v2",
-        sessionId: "drawer-redis-memory-chat-v2",
-        threadId: "drawer-redis-memory-chat-v2",
-        status: "idle",
-        currentTurnId: "turn-chat",
-        turns: {},
-        turnOrder: [],
-        cards: [
-          { id: "old-assistant", type: "AssistantMessageCard", role: "assistant", text: "旧的上一轮回复，不应该显示", message: "旧的上一轮回复，不应该显示" },
-        ],
-      };
-      if (stateCalls < 2) return base;
-      return {
-        ...base,
-        turns: {
-          "turn-chat": {
-            id: "turn-chat",
-            user: { clientTurnId: workflowAiChatClientTurnId, text: "你可以做什么?" },
-            status: "completed",
-            final: {
-              id: "final-chat",
-              text: "当前问题的新回复：我可以解释、检查、创建或修改当前 Workflow。",
-              status: "completed",
-            },
-          },
-        },
-        turnOrder: ["turn-chat"],
-      };
-    };
-
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "你可以做什么?");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 700));
-    });
-
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("当前问题的新回复");
-    expect(answer.textContent).not.toContain("旧的上一轮回复");
-  });
-
-  it("uses the assistant card following the matching Workflow AI user card when turns are absent", async () => {
-    workflowAiChatStateFactory = () => ({
-      schemaVersion: "aiops.transport.v2",
-      sessionId: "drawer-redis-memory-chat-v2",
-      threadId: "drawer-redis-memory-chat-v2",
-      status: "idle",
-      turns: {},
-      turnOrder: [],
-      cards: [
-        { id: "old-user", type: "UserMessageCard", role: "user", clientTurnId: "old-turn", text: "旧问题", message: "旧问题" },
-        { id: "old-assistant", type: "AssistantMessageCard", role: "assistant", text: "旧回答", message: "旧回答" },
-        { id: `${workflowAiChatClientTurnId}-user`, type: "UserMessageCard", role: "user", clientTurnId: workflowAiChatClientTurnId, text: "你可以做什么?", message: "你可以做什么?" },
-        { id: "current-assistant", type: "AssistantMessageCard", role: "assistant", text: "当前 card 回复：我可以解释、检查、创建或修改当前 Workflow。", message: "当前 card 回复：我可以解释、检查、创建或修改当前 Workflow。" },
-      ],
-    });
-
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "你可以做什么?");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    const answer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-readonly-answer"]');
-    expect(answer.textContent).toContain("当前 card 回复");
-    expect(answer.textContent).not.toContain("旧回答");
-  });
-
-  it("opens create-mode drawer from workflow_ai query and preloads the prompt without auto-submit", async () => {
-    await act(async () => {
-      root.render(
-        <AppShellChromeProvider>
-          <MemoryRouter initialEntries={["/runner?workflow_ai=create&prompt=%E6%AF%8F%E5%A4%A9%E5%B7%A1%E6%A3%80%20Redis%20%E5%86%85%E5%AD%98"]}>
-            <AppRouter />
-          </MemoryRouter>
-        </AppShellChromeProvider>,
-      );
-    });
-
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    expect(drawer.textContent).toContain("新建 Workflow");
-    expect((drawer.querySelector("textarea") as HTMLTextAreaElement).value).toBe("每天巡检 Redis 内存");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(globalThis.fetch).not.toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/plan",
-      expect.anything(),
-    );
-
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-    expect(await waitForElement(container, '[data-testid="workflow-ai-plan-card"]')).toBeTruthy();
-    expect(drawer.textContent).not.toContain("确认计划并开始修改");
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "确认");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-    expect(globalThis.fetch).toHaveBeenCalledWith(
-      "/api/runner-studio/workflow-ai/create-draft",
-      expect.objectContaining({ method: "POST" }),
-    );
-    expect((await waitForElement(container, '[data-testid="runner-studio-topbar"]')).textContent).toContain("每天巡检 Redis 内存");
-  });
-
-  it("does not fabricate a local plan or edit the graph when plan generation fails", async () => {
-    (globalThis.fetch as unknown as ReturnType<typeof vi.fn>).mockImplementation((input) => {
+  it("keeps the Inspector draft and reports unsaved when the typed command fails", async () => {
+    const fallbackFetch = vi.mocked(globalThis.fetch).getMockImplementation();
+    vi.mocked(globalThis.fetch).mockImplementation((input, init) => {
       const path = String(input);
-      if (path === "/api/runner-studio/workflows") {
-        return jsonResponse({
-          workflows: [{
-            name: "redis-memory",
-            title: "Redis Memory",
-            status: "draft",
-            version: "rev-1",
-            graph: workflowGraph,
-            validation_result: { valid: true, errors: [], warnings: [] },
-          }],
-        });
+      if (path === "/api/runner-studio/workflows/redis-memory/graph") return jsonResponse({ graph: workflowGraph });
+      if (path === "/api/runner-studio/workflow-commands") {
+        return jsonResponse({ errorCode: "STALE_REVISION", message: "workflow changed", retryHint: "reload" }, 409);
       }
-      if (path === "/api/runner-studio/actions") {
-        return jsonResponse({ items: [] });
-      }
-      if (path.startsWith("/api/runner-studio/workflow-ai/")) {
-        return jsonResponse({ error: "workfloweditor store unavailable" }, 404);
-      }
-      return jsonResponse({ error: `unexpected ${path}` }, 404);
+      return fallbackFetch?.(input, init) || jsonResponse({ error: `unexpected ${path}` }, 404);
     });
 
     await act(async () => {
       root.render(
-        <AppShellChromeProvider>
+        <DirectPageChromeProvider>
           <MemoryRouter initialEntries={["/runner/redis-memory"]}>
-            <AppRouter />
+            <Routes>
+              <Route path="/runner/:workflowName" element={<WorkflowTransportBoundary workflowId="redis-memory"><RunnerStudioPage appSnapshot={{ config: { workflowWorkspace: workspaceProjection(), workflowCapabilities: workflowCapabilities() } }} /></WorkflowTransportBoundary>} />
+            </Routes>
           </MemoryRouter>
-        </AppShellChromeProvider>,
+        </DirectPageChromeProvider>,
       );
     });
+    await act(async () => click(await waitForElement(container, '[data-testid="canvas-node-check"]')));
+    const inspector = await waitForElement<HTMLElement>(container, '[data-testid="runner-node-panel"]');
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-tab-script"]')));
+    const editor = await waitForElement<HTMLTextAreaElement>(inspector, '[data-testid="runner-node-script-editor"]');
+    await act(async () => changeTextarea(editor, "print('keep my draft')"));
+    await act(async () => click(inspector.querySelector('[data-testid="runner-node-panel-apply"]')));
+    await flush();
 
-    await act(async () => click(await waitForElement<HTMLButtonElement>(container, '[data-testid="runner-toolbar-ai-generate"]')));
-    const drawer = await waitForElement<HTMLElement>(container, '[data-testid="workflow-ai-drawer"]');
-    await act(async () => {
-      changeTextarea(drawer.querySelector("textarea") as HTMLTextAreaElement, "添加验证步骤");
-    });
-    await act(async () => click(Array.from(drawer.querySelectorAll("button")).find((button) => button.textContent?.includes("Send"))));
-
-    expect(await waitForElement(container, '[data-testid="workflow-ai-conflict-card"]')).toBeTruthy();
-    expect(drawer.textContent).toContain("计划生成失败");
-    expect(drawer.textContent).not.toContain("生成一个最小 Workflow patch");
-    expect(container.querySelector('[data-testid="workflow-ai-plan-card"]')).toBeNull();
-    expect(container.querySelector('[data-testid="canvas-node-ai-step-item-1"]')).toBeNull();
-    expect(container.querySelector('[data-testid="runner-save-state"]')?.textContent).not.toContain("未保存");
-    expect(drawer.textContent).not.toContain("Start");
-    expect(drawer.textContent).not.toContain("Apply");
+    expect((inspector.querySelector('[data-testid="runner-node-script-editor"]') as HTMLTextAreaElement).value).toBe("print('keep my draft')");
+    const toast = await waitForElement(container, '[data-testid="workflow-command-error-toast"]');
+    expect(toast.textContent).toContain("修改未保存");
+    expect(toast.textContent).toContain("workflow changed");
+    expect(container.querySelector('[data-testid="runner-workspace-command-state"]')).toBeNull();
+    expect(container.querySelector('[data-testid="workflow-save-status"]')?.textContent).toContain("未保存");
+    await act(async () => click(toast.querySelector('[aria-label="关闭错误提示"]')));
+    expect(container.querySelector('[data-testid="workflow-command-error-toast"]')).toBeNull();
+    expect(vi.mocked(globalThis.fetch).mock.calls.filter(([input, init]) =>
+      String(input).endsWith("/graph") && String(input).includes("redis-memory") && ["PUT", "POST"].includes(String(init?.method || "GET")),
+    )).toHaveLength(0);
   });
 });
+
+describe("WorkflowEditorShell authoritative manual commands", () => {
+  it("translates one drag-stop graph update into one typed move command", () => {
+    const next = {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.map((node) => node.id === "check"
+        ? { ...node, position: { x: 440, y: 220 } }
+        : node),
+    };
+
+    expect(workflowCommandForGraphChange(workflowGraph, next)).toEqual({
+      kind: "move",
+      layout: { nodes: [{ nodeId: "check", position: { x: 440, y: 220 } }] },
+    });
+  });
+
+  it("translates edits and connections without leaking canvas UI/runtime fields", () => {
+    const edited = {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.map((node) => node.id === "check"
+        ? { ...node, label: "检查 Redis 内存", ui: { selected: true }, state: { status: "running" } }
+        : node),
+    };
+    expect(workflowCommandForGraphChange(workflowGraph, edited)).toEqual({
+      kind: "update_node",
+      nodeId: "check",
+      nodePatch: { label: "检查 Redis 内存" },
+    });
+
+    const connected = {
+      ...workflowGraph,
+      edges: [...workflowGraph.edges, {
+        id: "start-end-success",
+        source: "start",
+        source_port: "success",
+        target: "end",
+        target_port: "in",
+        kind: "success",
+        state: { status: "selected" },
+      }],
+    };
+    expect(workflowCommandForGraphChange(workflowGraph, connected)).toEqual({
+      kind: "connect_edge",
+      edge: {
+        id: "start-end-success",
+        source: "start",
+        sourcePort: "success",
+        target: "end",
+        targetPort: "in",
+        kind: "success",
+      },
+    });
+  });
+
+  it("maps add, cascade delete, and disconnect to their typed server commands", () => {
+    const extraNode = { id: "notify", type: "action", label: "Notify", position: { x: 520, y: 320 }, step: { name: "notify", action: "script.shell", args: {} }, ui: { selected: true } };
+    expect(workflowCommandForGraphChange(workflowGraph, { ...workflowGraph, nodes: [...workflowGraph.nodes, extraNode] })).toEqual({
+      kind: "add_node",
+      node: { id: "notify", type: "action", label: "Notify", position: { x: 520, y: 320 }, step: { name: "notify", action: "script.shell", args: {} } },
+    });
+
+    expect(workflowCommandForGraphChange(workflowGraph, {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.filter((node) => node.id !== "check"),
+      edges: workflowGraph.edges.filter((edge) => edge.source !== "check" && edge.target !== "check"),
+    })).toEqual({ kind: "delete_node", nodeId: "check", cascadeEdges: true });
+
+    expect(workflowCommandForGraphChange(workflowGraph, { ...workflowGraph, edges: workflowGraph.edges.slice(1) }))
+      .toEqual({ kind: "disconnect_edge", edgeId: "start-check" });
+  });
+
+  it("fails closed for compound graph replacement instead of inventing local success", () => {
+    const compound = {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.filter((node) => node.id !== "check" && node.id !== "start"),
+      edges: [],
+    };
+
+    expect(() => workflowCommandForGraphChange(workflowGraph, compound))
+      .toThrow("single typed workflow command");
+  });
+});
+
+describe("RunnerStudioPage Candidate canvas revisions", () => {
+  it("maps a Candidate parameter edit to one canonical update_node operation", () => {
+    const next = {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.map((node) => node.id === "check"
+        ? { ...node, step: { ...node.step, args: { script: "df -h" } } }
+        : node),
+    };
+    expect(workflowOperationForCandidateGraphChange(workflowGraph, next)).toEqual({
+      op: "update_node",
+      nodeId: "check",
+      set: { step: { name: "检查内存", action: "script.python", args: { script: "df -h" } } },
+    });
+  });
+
+  it("maps Candidate drag-stop to one canonical update_layout operation", () => {
+    const next = {
+      ...workflowGraph,
+      nodes: workflowGraph.nodes.map((node) => node.id === "check"
+        ? { ...node, position: { x: 480, y: 260 } }
+        : node),
+    };
+    expect(workflowOperationForCandidateGraphChange(workflowGraph, next)).toEqual({
+      op: "update_layout",
+      layout: { nodes: [{ nodeId: "check", position: { x: 480, y: 260 } }] },
+    });
+  });
+
+  it("maps Candidate connection and reconnection to canonical edge operations", () => {
+    const connected = {
+      ...workflowGraph,
+      edges: [...workflowGraph.edges, {
+        id: "start-end-success", source: "start", source_port: "success", target: "end", target_port: "in", kind: "success",
+      }],
+    };
+    expect(workflowOperationForCandidateGraphChange(workflowGraph, connected)).toEqual({
+      op: "add_edge",
+      edge: { id: "start-end-success", source: "start", sourcePort: "success", target: "end", targetPort: "in", kind: "success" },
+    });
+
+    const reconnected = {
+      ...workflowGraph,
+      edges: workflowGraph.edges.map((edge) => edge.id === "check-end" ? { ...edge, target: "start" } : edge),
+    };
+    expect(workflowOperationForCandidateGraphChange(workflowGraph, reconnected)).toEqual({
+      op: "update_edge",
+      edgeId: "check-end",
+      set: { target: "start" },
+    });
+  });
+});
+
+function workspaceProjection() {
+  return {
+    schemaVersion: "aiops.workflow.workspace.v1" as const,
+    workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+    committed: {
+      workflowKey: { tenantId: "tenant-a", workflowId: "redis-memory" },
+      revision: { resourceVersion: "rev-1", semanticHash: "semantic-1", layoutHash: "layout-1" },
+      graph: workflowGraph,
+      sequence: 1,
+      loadedAt: "2026-07-21T00:00:00Z",
+    },
+    events: [],
+    lastSequence: 1,
+    runGateFacts: {
+      currentBasis: workflowBasis(),
+      environment: { name: "staging", bindingVersion: "env-1" },
+    },
+    validationArtifacts: [{
+      artifactId: "validation-rev-1",
+      basis: workflowBasis(),
+      status: "valid" as const,
+      diagnostics: [],
+      issuedAt: "2026-07-21T00:00:01Z",
+    }],
+    durableHistory: [{
+      source: "durable_transaction" as const,
+      transactionId: "txn-rev-1",
+      businessLabel: "更新工作流",
+      status: "completed" as const,
+      occurredAt: "2026-07-21T00:00:01Z",
+      actorLabel: "用户",
+      touchedObjectCount: 1,
+      reversible: true,
+    }],
+  };
+}
+
+function publishedWorkspaceProjection() {
+  const projection = workspaceProjection();
+  const currentBasis = {
+    ...workflowBasis(),
+    resourceVersion: CURRENT_RESOURCE_VERSION,
+    semanticHash: CURRENT_SEMANTIC_HASH,
+  };
+  const publishedBasis = {
+    ...workflowBasis(),
+    resourceVersion: PUBLISHED_RESOURCE_VERSION,
+    semanticHash: PUBLISHED_SEMANTIC_HASH,
+  };
+  return {
+    ...projection,
+    committed: {
+      ...projection.committed,
+      revision: {
+        resourceVersion: CURRENT_RESOURCE_VERSION,
+        semanticHash: CURRENT_SEMANTIC_HASH,
+        layoutHash: "layout-2",
+      },
+      sequence: 2,
+    },
+    lastSequence: 2,
+    runGateFacts: {
+      currentBasis,
+      environment: { name: "staging", bindingVersion: "env-1" },
+      postCheck: {
+        basis: currentBasis,
+        mode: "draft_non_production" as const,
+        status: "dry_run_passed" as const,
+        checkedAt: "2026-07-21T00:01:00Z",
+      },
+    },
+    validationArtifacts: [{
+      artifactId: "validation-rev-2",
+      basis: currentBasis,
+      status: "valid" as const,
+      diagnostics: [],
+      issuedAt: "2026-07-21T00:01:00Z",
+    }],
+    lifecycleArtifacts: [{
+      artifactId: "published-rev-1",
+      basis: publishedBasis,
+      status: "published" as const,
+      issuedAt: "2026-07-21T00:00:30Z",
+    }],
+  };
+}
+
+function workflowBasis() {
+  return {
+    resourceVersion: "rev-1",
+    semanticHash: "semantic-1",
+    catalogVersion: "catalog-1",
+    actionSchemaDigest: "actions-1",
+    referenceSnapshotHash: "refs-1",
+    environmentBindingVersion: "env-1",
+  };
+}
+
+function workflowCapabilities() {
+  return {
+    schemaVersion: "aiops.workflow.rollout.v1",
+    stage: "internal_apply",
+    saltVersion: "workflow-rollout-2026-07-v1",
+    rolloutPercentage: 100,
+    bucketBasisPoints: 1724,
+    decision: "allow_list",
+    capabilities: {
+      workflow_agent_ui: true,
+      workflow_mcp_read: true,
+      workflow_mcp_preview: true,
+      workflow_mcp_mutation: true,
+      workflow_delete: false,
+      workflow_publish: false,
+      workflow_execute: false,
+      workflow_domain_events: true,
+      workflow_plan_ir: false,
+      workflow_elk_layout: false,
+      workflow_edit_grants: false,
+      workflow_external_mcp: false,
+      workflow_mcp_apps: false,
+    },
+  };
+}

@@ -4,15 +4,17 @@ import (
 	"fmt"
 
 	"aiops-v2/internal/mcp"
-	edit "aiops-v2/internal/workfloweditor"
+	"runner/server/service"
 )
 
-func Register(registry *mcp.Registry, service *edit.Service) error {
+func Register(registry *mcp.Registry, app *service.WorkflowEditApplication, resources *WorkflowResourcesV2) error {
 	if registry == nil {
 		return fmt.Errorf("workfloweditor: mcp registry is required")
 	}
-	if service == nil {
-		service = edit.NewService(nil)
+	if app == nil || resources == nil {
+		return fmt.Errorf("workfloweditor: workflow edit application and resources are required")
 	}
-	return registry.RegisterRunnerCapability(Tools(service))
+	tools := append(WorkflowReadToolsV2(app, resources), WorkflowCompilePlanToolV2(app))
+	tools = append(tools, WorkflowMutationToolsV2(app)...)
+	return registry.RegisterRunnerCapability(tools)
 }

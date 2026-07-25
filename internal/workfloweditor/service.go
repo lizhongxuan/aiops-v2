@@ -2,6 +2,7 @@ package workfloweditor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -9,6 +10,8 @@ import (
 
 	"runner/workflow/visual"
 )
+
+var ErrCompatibilityStoreRequired = errors.New("legacy workflow editor compatibility store is not configured")
 
 type WorkflowRecord struct {
 	ID        string
@@ -20,6 +23,16 @@ type WorkflowRecord struct {
 type WorkflowStore interface {
 	GetWorkflow(ctx context.Context, id string) (WorkflowRecord, error)
 	SaveWorkflow(ctx context.Context, record WorkflowRecord) error
+}
+
+type unconfiguredWorkflowStore struct{}
+
+func (unconfiguredWorkflowStore) GetWorkflow(context.Context, string) (WorkflowRecord, error) {
+	return WorkflowRecord{}, ErrCompatibilityStoreRequired
+}
+
+func (unconfiguredWorkflowStore) SaveWorkflow(context.Context, WorkflowRecord) error {
+	return ErrCompatibilityStoreRequired
 }
 
 type MemoryWorkflowStore struct {
@@ -67,6 +80,7 @@ func (s *MemoryWorkflowStore) SaveWorkflow(_ context.Context, record WorkflowRec
 
 type Service struct {
 	store           WorkflowStore
+	legacyFixture   bool
 	sessions        *SessionStore
 	planner         WorkflowEditPlanner
 	mu              sync.Mutex
@@ -87,10 +101,11 @@ func WithEditPlanner(planner WorkflowEditPlanner) ServiceOption {
 
 func NewService(store WorkflowStore, opts ...ServiceOption) *Service {
 	if store == nil {
-		store = NewMemoryWorkflowStore()
+		store = unconfiguredWorkflowStore{}
 	}
 	service := &Service{
 		store:           store,
+		legacyFixture:   !isUnconfiguredWorkflowStore(store),
 		sessions:        NewSessionStore(),
 		planner:         DefaultWorkflowEditPlanner{},
 		appliedPatchIDs: map[string]bool{},
@@ -105,11 +120,26 @@ func NewService(store WorkflowStore, opts ...ServiceOption) *Service {
 	return service
 }
 
+func isUnconfiguredWorkflowStore(store WorkflowStore) bool {
+	_, disabled := store.(unconfiguredWorkflowStore)
+	return disabled
+}
+
+func (s *Service) requireLegacyFixture() error {
+	if s == nil || !s.legacyFixture {
+		return ErrCompatibilityStoreRequired
+	}
+	return nil
+}
+
 func (s *Service) Sessions() *SessionStore {
 	return s.sessions
 }
 
 func (s *Service) CreateSession(_ context.Context, req CreateSessionRequest) (WorkflowAISession, error) {
+	if err := s.requireLegacyFixture(); err != nil {
+		return WorkflowAISession{}, err
+	}
 	return s.sessions.Start(req), nil
 }
 
@@ -189,6 +219,9 @@ func (s *Service) ProposeEditPlan(ctx context.Context, req ProposeEditPlanReques
 }
 
 func (s *Service) ProposePatch(_ context.Context, req ProposePatchRequest) (WorkflowPatch, error) {
+	if err := s.requireLegacyFixture(); err != nil {
+		return WorkflowPatch{}, err
+	}
 	if strings.TrimSpace(req.DrawerSessionID) != "" {
 		if _, err := s.sessions.RecordPatchReview(req.DrawerSessionID); err != nil {
 			return WorkflowPatch{}, err
@@ -250,6 +283,9 @@ func (s *Service) DetectPatchEffect(ctx context.Context, req DetectPatchEffectRe
 }
 
 func (s *Service) ApplyPatch(ctx context.Context, req ApplyPatchRequest) (WorkflowPatchResult, error) {
+	if err := s.requireLegacyFixture(); err != nil {
+		return WorkflowPatchResult{}, err
+	}
 	if strings.TrimSpace(req.WorkflowID) == "" {
 		return WorkflowPatchResult{}, fmt.Errorf("workflow_id is required")
 	}
@@ -343,6 +379,9 @@ func (s *Service) ApplyPatch(ctx context.Context, req ApplyPatchRequest) (Workfl
 }
 
 func (s *Service) UndoLastAIPatch(ctx context.Context, req UndoLastAIPatchRequest) (UndoPatchResult, error) {
+	if err := s.requireLegacyFixture(); err != nil {
+		return UndoPatchResult{}, err
+	}
 	session, ok := s.sessions.Get(req.DrawerSessionID)
 	if !ok {
 		return UndoPatchResult{}, fmt.Errorf("workflow ai session %q not found", req.DrawerSessionID)
@@ -381,6 +420,9 @@ func (s *Service) UndoLastAIPatch(ctx context.Context, req UndoLastAIPatchReques
 }
 
 func (s *Service) CreateDraftFromConfirmedPlan(ctx context.Context, req WorkflowDraftFromPlanRequest) (WorkflowDraftFromPlanResult, error) {
+	if err := s.requireLegacyFixture(); err != nil {
+		return WorkflowDraftFromPlanResult{}, err
+	}
 	if strings.TrimSpace(req.UserConfirmationID) == "" {
 		return WorkflowDraftFromPlanResult{}, fmt.Errorf("user_confirmation_id is required for confirmed workflow draft creation")
 	}

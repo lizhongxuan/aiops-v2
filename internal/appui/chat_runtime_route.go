@@ -659,21 +659,93 @@ func applyWorkflowAgentRuntimeMetadata(req *runtimekernel.TurnRequest) {
 	if strings.TrimSpace(req.Metadata["aiops.workflowAgent.enabled"]) != "true" {
 		return
 	}
+	projectWorkflowAgentIntent(req)
 	req.HostID = ""
 	req.SessionType = runtimekernel.SessionTypeWorkspace
-	req.Mode = runtimekernel.ModePlan
+	// Workflow turns need execute-mode policy so the reviewed apply tool can
+	// reach RuntimeKernel's approval checkpoint. The workflow profile/tool pack
+	// and explicit host denials below keep host execution outside this route.
+	req.Mode = runtimekernel.ModeExecute
 	req.Metadata["profile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
 	req.Metadata["toolProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
 	req.Metadata["agentProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
 	req.Metadata["runtimeProfile"] = runtimekernel.RuntimePromptProfileWorkflowAgent
 	req.Metadata["runtimeRoute"] = runtimekernel.RuntimePromptProfileWorkflowAgent
-	req.Metadata["enableToolPack"] = appendMetadataListValue(req.Metadata["enableToolPack"], "workflow_editor")
+	// The Workflow drawer is an authoritative, frozen workflow scope. Generic
+	// chat routing may have classified transcript-like workflow context as
+	// research or host evidence before this override runs; do not leak those
+	// packs or explicit tools into the Workflow Agent surface.
+	req.Metadata["enableToolPack"] = "workflow_editor"
+	req.Metadata["enableTool"] = ""
+	req.Metadata["aiops.webSearch.policy"] = string(runtimekernel.WebSearchDisabled)
+	req.Metadata["aiops.webSearch.reason"] = "workflow_agent_scope"
+	req.Metadata["aiops.webSearch.reasonCodes"] = "workflow_agent_scope"
+	req.Metadata["aiops.webSearch.disabledBy"] = "workflow_agent"
+	req.Metadata["aiops.webSearch.requireCitations"] = "false"
+	req.Metadata["aiops.weblearn.enabled"] = "false"
+	delete(req.Metadata, "aiops.webSearch.querySeeds")
+	delete(req.Metadata, "aiops.weblearn.sourcePolicy")
+	delete(req.Metadata, "aiops.weblearn.requiredWhenUnfamiliar")
 	req.Metadata["aiops.target.binding"] = "none"
 	req.Metadata["aiops.target.hostId"] = ""
 	req.Metadata["aiops.target.summary"] = "Workflow AI Drawer"
 	req.Metadata["aiops.tool.execCommandAllowed"] = "false"
 	req.Metadata["aiops.tool.hostMutationAllowed"] = "false"
 	req.Metadata["aiops.workflowAgent.routeApplied"] = "true"
+}
+
+func projectWorkflowAgentIntent(req *runtimekernel.TurnRequest) {
+	if req == nil || req.IntentFrame == nil {
+		return
+	}
+	frame := runtimecontract.NormalizeIntentFrame(*req.IntentFrame)
+	frame.DataScopes = filterWorkflowHostDataScopes(frame.DataScopes)
+	frame.Evidence.DataScopes = filterWorkflowHostDataScopes(frame.Evidence.DataScopes)
+	frame.RiskBudget = filterWorkflowHostRisks(frame.RiskBudget)
+	capabilities := make([]runtimecontract.CapabilityCandidate, 0, len(frame.Capabilities))
+	for _, capability := range frame.Capabilities {
+		if strings.TrimSpace(capability.Name) == "host_runtime_inspection" {
+			continue
+		}
+		capability.DataScopes = filterWorkflowHostDataScopes(capability.DataScopes)
+		capability.Risks = filterWorkflowHostRisks(capability.Risks)
+		capabilities = append(capabilities, capability)
+	}
+	frame.Capabilities = capabilities
+	if len(frame.RiskBudget) == 0 {
+		frame.RiskBudget = runtimecontract.AppendActionRisk(frame.RiskBudget, runtimecontract.ActionRiskReadOnly)
+	}
+	frame = runtimecontract.NormalizeIntentFrame(frame)
+	req.IntentFrame = &frame
+	req.PermissionProfile = ""
+	req.RollbackPolicy = ""
+	applyRuntimeMutationPolicies(req, frame)
+	req.Metadata[runtimecontract.MetadataIntentKind] = string(frame.Kind)
+	req.Metadata[runtimecontract.MetadataIntentDataScopes] = strings.Join(intentDataScopeStrings(frame.DataScopes), ",")
+	req.Metadata[runtimecontract.MetadataIntentRiskBudget] = strings.Join(intentRiskStrings(frame.RiskBudget), ",")
+	if data, err := json.Marshal(frame); err == nil {
+		req.Metadata[runtimecontract.MetadataIntentFrame] = string(data)
+	}
+}
+
+func filterWorkflowHostDataScopes(values []runtimecontract.DataScope) []runtimecontract.DataScope {
+	filtered := make([]runtimecontract.DataScope, 0, len(values))
+	for _, value := range values {
+		if value != runtimecontract.DataScopeLocalRuntime {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
+}
+
+func filterWorkflowHostRisks(values []runtimecontract.ActionRisk) []runtimecontract.ActionRisk {
+	filtered := make([]runtimecontract.ActionRisk, 0, len(values))
+	for _, value := range values {
+		if value != runtimecontract.ActionRiskHostExec {
+			filtered = append(filtered, value)
+		}
+	}
+	return filtered
 }
 
 func firstRouteTargetHostID(targets []envcontext.TargetRef, mentions []hostops.HostMention) string {

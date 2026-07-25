@@ -1,0 +1,60 @@
+{
+  "id": "GEN-002",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Create an if/else workflow whose action failure also reaches an End node.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "condition", "action", "end"],
+    "requiredActions": ["notification.send"],
+    "allowedActions": ["notification.send"],
+    "argumentSchemas": {
+      "notification.send": { "required": ["channelRef"], "properties": { "channelRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": {
+      "condition": { "inputs": ["in"], "outputs": ["true", "false"] },
+      "notify": { "inputs": ["in"], "outputs": ["success", "failure"] }
+    },
+    "requiredPaths": ["/graph/edges/*/sourcePort", "/graph/edges/*/targetPort"],
+    "forbiddenPaths": ["/graph/nodes/*/args/secret"],
+    "forbiddenPlaceholders": ["script.python", "replace_me"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "edge", "source": "condition", "sourcePort": "true", "target": "notify", "targetPort": "in" },
+      { "kind": "edge", "source": "condition", "sourcePort": "false", "target": "end-false", "targetPort": "in" },
+      { "kind": "edge", "source": "notify", "sourcePort": "failure", "target": "end-failure", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "condition", "type": "condition", "inputPorts": ["in"], "outputPorts": ["true", "false"] },
+            { "id": "notify", "type": "action", "action": "notification.send", "args": { "channelRef": "channel://on-call" }, "inputPorts": ["in"], "outputPorts": ["success", "failure"] },
+            { "id": "end-success", "type": "end", "inputPorts": ["in"] },
+            { "id": "end-false", "type": "end", "inputPorts": ["in"] },
+            { "id": "end-failure", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "condition", "targetPort": "in" },
+            { "id": "e2", "source": "condition", "sourcePort": "true", "target": "notify", "targetPort": "in" },
+            { "id": "e3", "source": "condition", "sourcePort": "false", "target": "end-false", "targetPort": "in" },
+            { "id": "e4", "source": "notify", "sourcePort": "success", "target": "end-success", "targetPort": "in" },
+            { "id": "e5", "source": "notify", "sourcePort": "failure", "target": "end-failure", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 55, "previewMs": 86, "validateMs": 24, "repairCount": 0, "inputTokens": 960, "outputTokens": 720, "contextTokens": 1680 }
+    }]
+  }
+}

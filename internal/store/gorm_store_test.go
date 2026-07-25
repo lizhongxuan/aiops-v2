@@ -13,6 +13,7 @@ import (
 	"aiops-v2/internal/opsmanual"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/tooling"
+	"aiops-v2/internal/workfloweditor"
 )
 
 func newSQLiteGormStore(t *testing.T, path string) *GormStore {
@@ -165,6 +166,8 @@ func TestGormStorePersistsRuntimeSettings(t *testing.T) {
 	settings.AgentRuntime.IntentFrameRouting = "shadow"
 	settings.Tooling.ReadOnlyRetryEnabled = true
 	settings.Workflow.ReferenceGuardMode = "warning"
+	settings.Workflow.Rollout.Stage = workfloweditor.WorkflowAgentStageReadOnly
+	settings.Workflow.Rollout.RolloutPercentage = 100
 	settings.OpsManual.AutoRetrieval = true
 	settings.PublicWeb.Enabled = false
 	if err := first.SaveRuntimeSettings(&settings); err != nil {
@@ -177,7 +180,7 @@ func TestGormStorePersistsRuntimeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetRuntimeSettings() after reopen error = %v", err)
 	}
-	if restored.AgentRuntime.IntentFrameRouting != "shadow" || !restored.Tooling.ReadOnlyRetryEnabled || restored.Workflow.ReferenceGuardMode != "warning" {
+	if restored.AgentRuntime.IntentFrameRouting != "shadow" || !restored.Tooling.ReadOnlyRetryEnabled || restored.Workflow.ReferenceGuardMode != "warning" || restored.Workflow.Rollout.Stage != workfloweditor.WorkflowAgentStageReadOnly {
 		t.Fatalf("restored RuntimeSettings = %+v, want saved settings", restored)
 	}
 	if !restored.OpsManual.AutoRetrieval || restored.PublicWeb.Enabled {

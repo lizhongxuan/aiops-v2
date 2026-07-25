@@ -5,16 +5,18 @@ import (
 	"encoding/json"
 	"strings"
 
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/tooling"
 )
 
-func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, tc ToolCall, desc ToolDescriptor) (context.Context, json.RawMessage) {
+func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, tc ToolCall, desc ToolDescriptor, authorization *VerifiedActionToken) (context.Context, json.RawMessage) {
 	execCtx, _ := tooling.ToolExecutionContextFrom(ctx)
 	execCtx.SessionID = sessionID
 	execCtx.TurnID = turnID
 	execCtx.ToolCallID = tc.ID
 	execCtx.ToolName = tc.Name
 	execCtx.OriginalInput = append(json.RawMessage(nil), tc.Arguments...)
+	execCtx.VerifiedApproval = verifiedToolApprovalContext(authorization)
 
 	token, incidentID, hostID, tenantID, userID, stripped, hasToken := extractActionToken(tc.Arguments)
 	if hasToken && strings.TrimSpace(execCtx.ActionToken) == "" {
@@ -43,13 +45,45 @@ func enrichToolExecutionContext(ctx context.Context, sessionID, turnID string, t
 	return ctx, tc.Arguments
 }
 
-func toolExecutionContextForDispatch(hostID string, metadata map[string]string) tooling.ToolExecutionContext {
-	return tooling.ToolExecutionContext{
+func verifiedToolApprovalContext(authorization *VerifiedActionToken) *tooling.VerifiedApprovalContext {
+	if authorization == nil || authorization.verificationHash == "" || authorization.verificationHash != verifiedActionTokenHash(authorization.token, authorization.current) {
+		return nil
+	}
+	return &tooling.VerifiedApprovalContext{
+		ApprovalID:    authorization.token.ApprovalID,
+		TurnID:        authorization.token.TurnID,
+		ToolCallID:    authorization.token.ToolCallID,
+		ToolName:      authorization.token.ToolName,
+		ArgumentsHash: authorization.token.ArgumentsHash,
+		TargetRefs:    append([]string(nil), authorization.token.TargetRefs...),
+		BindingHash:   authorization.verificationHash,
+	}
+}
+
+func toolExecutionContextForDispatch(hostID string, metadata map[string]string, artifactSets ...[]runtimecontract.TurnArtifactEnvelope) tooling.ToolExecutionContext {
+	execution := tooling.ToolExecutionContext{
 		HostID:   strings.TrimSpace(hostID),
 		TenantID: firstMetadataValue(metadata, "tenantId", "tenantID", "tenant_id"),
 		UserID:   firstMetadataValue(metadata, "userId", "userID", "user_id"),
 		Metadata: cloneTurnMetadata(metadata),
 	}
+	if len(artifactSets) > 0 {
+		execution.TurnArtifacts = cloneRuntimeTurnArtifacts(artifactSets[0])
+	}
+	return execution
+}
+
+func toolExecutionContextForSnapshot(hostID string, metadata map[string]string, snapshot *TurnSnapshot) tooling.ToolExecutionContext {
+	if snapshot == nil {
+		return toolExecutionContextForDispatch(hostID, metadata)
+	}
+	execution := toolExecutionContextForDispatch(hostID, metadata, snapshot.TurnArtifacts)
+	if snapshot.TrustedIdentity != nil && snapshot.TrustedIdentity.Validate() == nil {
+		execution.TenantID = snapshot.TrustedIdentity.TenantID
+		execution.UserID = snapshot.TrustedIdentity.UserID
+		execution.SessionID = snapshot.TrustedIdentity.SessionID
+	}
+	return execution
 }
 
 func extractActionToken(input json.RawMessage) (token string, incidentID string, hostID string, tenantID string, userID string, stripped json.RawMessage, hasToken bool) {

@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-before-outbox",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "before-outbox",
+      "stage": "before_outbox",
+      "action": "terminate"
+    }
+  }
+}

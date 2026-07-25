@@ -1,0 +1,38 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W1",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W1",
+      "name": "linear-three-node",
+      "nodes": [
+        {
+          "id": "start",
+          "type": "start"
+        },
+        {
+          "id": "action",
+          "type": "action",
+          "actionRef": "fixture.echo"
+        },
+        {
+          "id": "end",
+          "type": "end"
+        }
+      ],
+      "edges": [
+        {
+          "id": "e1",
+          "source": "start",
+          "target": "action"
+        },
+        {
+          "id": "e2",
+          "source": "action",
+          "target": "end"
+        }
+      ]
+    }
+  }
+}

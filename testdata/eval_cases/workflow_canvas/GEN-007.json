@@ -1,0 +1,50 @@
+{
+  "id": "GEN-007",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Create a cloud inventory workflow, but the selected environment has no configured credential.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["cloud.inventory.read"],
+    "allowedActions": ["cloud.inventory.read"],
+    "argumentSchemas": {
+      "cloud.inventory.read": { "required": ["environmentRef", "secretRef"], "properties": { "environmentRef": "string", "secretRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "inventory": { "inputs": ["in"], "outputs": ["success"] } },
+    "requiredPaths": ["/graph/nodes/1/args/environmentRef", "/graph/nodes/1/args/secretRef"],
+    "forbiddenPaths": ["/graph/nodes/*/args/secret", "/graph/nodes/*/args/apiKey", "/graph/nodes/*/args/password"],
+    "forbiddenPlaceholders": ["replace_me", "dummy-secret", "script.python"],
+    "validation": { "firstPreviewStatus": "configuration_required", "finalStatus": "configuration_required", "rateEligible": false },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "fact", "name": "missing_secret_value_not_exposed" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "configuration_required", "valid": false, "diagnostics": ["missing environment credential binding"] } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "inventory", "type": "action", "action": "cloud.inventory.read", "args": { "environmentRef": "environment://production", "secretRef": "secretref://cloud-reader" }, "inputPorts": ["in"], "outputPorts": ["success"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "inventory", "targetPort": "in" },
+            { "id": "e2", "source": "inventory", "sourcePort": "success", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "configuration_required", "valid": false, "diagnostics": ["missing environment credential binding"] },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 51, "previewMs": 80, "validateMs": 22, "repairCount": 0, "inputTokens": 940, "outputTokens": 650, "contextTokens": 1590 },
+      "semanticFacts": { "missing_secret_value_not_exposed": true }
+    }]
+  }
+}

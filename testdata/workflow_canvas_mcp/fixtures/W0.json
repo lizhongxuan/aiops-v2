@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "W0",
+  "kind": "workflow",
+  "data": {
+    "workflow": {
+      "id": "W0",
+      "name": "blank-draft",
+      "nodes": [],
+      "edges": [],
+      "lifecycle": "draft"
+    }
+  }
+}

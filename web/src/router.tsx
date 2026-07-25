@@ -1,6 +1,7 @@
-import { Navigate, useRoutes } from "react-router-dom";
+import { Navigate, useParams, useRoutes } from "react-router-dom";
 
 import { AppShell } from "@/app/AppShell";
+import { useAppSnapshot } from "@/app/AppSnapshotContext";
 import { routeInventory } from "@/app/navigation";
 import { ChatPage } from "@/chat/ChatPage";
 import { AgentProfilePage } from "@/pages/AgentProfilePage";
@@ -33,6 +34,15 @@ import { ScriptConfigPage } from "@/pages/ScriptConfigPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { TerminalPage } from "@/pages/TerminalPage";
 import { UICardManagementPage } from "@/pages/UICardManagementPage";
+import { WorkflowTransportBoundary } from "@/runner/transport/WorkflowTransportBoundary";
+
+function RunnerStudioRoute() {
+  const { snapshot } = useAppSnapshot();
+  const { workflowName = "" } = useParams();
+  const workflowId = workflowName.trim();
+  const page = <RunnerStudioPage appSnapshot={snapshot} />;
+  return workflowId ? <WorkflowTransportBoundary workflowId={workflowId}>{page}</WorkflowTransportBoundary> : page;
+}
 
 function placeholderElement(title: string, description: string, routePath: string) {
   return <PlaceholderPage title={title} description={description} routePath={routePath} />;
@@ -51,8 +61,8 @@ const concreteRoutes: Record<string, React.ReactNode> = {
   "/coroot/p/:projectId/:view?/:id?/:report?": <CorootWorkspacePage />,
   "/runbooks": <RunbookCatalogPage />,
   "/runbooks/:runbookId": <RunbookDetailPage />,
-  "/runner": <RunnerStudioPage />,
-  "/runner/:workflowName": <RunnerStudioPage />,
+  "/runner": <RunnerStudioRoute />,
+  "/runner/:workflowName": <RunnerStudioRoute />,
   "/terminal/:hostId": <TerminalPage />,
   "/postmortems/:postmortemId": <PostmortemPage />,
   "/settings": <SettingsPage />,

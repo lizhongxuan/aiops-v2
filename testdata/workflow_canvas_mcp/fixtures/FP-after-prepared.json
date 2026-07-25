@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-after-prepared",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "after-prepared",
+      "stage": "prepared",
+      "action": "terminate"
+    }
+  }
+}

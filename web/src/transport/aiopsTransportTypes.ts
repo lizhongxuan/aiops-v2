@@ -279,6 +279,8 @@ export type AiopsTransportTurn = {
   id: string;
   user?: AiopsTransportMessage;
   intent?: AiopsTransportIntent;
+  /** Server-frozen page context for this turn; never derived from final text. */
+  workflowContext?: AiopsWorkflowTurnContextRequest;
   blockOrder?: string[];
   blocksById?: Record<string, AiopsTransportBlock>;
   /** Compatibility input only; AssistantTransport converts it at the boundary. */
@@ -292,6 +294,35 @@ export type AiopsTransportTurn = {
   startedAt?: string;
   completedAt?: string;
   updatedAt?: string;
+};
+
+export type AiopsWorkflowTurnSelection = {
+  nodeIds: string[];
+  edgeIds: string[];
+  neighborhoodIds?: string[];
+};
+
+export type AiopsWorkflowTurnEnvironment = {
+  name?: string;
+  bindingVersion: string;
+  capabilityVersions?: string[];
+};
+
+export type AiopsWorkflowTurnRevision = {
+  resourceVersion: string;
+  semanticHash: string;
+  layoutHash: string;
+};
+
+/**
+ * Mutable browser scope captured at Send. The server binds identity/session and
+ * turns this request into the immutable workflow.context turn artifact.
+ */
+export type AiopsWorkflowTurnContextRequest = {
+  workflowId: string;
+  revision: AiopsWorkflowTurnRevision;
+  selection: AiopsWorkflowTurnSelection;
+  environment: AiopsWorkflowTurnEnvironment;
 };
 
 export type AiopsTransportBlock = AiopsProcessBlock & {
@@ -483,6 +514,28 @@ export type AiopsTransportArtifact = {
   modifiedAt?: string;
 };
 
+export const WORKFLOW_CHANGE_ARTIFACT_CONTRACTS = [
+  { kind: "plan", type: "workflow_edit_plan", renderer: "workflow.change.plan.v2", schemaVersion: "aiops.workflow.plan.v1" },
+  { kind: "preview", type: "workflow_patch_preview", renderer: "workflow.change.preview.v2", schemaVersion: "aiops.workflow.edit.v2" },
+  { kind: "receipt", type: "workflow_patch_result", renderer: "workflow.change.receipt.v2", schemaVersion: "aiops.workflow.edit.v2" },
+  { kind: "validation", type: "workflow_patch_validation", renderer: "workflow.change.validation.v2", schemaVersion: "aiops.workflow.edit.v2" },
+  { kind: "conflict", type: "workflow_conflict", renderer: "workflow.change.conflict.v2", schemaVersion: "aiops.workflow.edit.v2" },
+] as const;
+
+export type WorkflowChangeArtifactContract = typeof WORKFLOW_CHANGE_ARTIFACT_CONTRACTS[number];
+export type WorkflowChangeArtifactType = WorkflowChangeArtifactContract["type"];
+export type WorkflowChangeArtifactRenderer = WorkflowChangeArtifactContract["renderer"];
+
+export type AiopsTransportArtifactAction = Record<string, unknown> & {
+  id?: string;
+  intent?: string;
+  label?: string;
+  target?: Record<string, unknown>;
+  href?: string;
+  mutation?: boolean;
+  disabled?: boolean;
+};
+
 export type AiopsTransportAgentUiArtifact = {
   id: string;
   type: string;
@@ -498,7 +551,7 @@ export type AiopsTransportAgentUiArtifact = {
   inlineData?: unknown;
   payload?: Record<string, unknown>;
   metadata?: Record<string, unknown>;
-  actions?: Array<Record<string, unknown>>;
+  actions?: AiopsTransportArtifactAction[];
   mcpCard?: Record<string, unknown>;
   source?: string;
   caseId?: string;

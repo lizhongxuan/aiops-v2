@@ -1,0 +1,4174 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.case-manifest/v1",
+  "currentActivationPhase": 0,
+  "approvedCapabilityTags": [],
+  "fixtures": [
+    {
+      "id": "W0",
+      "kind": "workflow",
+      "path": "fixtures/W0.json"
+    },
+    {
+      "id": "W1",
+      "kind": "workflow",
+      "path": "fixtures/W1.json"
+    },
+    {
+      "id": "W2",
+      "kind": "workflow",
+      "path": "fixtures/W2.json"
+    },
+    {
+      "id": "W3",
+      "kind": "workflow",
+      "path": "fixtures/W3.json"
+    },
+    {
+      "id": "W4",
+      "kind": "workflow",
+      "path": "fixtures/W4.json"
+    },
+    {
+      "id": "W5",
+      "kind": "workflow",
+      "path": "fixtures/W5.json"
+    },
+    {
+      "id": "W6",
+      "kind": "workflow",
+      "path": "fixtures/W6.json"
+    },
+    {
+      "id": "U-view",
+      "kind": "principal",
+      "path": "fixtures/U-view.json"
+    },
+    {
+      "id": "U-edit",
+      "kind": "principal",
+      "path": "fixtures/U-edit.json"
+    },
+    {
+      "id": "U-publish",
+      "kind": "principal",
+      "path": "fixtures/U-publish.json"
+    },
+    {
+      "id": "U-admin",
+      "kind": "principal",
+      "path": "fixtures/U-admin.json"
+    },
+    {
+      "id": "Tenant-A",
+      "kind": "tenant",
+      "path": "fixtures/Tenant-A.json"
+    },
+    {
+      "id": "Tenant-B",
+      "kind": "tenant",
+      "path": "fixtures/Tenant-B.json"
+    },
+    {
+      "id": "G-low",
+      "kind": "grant",
+      "path": "fixtures/G-low.json"
+    },
+    {
+      "id": "G-delete",
+      "kind": "grant",
+      "path": "fixtures/G-delete.json"
+    },
+    {
+      "id": "G-expired",
+      "kind": "grant",
+      "path": "fixtures/G-expired.json"
+    },
+    {
+      "id": "G-revoked",
+      "kind": "grant",
+      "path": "fixtures/G-revoked.json"
+    },
+    {
+      "id": "R17",
+      "kind": "revision",
+      "path": "fixtures/R17.json"
+    },
+    {
+      "id": "R18",
+      "kind": "revision",
+      "path": "fixtures/R18.json"
+    },
+    {
+      "id": "FP-after-prepared",
+      "kind": "failure-point",
+      "path": "fixtures/FP-after-prepared.json"
+    },
+    {
+      "id": "FP-after-graph-commit",
+      "kind": "failure-point",
+      "path": "fixtures/FP-after-graph-commit.json"
+    },
+    {
+      "id": "FP-after-receipt",
+      "kind": "failure-point",
+      "path": "fixtures/FP-after-receipt.json"
+    },
+    {
+      "id": "FP-before-outbox",
+      "kind": "failure-point",
+      "path": "fixtures/FP-before-outbox.json"
+    },
+    {
+      "id": "FP-disk-full",
+      "kind": "failure-point",
+      "path": "fixtures/FP-disk-full.json"
+    },
+    {
+      "id": "FP-rename-failure",
+      "kind": "failure-point",
+      "path": "fixtures/FP-rename-failure.json"
+    },
+    {
+      "id": "FP-outbox-paused",
+      "kind": "failure-point",
+      "path": "fixtures/FP-outbox-paused.json"
+    }
+  ],
+  "cases": [
+    {
+      "id": "DOM-001",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-001",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-002",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-002",
+      "fixtures": [
+        "W2"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-003",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-003",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-004",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-004",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-005",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-005",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-006",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-006",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-007",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-007",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-008",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-008",
+      "fixtures": [
+        "W3",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-009",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-009",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-010",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-010",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-011",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-011",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "DOM-012",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-domain",
+      "selector": "case=DOM-012",
+      "fixtures": [
+        "W1"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "dom",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-domain",
+      "evidence": [
+        "automation:go:workflow-domain#DOM-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-001",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-001",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-002",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-002",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-003",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-003",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-004",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "go:workflow-mcp",
+      "selector": "TestWorkflowGetContextRunnerAuthoritativeParity/MCP-004",
+      "fixtures": [
+        "W0",
+        "W1",
+        "W2",
+        "W3",
+        "W4",
+        "W5",
+        "W6",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#TestWorkflowGetContextRunnerAuthoritativeParity/MCP-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-005",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-005",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-006",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-006",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-007",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-007",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-008",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-008",
+      "fixtures": [
+        "W2",
+        "R17"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-009",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-009",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-009"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "apply accepted missing concurrency or approval binding",
+      "greenActivationPhase": 2
+    },
+    {
+      "id": "MCP-010",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-010",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-011",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-011",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-012",
+      "priority": "P1",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-012",
+      "fixtures": [
+        "W4"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-013",
+      "priority": "P1",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-013",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-014",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-014",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-014"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "MCP-015",
+      "priority": "P0",
+      "activationPhase": 5,
+      "activationState": "planned",
+      "suite": "go:workflow-mcp",
+      "selector": "case=MCP-015",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "mcp",
+        "workflow-canvas",
+        "optional:external-inbound"
+      ],
+      "owner": "workflow-mcp",
+      "evidence": [
+        "automation:go:workflow-mcp#MCP-015"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-001",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-001",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-002",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-002",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-002"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "duplicate apply created duplicate mutation",
+      "greenActivationPhase": 1
+    },
+    {
+      "id": "TXN-003",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-003",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-004",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-004",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-005",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-005",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-006",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-006",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-007",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-007",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-008",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-008",
+      "fixtures": [
+        "W1",
+        "FP-after-prepared"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-009",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-009",
+      "fixtures": [
+        "W1",
+        "FP-after-graph-commit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-010",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-010",
+      "fixtures": [
+        "W1",
+        "FP-after-receipt"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-011",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-011",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-012",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-012",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-013",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-013",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-014",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-014",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-014"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-015",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-015",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-015"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "TXN-016",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-016",
+      "fixtures": [
+        "W1",
+        "R17",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-016"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "workflow sources diverge",
+      "greenActivationPhase": 2
+    },
+    {
+      "id": "TXN-017",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "go:workflow-transaction",
+      "selector": "case=TXN-017",
+      "fixtures": [
+        "W1",
+        "FP-disk-full",
+        "FP-rename-failure"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "txn",
+        "workflow-canvas",
+        "transaction"
+      ],
+      "owner": "workflow-transaction",
+      "evidence": [
+        "automation:go:workflow-transaction#TXN-017"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-001",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-002",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-002",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-003",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-004",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-004",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-005",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-005",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-006",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-006",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-007",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-007",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-007"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "chat review canvas change count diverged",
+      "greenActivationPhase": 3
+    },
+    {
+      "id": "UI-008",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-008",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-009",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-009",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-010",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-010",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-011",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-011",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-012",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-012",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-012"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "invalid candidate reported completed",
+      "greenActivationPhase": 3
+    },
+    {
+      "id": "UI-013",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-013",
+      "fixtures": [
+        "W5",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-014",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-014",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-014"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-015",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-015",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-015"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-016",
+      "priority": "P1",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-016",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-016"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "candidate missing after reload",
+      "greenActivationPhase": 3
+    },
+    {
+      "id": "UI-017",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-017",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-017"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-018",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-018",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-018"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-019",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-019",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-019"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-020",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-020",
+      "fixtures": [
+        "W2",
+        "G-delete",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-020"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-021",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-021",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-021"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-022",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-022",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-022"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-023",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-023",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-023"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-024",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-024",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-024"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-025",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-025",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-publish"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas",
+        "lifecycle-gate"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-025"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-026",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-026",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-publish"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas",
+        "lifecycle-gate"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-026"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "UI-027",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "web:workflow-workspace",
+      "selector": "case=UI-027",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-publish"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "ui",
+        "workflow-canvas",
+        "lifecycle-gate"
+      ],
+      "owner": "workflow-web",
+      "evidence": [
+        "automation:web:workflow-workspace#UI-027"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "post-check failure reported completed",
+      "greenActivationPhase": 4
+    },
+    {
+      "id": "EVT-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-001",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-002",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-002",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-003",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-004",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-004",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-005",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-005",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-006",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-006",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-007",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-007",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-008",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-008",
+      "fixtures": [
+        "W1",
+        "W2",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-009",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-009",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "EVT-010",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "web:workflow-events",
+      "selector": "case=EVT-010",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "evt",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-events",
+      "evidence": [
+        "automation:web:workflow-events#EVT-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-001",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-001",
+      "fixtures": [
+        "W2",
+        "U-view",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-002",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-002",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-003",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "security:workflow",
+      "selector": "TestWorkflowResourcesV2CrossTenantDoesNotDiscloseAuthoritativeWorkflow/SEC-003",
+      "fixtures": [
+        "W2",
+        "Tenant-A",
+        "Tenant-B"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#TestWorkflowResourcesV2CrossTenantDoesNotDiscloseAuthoritativeWorkflow/SEC-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-004",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "security:workflow",
+      "selector": "case=SEC-004",
+      "fixtures": [
+        "W2",
+        "G-expired",
+        "G-revoked"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-004"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "mutation committed without active grant",
+      "greenActivationPhase": 2
+    },
+    {
+      "id": "SEC-005",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-005",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-006",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-006",
+      "fixtures": [
+        "W2",
+        "G-low"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-007",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-007",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-008",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-008",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-009",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-009",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-010",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-010",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-011",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-011",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-012",
+      "priority": "P1",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-012",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-013",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-013",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-014",
+      "priority": "P0",
+      "activationPhase": 2,
+      "activationState": "planned",
+      "suite": "security:workflow",
+      "selector": "case=SEC-014",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-014"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "SEC-015",
+      "priority": "P0",
+      "activationPhase": 0,
+      "activationState": "active",
+      "suite": "security:workflow",
+      "selector": "case=SEC-015",
+      "fixtures": [
+        "W2",
+        "G-delete",
+        "G-revoked"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "sec",
+        "workflow-canvas",
+        "security"
+      ],
+      "owner": "workflow-security",
+      "evidence": [
+        "automation:security:workflow#SEC-015"
+      ],
+      "expectedOutcome": "known_failure",
+      "expectedFailureSignature": "apply approval was reusable",
+      "greenActivationPhase": 2
+    },
+    {
+      "id": "PW-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-001",
+      "fixtures": [
+        "W0",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-002",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-002",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-003",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-004",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-004",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-005",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-005",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-006",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-006",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-007",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-007",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-008",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-008",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-009",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-009",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-010",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-010",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-011",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-011",
+      "fixtures": [
+        "W5",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-012",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-012",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-013",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-013",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-014",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-014",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-014"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-015",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-015",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-015"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-016",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-016",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-016"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-017",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-017",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-017"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-018",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-018",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-018"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-019",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-019",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-019"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-020",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-020",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-020"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-021",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-021",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-021"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-022",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-022",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-022"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-023",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-023",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-023"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-024",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-024",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-024"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-025",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-025",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-025"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-026",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-026",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-026"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-027",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-027",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-027"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-028",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-028",
+      "fixtures": [
+        "W4",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-028"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-029",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-029",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-029"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-030",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-030",
+      "fixtures": [
+        "W2",
+        "U-edit",
+        "Tenant-A"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-030"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-031",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-031",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user",
+        "lifecycle-gate"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-031"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-032",
+      "priority": "P0",
+      "activationPhase": 5,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-032",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-publish"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user",
+        "optional:published-runtime"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-032"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PW-033",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "playwright:workflow-real-user",
+      "selector": "case=PW-033",
+      "fixtures": [
+        "W2",
+        "R17",
+        "R18",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "browser-in-app"
+      ],
+      "capabilityTags": [
+        "pw",
+        "workflow-canvas",
+        "real-user",
+        "lifecycle-gate"
+      ],
+      "owner": "workflow-e2e",
+      "evidence": [
+        "automation:playwright:workflow-real-user#PW-033"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "RWD-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-responsive",
+      "selector": "case=RWD-001",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "rwd",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-responsive#RWD-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "RWD-002",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-responsive",
+      "selector": "case=RWD-002",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "rwd",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-responsive#RWD-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "RWD-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-responsive",
+      "selector": "case=RWD-003",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "rwd",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-responsive#RWD-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "RWD-004",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-responsive",
+      "selector": "case=RWD-004",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "rwd",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-responsive#RWD-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "VIS-001",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-visual",
+      "selector": "case=VIS-001",
+      "fixtures": [
+        "W0",
+        "W2",
+        "W4",
+        "W5"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "vis",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-visual#VIS-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "VIS-002",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-visual",
+      "selector": "case=VIS-002",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "vis",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-visual#VIS-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "VIS-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-visual",
+      "selector": "case=VIS-003",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "vis",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-visual#VIS-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-001",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-002",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-002",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-003",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-003",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-004",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-004",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-005",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-005",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "A11Y-006",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "playwright:workflow-accessibility",
+      "selector": "case=A11Y-006",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [
+        "chromium",
+        "firefox",
+        "webkit"
+      ],
+      "capabilityTags": [
+        "a11y",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-ux",
+      "evidence": [
+        "automation:playwright:workflow-accessibility#A11Y-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PERF-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "perf:workflow",
+      "selector": "case=PERF-001",
+      "fixtures": [
+        "W2"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "perf",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-performance",
+      "evidence": [
+        "automation:perf:workflow#PERF-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PERF-002",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "perf:workflow",
+      "selector": "case=PERF-002",
+      "fixtures": [
+        "W4"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "perf",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-performance",
+      "evidence": [
+        "automation:perf:workflow#PERF-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PERF-003",
+      "priority": "P1",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "perf:workflow",
+      "selector": "case=PERF-003",
+      "fixtures": [
+        "W4"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "perf",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-performance",
+      "evidence": [
+        "automation:perf:workflow#PERF-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PERF-004",
+      "priority": "P2",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "perf:workflow",
+      "selector": "case=PERF-004",
+      "fixtures": [
+        "W4"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "perf",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-performance",
+      "evidence": [
+        "automation:perf:workflow#PERF-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "PERF-005",
+      "priority": "P1",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "perf:workflow",
+      "selector": "case=PERF-005",
+      "fixtures": [
+        "W4"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "perf",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-performance",
+      "evidence": [
+        "automation:perf:workflow#PERF-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-001",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-001",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-002",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-002",
+      "fixtures": [
+        "W2",
+        "FP-after-graph-commit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-003",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-003",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-004",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-004",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-005",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-005",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-006",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-006",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-007",
+      "priority": "P0",
+      "activationPhase": 3,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-007",
+      "fixtures": [
+        "W2",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "FI-008",
+      "priority": "P0",
+      "activationPhase": 1,
+      "activationState": "planned",
+      "suite": "fault:workflow",
+      "selector": "case=FI-008",
+      "fixtures": [
+        "W2",
+        "FP-disk-full",
+        "FP-outbox-paused"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "fi",
+        "workflow-canvas"
+      ],
+      "owner": "workflow-reliability",
+      "evidence": [
+        "automation:fault:workflow#FI-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-001",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-001",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-001"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-002",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-002",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-002"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-003",
+      "priority": "P1",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-003",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-003"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-004",
+      "priority": "P1",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-004",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-004"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-005",
+      "priority": "P1",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-005",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-005"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-006",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-006",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-006"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-007",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-007",
+      "fixtures": [
+        "W5"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-007"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-008",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-008",
+      "fixtures": [
+        "W3"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-008"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-009",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-009",
+      "fixtures": [
+        "W6"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-009"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-010",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-010",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-010"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-011",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-011",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-011"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-012",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-012",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-012"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-013",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-013",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-013"
+      ],
+      "expectedOutcome": "pass"
+    },
+    {
+      "id": "GEN-014",
+      "priority": "P0",
+      "activationPhase": 4,
+      "activationState": "planned",
+      "suite": "eval:workflow-generation",
+      "selector": "case=GEN-014",
+      "fixtures": [
+        "W0",
+        "U-edit"
+      ],
+      "browsers": [],
+      "capabilityTags": [
+        "gen",
+        "workflow-canvas",
+        "generation"
+      ],
+      "owner": "workflow-generation",
+      "evidence": [
+        "automation:eval:workflow-generation#GEN-014"
+      ],
+      "expectedOutcome": "pass"
+    }
+  ]
+}

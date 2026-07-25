@@ -18,6 +18,7 @@ import (
 	"aiops-v2/internal/store"
 	"aiops-v2/internal/terminal"
 	"aiops-v2/internal/tooling"
+	"aiops-v2/internal/workfloweditor"
 )
 
 // RuntimeGateway is the runtime-facing dependency used by the Web application
@@ -641,18 +642,6 @@ func firstNonNilOpsGraphService(primary, fallback OpsGraphService) OpsGraphServi
 	return fallback
 }
 
-type ChatCommand struct {
-	SessionID       string
-	SessionType     string
-	Mode            string
-	Content         string
-	Role            string
-	HostID          string
-	ClientMessageID string
-	ClientTurnID    string
-	Metadata        map[string]string
-}
-
 type ResumeCommand struct {
 	SessionID    string            `json:"sessionId"`
 	TurnID       string            `json:"turnId"`
@@ -1004,9 +993,10 @@ type RuntimeToolingSettingsUpdate struct {
 }
 
 type RuntimeWorkflowSettingsUpdate struct {
-	ReferenceGuardMode *string `json:"referenceGuardMode,omitempty"`
-	ValidationProvider *string `json:"validationProvider,omitempty"`
-	ValidationImage    *string `json:"validationImage,omitempty"`
+	ReferenceGuardMode *string                               `json:"referenceGuardMode,omitempty"`
+	ValidationProvider *string                               `json:"validationProvider,omitempty"`
+	ValidationImage    *string                               `json:"validationImage,omitempty"`
+	Rollout            *workfloweditor.WorkflowRolloutConfig `json:"rollout,omitempty"`
 }
 
 type RuntimeOpsManualSettingsUpdate struct {

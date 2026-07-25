@@ -12,6 +12,7 @@ import (
 	"aiops-v2/internal/appui"
 	"aiops-v2/internal/terminal"
 	"aiops-v2/internal/workfloweditor"
+	runnerservice "runner/server/service"
 )
 
 // ---------------------------------------------------------------------------
@@ -22,16 +23,17 @@ import (
 
 // ChatMessageRequest represents the incoming chat message from the frontend.
 type ChatMessageRequest struct {
-	SessionID       string            `json:"sessionId,omitempty"`
-	SessionType     string            `json:"sessionType,omitempty"` // host, workspace
-	Mode            string            `json:"mode,omitempty"`        // chat, inspect, plan, execute
-	Content         string            `json:"content"`
-	Message         string            `json:"message,omitempty"`
-	Role            string            `json:"role,omitempty"` // defaults to "user"
-	HostID          string            `json:"hostId,omitempty"`
-	ClientMessageID string            `json:"clientMessageId,omitempty"`
-	ClientTurnID    string            `json:"clientTurnId,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	SessionID       string                            `json:"sessionId,omitempty"`
+	SessionType     string                            `json:"sessionType,omitempty"` // host, workspace
+	Mode            string                            `json:"mode,omitempty"`        // chat, inspect, plan, execute
+	Content         string                            `json:"content"`
+	Message         string                            `json:"message,omitempty"`
+	Role            string                            `json:"role,omitempty"` // defaults to "user"
+	HostID          string                            `json:"hostId,omitempty"`
+	ClientMessageID string                            `json:"clientMessageId,omitempty"`
+	ClientTurnID    string                            `json:"clientTurnId,omitempty"`
+	Metadata        map[string]string                 `json:"metadata,omitempty"`
+	WorkflowContext *appui.WorkflowTurnContextRequest `json:"workflowContext,omitempty"`
 }
 
 // ChatMessageResponse is the JSON response for POST /api/v1/chat/message.
@@ -89,17 +91,22 @@ func chatRequestContent(req ChatMessageRequest) string {
 
 // HTTPServer provides the first-party HTTP REST API and WebSocket entrypoints.
 type HTTPServer struct {
-	ui                             appui.HTTPServices
-	mux                            *http.ServeMux
-	web                            http.Handler
-	runnerStudioHandler            http.Handler
-	workflowEditor                 *workfloweditor.Service
-	terminalManager                *terminal.Manager
-	appWSHeartbeatTick             time.Duration
-	appSnapshots                   *AppSnapshotBroadcaster
-	agentEvents                    appui.AgentEventService
-	promptTraces                   appui.PromptTraceService
-	opsManualAutoRetrievalOverride *bool
+	ui                                    appui.HTTPServices
+	mux                                   *http.ServeMux
+	web                                   http.Handler
+	runnerStudioHandler                   http.Handler
+	workflowEditor                        *workfloweditor.Service
+	workflowCommandApplication            workflowManualCommandApplication
+	workflowCommandScopeResolver          WorkflowCommandScopeResolver
+	workflowCandidateApplyApprovalStore   WorkflowCandidateApplyApprovalStore
+	workflowCandidateApplyApprovalRuntime WorkflowCandidateApplyApprovalRuntime
+	workflowEventBindings                 *workflowEventBindingCoordinator
+	terminalManager                       *terminal.Manager
+	appWSHeartbeatTick                    time.Duration
+	appSnapshots                          *AppSnapshotBroadcaster
+	agentEvents                           appui.AgentEventService
+	promptTraces                          appui.PromptTraceService
+	opsManualAutoRetrievalOverride        *bool
 }
 
 // HTTPServerOption customizes transport-only HTTP server behavior.
@@ -155,6 +162,31 @@ func WithWorkflowEditorService(service *workfloweditor.Service) HTTPServerOption
 	}
 }
 
+// WithWorkflowEditApplication wires manual Canvas commands to the same Runner
+// application used by MCP. The scope resolver must project authenticated
+// tenant/user/session facts; request JSON is never an identity authority.
+func WithWorkflowEditApplication(application *runnerservice.WorkflowEditApplication, resolver WorkflowCommandScopeResolver) HTTPServerOption {
+	return withWorkflowCommandApplication(application, resolver)
+}
+
+func withWorkflowCommandApplication(application workflowManualCommandApplication, resolver WorkflowCommandScopeResolver) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.workflowCommandApplication = application
+		s.workflowCommandScopeResolver = resolver
+	}
+}
+
+// WithWorkflowCandidateApplyApproval wires the immutable Candidate reader and
+// RuntimeKernel's controlled single-tool entrypoint. It creates only a normal
+// Runtime PendingApproval; business Workflow grants remain execution-time
+// artifacts issued after the Runtime verifies the user's ActionToken.
+func WithWorkflowCandidateApplyApproval(store WorkflowCandidateApplyApprovalStore, runtime WorkflowCandidateApplyApprovalRuntime) HTTPServerOption {
+	return func(s *HTTPServer) {
+		s.workflowCandidateApplyApprovalStore = store
+		s.workflowCandidateApplyApprovalRuntime = runtime
+	}
+}
+
 // NewHTTPServer creates a new HTTPServer wired to the given application services.
 func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer {
 	agentEvents := appui.NewAgentEventService(nil)
@@ -174,7 +206,6 @@ func NewHTTPServer(ui appui.HTTPServices, opts ...HTTPServerOption) *HTTPServer 
 	s := &HTTPServer{
 		ui:                 ui,
 		mux:                http.NewServeMux(),
-		workflowEditor:     workfloweditor.NewService(nil),
 		terminalManager:    terminal.NewManager(),
 		appWSHeartbeatTick: 15 * time.Second,
 		agentEvents:        agentEvents,
@@ -254,6 +285,12 @@ func (s *HTTPServer) registerRoutes() {
 	s.mux.HandleFunc("/api/v1/changes/", s.handleChanges)
 	s.mux.HandleFunc("/api/runner-studio/workflow-ai/", s.handleRunnerStudioWorkflowAI)
 	s.mux.HandleFunc("/api/runner-studio/ai/", s.handleRunnerStudioAI)
+	s.mux.HandleFunc("/api/runner-studio/workflow-commands", s.handleWorkflowEditCommand)
+	s.mux.HandleFunc("/api/runner-studio/workflow-dry-run", s.handleWorkflowDryRun)
+	s.mux.HandleFunc("/api/runner-studio/workflow-history-actions", s.handleWorkflowHistoryCommand)
+	s.mux.HandleFunc("/api/runner-studio/workflow-candidate-revise", s.handleWorkflowCandidateRevise)
+	s.mux.HandleFunc("/api/runner-studio/workflow-candidate-actions", s.handleWorkflowCandidateAbandon)
+	s.mux.HandleFunc("/api/runner-studio/workflow-candidate-apply-approval", s.handleWorkflowCandidateApplyApproval)
 	s.mux.HandleFunc("/api/runner-studio/", s.handleRunnerStudio)
 
 	resourceOpts := []ResourceServerOption{}
@@ -326,6 +363,7 @@ func (s *HTTPServer) handleChatMessage(w http.ResponseWriter, r *http.Request) {
 		ClientMessageID: req.ClientMessageID,
 		ClientTurnID:    req.ClientTurnID,
 		Metadata:        req.Metadata,
+		WorkflowContext: req.WorkflowContext,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})

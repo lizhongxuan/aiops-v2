@@ -1,0 +1,73 @@
+{
+  "id": "GEN-008",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "In W3, change only the alert threshold from 80 to 90 and preserve all other semantics and layout.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["alert.evaluate"],
+    "allowedActions": ["alert.evaluate"],
+    "argumentSchemas": {
+      "alert.evaluate": { "required": ["threshold", "metricRef"], "properties": { "threshold": "number", "metricRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "evaluate": { "inputs": ["in"], "outputs": ["triggered", "clear"] } },
+    "requiredPaths": ["/graph/nodes/1/args/threshold", "/graph/nodes/1/position"],
+    "forbiddenPaths": ["/graph/nodes/*/args/script"],
+    "forbiddenPlaceholders": ["script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "preserve_path", "path": "/graph/nodes/0" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/action" },
+      { "kind": "preserve_path", "path": "/graph/nodes/1/position" },
+      { "kind": "preserve_path", "path": "/graph/nodes/2" },
+      { "kind": "preserve_path", "path": "/graph/nodes/3" },
+      { "kind": "preserve_path", "path": "/graph/edges" },
+      { "kind": "fact", "name": "only_threshold_changed" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "baseline": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"], "position": { "x": 0, "y": 0 } },
+            { "id": "evaluate", "type": "action", "action": "alert.evaluate", "args": { "threshold": 80, "metricRef": "metric://latency" }, "inputPorts": ["in"], "outputPorts": ["triggered", "clear"], "position": { "x": 200, "y": 0 } },
+            { "id": "end-triggered", "type": "end", "inputPorts": ["in"], "position": { "x": 400, "y": -80 } },
+            { "id": "end-clear", "type": "end", "inputPorts": ["in"], "position": { "x": 400, "y": 80 } }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "evaluate", "targetPort": "in" },
+            { "id": "e2", "source": "evaluate", "sourcePort": "triggered", "target": "end-triggered", "targetPort": "in" },
+            { "id": "e3", "source": "evaluate", "sourcePort": "clear", "target": "end-clear", "targetPort": "in" }
+          ]
+        }
+      },
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"], "position": { "x": 0, "y": 0 } },
+            { "id": "evaluate", "type": "action", "action": "alert.evaluate", "args": { "threshold": 90, "metricRef": "metric://latency" }, "inputPorts": ["in"], "outputPorts": ["triggered", "clear"], "position": { "x": 200, "y": 0 } },
+            { "id": "end-triggered", "type": "end", "inputPorts": ["in"], "position": { "x": 400, "y": -80 } },
+            { "id": "end-clear", "type": "end", "inputPorts": ["in"], "position": { "x": 400, "y": 80 } }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "evaluate", "targetPort": "in" },
+            { "id": "e2", "source": "evaluate", "sourcePort": "triggered", "target": "end-triggered", "targetPort": "in" },
+            { "id": "e3", "source": "evaluate", "sourcePort": "clear", "target": "end-clear", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 42, "previewMs": 65, "validateMs": 17, "repairCount": 0, "inputTokens": 980, "outputTokens": 540, "contextTokens": 1520 },
+      "semanticFacts": { "only_threshold_changed": true }
+    }]
+  }
+}

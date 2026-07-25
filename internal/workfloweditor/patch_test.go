@@ -22,8 +22,8 @@ func TestPatchRejectsFullGraphReplacementByDefault(t *testing.T) {
 	if validation.Valid {
 		t.Fatalf("validation = %#v, want replace_full_graph rejected", validation)
 	}
-	if !strings.Contains(strings.Join(validation.Errors, "\n"), "second confirmation") {
-		t.Fatalf("errors = %#v, want second confirmation error", validation.Errors)
+	if !strings.Contains(strings.Join(validation.Errors, "\n"), "retired") {
+		t.Fatalf("errors = %#v, want retired compatibility operation error", validation.Errors)
 	}
 }
 
@@ -83,15 +83,15 @@ func TestApplyPatchReturnsDuplicateForRepeatedPatchID(t *testing.T) {
 	}
 }
 
-func TestApplyPatchReturnsMetadataOnlyForUIMetadataOnlyChange(t *testing.T) {
+func TestApplyPatchRejectsLegacyUIMetadataChange(t *testing.T) {
 	graph := workflowEditorTestGraph()
 	patch := WorkflowPatch{ID: "patch", BaseRevision: "rev", Operations: []WorkflowPatchOperation{{
 		Op:     PatchUpdateWorkflowMetadata,
 		Fields: map[string]any{"drawer_note": "reviewed"},
 	}}}
 	effect := DetectWorkflowPatchEffect(graph, patch, nil)
-	if effect.Status != EffectMetadataOnly {
-		t.Fatalf("effect = %#v, want metadata_only", effect)
+	if effect.Status != EffectNoEffect || !strings.Contains(effect.Summary, "unsupported operation") {
+		t.Fatalf("effect = %#v, want retired operation rejection", effect)
 	}
 }
 

@@ -1,0 +1,11 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "Tenant-B",
+  "kind": "tenant",
+  "data": {
+    "tenant": {
+      "id": "tenant-b",
+      "storageNamespace": "fixture/tenant-b"
+    }
+  }
+}

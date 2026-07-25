@@ -1,0 +1,51 @@
+{
+  "id": "GEN-010",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Repair the invalid variable edge reported by diagnostics and return a valid workflow.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "action", "end"],
+    "requiredActions": ["variable.transform"],
+    "allowedActions": ["variable.transform"],
+    "argumentSchemas": {
+      "variable.transform": { "required": ["inputRef", "outputRef"], "properties": { "inputRef": "string", "outputRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": { "transform": { "inputs": ["input"], "outputs": ["output"] } },
+    "requiredPaths": ["/graph/nodes/1/args/inputRef", "/graph/nodes/1/args/outputRef"],
+    "forbiddenPaths": ["/graph/edges/*/invalidVariableRef"],
+    "forbiddenPlaceholders": ["replace_me", "script.python"],
+    "validation": { "firstPreviewStatus": "invalid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "acyclic" },
+      { "kind": "all_paths_end" },
+      { "kind": "fact", "name": "diagnostic_path_repaired" },
+      { "kind": "edge", "source": "transform", "sourcePort": "output", "target": "end", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "invalid", "valid": false, "diagnostics": ["INVALID_VARIABLE_REF at /edges/1/sourcePort"] } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "transform", "type": "action", "action": "variable.transform", "args": { "inputRef": "vars://request", "outputRef": "vars://normalized" }, "inputPorts": ["input"], "outputPorts": ["output"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "transform", "targetPort": "input" },
+            { "id": "e2", "source": "transform", "sourcePort": "output", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 58, "previewMs": 94, "validateMs": 27, "repairCount": 1, "inputTokens": 1080, "outputTokens": 720, "contextTokens": 1800 },
+      "semanticFacts": { "diagnostic_path_repaired": true }
+    }]
+  }
+}

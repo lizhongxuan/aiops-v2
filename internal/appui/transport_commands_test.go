@@ -8,6 +8,7 @@ import (
 
 	"aiops-v2/internal/hostops"
 	"aiops-v2/internal/specialinputmemory"
+	"runner/workflow/edit"
 )
 
 type transportCommandChatServiceStub struct {
@@ -194,6 +195,12 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 			HostID:   "host-prod-07",
 			Message:  TransportUserMessage{Text: "investigate payment-api"},
 			Metadata: map[string]string{"aiops.target.kind": "label", "aiops.target.labelKey": "env", "aiops.target.labelValue": "prod"},
+			WorkflowContext: &WorkflowTurnContextRequest{
+				WorkflowID:  "workflow-a",
+				Revision:    edit.Revision{ResourceVersion: "rv-1", SemanticHash: "sem-1", LayoutHash: "layout-1"},
+				Selection:   WorkflowTurnSelection{NodeIDs: []string{"node-a"}},
+				Environment: WorkflowTurnEnvironment{Name: "staging", BindingVersion: "env-1"},
+			},
 		},
 	})
 	if err != nil {
@@ -209,6 +216,12 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	if got := chat.sendCmd.Metadata["aiops.target.labelValue"]; got != "prod" {
 		t.Fatalf("SendMessage metadata labelValue = %q, want prod", got)
 	}
+	if chat.sendCmd.Metadata["source"] != "workflow_ai_chat" || chat.sendCmd.Metadata["aiops.workflowAgent.enabled"] != "true" || chat.sendCmd.Metadata["aiops.workflow.id"] != "workflow-a" || chat.sendCmd.Metadata["aiops.workflow.baseRevision"] != "rv-1" {
+		t.Fatalf("SendMessage workflow route metadata = %#v", chat.sendCmd.Metadata)
+	}
+	if context := chat.sendCmd.WorkflowContext; context == nil || context.WorkflowID != "workflow-a" || context.Revision.SemanticHash != "sem-1" || context.Environment.BindingVersion != "env-1" {
+		t.Fatalf("SendMessage workflow context = %#v, want transport context", context)
+	}
 	if nextState.SessionID != "sess-1" || nextState.ThreadID != "thread-1" {
 		t.Fatalf("nextState = %+v, want sess-1/thread-1", nextState)
 	}
@@ -218,6 +231,13 @@ func TestTransportCommandsAddMessageCallsChatService(t *testing.T) {
 	turn := nextState.Turns["turn-1"]
 	if turn.User == nil || turn.User.Text != "investigate payment-api" {
 		t.Fatalf("turn.User = %+v, want accepted user message", turn.User)
+	}
+	if turn.WorkflowContext == nil || turn.WorkflowContext.WorkflowID != "workflow-a" || turn.WorkflowContext.Selection.NodeIDs[0] != "node-a" {
+		t.Fatalf("turn.WorkflowContext = %#v, want frozen optimistic scope", turn.WorkflowContext)
+	}
+	chat.sendCmd.WorkflowContext.Selection.NodeIDs[0] = "mutated-after-send"
+	if turn.WorkflowContext.Selection.NodeIDs[0] != "node-a" {
+		t.Fatalf("turn.WorkflowContext shares mutable request storage: %#v", turn.WorkflowContext)
 	}
 	if !nextState.RuntimeLiveness.ActiveTurns["turn-1"] {
 		t.Fatalf("ActiveTurns = %#v, want turn-1 active", nextState.RuntimeLiveness.ActiveTurns)
@@ -821,8 +841,18 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 	state.Status = AiopsTransportStatusBlocked
 	state.CurrentTurnID = "turn-1"
 	state.Turns["turn-1"] = AiopsTransportTurn{
-		ID:     "turn-1",
-		Status: AiopsTransportTurnStatusBlocked,
+		ID:         "turn-1",
+		Status:     AiopsTransportTurnStatusBlocked,
+		BlockOrder: []string{"cmd-1"},
+		BlocksByID: map[string]AiopsTransportBlock{
+			"cmd-1": {
+				Type: AiopsTransportBlockType(AiopsTransportProcessKindApproval),
+				AiopsProcessBlock: AiopsProcessBlock{
+					ID: "cmd-1", Kind: AiopsTransportProcessKindCommand, Status: AiopsTransportProcessStatusBlocked,
+					Command: "ifconfig en0 down", ApprovalID: "approval-1",
+				},
+			},
+		},
 		Process: []AiopsProcessBlock{
 			{
 				ID:         "cmd-1",
@@ -871,6 +901,9 @@ func TestTransportCommandsApprovalAcceptClearsPendingAndReturnsWorkingImmediatel
 	}
 	if len(turn.Process) != 1 || turn.Process[0].Status != AiopsTransportProcessStatusRunning {
 		t.Fatalf("process = %+v, want approved command marked running while backend resumes", turn.Process)
+	}
+	if block := turn.BlocksByID["cmd-1"]; block.Status != AiopsTransportProcessStatusRunning {
+		t.Fatalf("canonical block = %+v, want approved command marked running while backend resumes", block)
 	}
 }
 

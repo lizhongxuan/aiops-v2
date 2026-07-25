@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-after-receipt",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "after-receipt",
+      "stage": "receipt_persisted",
+      "action": "terminate"
+    }
+  }
+}

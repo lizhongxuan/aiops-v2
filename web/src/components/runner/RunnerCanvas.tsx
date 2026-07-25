@@ -8,13 +8,13 @@ import {
   MarkerType,
   ReactFlow,
   ReactFlowProvider,
-  addEdge,
   useReactFlow,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
   type Node,
+  type NodeChange,
   type NodeDragHandler,
 } from "@xyflow/react";
 import { Maximize2, Minimize2, Plus } from "lucide-react";
@@ -26,7 +26,6 @@ import {
   graphToFlowModel,
   insertCatalogActionOnEdge,
   removeGraphEdge,
-  removeGraphNode,
   updateGraphNodePosition,
   type RunnerGraph,
   type RunnerPosition,
@@ -34,9 +33,18 @@ import {
 import { filterActionsForSourcePort } from "./nodeTypeRegistry";
 import { getRunnerActionCategoryLabel, getRunnerActionDescription, getRunnerPaletteActions } from "./runnerActionPalette";
 import { getRunnerFocusNodeId, getRunnerNodeRunState } from "./runnerRunVisualState";
-import { RunnerCanvasEdge } from "./RunnerCanvasEdge";
+import { candidateEdgeColor, RunnerCanvasEdge } from "./RunnerCanvasEdge";
 import { RunnerCanvasNode } from "./RunnerCanvasNode";
+import { resolveWorkflowCanvasKeyboardCommand } from "./workflowCanvasKeyboard";
+import { tryProjectWorkflowCanvas } from "./workflowCanvasProjection";
+import { createWorkflowLayoutOperation, projectWorkflowLayout, type WorkflowLayoutOptions } from "@/runner/layout/workflowElkLayout";
+import { WORKFLOW_CONTEXT_DOCK_OPEN_EVENT } from "@/runner/WorkflowContextDock";
+import type { WorkflowOperation } from "@/runner/workspace/workflowMcpContracts";
+import type { WorkflowCandidateFact } from "@/runner/workspace/workflowWorkspaceTypes";
+import { WORKFLOW_CANVAS_LOCATE_EVENT } from "@/runner/workflowCanvasEvents";
 import "./runnerStudio.css";
+
+export const RUNNER_CANVAS_CANDIDATE_COMMAND_EVENT = "aiops:runner-canvas:candidate-command";
 
 type RunnerAction = {
   action?: string;
@@ -45,6 +53,8 @@ type RunnerAction = {
   title?: string;
   category?: string;
   description?: string;
+  execution_available?: boolean;
+  access?: { allowed?: boolean; reason?: string };
 };
 
 type RunnerCanvasProps = {
@@ -56,11 +66,18 @@ type RunnerCanvasProps = {
   focusNodeId?: string;
   selectedNodeId?: string;
   aiHighlightedNodeIds?: string[];
+  candidate?: WorkflowCandidateFact;
+  committedResourceVersion?: string;
+  autoLayoutOptions?: WorkflowLayoutOptions;
   fullscreen?: boolean;
   onUpdateGraph: (graph: RunnerGraph) => void;
+  onReviseCandidateGraph?: (previousCandidateGraph: RunnerGraph, nextCandidateGraph: RunnerGraph) => void | Promise<void>;
   onSelectNode: (nodeId: string) => void;
   onOpenNodeConfig: (nodeId: string) => void;
   onDeleteNode?: (nodeId: string) => void;
+  onDeleteEdge?: (edgeId: string) => void;
+  onUndo?: () => void;
+  onRedo?: () => void;
   onNodeAction?: (action: string, nodeId: string) => void;
   onToggleFullscreen?: () => void;
 };
@@ -72,15 +89,32 @@ const CANVAS_NODE_HEIGHT = 118;
 const CANVAS_VISIBLE_NODE_HEIGHT = 66;
 const CANVAS_NODE_HANDLE_Y = 46;
 const EDGE_HOVER_DISTANCE = 30;
-const LAYOUT_START_X = 80;
-const LAYOUT_START_Y = 160;
-const LAYOUT_COLUMN_GAP = 300;
-const LAYOUT_ROW_GAP = 170;
 const CANVAS_FIT_MAX_ZOOM = 0.86;
+const WORKFLOW_OVERLAY_SAFE_GAP = 24;
+
+export function workflowOverlayViewportShift(
+  nodeBounds: Pick<DOMRect, "right">,
+  drawerBounds: Pick<DOMRect, "left">,
+  gap = WORKFLOW_OVERLAY_SAFE_GAP,
+) {
+  return Math.max(0, Math.ceil(nodeBounds.right - drawerBounds.left + gap));
+}
+
+function candidateReadyForCanvasCommand(candidate: WorkflowCandidateFact | undefined): boolean {
+  if (!candidate) return false;
+  const { changeSet, candidate: current } = candidate;
+  const changeSetState = String(changeSet.state || "");
+  const candidateState = String(current.state || "");
+  return current.currentChangeSetId === changeSet.id
+    && current.currentRevision === changeSet.candidateRevision
+    && current.currentPreviewHash === changeSet.previewHash
+    && changeSet.validation.valid === true
+    && ["previewed", "ready", "approved"].includes(changeSetState)
+    && ["ready", "active"].includes(candidateState);
+}
 
 type FlowPoint = { x: number; y: number };
 type ActiveEdgeHit = { edgeId: string };
-type RunnerGraphNode = NonNullable<RunnerGraph["nodes"]>[number];
 
 function actionKey(action: RunnerAction) {
   return String(action.action || action.name || action.label || action.title || "action").replace(/[^a-zA-Z0-9_-]+/g, "-").toLowerCase();
@@ -88,11 +122,6 @@ function actionKey(action: RunnerAction) {
 
 function actionLabel(action: RunnerAction) {
   return action.label || action.title || action.name || action.action || "Action";
-}
-
-function isTextEditingTarget(target: HTMLElement | null) {
-  if (!target) return false;
-  return ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable;
 }
 
 function pointInsideNode(point: FlowPoint, node: Node, padding = 0) {
@@ -149,66 +178,16 @@ function getActiveEdgeHit(point: FlowPoint, nodes: Node[], edges: Edge[]): Activ
   return best ? { edgeId: best.edgeId } : null;
 }
 
-function nodeLayoutRank(node: RunnerGraphNode, indexById: Map<string, number>) {
-  const type = String(node.type || "").toLowerCase();
-  if (type === "start" || node.id === "start") return -10000;
-  if (type === "end" || node.id === "end") return 10000;
-  return indexById.get(node.id) || 0;
-}
-
-function autoLayoutRunnerGraph(graph: RunnerGraph): RunnerGraph {
-  const nodes = graph.nodes || [];
-  if (!nodes.length) return graph;
-  const nodeIds = new Set(nodes.map((node) => node.id));
-  const indexById = new Map(nodes.map((node, index) => [node.id, index]));
-  const incoming = new Map(nodes.map((node) => [node.id, [] as string[]]));
-  for (const edge of graph.edges || []) {
-    const source = String(edge.source || "");
-    const target = String(edge.target || "");
-    if (!nodeIds.has(source) || !nodeIds.has(target)) continue;
-    incoming.get(target)?.push(source);
-  }
-  const depthMemo = new Map<string, number>();
-  const depthForNode = (nodeId: string, visiting = new Set<string>()): number => {
-    if (depthMemo.has(nodeId)) return depthMemo.get(nodeId) || 0;
-    if (visiting.has(nodeId)) return 0;
-    visiting.add(nodeId);
-    const depth = (incoming.get(nodeId) || []).reduce((maxDepth, sourceId) => Math.max(maxDepth, depthForNode(sourceId, visiting) + 1), 0);
-    visiting.delete(nodeId);
-    depthMemo.set(nodeId, depth);
-    return depth;
-  };
-  const layers = new Map<string, number>();
-  for (const node of nodes) layers.set(node.id, depthForNode(node.id));
-  const layerRows = new Map<number, typeof nodes>();
-  for (const node of nodes) {
-    const layer = layers.get(node.id) || 0;
-    layerRows.set(layer, [...(layerRows.get(layer) || []), node]);
-  }
-  for (const [layer, layerNodes] of layerRows) {
-    layerRows.set(
-      layer,
-      [...layerNodes].sort((a, b) => nodeLayoutRank(a, indexById) - nodeLayoutRank(b, indexById)),
-    );
-  }
-  const rowById = new Map<string, number>();
-  for (const layerNodes of layerRows.values()) layerNodes.forEach((node, row) => rowById.set(node.id, row));
-  return {
-    ...graph,
-    nodes: nodes.map((node) => ({
-      ...node,
-      position: {
-        x: LAYOUT_START_X + (layers.get(node.id) || 0) * LAYOUT_COLUMN_GAP,
-        y: LAYOUT_START_Y + (rowById.get(node.id) || 0) * LAYOUT_ROW_GAP,
-      },
-    })),
-  };
-}
-
 function RunnerCanvasInner(props: RunnerCanvasProps) {
   const reactFlow = useReactFlow();
   const canvasRef = useRef<HTMLElement | null>(null);
   const lastFocusedSignalRef = useRef("");
+  const candidateChangeIndexRef = useRef(-1);
+  const latestGraphRef = useRef(props.graph);
+  const layoutRequestRef = useRef(0);
+  const overlayInsetFrameRef = useRef<number>();
+  const pointerNodeDragActiveRef = useRef(false);
+  latestGraphRef.current = props.graph;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [edgePickerEdgeId, setEdgePickerEdgeId] = useState("");
   const [activeEdgeHit, setActiveEdgeHit] = useState<ActiveEdgeHit | null>(null);
@@ -219,6 +198,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   const [edgeMenu, setEdgeMenu] = useState<{ x: number; y: number; edgeId: string } | null>(null);
   const [pendingAddPosition, setPendingAddPosition] = useState<RunnerPosition | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState("");
+  const [recoverableDeletion, setRecoverableDeletion] = useState("");
   const menuPositionForEvent = useCallback((event: MouseEvent, menuWidth = 210, menuHeight = 178) => {
     const bounds = canvasRef.current?.getBoundingClientRect() || event.currentTarget.getBoundingClientRect();
     return {
@@ -239,36 +219,48 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   const deleteGraphEdges = useCallback(
     (edgeIds: string[]) => {
       if (!edgeIds.length) return;
-      let nextGraph = props.graph;
-      for (const edgeId of edgeIds) nextGraph = removeGraphEdge(nextGraph, edgeId);
+      if (!props.onDeleteEdge || !props.onUndo) {
+        setConnectionError("删除连线需要服务端可撤销事务；当前工作流未提供此能力。");
+        return;
+      }
+      for (const edgeId of edgeIds) props.onDeleteEdge(edgeId);
       setConnectionError("");
+      setRecoverableDeletion(edgeIds.length === 1 ? "连线已删除，可撤销。" : `${edgeIds.length} 条连线已删除，可撤销。`);
       setActiveEdgeHit(null);
       setSelectedEdgeId("");
       setEdgePickerEdgeId("");
       setEdgeMenu(null);
-      props.onUpdateGraph(nextGraph);
     },
-    [props],
+    [props.onDeleteEdge, props.onUndo],
   );
   const deleteGraphNode = useCallback(
     (nodeId = "") => {
       const targetNodeId = String(nodeId || "").trim();
       if (!targetNodeId) return;
-      if (props.onDeleteNode) {
-        props.onDeleteNode(targetNodeId);
+      if (!props.onDeleteNode) {
+        setConnectionError("删除节点属于高风险操作，当前页面没有提供明确的服务端删除回调。");
         return;
       }
-      props.onUpdateGraph(removeGraphNode(props.graph, targetNodeId));
+      props.onDeleteNode(targetNodeId);
       props.onSelectNode("");
     },
-    [props],
+    [props.onDeleteNode, props.onSelectNode],
   );
-  const flowModel = useMemo(() => graphToFlowModel(props.graph, { selectedNodeId: props.selectedNodeId }), [props.graph, props.selectedNodeId]);
+  const canvasProjection = useMemo(
+    () => tryProjectWorkflowCanvas(props.graph, props.candidate, { committedResourceVersion: props.committedResourceVersion }),
+    [props.candidate, props.committedResourceVersion, props.graph],
+  );
+  const canvasGraph = canvasProjection.graph;
+  const candidateActive = Boolean(props.candidate);
+  const candidateEditable = candidateActive
+    && canvasProjection.status === "candidate"
+    && Boolean(props.onReviseCandidateGraph);
+  const flowModel = useMemo(() => graphToFlowModel(canvasGraph, { selectedNodeId: props.selectedNodeId }), [canvasGraph, props.selectedNodeId]);
   const paletteActions = useMemo(() => getRunnerPaletteActions(props.actions), [props.actions]);
   const explicitFocusNodeId = useMemo(() => String(props.focusNodeId || "").split(":")[0], [props.focusNodeId]);
   const runFocusNodeId = useMemo(
-    () => getRunnerFocusNodeId({ graph: props.graph, runState: props.runState, explicitNodeId: explicitFocusNodeId }),
-    [explicitFocusNodeId, props.graph, props.runState],
+    () => getRunnerFocusNodeId({ graph: canvasGraph, runState: props.runState, explicitNodeId: explicitFocusNodeId }),
+    [canvasGraph, explicitFocusNodeId, props.runState],
   );
   const aiHighlightedNodeIds = useMemo(() => new Set((props.aiHighlightedNodeIds || []).map(String)), [props.aiHighlightedNodeIds]);
   const nodes = useMemo(
@@ -278,12 +270,14 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         data: {
           ...node.data,
           aiHighlighted: aiHighlightedNodeIds.has(node.id),
+          candidate: canvasProjection.nodes[node.id],
+          candidateReadOnly: candidateActive && !candidateEditable,
           runState: getRunnerNodeRunState(props.runState, node.id),
           onOpenConfig: props.onOpenNodeConfig,
           onNodeAction: props.onNodeAction,
         },
       })) as Node[],
-    [aiHighlightedNodeIds, flowModel.nodes, props.onOpenNodeConfig, props.onNodeAction, props.runState],
+    [aiHighlightedNodeIds, candidateActive, candidateEditable, canvasProjection.nodes, flowModel.nodes, props.onOpenNodeConfig, props.onNodeAction, props.runState],
   );
   const edges = useMemo(
     () =>
@@ -294,14 +288,16 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         selected: selectedEdgeId === edge.id,
         data: {
           ...(edge.data || {}),
+          candidate: canvasProjection.edges[edge.id],
           active: activeEdgeHit?.edgeId === edge.id,
+          candidateReadOnly: candidateActive,
           onSelectEdge: selectGraphEdge,
-          onInsertEdge: (edgeId: string) => {
+          onInsertEdge: candidateActive ? undefined : (edgeId: string) => {
             setPickerOpen(false);
             setEdgePickerEdgeId(edgeId);
             setActiveEdgeHit(null);
           },
-          onOpenEdgeMenu: (edgeId: string, event: MouseEvent<SVGPathElement>) => {
+          onOpenEdgeMenu: candidateActive ? undefined : (edgeId: string, event: MouseEvent<SVGPathElement>) => {
             event.preventDefault();
             event.stopPropagation();
             setContextMenu(null);
@@ -311,12 +307,78 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
             setEdgeMenu({ ...menuPosition, edgeId });
           },
         },
-        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: "#94a3b8" },
+        markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: candidateEdgeColor(canvasProjection.edges[edge.id]) },
       })) as Edge[],
-    [activeEdgeHit, flowModel.edges, menuPositionForEvent, selectGraphEdge, selectedEdgeId],
+    [activeEdgeHit, candidateActive, canvasProjection.edges, flowModel.edges, menuPositionForEvent, selectGraphEdge, selectedEdgeId],
   );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(nodes);
   const [flowEdges, setFlowEdges, onEdgesChange] = useEdgesState(edges);
+
+  const onFlowNodesChange = useCallback(
+    (changes: NodeChange[]) => {
+      if (changes.some((change) => change.type === "position" && change.dragging === true)) {
+        pointerNodeDragActiveRef.current = true;
+      }
+      onNodesChange(changes);
+
+      const completedMoves = changes.filter(
+        (change): change is Extract<NodeChange, { type: "position" }> & { position: RunnerPosition; dragging: false } =>
+          change.type === "position" && change.dragging === false && Boolean(change.position),
+      );
+      if (!completedMoves.length || pointerNodeDragActiveRef.current) return;
+      if (candidateActive && !candidateEditable) {
+        setFlowNodes(nodes);
+        return;
+      }
+
+      const sourceGraph = candidateEditable ? canvasGraph : props.graph;
+      const movedGraph = completedMoves.reduce(
+        (nextGraph, change) => updateGraphNodePosition(nextGraph, change.id, change.position),
+        sourceGraph,
+      );
+      if (candidateEditable) {
+        void props.onReviseCandidateGraph?.(canvasGraph, movedGraph);
+        setFlowNodes(nodes);
+        return;
+      }
+      props.onUpdateGraph(movedGraph);
+    },
+    [candidateActive, candidateEditable, canvasGraph, nodes, onNodesChange, props.graph, props.onReviseCandidateGraph, props.onUpdateGraph, setFlowNodes],
+  );
+
+  const emitCandidateCommand = useCallback((command: "previous_candidate_change" | "next_candidate_change" | "apply_candidate") => {
+    const candidate = props.candidate;
+    if (!candidate) return;
+    const operations = candidate.changeSet.operations;
+    let operationIndex: number | undefined;
+    let operation: WorkflowOperation | undefined;
+    if (command !== "apply_candidate" && operations.length > 0) {
+      const step = command === "next_candidate_change" ? 1 : -1;
+      const current = candidateChangeIndexRef.current;
+      operationIndex = current < 0
+        ? (step > 0 ? 0 : operations.length - 1)
+        : (current + step + operations.length) % operations.length;
+      candidateChangeIndexRef.current = operationIndex;
+      operation = operations[operationIndex];
+      const target = candidateOperationTarget(operation);
+      if (target.nodeId) {
+        props.onSelectNode(target.nodeId);
+        const node = (canvasGraph.nodes || []).find((item) => item.id === target.nodeId);
+        if (node?.position) void reactFlow.setCenter(Number(node.position.x) + 102, Number(node.position.y) + 46, { zoom: CANVAS_FIT_MAX_ZOOM, duration: 240 });
+      } else if (target.edgeId) {
+        selectGraphEdge(target.edgeId);
+      }
+    }
+    window.dispatchEvent(new CustomEvent(RUNNER_CANVAS_CANDIDATE_COMMAND_EVENT, {
+      detail: {
+        command,
+        candidateId: candidate.candidate.id,
+        changeSetId: candidate.changeSet.id,
+        previewHash: candidate.changeSet.previewHash,
+        ...(operationIndex !== undefined ? { operationIndex, operation } : {}),
+      },
+    }));
+  }, [canvasGraph.nodes, props.candidate, props.onSelectNode, reactFlow, selectGraphEdge]);
 
   useEffect(() => {
     setFlowNodes(nodes);
@@ -327,53 +389,158 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   }, [edges, setFlowEdges]);
 
   useEffect(() => {
+    if (candidateActive) return;
     if (!selectedEdgeId) return;
     const exists = (props.graph.edges || []).some((edge) => (edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`) === selectedEdgeId);
     if (!exists) setSelectedEdgeId("");
-  }, [props.graph.edges, selectedEdgeId]);
+  }, [candidateActive, props.graph.edges, selectedEdgeId]);
+
+  useEffect(() => {
+    candidateChangeIndexRef.current = -1;
+  }, [props.candidate?.candidate.id, props.candidate?.candidate.currentRevision]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (!selectedEdgeId) return;
-      if (event.key !== "Delete" && event.key !== "Backspace") return;
-      const target = event.target as HTMLElement | null;
-      if (isTextEditingTarget(target)) return;
-      event.preventDefault();
-      deleteGraphEdges([selectedEdgeId]);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleteGraphEdges, selectedEdgeId]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!props.selectedNodeId || selectedEdgeId) return;
-      if (event.key !== "Delete" && event.key !== "Backspace") return;
-      const target = event.target as HTMLElement | null;
-      if (isTextEditingTarget(target)) return;
+      const command = resolveWorkflowCanvasKeyboardCommand(event, {
+        selectedNodeId: props.selectedNodeId,
+        selectedEdgeId,
+        candidateActive,
+        // Transport previews use ready/previewed while a server-persisted
+        // direct revision uses active/ready. Check the exact validated binding
+        // instead of one layer's state spelling.
+        candidateReady: candidateReadyForCanvasCommand(props.candidate),
+        candidateChangeCount: props.candidate?.changeSet.operations.length || 0,
+        canUndo: Boolean(props.onUndo),
+        canRedo: Boolean(props.onRedo),
+      });
+      if (!command || ![
+        "delete_selection", "undo", "redo", "open_configuration", "clear_selection", "fit",
+        "previous_candidate_change", "next_candidate_change", "apply_candidate",
+      ].includes(command)) return;
       event.preventDefault();
       event.stopPropagation();
-      deleteGraphNode(props.selectedNodeId);
+      if (command === "delete_selection") {
+        if (selectedEdgeId) deleteGraphEdges([selectedEdgeId]);
+        else deleteGraphNode(props.selectedNodeId);
+      }
+      if (command === "undo") props.onUndo?.();
+      if (command === "redo") props.onRedo?.();
+      if (command === "open_configuration" && props.selectedNodeId) props.onOpenNodeConfig(props.selectedNodeId);
+      if (command === "clear_selection") {
+        props.onSelectNode("");
+        setSelectedEdgeId("");
+        setActiveEdgeHit(null);
+        setContextMenu(null);
+        setEdgeMenu(null);
+      }
+      if (command === "fit") void reactFlow.fitView({ padding: 0.24, duration: 240, maxZoom: CANVAS_FIT_MAX_ZOOM });
+      if (command === "previous_candidate_change" || command === "next_candidate_change" || command === "apply_candidate") emitCandidateCommand(command);
     };
     document.addEventListener("keydown", handleKeyDown, true);
     return () => document.removeEventListener("keydown", handleKeyDown, true);
-  }, [deleteGraphNode, props.selectedNodeId, selectedEdgeId]);
+  }, [candidateActive, deleteGraphEdges, deleteGraphNode, emitCandidateCommand, props.candidate, props.onOpenNodeConfig, props.onRedo, props.onSelectNode, props.onUndo, props.selectedNodeId, reactFlow, selectedEdgeId]);
 
   useEffect(() => {
     if (!runFocusNodeId) return;
     const signal = `${props.focusNodeId || ""}:${runFocusNodeId}`;
     if (lastFocusedSignalRef.current === signal) return;
-    const graphNode = (props.graph.nodes || []).find((node) => node.id === runFocusNodeId);
+    const graphNode = (canvasGraph.nodes || []).find((node) => node.id === runFocusNodeId);
     if (!graphNode?.position) return;
     lastFocusedSignalRef.current = signal;
     const x = Number(graphNode.position.x || 0) + 102;
     const y = Number(graphNode.position.y || 0) + 46;
     void reactFlow.setCenter(x, y, { zoom: CANVAS_FIT_MAX_ZOOM, duration: 420 });
-  }, [props.focusNodeId, props.graph.nodes, reactFlow, runFocusNodeId]);
+  }, [canvasGraph.nodes, props.focusNodeId, reactFlow, runFocusNodeId]);
+
+  useEffect(() => {
+    const keepSelectedNodeClearOfWorkflowOverlay = (event: Event) => {
+      const requestedTab = (event as CustomEvent<{ tab?: string }>).detail?.tab;
+      if (requestedTab === "configuration") return;
+      if (overlayInsetFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(overlayInsetFrameRef.current);
+      }
+      overlayInsetFrameRef.current = window.requestAnimationFrame(() => {
+        overlayInsetFrameRef.current = window.requestAnimationFrame(() => {
+          overlayInsetFrameRef.current = undefined;
+          const drawer = document.querySelector<HTMLElement>('[data-testid="workflow-context-dock"]:not([hidden])');
+          const canvas = canvasRef.current;
+          if (!drawer || !canvas) return;
+          const selected = props.selectedNodeId
+            ? findCanvasNodeElement(props.selectedNodeId)
+            : null;
+          const visibleNodes = [...canvas.querySelectorAll<HTMLElement>('[data-testid^="canvas-node-"]')];
+          const target = selected || visibleNodes
+            .filter((node) => node.getBoundingClientRect().right > drawer.getBoundingClientRect().left)
+            .sort((left, right) => right.getBoundingClientRect().right - left.getBoundingClientRect().right)[0];
+          if (!target) return;
+          const shift = workflowOverlayViewportShift(target.getBoundingClientRect(), drawer.getBoundingClientRect());
+          if (shift <= 0) return;
+          const viewport = reactFlow.getViewport();
+          void reactFlow.setViewport(
+            { ...viewport, x: viewport.x - shift },
+            { duration: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 80 },
+          );
+        });
+      });
+    };
+    window.addEventListener(WORKFLOW_CONTEXT_DOCK_OPEN_EVENT, keepSelectedNodeClearOfWorkflowOverlay);
+    return () => {
+      window.removeEventListener(WORKFLOW_CONTEXT_DOCK_OPEN_EVENT, keepSelectedNodeClearOfWorkflowOverlay);
+      if (overlayInsetFrameRef.current !== undefined) {
+        window.cancelAnimationFrame(overlayInsetFrameRef.current);
+      }
+    };
+  }, [props.selectedNodeId, reactFlow]);
+
+  useEffect(() => {
+    const locateCurrentCandidate = () => {
+      const target = (props.candidate?.changeSet.operations || [])
+        .map(candidateOperationTarget)
+        .find((item) => item.nodeId || item.edgeId);
+      if (target?.nodeId) {
+        const node = (canvasGraph.nodes || []).find((item) => item.id === target.nodeId);
+        if (!node?.position) return;
+        setSelectedEdgeId("");
+        setActiveEdgeHit(null);
+        props.onSelectNode(target.nodeId);
+        void reactFlow.setCenter(
+          Number(node.position.x || 0) + CANVAS_NODE_WIDTH / 2,
+          Number(node.position.y || 0) + CANVAS_NODE_HANDLE_Y,
+          { zoom: CANVAS_FIT_MAX_ZOOM, duration: 420 },
+        );
+        return;
+      }
+      if (target?.edgeId) {
+        const edge = (canvasGraph.edges || []).find((item) => (item.id || `${item.source}-${item.target}-${item.kind || "next"}`) === target.edgeId);
+        const source = (canvasGraph.nodes || []).find((item) => item.id === edge?.source);
+        const destination = (canvasGraph.nodes || []).find((item) => item.id === edge?.target);
+        if (!edge || !source?.position || !destination?.position) return;
+        selectGraphEdge(target.edgeId);
+        void reactFlow.setCenter(
+          (Number(source.position.x || 0) + Number(destination.position.x || 0) + CANVAS_NODE_WIDTH) / 2,
+          (Number(source.position.y || 0) + Number(destination.position.y || 0)) / 2 + CANVAS_NODE_HANDLE_Y,
+          { zoom: CANVAS_FIT_MAX_ZOOM, duration: 420 },
+        );
+        return;
+      }
+      void reactFlow.fitView({ padding: 0.24, duration: 240, maxZoom: CANVAS_FIT_MAX_ZOOM });
+    };
+    window.addEventListener(WORKFLOW_CANVAS_LOCATE_EVENT, locateCurrentCandidate);
+    return () => window.removeEventListener(WORKFLOW_CANVAS_LOCATE_EVENT, locateCurrentCandidate);
+  }, [canvasGraph.edges, canvasGraph.nodes, props.candidate, props.onSelectNode, reactFlow, selectGraphEdge]);
 
   const addAction = useCallback(
     (action: RunnerAction, position = { x: 420, y: 180 }, options: { preservePosition?: boolean } = {}) => {
-      props.onUpdateGraph(addCatalogActionNode(props.graph, action, position, options));
+      try {
+        const nextGraph = addCatalogActionNode(props.graph, action, position, {
+          ...options,
+          requireSafeInsertion: true,
+        });
+        setConnectionError("");
+        props.onUpdateGraph(nextGraph);
+      } catch (error) {
+        setConnectionError(error instanceof Error ? error.message : "无法安全添加节点");
+      }
     },
     [props],
   );
@@ -389,16 +556,32 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
 
   const onConnect = useCallback(
     (connection: Connection) => {
-      const result = connectFlowEdge(props.graph, connection);
+      if (candidateActive && !candidateEditable) return;
+      const sourceGraph = candidateEditable ? canvasGraph : props.graph;
+      const result = connectFlowEdge(sourceGraph, connection);
       if (result.error) {
         setConnectionError(result.error.message);
         return;
       }
       setConnectionError("");
+      if (candidateEditable) {
+        void props.onReviseCandidateGraph?.(canvasGraph, result.graph);
+        setFlowEdges(edges);
+        return;
+      }
       props.onUpdateGraph(result.graph);
-      setFlowEdges((currentEdges) => addEdge(connection, currentEdges));
     },
-    [props],
+    [candidateActive, candidateEditable, canvasGraph, edges, props, setFlowEdges],
+  );
+
+  const isValidConnection = useCallback(
+    (connection: Connection | Edge) => {
+      if (candidateActive && !candidateEditable) return false;
+      const result = connectFlowEdge(candidateEditable ? canvasGraph : props.graph, connection as Connection);
+      setConnectionError(result.error?.message || "");
+      return !result.error;
+    },
+    [candidateActive, candidateEditable, canvasGraph, props.graph],
   );
 
   const onEdgesDelete = useCallback(
@@ -410,17 +593,25 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
 
   const onReconnect = useCallback(
     (oldEdge: Edge, connection: Connection) => {
-      const graphWithoutOldEdge = removeGraphEdge(props.graph, oldEdge.id);
+      if (candidateActive && !candidateEditable) return;
+      const sourceGraph = candidateEditable ? canvasGraph : props.graph;
+      const graphWithoutOldEdge = removeGraphEdge(sourceGraph, oldEdge.id);
       const result = connectFlowEdge(graphWithoutOldEdge, connection);
       if (result.error) {
         setConnectionError(result.error.message);
         return;
       }
+      const reconnectedGraph = preserveReconnectedEdgeIdentity(graphWithoutOldEdge, result.graph, oldEdge.id);
       setConnectionError("");
       setEdgeMenu(null);
-      props.onUpdateGraph(result.graph);
+      if (candidateEditable) {
+        void props.onReviseCandidateGraph?.(canvasGraph, reconnectedGraph);
+        setFlowEdges(edges);
+        return;
+      }
+      props.onUpdateGraph(reconnectedGraph);
     },
-    [props],
+    [candidateActive, candidateEditable, canvasGraph, edges, props, setFlowEdges],
   );
 
   const edgeForPicker = useMemo(
@@ -442,11 +633,26 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
 
   const onNodeDragStop = useCallback<NodeDragHandler>(
     (_event, node) => {
+      pointerNodeDragActiveRef.current = false;
+      if (candidateActive && !candidateEditable) return;
+      if (candidateEditable) {
+        void props.onReviseCandidateGraph?.(
+          canvasGraph,
+          updateGraphNodePosition(canvasGraph, node.id, node.position),
+        );
+        setFlowNodes(nodes);
+        setActiveEdgeHit(null);
+        return;
+      }
       props.onUpdateGraph(updateGraphNodePosition(props.graph, node.id, node.position));
       setActiveEdgeHit(null);
     },
-    [props],
+    [candidateActive, candidateEditable, canvasGraph, nodes, props, setFlowNodes],
   );
+
+  const onNodeDragStart = useCallback<NodeDragHandler>(() => {
+    pointerNodeDragActiveRef.current = true;
+  }, []);
 
   const handleCanvasMouseMove = useCallback(
     (event: MouseEvent) => {
@@ -484,6 +690,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   const handleDrop = useCallback(
     (event: DragEvent<HTMLDivElement>) => {
       event.preventDefault();
+      if (candidateActive) return;
       setContextMenu(null);
       setEdgeMenu(null);
       setPendingAddPosition(null);
@@ -493,7 +700,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       const point = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
       addAction(action, { x: point.x - CANVAS_NODE_WIDTH / 2, y: point.y - CANVAS_VISIBLE_NODE_HEIGHT / 2 });
     },
-    [addAction, props.actions, reactFlow],
+    [addAction, candidateActive, props.actions, reactFlow],
   );
 
   const openNodePicker = useCallback(() => {
@@ -508,6 +715,7 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
   const handlePaneContextMenu = useCallback(
     (event: MouseEvent) => {
       event.preventDefault();
+      if (candidateActive) return;
       const flowPoint = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
       const menuPosition = menuPositionForEvent(event);
       setContextMenu({
@@ -523,23 +731,42 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       setEdgePickerEdgeId("");
       setActiveEdgeHit(null);
     },
-    [menuPositionForEvent, reactFlow],
+    [candidateActive, menuPositionForEvent, reactFlow],
   );
 
   const handleAutoLayout = useCallback(() => {
-    const layoutGraph = autoLayoutRunnerGraph(props.graph);
-    props.onUpdateGraph(layoutGraph);
-    setActiveEdgeHit(null);
-    setEdgePickerEdgeId("");
-    window.requestAnimationFrame(() => {
+    if (candidateActive) {
+      void reactFlow.fitView({ padding: 0.24, duration: 240, maxZoom: CANVAS_FIT_MAX_ZOOM });
+      return;
+    }
+    const graph = props.graph;
+    const request = ++layoutRequestRef.current;
+    void createWorkflowLayoutOperation(graph, props.autoLayoutOptions).then((operation) => {
+      if (request !== layoutRequestRef.current || latestGraphRef.current !== graph) return;
+      props.onUpdateGraph(projectWorkflowLayout(graph, operation));
+      setActiveEdgeHit(null);
+      setEdgePickerEdgeId("");
       window.requestAnimationFrame(() => {
-        void reactFlow.fitView({ padding: 0.24, duration: 360, maxZoom: CANVAS_FIT_MAX_ZOOM });
+        window.requestAnimationFrame(() => {
+          void reactFlow.fitView({ padding: 0.24, duration: 360, maxZoom: CANVAS_FIT_MAX_ZOOM });
+        });
       });
+    }).catch(() => {
+      if (request === layoutRequestRef.current) setConnectionError("自动布局失败，请重试");
     });
-  }, [props, reactFlow]);
+  }, [candidateActive, props, reactFlow]);
 
   return (
     <section className={`runner-canvas-react ${pickerOpen ? "with-palette" : ""}`} data-testid="runner-canvas-dropzone" onClickCapture={handleCanvasClick} onDrop={handleDrop} onDragOver={(event) => event.preventDefault()}>
+      {candidateActive ? (
+        <aside
+          role={canvasProjection.status === "blocked" ? "alert" : "status"}
+          data-testid="runner-candidate-canvas-status"
+          style={{ position: "absolute", zIndex: 55, top: 12, right: 12, maxWidth: 340, border: `1px solid ${canvasProjection.status === "blocked" ? "#dc2626" : "#93c5fd"}`, borderRadius: 8, background: "#fff", color: "#334155", padding: "8px 10px", fontSize: 12, fontWeight: 700, boxShadow: "0 8px 20px rgba(15,23,42,.10)" }}
+        >
+          {canvasProjection.status === "blocked" ? `候选预览已阻止：${canvasProjection.error}` : `候选版本 ${canvasProjection.candidateRevision}（尚未保存）${canvasProjection.workflow.blocked === "conflict" ? " · 存在冲突" : ""}`}
+        </aside>
+      ) : null}
       {contextMenu ? (
         <section className="runner-canvas-context-menu" data-testid="runner-canvas-context-menu" style={{ left: contextMenu.x, top: contextMenu.y }}>
           <button type="button" data-testid="runner-context-add-node" onClick={() => { setPendingAddPosition(contextMenu.insertPosition); setContextMenu(null); setPickerOpen(true); }}>
@@ -558,9 +785,10 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
       ) : null}
       {edgeMenu ? (
         <section className="runner-edge-menu runner-edge-menu-compact" data-testid="runner-edge-menu" style={{ left: edgeMenu.x, top: edgeMenu.y }}>
-          <button type="button" className="danger" data-testid="runner-edge-delete" onClick={() => deleteGraphEdges([edgeMenu.edgeId])}>
-            删除连线
+          <button type="button" className="danger" data-testid="runner-edge-delete" disabled={!props.onDeleteEdge || !props.onUndo} title={!props.onDeleteEdge || !props.onUndo ? "需要服务端可撤销事务" : "删除后可撤销"} onClick={() => deleteGraphEdges([edgeMenu.edgeId])}>
+            {!props.onDeleteEdge || !props.onUndo ? "删除连线（不可用）" : "删除连线"}
           </button>
+          {!props.onDeleteEdge || !props.onUndo ? <small>当前服务端未提供可撤销删除。</small> : null}
         </section>
       ) : null}
       {pickerOpen ? (
@@ -628,16 +856,19 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         </div>
       ) : null}
       {connectionError ? <p className="runner-canvas-validation" role="alert">{connectionError}</p> : null}
+      {recoverableDeletion ? <p className="runner-canvas-validation" role="status">{recoverableDeletion}<button type="button" onClick={() => { props.onUndo?.(); setRecoverableDeletion(""); }}>撤销</button></p> : null}
       <ReactFlow
         ref={canvasRef}
         nodes={flowNodes}
         edges={flowEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
-        onNodesChange={onNodesChange}
+        onNodesChange={onFlowNodesChange}
         onEdgesChange={onEdgesChange}
         onEdgesDelete={onEdgesDelete}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
+        onConnectStart={() => setConnectionError("")}
         onReconnect={onReconnect}
         onEdgeClick={(event, edge) => {
           event.stopPropagation();
@@ -646,18 +877,30 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         onEdgeDoubleClick={(event, edge) => {
           event.preventDefault();
           event.stopPropagation();
-          deleteGraphEdges([edge.id]);
+          selectGraphEdge(edge.id);
+          if (!candidateActive) {
+            const menuPosition = menuPositionForEvent(event, 156, 76);
+            setEdgeMenu({ ...menuPosition, edgeId: edge.id });
+          }
         }}
         onEdgeContextMenu={(event, edge) => {
           event.preventDefault();
           event.stopPropagation();
+          if (candidateActive) return;
           setContextMenu(null);
           setPickerOpen(false);
           setEdgePickerEdgeId("");
           const menuPosition = menuPositionForEvent(event, 156, 48);
           setEdgeMenu({ ...menuPosition, edgeId: edge.id });
         }}
-        onNodeClick={(_event, node) => {
+        onNodeClick={(event, node) => {
+          const eventTarget = event.target instanceof HTMLElement ? event.target : null;
+          const focusTarget = eventTarget?.closest<HTMLElement>(`[data-testid="canvas-node-${node.id}"]`)
+            || findCanvasNodeElement(node.id);
+          if (focusTarget) {
+            focusTarget.tabIndex = 0;
+            focusTarget.focus({ preventScroll: true });
+          }
           setSelectedEdgeId("");
           props.onSelectNode(node.id);
         }}
@@ -669,7 +912,11 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
           setEdgeMenu(null);
         }}
         onPaneContextMenu={handlePaneContextMenu}
+        onNodeDragStart={onNodeDragStart}
         onNodeDragStop={onNodeDragStop}
+        nodesDraggable={!candidateActive || candidateEditable}
+        nodesConnectable={!candidateActive || candidateEditable}
+        edgesReconnectable={!candidateActive || candidateEditable}
         onMouseMove={handleCanvasMouseMove}
         onMouseLeave={() => setActiveEdgeHit(null)}
         fitView
@@ -677,22 +924,24 @@ function RunnerCanvasInner(props: RunnerCanvasProps) {
         maxZoom={1.4}
         connectionRadius={44}
         connectionMode={ConnectionMode.Loose}
-        edgesReconnectable
         reconnectRadius={16}
         connectOnClick
-        deleteKeyCode={["Backspace", "Delete"]}
+        deleteKeyCode={null}
+        proOptions={{ hideAttribution: true }}
       >
         <Background />
         <MiniMap pannable zoomable />
         <Controls onFitView={handleAutoLayout}>
-          <ControlButton
-            data-testid="runner-node-picker-toggle"
-            title="添加节点"
-            aria-label="添加节点"
-            onClick={openNodePicker}
-          >
-            <Plus size={16} />
-          </ControlButton>
+          {!candidateActive ? (
+            <ControlButton
+              data-testid="runner-node-picker-toggle"
+              title="添加节点"
+              aria-label="添加节点"
+              onClick={openNodePicker}
+            >
+              <Plus size={16} />
+            </ControlButton>
+          ) : null}
           <ControlButton
             className="runner-canvas-fullscreen-control"
             data-testid="runner-canvas-fullscreen-toggle"
@@ -714,4 +963,29 @@ export function RunnerCanvas(props: RunnerCanvasProps) {
       <RunnerCanvasInner {...props} />
     </ReactFlowProvider>
   );
+}
+
+function candidateOperationTarget(operation: WorkflowOperation): { nodeId?: string; edgeId?: string } {
+  if (operation.op === "add_node") return { nodeId: operation.node.id || operation.clientRef };
+  if (operation.op === "update_node" || operation.op === "delete_node") return { nodeId: operation.nodeId };
+  if (operation.op === "add_edge") return operation.edge.id ? { edgeId: operation.edge.id } : { nodeId: operation.edge.target };
+  if (operation.op === "update_edge" || operation.op === "delete_edge") return { edgeId: operation.edgeId };
+  if (operation.op === "update_layout") return { nodeId: operation.layout.nodes[0]?.nodeId };
+  return {};
+}
+
+function findCanvasNodeElement(nodeId: string): HTMLElement | null {
+  const testId = `canvas-node-${nodeId}`;
+  return [...document.querySelectorAll<HTMLElement>('[data-testid^="canvas-node-"]')]
+    .find((element) => element.dataset.testid === testId) || null;
+}
+
+function preserveReconnectedEdgeIdentity(before: RunnerGraph, after: RunnerGraph, edgeId: string): RunnerGraph {
+  const existingIds = new Set((before.edges || []).map((edge) => edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`));
+  const addedEdge = (after.edges || []).find((edge) => !existingIds.has(edge.id || `${edge.source}-${edge.target}-${edge.kind || "next"}`));
+  if (!addedEdge) return after;
+  return {
+    ...after,
+    edges: (after.edges || []).map((edge) => edge === addedEdge ? { ...edge, id: edgeId } : edge),
+  };
 }

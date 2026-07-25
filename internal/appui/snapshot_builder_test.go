@@ -3,12 +3,14 @@ package appui
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"aiops-v2/internal/agentstate"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/store"
+	"aiops-v2/internal/workfloweditor"
 )
 
 type sessionSourceStub struct {
@@ -137,6 +139,73 @@ func TestSnapshotBuilderExposesConfiguredLLMModelOnlyFromSettingsRepo(t *testing
 
 	if snapshot.Config["model"] != "claude-sonnet-4-20250514" {
 		t.Fatalf("Config[model] = %q, want configured model", snapshot.Config["model"])
+	}
+}
+
+func TestSnapshotBuilderProjectsTrustedWorkflowCapabilities(t *testing.T) {
+	settings := store.DefaultRuntimeSettings()
+	settings.Workflow.Rollout.Stage = workfloweditor.WorkflowAgentStageInternalApply
+	settings.Workflow.Rollout.RolloutPercentage = 100
+	settings.Workflow.Rollout.Features.DomainEvents = true
+	builder := NewSnapshotBuilderWithSettings(nil, &settingsRepoStub{runtime: &settings})
+
+	snapshot := builder.BuildStateSnapshot(nil)
+	capabilities, ok := snapshot.Config["workflowCapabilities"].(workfloweditor.WorkflowCapabilitySnapshot)
+	if !ok {
+		t.Fatalf("workflowCapabilities = %#v, want typed snapshot", snapshot.Config["workflowCapabilities"])
+	}
+	if capabilities.Stage != workfloweditor.WorkflowAgentStageInternalApply || !capabilities.Capabilities.WorkflowMCPMutation || capabilities.Capabilities.WorkflowDelete || capabilities.Capabilities.WorkflowPublish {
+		t.Fatalf("workflowCapabilities = %+v, want internal_apply without delete/publish", capabilities)
+	}
+	settings.Workflow.Rollout.Stage = workfloweditor.WorkflowAgentStageGeneral
+	if capabilities.Stage != workfloweditor.WorkflowAgentStageInternalApply {
+		t.Fatalf("projected capability aliases runtime settings: %+v", capabilities)
+	}
+}
+
+func TestSnapshotBuilderProjectsExplicitDisabledWorkflowCapabilitiesByDefault(t *testing.T) {
+	snapshot := NewSnapshotBuilder().BuildStateSnapshot(nil)
+	capabilities, ok := snapshot.Config["workflowCapabilities"].(workfloweditor.WorkflowCapabilitySnapshot)
+	if !ok || capabilities.Stage != workfloweditor.WorkflowAgentStageDisabled || capabilities.Capabilities.Any() {
+		t.Fatalf("workflowCapabilities = %#v, want explicit disabled snapshot", snapshot.Config["workflowCapabilities"])
+	}
+}
+
+func TestSnapshotBuilderProjectsTypedPromptPresetCapabilityOff(t *testing.T) {
+	settings := store.DefaultRuntimeSettings()
+	settings.Workflow.Rollout.Stage = workfloweditor.WorkflowAgentStageGeneral
+	settings.Workflow.Rollout.RolloutPercentage = 100
+	snapshot := NewSnapshotBuilderWithSettings(nil, &settingsRepoStub{runtime: &settings}).BuildStateSnapshot(nil)
+
+	capability, ok := snapshot.Config["workflowPromptPresetCapability"].(WorkflowPromptPresetCapability)
+	if !ok {
+		t.Fatalf("workflowPromptPresetCapability = %#v, want typed capability", snapshot.Config["workflowPromptPresetCapability"])
+	}
+	if err := validateWorkflowPromptPresetCapability(capability); err != nil {
+		t.Fatalf("prompt preset capability is invalid: %v", err)
+	}
+	if capability.Status != "off" ||
+		capability.Reason != "provider_unavailable" ||
+		capability.Permission != "unavailable" ||
+		capability.Rollout != "off" ||
+		capability.HandlerAvailable ||
+		len(capability.Presets) != 0 {
+		t.Fatalf("prompt preset capability must fail closed without a provider: %#v", capability)
+	}
+	encoded, err := json.Marshal(capability)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"presets":[]`) {
+		t.Fatalf("disabled prompt presets must serialize as an empty array: %s", encoded)
+	}
+}
+
+func TestWorkflowPromptPresetCapabilityRejectsUnknownSchema(t *testing.T) {
+	capability := disabledWorkflowPromptPresetCapability()
+	capability.SchemaVersion = "aiops.workflow.prompt-presets.unknown"
+	if err := validateWorkflowPromptPresetCapability(capability); err == nil {
+		t.Fatal("unknown prompt preset schema must fail closed")
 	}
 }
 

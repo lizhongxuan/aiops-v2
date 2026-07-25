@@ -235,6 +235,9 @@ func (s *defaultChatService) SendMessage(ctx context.Context, cmd ChatCommand) (
 	if req.SessionID == "" {
 		req.SessionID = fmt.Sprintf("sess-%d", time.Now().UnixNano())
 	}
+	if err := attachWorkflowTurnContext(ctx, cmd, &req); err != nil {
+		return TurnResponse{}, err
+	}
 	opsRun := ensureOpsRunMetadata(&req)
 	ensureCorootRCAMetadata(&req)
 	s.enrichTurnHostMetadata(&req)

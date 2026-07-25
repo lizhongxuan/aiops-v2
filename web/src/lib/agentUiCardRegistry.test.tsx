@@ -5,9 +5,12 @@ import type { AiopsTransportAgentUiArtifact } from "@/transport/aiopsTransportTy
 import { agentUiCardDefinitions, AGENT_UI_ARTIFACT_TYPES } from "./agentUiCardDefinitions";
 import {
   createAgentUiCardRegistry,
+  defaultAgentUiCardRegistry,
   lookupAgentUiCardRenderer,
   type AgentUiCardRegistryDefinition,
 } from "./agentUiCardRegistry";
+import { WorkflowChangeArtifact } from "@/components/chat/WorkflowChangeArtifact";
+import { WorkflowResultArtifact } from "@/components/chat/WorkflowResultArtifact";
 
 const DummyRenderer: ComponentType<{ artifact: AiopsTransportAgentUiArtifact }> = () => null;
 
@@ -123,6 +126,60 @@ describe("agent UI card registry", () => {
     expect(lookupAgentUiCardRenderer(registry, { id: "bad", type: "trace_summary", payload: "bad" } as any)).toMatchObject({
       state: "invalid_payload",
       reason: "卡片 payload 必须是对象。",
+    });
+  });
+
+  it("routes the five workflow change contracts by exact type, renderer, and schema version", () => {
+    const contracts = [
+      ["workflow_edit_plan", "workflow.change.plan.v2", "aiops.workflow.plan.v1"],
+      ["workflow_patch_preview", "workflow.change.preview.v2", "aiops.workflow.edit.v2"],
+      ["workflow_patch_result", "workflow.change.receipt.v2", "aiops.workflow.edit.v2"],
+      ["workflow_patch_validation", "workflow.change.validation.v2", "aiops.workflow.edit.v2"],
+      ["workflow_conflict", "workflow.change.conflict.v2", "aiops.workflow.edit.v2"],
+    ] as const;
+
+    for (const [type, renderer, schemaVersion] of contracts) {
+      expect(lookupAgentUiCardRenderer(defaultAgentUiCardRegistry, {
+        id: `${type}:1`,
+        type,
+        renderer,
+        schemaVersion,
+        payload: {},
+      })).toMatchObject({
+        state: "active",
+        Renderer: WorkflowChangeArtifact,
+        definition: { type, renderer, schemaVersion, strictContract: true },
+      });
+    }
+  });
+
+  it("uses a local safe fallback when any workflow change contract coordinate is missing or unknown", () => {
+    const base = {
+      id: "preview:1",
+      type: "workflow_patch_preview",
+      renderer: "workflow.change.preview.v2",
+      schemaVersion: "aiops.workflow.edit.v2",
+      payload: { previewHash: "secret-hash" },
+    };
+
+    for (const artifact of [
+      { ...base, renderer: "" },
+      { ...base, renderer: "workflow.change.unknown.v2" },
+      { ...base, schemaVersion: "" },
+      { ...base, schemaVersion: "aiops.workflow.edit.v99" },
+      { ...base, type: "workflow_conflict" },
+    ]) {
+      expect(lookupAgentUiCardRenderer(defaultAgentUiCardRegistry, artifact)).toMatchObject({
+        state: "fallback_renderer",
+        reason: "Workflow 变更卡片契约不受支持，已使用局部安全展示。",
+      });
+    }
+  });
+
+  it("keeps workflow_result on its dedicated execution result renderer", () => {
+    expect(lookupAgentUiCardRenderer(defaultAgentUiCardRegistry, artifact("workflow_result"))).toMatchObject({
+      state: "active",
+      Renderer: WorkflowResultArtifact,
     });
   });
 });

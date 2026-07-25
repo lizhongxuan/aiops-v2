@@ -1,0 +1,57 @@
+{
+  "id": "GEN-004",
+  "category": "workflow_generation",
+  "priority": "P1",
+  "input": "Create a retry loop with an explicit success exit and at most three iterations.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": ["start", "loop", "action", "end"],
+    "requiredActions": ["health.check"],
+    "allowedActions": ["health.check"],
+    "argumentSchemas": {
+      "health.check": { "required": ["targetRef"], "properties": { "targetRef": "string" }, "additionalProperties": false }
+    },
+    "requiredPorts": {
+      "loop": { "inputs": ["in", "repeat"], "outputs": ["body", "exit"] },
+      "check": { "inputs": ["in"], "outputs": ["retry", "success"] }
+    },
+    "requiredPaths": ["/graph/nodes/1/args/maxIterations", "/graph/edges/*/sourcePort"],
+    "forbiddenPaths": ["/graph/nodes/*/args/script"],
+    "forbiddenPlaceholders": ["while(true)", "script.python"],
+    "validation": { "firstPreviewStatus": "valid", "finalStatus": "valid", "rateEligible": true },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [
+      { "kind": "bounded_loop" },
+      { "kind": "fact", "name": "loop_exit_guarded" },
+      { "kind": "edge", "source": "loop", "sourcePort": "exit", "target": "end", "targetPort": "in" }
+    ],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "valid", "valid": true } },
+      "final": {
+        "graph": {
+          "nodes": [
+            { "id": "start", "type": "start", "outputPorts": ["next"] },
+            { "id": "loop", "type": "loop", "args": { "maxIterations": 3 }, "inputPorts": ["in", "repeat"], "outputPorts": ["body", "exit"] },
+            { "id": "check", "type": "action", "action": "health.check", "args": { "targetRef": "service://selected" }, "inputPorts": ["in"], "outputPorts": ["retry", "success"] },
+            { "id": "end", "type": "end", "inputPorts": ["in"] }
+          ],
+          "edges": [
+            { "id": "e1", "source": "start", "sourcePort": "next", "target": "loop", "targetPort": "in" },
+            { "id": "e2", "source": "loop", "sourcePort": "body", "target": "check", "targetPort": "in" },
+            { "id": "e3", "source": "check", "sourcePort": "retry", "target": "loop", "targetPort": "repeat" },
+            { "id": "e4", "source": "check", "sourcePort": "success", "target": "end", "targetPort": "in" },
+            { "id": "e5", "source": "loop", "sourcePort": "exit", "target": "end", "targetPort": "in" }
+          ]
+        },
+        "validation": { "status": "valid", "valid": true },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 68, "previewMs": 98, "validateMs": 31, "repairCount": 0, "inputTokens": 1040, "outputTokens": 790, "contextTokens": 1830 },
+      "semanticFacts": { "loop_exit_guarded": true }
+    }]
+  }
+}

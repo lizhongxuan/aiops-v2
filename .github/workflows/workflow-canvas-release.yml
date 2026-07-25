@@ -1,0 +1,113 @@
+name: Workflow Canvas release
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_run_id:
+        description: Successful default-branch Workflow Canvas nightly run ID used as the approved baseline
+        required: true
+        type: string
+      live_repetitions:
+        description: Live-model repetitions per generation case
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "3"
+          - "5"
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: workflow-canvas-release
+  cancel-in-progress: false
+
+jobs:
+  release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment:
+      name: workflow-canvas-release
+    env:
+      PLAYWRIGHT_RETRIES: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Initialize allowlisted release evidence
+        run: scripts/workflow-canvas-ci-evidence.sh rc chromium,firefox,webkit
+      - name: Verify Nightly baseline provenance
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const rawRunId = ${{ toJSON(inputs.baseline_run_id) }};
+            if (!/^\d+$/.test(rawRunId)) {
+              core.setFailed("baseline_run_id must be a GitHub Actions run ID");
+              return;
+            }
+            const runId = Number(rawRunId);
+            const { data: repository } = await github.rest.repos.get(context.repo);
+            const { data: run } = await github.rest.actions.getWorkflowRun({
+              ...context.repo,
+              run_id: runId,
+            });
+            const workflowPath = String(run.path || "").split("@")[0];
+            const expectedPath = ".github/workflows/workflow-canvas-nightly.yml";
+            if (!workflowPath.endsWith(expectedPath)) {
+              core.setFailed(`baseline run uses ${workflowPath}, expected ${expectedPath}`);
+            } else if (run.conclusion !== "success") {
+              core.setFailed(`baseline run conclusion is ${run.conclusion}, expected success`);
+            } else if (!["schedule", "workflow_dispatch"].includes(run.event)) {
+              core.setFailed(`baseline run event ${run.event} is not trusted`);
+            } else if (run.head_branch !== repository.default_branch) {
+              core.setFailed(`baseline branch ${run.head_branch} is not ${repository.default_branch}`);
+            }
+      - name: Download approved Nightly baseline
+        uses: actions/download-artifact@v4
+        with:
+          name: workflow-canvas-nightly-evidence
+          path: ${{ runner.temp }}/workflow-canvas-baseline
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.baseline_run_id }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Workflow Canvas test dependencies
+        working-directory: web
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+      - name: Run RC recorded, recovery, performance, and cross-browser matrix
+        run: scripts/workflow-canvas-ci-matrix.sh rc
+      - name: Run three-or-more live-model repetitions against the approved baseline
+        env:
+          AIOPS_LIVE_MODEL_BASE_URL: ${{ secrets.AIOPS_WORKFLOW_LIVE_MODEL_BASE_URL }}
+          AIOPS_LIVE_MODEL_API_KEY: ${{ secrets.AIOPS_WORKFLOW_LIVE_MODEL_API_KEY }}
+          AIOPS_LIVE_MODEL_MODEL: ${{ secrets.AIOPS_WORKFLOW_LIVE_MODEL_MODEL }}
+          AIOPS_LIVE_MODEL_REPETITIONS: ${{ inputs.live_repetitions }}
+          AIOPS_WORKFLOW_EVAL_BASELINE: ${{ runner.temp }}/workflow-canvas-baseline/generation-recorded/report.json
+          AIOPS_WORKFLOW_REQUIRE_BASELINE: "1"
+          AIOPS_WORKFLOW_MAX_BASELINE_REGRESSIONS: "0"
+        run: scripts/workflow-generation-eval.sh live "${RUNNER_TEMP}/workflow-canvas-evidence/generation-live"
+      - name: Verify release evidence is safe to upload
+        id: evidence_redaction
+        if: ${{ always() }}
+        env:
+          AIOPS_LIVE_MODEL_API_KEY: ${{ secrets.AIOPS_WORKFLOW_LIVE_MODEL_API_KEY }}
+        run: scripts/check-workflow-evidence-redaction.sh "${RUNNER_TEMP}/workflow-canvas-evidence"
+      - name: Upload release evidence
+        if: ${{ always() && steps.evidence_redaction.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: workflow-canvas-release-evidence
+          path: ${{ runner.temp }}/workflow-canvas-evidence
+          if-no-files-found: error
+          retention-days: 90

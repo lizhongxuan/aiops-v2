@@ -98,3 +98,10 @@ func buildRuntimeTurnAssembly(input runtimeTurnAssemblyInput) (*agentassembly.Tu
 	}
 	return &assembly, nil
 }
+
+// assembleRuntimeTurn is the single production call boundary for the frozen
+// turn assembly. Model-driven and server-controlled turns both use it so the
+// admission and capability contract cannot fork.
+func assembleRuntimeTurn(input runtimeTurnAssemblyInput) (*agentassembly.TurnAssembly, error) {
+	return buildRuntimeTurnAssembly(input)
+}

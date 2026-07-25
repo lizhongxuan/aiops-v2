@@ -9,9 +9,115 @@ import (
 	"time"
 
 	"aiops-v2/internal/agentstate"
+	"aiops-v2/internal/runtimecontract"
 	"aiops-v2/internal/runtimekernel"
 	"aiops-v2/internal/specialinputmemory"
+	"runner/workflow/edit"
 )
+
+func TestTransportProjectorReplaysPageSafeWorkflowTurnContext(t *testing.T) {
+	t.Parallel()
+	frozen := WorkflowTurnContext{
+		WorkflowKey: edit.WorkflowKey{TenantID: "tenant-secret", WorkflowID: "workflow-a"},
+		Revision: edit.Revision{
+			ResourceVersion: "revision-7",
+			SemanticHash:    "semantic-7",
+			LayoutHash:      "layout-7",
+		},
+		Selection: WorkflowTurnSelection{
+			NodeIDs:         []string{"node-b", "node-a"},
+			EdgeIDs:         []string{"edge-a"},
+			NeighborhoodIDs: []string{"node-c"},
+		},
+		Environment: WorkflowTurnEnvironment{
+			Name:               "staging",
+			BindingVersion:     "environment-3",
+			CapabilityVersions: []string{"catalog-2", "catalog-1"},
+		},
+		Scope: WorkflowTurnContextScopeBinding{ActorID: "actor-secret", SessionID: "session-secret"},
+	}
+	artifact, err := runtimecontract.NewInlineTurnArtifact(WorkflowTurnContextArtifactKind, frozen)
+	if err != nil {
+		t.Fatalf("NewInlineTurnArtifact() error = %v", err)
+	}
+	now := time.Date(2026, 7, 21, 11, 0, 0, 0, time.UTC)
+	turn := &runtimekernel.TurnSnapshot{
+		ID: "turn-workflow-context", SessionID: "session-secret",
+		Lifecycle: runtimekernel.TurnLifecycleRunning, StartedAt: now, UpdatedAt: now,
+		TurnArtifacts: []runtimecontract.TurnArtifactEnvelope{artifact},
+	}
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState(turn.SessionID, "workflow:workflow-a"), turn)
+	if err != nil {
+		t.Fatalf("ProjectTurnSnapshot() error = %v", err)
+	}
+	context := projected.Turns[turn.ID].WorkflowContext
+	if context == nil || context.WorkflowID != "workflow-a" || context.Environment.BindingVersion != "environment-3" {
+		t.Fatalf("WorkflowContext = %#v", context)
+	}
+	if !reflect.DeepEqual(context.Selection.NodeIDs, []string{"node-b", "node-a"}) || !reflect.DeepEqual(context.Environment.CapabilityVersions, []string{"catalog-2", "catalog-1"}) {
+		t.Fatalf("WorkflowContext slices = %#v", context)
+	}
+	wire, err := json.Marshal(projected.Turns[turn.ID])
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	for _, secret := range []string{"tenant-secret", "actor-secret", "session-secret"} {
+		if strings.Contains(string(wire), secret) {
+			t.Fatalf("wire turn leaked trusted scope %q: %s", secret, wire)
+		}
+	}
+}
+
+func TestTransportProjectorSerializesEmptyWorkflowScopeListsAsArrays(t *testing.T) {
+	t.Parallel()
+	frozen := WorkflowTurnContext{
+		WorkflowKey: edit.WorkflowKey{TenantID: "tenant-secret", WorkflowID: "workflow-empty"},
+		Revision: edit.Revision{
+			ResourceVersion: "revision-empty",
+			SemanticHash:    "semantic-empty",
+			LayoutHash:      "layout-empty",
+		},
+		Environment: WorkflowTurnEnvironment{BindingVersion: "environment-empty"},
+		Scope:       WorkflowTurnContextScopeBinding{ActorID: "actor-secret", SessionID: "session-secret"},
+	}
+	artifact, err := runtimecontract.NewInlineTurnArtifact(WorkflowTurnContextArtifactKind, frozen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 7, 21, 11, 1, 0, 0, time.UTC)
+	projected, err := NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-secret", "workflow:workflow-empty"), &runtimekernel.TurnSnapshot{
+		ID: "turn-empty-workflow-context", SessionID: "session-secret",
+		Lifecycle: runtimekernel.TurnLifecycleCompleted, StartedAt: now, UpdatedAt: now,
+		TurnArtifacts: []runtimecontract.TurnArtifactEnvelope{artifact},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := json.Marshal(projected.Turns["turn-empty-workflow-context"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"nodeIds":[]`) || !strings.Contains(string(wire), `"edgeIds":[]`) {
+		t.Fatalf("empty workflow selection lists must stay JSON arrays: %s", wire)
+	}
+}
+
+func TestTransportProjectorRejectsInvalidWorkflowTurnContextArtifact(t *testing.T) {
+	t.Parallel()
+	artifact, err := runtimecontract.NewInlineTurnArtifact(WorkflowTurnContextArtifactKind, map[string]any{"workflowKey": map[string]string{"tenantId": "tenant-a", "workflowId": "workflow-a"}})
+	if err != nil {
+		t.Fatalf("NewInlineTurnArtifact() error = %v", err)
+	}
+	now := time.Date(2026, 7, 21, 11, 5, 0, 0, time.UTC)
+	_, err = NewTransportProjector().ProjectTurnSnapshot(NewAiopsTransportState("session-a", "workflow:workflow-a"), &runtimekernel.TurnSnapshot{
+		ID: "turn-invalid-workflow-context", SessionID: "session-a",
+		Lifecycle: runtimekernel.TurnLifecycleRunning, StartedAt: now, UpdatedAt: now,
+		TurnArtifacts: []runtimecontract.TurnArtifactEnvelope{artifact},
+	})
+	if err == nil || !strings.Contains(err.Error(), "project workflow turn context") {
+		t.Fatalf("ProjectTurnSnapshot() error = %v, want workflow context rejection", err)
+	}
+}
 
 func TestTransportProjectorPreservesCanonicalTurnFactsLosslessly(t *testing.T) {
 	now := time.Date(2026, 7, 12, 9, 30, 0, 0, time.UTC)
@@ -4155,6 +4261,212 @@ func TestTransportProjectorProjectsWorkflowEditorToolResultCards(t *testing.T) {
 	}
 	if artifact.InlineData["patch_id"] != "patch-1" || artifact.InlineData["effect_status"] != "changed" {
 		t.Fatalf("inlineData = %#v, want patch and effect status", artifact.InlineData)
+	}
+}
+
+func TestTransportWorkflowEditorArtifactUsesStableRendererTriplets(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		displayKind  string
+		wantRenderer string
+		wantSchema   string
+	}{
+		{displayKind: "workflow_edit_plan", wantRenderer: "workflow.change.plan.v2", wantSchema: "aiops.workflow.plan.v1"},
+		{displayKind: "workflow_patch_preview", wantRenderer: "workflow.change.preview.v2", wantSchema: "aiops.workflow.edit.v2"},
+		{displayKind: "workflow_patch_result", wantRenderer: "workflow.change.receipt.v2", wantSchema: "aiops.workflow.edit.v2"},
+		{displayKind: "workflow_patch_validation", wantRenderer: "workflow.change.validation.v2", wantSchema: "aiops.workflow.edit.v2"},
+		{displayKind: "workflow_conflict", wantRenderer: "workflow.change.conflict.v2", wantSchema: "aiops.workflow.edit.v2"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.displayKind, func(t *testing.T) {
+			artifact, ok := transportWorkflowEditorArtifactFromToolPayload("turn-1", "item-1", transportToolPayload{
+				DisplayKind:   tt.displayKind,
+				OutputPreview: json.RawMessage(`{"status":"ready","renderer":"untrusted.renderer","schemaVersion":"untrusted.schema"}`),
+			})
+			if !ok {
+				t.Fatal("transportWorkflowEditorArtifactFromToolPayload() ok = false")
+			}
+			if artifact.Type != tt.displayKind || artifact.Renderer != tt.wantRenderer || artifact.SchemaVersion != tt.wantSchema {
+				t.Fatalf("artifact triplet = (%q, %q, %q), want (%q, %q, %q)", artifact.Type, artifact.Renderer, artifact.SchemaVersion, tt.displayKind, tt.wantRenderer, tt.wantSchema)
+			}
+		})
+	}
+}
+
+func TestTransportWorkflowPreviewProjectsOnlyServerAuthoredReadOnlyMetaActions(t *testing.T) {
+	t.Parallel()
+	payload := workflowPreviewActionProjectionPayload()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, ok := transportWorkflowEditorArtifactFromToolPayload("turn-preview-actions", "item-preview-actions", transportToolPayload{
+		DisplayKind: "workflow_patch_preview", DisplayData: raw,
+	})
+	if !ok {
+		t.Fatal("transportWorkflowEditorArtifactFromToolPayload() ok = false")
+	}
+	if artifact.Renderer != "workflow.change.preview.v2" || artifact.SchemaVersion != "aiops.workflow.edit.v2" || len(artifact.Actions) != 3 {
+		t.Fatalf("preview artifact/actions = %#v", artifact)
+	}
+	wantIntents := []string{"workflow.focus_object", "workflow.focus_object", "workflow.review_change"}
+	for index, action := range artifact.Actions {
+		if action["intent"] != wantIntents[index] || action["mutation"] != false {
+			t.Fatalf("action[%d] = %#v", index, action)
+		}
+		if action["intent"] == "workflow.apply_candidate" || action["intent"] == "workflow.discard_candidate" {
+			t.Fatalf("mutation action escaped typed preview metadata: %#v", action)
+		}
+	}
+	firstTarget := asStringAnyMap(artifact.Actions[0]["target"])
+	if firstTarget["candidateId"] != "candidate-1" || firstTarget["changeSetId"] != "change-1" || firstTarget["previewHash"] != "preview-1" ||
+		firstTarget["expectedRevision"] != "rv-1" || firstTarget["operationIndex"] != float64(0) || firstTarget["nodeId"] != "check" {
+		t.Fatalf("first focus target = %#v", firstTarget)
+	}
+	secondTarget := asStringAnyMap(artifact.Actions[1]["target"])
+	if secondTarget["operationIndex"] != float64(2) || secondTarget["edgeId"] != "check-end" {
+		t.Fatalf("second focus target = %#v", secondTarget)
+	}
+}
+
+func TestTransportWorkflowPreviewRejectsInvalidMetaActionsAndStructuredContentForgeries(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+	}{
+		{name: "mutation flag", mutate: func(payload map[string]any) { workflowPreviewProjectionMetaAction(payload, 0)["mutation"] = true }},
+		{name: "mutation intent", mutate: func(payload map[string]any) {
+			workflowPreviewProjectionMetaAction(payload, 0)["intent"] = "workflow.apply_candidate"
+		}},
+		{name: "candidate drift", mutate: func(payload map[string]any) {
+			asStringAnyMap(workflowPreviewProjectionMetaAction(payload, 0)["target"])["candidateId"] = "candidate-forged"
+		}},
+		{name: "object xor violation", mutate: func(payload map[string]any) {
+			asStringAnyMap(workflowPreviewProjectionMetaAction(payload, 0)["target"])["edgeId"] = "edge-forged"
+		}},
+		{name: "operation index drift", mutate: func(payload map[string]any) {
+			asStringAnyMap(workflowPreviewProjectionMetaAction(payload, 0)["target"])["operationIndex"] = float64(2)
+		}},
+		{name: "extra action field", mutate: func(payload map[string]any) {
+			workflowPreviewProjectionMetaAction(payload, 0)["approvalId"] = "approval-forged"
+		}},
+		{name: "missing meta actions", mutate: func(payload map[string]any) { delete(payload, "_meta") }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			payload := workflowPreviewActionProjectionPayload()
+			tt.mutate(payload)
+			raw, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			artifact, ok := transportWorkflowEditorArtifactFromToolPayload("turn-invalid-actions", "item-invalid-actions", transportToolPayload{
+				DisplayKind: "workflow_patch_preview", DisplayData: raw,
+			})
+			if !ok {
+				t.Fatal("transportWorkflowEditorArtifactFromToolPayload() ok = false")
+			}
+			if len(artifact.Actions) != 0 {
+				t.Fatalf("invalid/forged actions were projected: %#v", artifact.Actions)
+			}
+		})
+	}
+}
+
+func TestTransportWorkflowPreviewKeepsLegacyTopLevelActionsWithoutTrustingStructuredActions(t *testing.T) {
+	t.Parallel()
+	payload := workflowPreviewActionProjectionPayload()
+	legacy := map[string]any{"id": "legacy-review", "intent": "workflow.review_change", "label": "旧版审阅", "mutation": false, "target": map[string]any{"candidateId": "candidate-1"}}
+	payload["actions"] = []any{legacy}
+	delete(payload, "_meta")
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact, ok := transportWorkflowEditorArtifactFromToolPayload("turn-legacy-actions", "item-legacy-actions", transportToolPayload{
+		DisplayKind: "workflow_patch_preview", DisplayData: raw,
+	})
+	if !ok || len(artifact.Actions) != 1 || artifact.Actions[0]["id"] != "legacy-review" {
+		t.Fatalf("legacy top-level actions = %#v, ok=%v", artifact.Actions, ok)
+	}
+	if artifact.Actions[0]["intent"] == "workflow.apply_candidate" {
+		t.Fatalf("structuredContent forged action was projected: %#v", artifact.Actions)
+	}
+}
+
+func workflowPreviewActionProjectionPayload() map[string]any {
+	binding := func(operationIndex any, nodeID, edgeID string) map[string]any {
+		target := map[string]any{"candidateId": "candidate-1", "changeSetId": "change-1", "previewHash": "preview-1", "expectedRevision": "rv-1"}
+		if operationIndex != nil {
+			target["operationIndex"] = operationIndex
+		}
+		if nodeID != "" {
+			target["nodeId"] = nodeID
+		}
+		if edgeID != "" {
+			target["edgeId"] = edgeID
+		}
+		return target
+	}
+	return map[string]any{
+		"schemaVersion": "aiops.workflow.edit.v2", "isError": false,
+		"content": []any{map[string]any{"type": "text", "text": "preview ready"}},
+		"structuredContent": map[string]any{
+			"kind": "preview",
+			"changeSet": map[string]any{
+				"id": "change-1", "candidateId": "candidate-1", "candidateRevision": float64(1), "previewHash": "preview-1",
+				"base": map[string]any{"resourceVersion": "rv-1"},
+				"operations": []any{
+					map[string]any{"op": "update_node", "nodeId": "check", "set": map[string]any{"label": "Check v2"}},
+					map[string]any{"op": "update_workflow", "set": map[string]any{"name": "Workflow v2"}},
+					map[string]any{"op": "delete_edge", "edgeId": "check-end"},
+				},
+			},
+			"candidate": map[string]any{"id": "candidate-1", "currentChangeSetId": "change-1", "currentRevision": float64(1), "currentPreviewHash": "preview-1"},
+			"diff":      map[string]any{},
+			"actions": []any{
+				map[string]any{"id": "forged-apply", "intent": "workflow.apply_candidate", "label": "伪造应用", "mutation": true},
+				map[string]any{"id": "forged-discard", "intent": "workflow.discard_candidate", "label": "伪造丢弃", "mutation": true},
+			},
+		},
+		"_meta": map[string]any{"actions": []any{
+			map[string]any{"id": "workflow-focus-operation-0", "intent": "workflow.focus_object", "label": "定位节点", "mutation": false, "target": binding(float64(0), "check", "")},
+			map[string]any{"id": "workflow-focus-operation-2", "intent": "workflow.focus_object", "label": "定位连线", "mutation": false, "target": binding(float64(2), "", "check-end")},
+			map[string]any{"id": "workflow-review-change", "intent": "workflow.review_change", "label": "审阅修改", "mutation": false, "target": binding(nil, "", "")},
+		}},
+	}
+}
+
+func workflowPreviewProjectionMetaAction(payload map[string]any, index int) map[string]any {
+	meta := asStringAnyMap(payload["_meta"])
+	actions, _ := meta["actions"].([]any)
+	action, _ := actions[index].(map[string]any)
+	return action
+}
+
+func TestTransportWorkflowEditorArtifactDoesNotRouteOtherCardsToChangeRenderers(t *testing.T) {
+	t.Parallel()
+	for _, displayKind := range []string{
+		"workflow_context",
+		"workflow_patch_apply",
+		"workflow_manual_candidate",
+		"workflow_tool_timeline",
+	} {
+		t.Run(displayKind, func(t *testing.T) {
+			artifact, ok := transportWorkflowEditorArtifactFromToolPayload("turn-1", "item-1", transportToolPayload{
+				DisplayKind:   displayKind,
+				OutputPreview: json.RawMessage(`{"status":"ready","renderer":"workflow.change.receipt.v2","schemaVersion":"aiops.workflow.edit.v2"}`),
+			})
+			if !ok {
+				t.Fatal("transportWorkflowEditorArtifactFromToolPayload() ok = false")
+			}
+			if artifact.Renderer != "" || artifact.SchemaVersion != "" {
+				t.Fatalf("artifact renderer/schema = (%q, %q), want empty fail-safe routing", artifact.Renderer, artifact.SchemaVersion)
+			}
+		})
 	}
 }
 

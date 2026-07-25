@@ -191,6 +191,28 @@ func TestMarkTurnBlockedStoresRollbackContractForValidMutatingApproval(t *testin
 	}
 }
 
+func TestAssistantMessageEvidenceRefsIncludeRuntimeMaterializedReferences(t *testing.T) {
+	snapshot := &TurnSnapshot{
+		ExternalReferences: []ExternalReference{{ID: "ref-workflow-before"}},
+		AgentItems: []agentstate.TurnItem{newAgentItem(
+			"tool-result-context",
+			agentstate.TurnItemTypeToolResult,
+			agentstate.ItemStatusCompleted,
+			"workflow context",
+			map[string]any{
+				"evidenceRefs":       []string{"evidence-explicit"},
+				"externalReferences": []ExternalReference{{ID: "ref-workflow-before"}, {ID: "ref-catalog-before"}},
+			},
+		)},
+	}
+
+	got := assistantMessageEvidenceRefsFromSnapshot(snapshot)
+	want := []string{"ref-workflow-before", "evidence-explicit", "ref-catalog-before"}
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("evidence refs = %#v, want %#v", got, want)
+	}
+}
+
 func validActionRollbackContractForTest() ActionRollbackContract {
 	return ActionRollbackContract{
 		SchemaVersion:          ActionRollbackContractSchemaVersion,

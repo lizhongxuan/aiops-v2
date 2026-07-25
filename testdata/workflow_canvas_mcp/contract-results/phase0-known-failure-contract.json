@@ -1,0 +1,55 @@
+[
+  {
+    "id": "MCP-004",
+    "outcome": "passed"
+  },
+  {
+    "id": "MCP-009",
+    "outcome": "failed",
+    "failureSignature": "contract probe: apply accepted missing concurrency or approval binding"
+  },
+  {
+    "id": "TXN-002",
+    "outcome": "failed",
+    "failureSignature": "contract probe: duplicate apply created duplicate mutation"
+  },
+  {
+    "id": "TXN-016",
+    "outcome": "failed",
+    "failureSignature": "contract probe: workflow sources diverge"
+  },
+  {
+    "id": "UI-007",
+    "outcome": "failed",
+    "failureSignature": "contract probe: chat review canvas change count diverged"
+  },
+  {
+    "id": "UI-012",
+    "outcome": "failed",
+    "failureSignature": "contract probe: invalid candidate reported completed"
+  },
+  {
+    "id": "UI-016",
+    "outcome": "failed",
+    "failureSignature": "contract probe: candidate missing after reload"
+  },
+  {
+    "id": "UI-027",
+    "outcome": "failed",
+    "failureSignature": "contract probe: post-check failure reported completed"
+  },
+  {
+    "id": "SEC-003",
+    "outcome": "passed"
+  },
+  {
+    "id": "SEC-004",
+    "outcome": "failed",
+    "failureSignature": "contract probe: mutation committed without active grant"
+  },
+  {
+    "id": "SEC-015",
+    "outcome": "failed",
+    "failureSignature": "contract probe: apply approval was reusable"
+  }
+]

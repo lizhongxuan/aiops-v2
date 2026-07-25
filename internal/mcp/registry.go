@@ -83,6 +83,7 @@ type Resource struct {
 	Name        string          `json:"name,omitempty"`
 	Description string          `json:"description,omitempty"`
 	MimeType    string          `json:"mimeType,omitempty"`
+	Version     string          `json:"version,omitempty"`
 	Raw         json.RawMessage `json:"raw,omitempty"`
 }
 
@@ -95,33 +96,36 @@ type ResourceContent struct {
 	Blob     []byte `json:"blob,omitempty"`
 	Digest   string `json:"digest,omitempty"`
 	Bytes    int64  `json:"bytes,omitempty"`
+	Version  string `json:"version,omitempty"`
 }
 
 // Registry tracks MCP server configuration and dynamically connected tools.
 type Registry struct {
-	mu           sync.RWMutex
-	governance   *settings.Governance
-	serverCfgs   map[string]ServerConfig
-	serverTools  map[string][]tooling.Tool
-	serverState  map[string]bool
-	statuses     map[string]ServerStatus
-	health       *HealthRegistry
-	resources    map[string][]Resource
-	contents     map[string]map[string]ResourceContent
-	instructions map[string]ServerInstruction
+	mu                sync.RWMutex
+	governance        *settings.Governance
+	serverCfgs        map[string]ServerConfig
+	serverTools       map[string][]tooling.Tool
+	serverState       map[string]bool
+	statuses          map[string]ServerStatus
+	health            *HealthRegistry
+	resources         map[string][]Resource
+	contents          map[string]map[string]ResourceContent
+	resourceProviders map[string]registeredResourceProvider
+	instructions      map[string]ServerInstruction
 }
 
 // NewRegistry creates an empty MCP server registry.
 func NewRegistry() *Registry {
 	r := &Registry{
-		serverCfgs:   make(map[string]ServerConfig),
-		serverTools:  make(map[string][]tooling.Tool),
-		serverState:  make(map[string]bool),
-		statuses:     make(map[string]ServerStatus),
-		health:       NewHealthRegistry(DefaultHealthTTL),
-		resources:    make(map[string][]Resource),
-		contents:     make(map[string]map[string]ResourceContent),
-		instructions: make(map[string]ServerInstruction),
+		serverCfgs:        make(map[string]ServerConfig),
+		serverTools:       make(map[string][]tooling.Tool),
+		serverState:       make(map[string]bool),
+		statuses:          make(map[string]ServerStatus),
+		health:            NewHealthRegistry(DefaultHealthTTL),
+		resources:         make(map[string][]Resource),
+		contents:          make(map[string]map[string]ResourceContent),
+		resourceProviders: make(map[string]registeredResourceProvider),
+		instructions:      make(map[string]ServerInstruction),
 	}
 	setDefaultRegistry(r)
 	return r
@@ -245,6 +249,7 @@ func (r *Registry) RegisterRunnerCapability(tools []tooling.Tool) error {
 		RiskLevel:            tooling.ToolRiskHigh,
 		OwnerSource:          "builtin",
 		ToolPack:             "workflow_editor",
+		Profiles:             []string{"workflow_agent"},
 		PermissionScope:      "reviewed_mutation",
 		PromptBudgetClass:    "compact",
 		SchemaBudgetClass:    "on_demand",
@@ -491,7 +496,7 @@ func (r *Registry) ListResources(serverID string) []Resource {
 }
 
 // ReadResource returns locally registered resource content.
-func (r *Registry) ReadResource(_ context.Context, serverID, uri string) (ResourceContent, bool, error) {
+func (r *Registry) ReadResource(ctx context.Context, serverID, uri string) (ResourceContent, bool, error) {
 	serverID = strings.TrimSpace(serverID)
 	uri = strings.TrimSpace(uri)
 	if serverID == "" {
@@ -499,6 +504,9 @@ func (r *Registry) ReadResource(_ context.Context, serverID, uri string) (Resour
 	}
 	if uri == "" {
 		return ResourceContent{}, false, fmt.Errorf("mcp: resource uri is required")
+	}
+	if content, routed, err := r.readScopedResource(ctx, serverID, uri); routed {
+		return content, err == nil, err
 	}
 
 	r.mu.RLock()
@@ -583,6 +591,7 @@ func (r *Registry) UnregisterServer(serverID string) {
 	delete(r.serverTools, serverID)
 	delete(r.resources, serverID)
 	delete(r.contents, serverID)
+	delete(r.resourceProviders, serverID)
 	delete(r.statuses, serverID)
 	if r.health != nil {
 		r.health.Set(HealthSnapshot{ServerID: serverID, Status: HealthUnknown, LastCheckedAt: time.Now(), TTLSeconds: int(DefaultHealthTTL.Seconds())})

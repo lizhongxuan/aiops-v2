@@ -68,12 +68,11 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 			subscribedAgentEventSessionID = sessionID
 		}
 
-		snapshot, err := s.ui.StateService().GetState(ctx)
+		snapshot, err := s.buildLatestAppSnapshot(ctx)
 		if err != nil {
 			_ = sendJSON(map[string]any{"type": "heartbeat"})
 			return
 		}
-		snapshot = s.withAgentEventProjection(ctx, snapshot)
 		subscribeAgentEventsForSnapshot(snapshot)
 		if err := sendJSON(snapshot); err != nil {
 			return
@@ -110,7 +109,11 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 					updates = nil
 					continue
 				}
-				snapshot = s.withAgentEventProjection(ctx, snapshot)
+				if s.appSnapshots != nil {
+					snapshot = s.appSnapshots.projectSnapshot(ctx, snapshot)
+				} else {
+					snapshot = s.withAgentEventProjection(ctx, snapshot)
+				}
 				subscribeAgentEventsForSnapshot(snapshot)
 				if err := sendJSON(snapshot); err != nil {
 					return
@@ -127,11 +130,10 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 					return
 				}
 				if isTerminalTurnAgentEvent(event) {
-					snapshot, err := s.ui.StateService().GetState(ctx)
+					snapshot, err := s.buildLatestAppSnapshot(ctx)
 					if err != nil {
 						continue
 					}
-					snapshot = s.withAgentEventProjection(ctx, snapshot)
 					subscribeAgentEventsForSnapshot(snapshot)
 					if err := sendJSON(snapshot); err != nil {
 						return
@@ -147,6 +149,20 @@ func (s *HTTPServer) appWebSocketHandler() websocket.Handler {
 			}
 		}
 	})
+}
+
+func (s *HTTPServer) buildLatestAppSnapshot(ctx context.Context) (appui.StateSnapshot, error) {
+	if s != nil && s.appSnapshots != nil {
+		return s.appSnapshots.BuildLatest(ctx)
+	}
+	if s == nil || s.ui == nil || s.ui.StateService() == nil {
+		return appui.NewSnapshotBuilder().BuildStateSnapshot(nil), nil
+	}
+	snapshot, err := s.ui.StateService().GetState(ctx)
+	if err != nil {
+		return appui.StateSnapshot{}, err
+	}
+	return s.withAgentEventProjection(ctx, snapshot), nil
 }
 
 func isTerminalTurnAgentEvent(event appui.AgentEvent) bool {

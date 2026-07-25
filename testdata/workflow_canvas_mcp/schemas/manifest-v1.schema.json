@@ -1,0 +1,171 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aiops.local/schemas/workflow-canvas-case-manifest-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "currentActivationPhase",
+    "approvedCapabilityTags",
+    "fixtures",
+    "cases"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "aiops.workflow-canvas.case-manifest/v1"
+    },
+    "currentActivationPhase": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 5
+    },
+    "approvedCapabilityTags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/fixtureRef"
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 169,
+      "maxItems": 169,
+      "items": {
+        "$ref": "#/$defs/case"
+      }
+    }
+  },
+  "$defs": {
+    "fixtureRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "kind",
+        "path"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "priority",
+        "activationPhase",
+        "activationState",
+        "suite",
+        "selector",
+        "fixtures",
+        "browsers",
+        "capabilityTags",
+        "owner",
+        "evidence",
+        "expectedOutcome"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9]*-[0-9]{3}$"
+        },
+        "priority": {
+          "enum": [
+            "P0",
+            "P1",
+            "P2"
+          ]
+        },
+        "activationPhase": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 5
+        },
+        "activationState": {
+          "enum": [
+            "active",
+            "planned"
+          ]
+        },
+        "suite": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selector": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fixtures": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "browsers": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "chromium",
+              "firefox",
+              "webkit",
+              "browser-in-app"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "capabilityTags": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "owner": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "expectedOutcome": {
+          "enum": [
+            "pass",
+            "known_failure"
+          ]
+        },
+        "expectedFailureSignature": {
+          "type": "string",
+          "minLength": 1
+        },
+        "greenActivationPhase": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        }
+      }
+    }
+  }
+}

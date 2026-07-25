@@ -80,7 +80,7 @@ steps:
     args:
       cmd: "echo hi"
 `)
-	if _, err := store.Put("good-name", rawGood); err != nil {
-		t.Fatalf("expected valid name to succeed, got %v", err)
+	if _, err := store.Put("good-name", rawGood); err == nil || !strings.Contains(err.Error(), "legacy workflow writes are disabled") {
+		t.Fatalf("expected legacy write boundary error, got %v", err)
 	}
 }

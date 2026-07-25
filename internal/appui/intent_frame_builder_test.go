@@ -100,6 +100,18 @@ func TestBuildIntentFrameHostResourceReadRequestsHostRuntime(t *testing.T) {
 	}
 }
 
+func TestBuildIntentFrameOpaqueWorkflowDigestDoesNotRequestHostRuntime(t *testing.T) {
+	input := "WORKFLOW_MCP_READ tenant=runner-default workflow=linear-three-node-workflow-chat revision=sha256:19ad7b50c4154020d6503f3f41617bf3e802bdf5a0dbf274179dcdb62dc83dd3 请读取当前工作流摘要"
+	frame := BuildIntentFrame(input, BuildEvidenceEnvelope(input, nil, nil), nil)
+
+	if runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskHostExec) {
+		t.Fatalf("opaque revision substring was classified as host execution: %#v", frame)
+	}
+	if !runtimecontract.ContainsActionRisk(frame.RiskBudget, runtimecontract.ActionRiskReadOnly) {
+		t.Fatalf("workflow context read risk = %#v, want read_only", frame.RiskBudget)
+	}
+}
+
 func TestBuildIntentFrameHostResourceExplanationDoesNotRequestHostRuntime(t *testing.T) {
 	envelope := BuildEvidenceEnvelope("解释 Linux load average 是什么", nil, nil)
 	frame := BuildIntentFrame("解释 Linux load average 是什么", envelope, nil)

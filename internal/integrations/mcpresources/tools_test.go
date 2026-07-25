@@ -37,6 +37,51 @@ func TestListAndReadMCPResourcesTools(t *testing.T) {
 	}
 }
 
+type scopedToolResourceProvider struct{ reads int }
+
+func (*scopedToolResourceProvider) Capabilities() mcp.ResourceProviderCapabilities {
+	return mcp.ResourceProviderCapabilities{List: true, Read: true, Pagination: true, RevisionAddressed: true, OpaqueURIs: true}
+}
+func (*scopedToolResourceProvider) List(context.Context, mcp.ResourceListRequest) (mcp.ResourcePage, error) {
+	return mcp.ResourcePage{Resources: []mcp.Resource{{URI: "workflow://opaque/context", Name: "context", MimeType: "application/json", Version: "revision-7"}}, NextCursor: "next-page"}, nil
+}
+func (p *scopedToolResourceProvider) Read(_ context.Context, request mcp.ResourceReadRequest) (mcp.ResourceContent, error) {
+	p.reads++
+	return mcp.ResourceContent{URI: request.URI, MimeType: "application/json", Text: `{"revision":7}`, Version: "revision-7"}, nil
+}
+
+func TestMCPResourceToolsUseTrustedScopedProviderAndExposeCapabilities(t *testing.T) {
+	registry := mcp.NewRegistry()
+	provider := &scopedToolResourceProvider{}
+	if err := registry.RegisterResourceProvider(mcp.ResourceProviderRegistration{ServerID: "runner", URIPrefix: "workflow://opaque/", Provider: provider, Authorize: func(_ context.Context, request mcp.ResourceAccessRequest) bool {
+		return request.Execution.TenantID == "tenant-a" && request.Execution.UserID == "user-a" && request.Execution.SessionID == "session-a" && request.Execution.Metadata["workflowId"] == "workflow-a"
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	ctx := tooling.ContextWithToolExecution(context.Background(), tooling.ToolExecutionContext{TenantID: "tenant-a", UserID: "user-a", SessionID: "session-a", Metadata: map[string]string{"workflowId": "workflow-a"}})
+	listed, err := NewListTool(registry).Execute(ctx, json.RawMessage(`{"server":"runner","cursor":"first","limit":1}`))
+	if err != nil || !strings.Contains(listed.Content, `"nextCursor":"next-page"`) || !strings.Contains(listed.Content, `"revisionAddressed":true`) {
+		t.Fatalf("list = %s, %v", listed.Content, err)
+	}
+	read, err := NewReadTool(registry).Execute(ctx, json.RawMessage(`{"server":"runner","uri":"workflow://opaque/context"}`))
+	if err != nil || !strings.Contains(read.Content, `"version":"revision-7"`) || len(read.References) != 1 || read.References[0].Version != "revision-7" {
+		t.Fatalf("read = %#v, %v", read, err)
+	}
+}
+
+func TestMCPResourceToolsScopedFailuresDoNotRevealExistence(t *testing.T) {
+	registry := mcp.NewRegistry()
+	provider := &scopedToolResourceProvider{}
+	if err := registry.RegisterResourceProvider(mcp.ResourceProviderRegistration{ServerID: "runner", URIPrefix: "workflow://opaque/", Provider: provider, Authorize: func(context.Context, mcp.ResourceAccessRequest) bool { return false }}); err != nil {
+		t.Fatal(err)
+	}
+	_, listErr := NewListTool(registry).Execute(context.Background(), json.RawMessage(`{"server":"runner"}`))
+	_, readErr := NewReadTool(registry).Execute(context.Background(), json.RawMessage(`{"server":"runner","uri":"workflow://opaque/missing"}`))
+	if listErr == nil || readErr == nil || listErr.Error() != readErr.Error() || strings.Contains(readErr.Error(), "missing") {
+		t.Fatalf("scoped failure errors = %v / %v", listErr, readErr)
+	}
+}
+
 func TestReadMCPResourceSupportsOffsetLimit(t *testing.T) {
 	registry := mcp.NewRegistry()
 	seedMCPResource(t, registry, "srv", "resource://large", "alpha\nbeta\ngamma\n")

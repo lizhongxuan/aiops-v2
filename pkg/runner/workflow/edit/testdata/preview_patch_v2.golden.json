@@ -1,0 +1,78 @@
+{
+  "schemaVersion": "aiops.workflow.edit.v2",
+  "workflowKey": {
+    "tenantId": "tenant-a",
+    "workflowId": "capacity-guard"
+  },
+  "expected": {
+    "resourceVersion": "rv-17",
+    "semanticHash": "sha256:semantic-17",
+    "layoutHash": "sha256:layout-17"
+  },
+  "validationBasis": {
+    "resourceVersion": "rv-17",
+    "semanticHash": "sha256:semantic-17",
+    "catalogVersion": "catalog-7",
+    "actionSchemaDigest": "sha256:actions-7",
+    "referenceSnapshotHash": "sha256:references-3",
+    "environmentBindingVersion": "environment-2"
+  },
+  "intent": "Add a capacity check and connect it to the existing end node",
+  "operations": [
+    {
+      "op": "add_node",
+      "clientRef": "capacity_check",
+      "node": {
+        "type": "action",
+        "label": "Check capacity",
+        "position": {
+          "x": 320,
+          "y": 160
+        },
+        "step": {
+          "name": "check_capacity",
+          "targets": ["selected-host"],
+          "action": "host.inspect",
+          "args": {
+            "credential": {
+              "secretRef": "secret://host-readonly"
+            }
+          },
+          "must_vars": [],
+          "when": "",
+          "loop": [],
+          "retries": 0,
+          "timeout": "30s",
+          "continue_on_error": false,
+          "expect_vars": [],
+          "notify": []
+        }
+      }
+    },
+    {
+      "op": "add_edge",
+      "clientRef": "capacity_to_end",
+      "edge": {
+        "source": "capacity_check",
+        "sourcePort": "next",
+        "target": "end",
+        "targetPort": "in",
+        "kind": "next"
+      }
+    },
+    {
+      "op": "update_layout",
+      "layout": {
+        "nodes": [
+          {
+            "nodeId": "capacity_check",
+            "position": {
+              "x": 320,
+              "y": 160
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

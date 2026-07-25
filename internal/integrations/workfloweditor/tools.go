@@ -43,39 +43,10 @@ var mutatingTools = map[string]bool{
 	"workflow.create_draft_from_confirmed_plan": true,
 }
 
-func Tools(service *edit.Service) []tooling.Tool {
-	if service == nil {
-		service = edit.NewService(nil)
-	}
-	names := []string{
-		"workflow.list",
-		"workflow.get_snapshot",
-		"workflow.get_step",
-		"workflow.get_action_catalog",
-		"workflow.get_manual_binding",
-		"workflow.describe",
-		"workflow.diff",
-		"workflow.get_ai_session",
-		"workflow.propose_edit_plan",
-		"workflow.propose_patch",
-		"workflow.validate_patch",
-		"workflow.preview_patch",
-		"workflow.detect_patch_effect",
-		"workflow.propose_ops_manual_candidate",
-		"workflow.propose_ops_manual_update",
-		"workflow.apply_patch",
-		"workflow.save_draft",
-		"workflow.attach_manual_candidate",
-		"workflow.undo_last_ai_patch",
-		"workflow.propose_create_plan",
-		"workflow.create_draft_from_confirmed_plan",
-	}
-	out := make([]tooling.Tool, 0, len(names))
-	for _, name := range names {
-		out = append(out, newWorkflowEditorTool(name, service))
-	}
-	return out
-}
+// Tools is retained only as a source-compatible legacy entry point. The old
+// 21-tool surface contained placeholder executors and must never be exposed by
+// tools/list; production registration uses the Application-backed V2 tools.
+func Tools(*edit.Service) []tooling.Tool { return nil }
 
 func newWorkflowEditorTool(name string, service *edit.Service) tooling.Tool {
 	readOnly := readOnlyTools[name]

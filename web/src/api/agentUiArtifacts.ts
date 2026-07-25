@@ -125,6 +125,13 @@ export const ALLOWED_ACTION_INTENTS = new Set([
   "request-permission",
   "generate-runner-workflow-candidate",
   "generate_runner_workflow_candidate",
+  "workflow.focus_object",
+  "workflow.review_change",
+  "workflow.apply_candidate",
+  "workflow.discard_candidate",
+  "workflow.retry_from_current",
+  "workflow.undo_transaction",
+  "workflow.open_configuration",
 ]);
 
 function compactText(value: unknown): string {

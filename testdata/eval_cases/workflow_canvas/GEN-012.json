@@ -1,0 +1,33 @@
+{
+  "id": "GEN-012",
+  "category": "workflow_generation",
+  "priority": "P0",
+  "input": "Create a workflow for an operation that has no matching action in the current Catalog.",
+  "expected": { "mustInclude": ["mock agent"] },
+  "workflowGeneration": {
+    "schemaVersion": "aiops.workflow-generation.eval-case.v1",
+    "requiredNodeTypes": [],
+    "allowedActions": [],
+    "argumentSchemas": {},
+    "requiredPorts": {},
+    "requiredPaths": [],
+    "forbiddenPaths": ["/graph/nodes/*/action", "/graph/nodes/*/args/script"],
+    "forbiddenPlaceholders": ["invented.action", "script.python", "<todo>"],
+    "validation": { "firstPreviewStatus": "capability_gap", "finalStatus": "capability_gap", "rateEligible": false },
+    "risk": { "level": "low", "requiresApproval": false },
+    "invariants": [{ "kind": "fact", "name": "catalog_capability_gap_reported" }],
+    "budgets": { "maxRepairCount": 2, "maxFirstFeedbackMs": 30000, "maxPreviewP95Ms": 30000, "maxValidateP95Ms": 2000, "maxInputTokens": 12000, "maxContextTokens": 24000 },
+    "recordedAttempts": [{
+      "schemaVersion": "aiops.workflow-generation.eval-output.v1",
+      "firstPreview": { "validation": { "status": "capability_gap", "valid": false } },
+      "final": {
+        "graph": { "nodes": [], "edges": [] },
+        "validation": { "status": "capability_gap", "valid": false, "diagnostics": ["no Catalog action matches the requested operation"] },
+        "risk": "low",
+        "approval": { "required": false, "granted": false }
+      },
+      "metrics": { "firstFeedbackMs": 27, "previewMs": 27, "validateMs": 0, "repairCount": 0, "inputTokens": 640, "outputTokens": 210, "contextTokens": 850 },
+      "semanticFacts": { "catalog_capability_gap_reported": true }
+    }]
+  }
+}

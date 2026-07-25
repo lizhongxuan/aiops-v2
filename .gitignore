@@ -1,5 +1,9 @@
 !/web/tests/
 !/web/tests/**
+!/cmd/ai-server/
+/cmd/ai-server/*
+!/cmd/ai-server/workflow_control_plane_wiring.go
+!/cmd/ai-server/workflow_control_plane_wiring_test.go
 !/deploy/
 deploy/*
 !/deploy/k8s/
@@ -17,6 +21,8 @@ docs/*
 !/docs/2026-06-17-aiops-v2-pg-coroot-workflow-acceptance.zh.md
 !/docs/2026-06-17-aiops-v2-general-ops-capability-modification-design.zh.md
 !/docs/2026-06-23-aiops-v2-codex-like-ai-chat-runtime-v2-plan.zh.md
+!/docs/2026-07-21-aiops-v2-workflow-canvas-mcp-control-plane-design.zh.md
+!/docs/2026-07-23-aiops-v2-workflow-studio-visual-interaction-redesign.zh.md
 !/docs/superpowers/
 docs/superpowers/*
 !/docs/superpowers/specs/
@@ -38,6 +44,8 @@ docs/superpowers/plans/*
 !/docs/superpowers/plans/2026-06-27-aiops-v2-host-mention-hidden-metadata-runtime-binding-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-06-29-aiops-v2-web-search-firecrawl-optimization-implementation-todo.zh.md
 !/docs/superpowers/plans/2026-07-15-aiops-v2-ai-chat-output-presentation-optimization-implementation-todo.zh.md
+!/docs/superpowers/plans/2026-07-21-aiops-v2-workflow-canvas-mcp-control-plane-implementation-todo.zh.md
+!/docs/superpowers/plans/2026-07-23-aiops-v2-workflow-studio-visual-interaction-redesign-implementation-todo.zh.md
 
 # Local isolated development worktrees.
 .worktrees/

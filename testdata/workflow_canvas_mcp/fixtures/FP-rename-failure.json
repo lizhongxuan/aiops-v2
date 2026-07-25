@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "FP-rename-failure",
+  "kind": "failure-point",
+  "data": {
+    "failurePoint": {
+      "name": "rename-failure",
+      "stage": "manifest_swap",
+      "action": "return-error"
+    }
+  }
+}

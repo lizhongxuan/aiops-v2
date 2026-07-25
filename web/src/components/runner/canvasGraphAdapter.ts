@@ -72,6 +72,11 @@ type RunnerAction = {
 };
 type AddCatalogActionNodeOptions = {
   preservePosition?: boolean;
+  requireSafeInsertion?: boolean;
+};
+
+type RemoveGraphNodeOptions = {
+  bridgeSimpleChain?: boolean;
 };
 
 type FlowConnection = {
@@ -348,6 +353,9 @@ export function addCatalogActionNode(
 ) {
   const next = cloneGraph(graph);
   const existingNodes = next.nodes || [];
+  const safeInsertionEdge = options.requireSafeInsertion
+    ? uniqueSafeTerminalInsertionEdge(next)
+    : undefined;
   const node = buildCatalogActionNode(existingNodes, action, position, options);
   const startNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "start" || item.id === "start");
   const endNode = existingNodes.find((item) => String(item.type || "").toLowerCase() === "end" || item.id === "end");
@@ -357,14 +365,66 @@ export function addCatalogActionNode(
   });
   const startToEndEdge = (next.edges || []).find((edge) => edge.source === startNode?.id && edge.target === endNode?.id);
   next.nodes = [...existingNodes, node];
+  if (safeInsertionEdge) {
+    const remainingEdges = (next.edges || []).filter((edge) => edge !== safeInsertionEdge);
+    const sourcePort = declaredNodePort(
+      existingNodes.find((item) => item.id === safeInsertionEdge.source),
+      "output",
+      safeInsertionEdge.source_port || safeInsertionEdge.sourceHandle || "next",
+    );
+    const targetPort = declaredNodePort(
+      existingNodes.find((item) => item.id === safeInsertionEdge.target),
+      "input",
+      safeInsertionEdge.target_port || safeInsertionEdge.targetHandle || "in",
+    );
+    const firstEdge: RunnerEdge = {
+      id: uniqueId(`${safeInsertionEdge.source}-${node.id}-next`, remainingEdges),
+      source: safeInsertionEdge.source,
+      target: node.id,
+      kind: "next",
+      target_port: "in",
+    };
+    if (sourcePort) firstEdge.source_port = sourcePort;
+    const secondEdge: RunnerEdge = {
+      id: uniqueId(`${node.id}-${safeInsertionEdge.target}-next`, [...remainingEdges, firstEdge]),
+      source: node.id,
+      target: safeInsertionEdge.target,
+      kind: "next",
+      source_port: "next",
+    };
+    if (targetPort) secondEdge.target_port = targetPort;
+    next.edges = [...remainingEdges, firstEdge, secondEdge];
+    return next;
+  }
   if (startNode && endNode && !hasExecutableNode && startToEndEdge) {
+    const startPort = declaredNodePort(startNode, "output", startToEndEdge.source_port || startToEndEdge.sourceHandle || "next");
+    const endPort = declaredNodePort(endNode, "input", startToEndEdge.target_port || startToEndEdge.targetHandle || "in");
+    const startToNode: RunnerEdge = { id: `${startNode.id}-${node.id}-next`, source: startNode.id, target: node.id, kind: "next", target_port: "in" };
+    if (startPort) startToNode.source_port = startPort;
+    const nodeToEnd: RunnerEdge = { id: `${node.id}-${endNode.id}-next`, source: node.id, target: endNode.id, kind: "next", source_port: "next" };
+    if (endPort) nodeToEnd.target_port = endPort;
     next.edges = [
       ...(next.edges || []).filter((edge) => edge !== startToEndEdge),
-      { id: `${startNode.id}-${node.id}-next`, source: startNode.id, target: node.id, kind: "next", source_port: "next", target_port: "in" },
-      { id: `${node.id}-${endNode.id}-next`, source: node.id, target: endNode.id, kind: "next", source_port: "next", target_port: "in" },
+      startToNode,
+      nodeToEnd,
     ];
   }
   return next;
+}
+
+function uniqueSafeTerminalInsertionEdge(graph: RunnerGraph): RunnerEdge {
+  const endNodeIds = new Set((graph.nodes || [])
+    .filter((node) => String(node.type || "").toLowerCase() === "end" || node.id === "end")
+    .map((node) => node.id));
+  const candidates = (graph.edges || []).filter((edge) => {
+    if (!edge.source || !edge.target || !endNodeIds.has(edge.target)) return false;
+    const sourcePort = edge.source_port || edge.sourceHandle || edge.kind || "next";
+    return canonicalEdgeKindForPort(edge.kind || sourcePort) === "next";
+  });
+  if (candidates.length !== 1) {
+    throw new Error(`无法安全添加节点：需要唯一一条通向结束节点的 next 连线，当前找到 ${candidates.length} 条`);
+  }
+  return candidates[0];
 }
 
 function serializeGraphPorts(ports: { inputs?: RunnerPort[]; outputs?: RunnerPort[] } = {}) {
@@ -372,6 +432,14 @@ function serializeGraphPorts(ports: { inputs?: RunnerPort[]; outputs?: RunnerPor
     ...(ports.inputs || []).map((port) => ({ id: port.id, type: "input", label: port.label || port.id })),
     ...(ports.outputs || []).map((port) => ({ id: port.id, type: "output", label: port.label || port.id })),
   ];
+}
+
+function declaredNodePort(node: RunnerNode | undefined, type: "input" | "output", desired: unknown) {
+  const portID = String(desired || "").trim();
+  if (!portID || !Array.isArray(node?.ports)) return undefined;
+  return node.ports.some((port) => String(port?.type || "").trim() === type && String(port?.id || "").trim() === portID)
+    ? portID
+    : undefined;
 }
 
 export function addGraphEdge(graph: RunnerGraph = {}, connection: FlowConnection = {}) {
@@ -400,14 +468,36 @@ export function removeGraphEdge(graph: RunnerGraph = {}, edgeId = "") {
   return next;
 }
 
-export function removeGraphNode(graph: RunnerGraph = {}, nodeId = "") {
+export function removeGraphNode(graph: RunnerGraph = {}, nodeId = "", options: RemoveGraphNodeOptions = {}) {
   const targetNodeId = String(nodeId || "").trim();
   if (!targetNodeId) return graph;
   const node = (graph.nodes || []).find((item) => item.id === targetNodeId);
   if (!node || isSystemGraphNode(node)) return graph;
+  const incoming = (graph.edges || []).filter((edge) => edge.target === targetNodeId && edge.source);
+  const outgoing = (graph.edges || []).filter((edge) => edge.source === targetNodeId && edge.target);
   const next = cloneGraph(graph);
   next.nodes = (next.nodes || []).filter((item) => item.id !== targetNodeId);
   next.edges = (next.edges || []).filter((edge) => edge.source !== targetNodeId && edge.target !== targetNodeId);
+  if (options.bridgeSimpleChain && incoming.length === 1 && outgoing.length === 1) {
+    const source = String(incoming[0].source || "");
+    const target = String(outgoing[0].target || "");
+    const sourcePort = String(incoming[0].source_port || incoming[0].sourceHandle || incoming[0].kind || "next");
+    const targetPort = String(outgoing[0].target_port || outgoing[0].targetHandle || "in");
+    const kind = canonicalEdgeKindForPort(incoming[0].kind || sourcePort || "next");
+    const alreadyConnected = (next.edges || []).some((edge) => edge.source === source && edge.target === target && canonicalEdgeKindForPort(edge.kind || edge.source_port || "next") === kind);
+    if (source && target && source !== target && !alreadyConnected) {
+      const bridge: RunnerEdge = {
+        id: uniqueId(`${source}-${target}-${kind}`, next.edges),
+        source,
+        target,
+        kind,
+        source_port: sourcePort,
+        target_port: targetPort,
+      };
+      if (incoming[0].condition !== undefined) bridge.condition = cloneValue(incoming[0].condition);
+      next.edges = [...(next.edges || []), bridge];
+    }
+  }
   return next;
 }
 
@@ -586,25 +676,26 @@ export function insertCatalogActionOnEdge(graph: RunnerGraph = {}, targetEdgeId 
   };
   const inserted = buildCatalogActionNode(next.nodes || [], action, insertPosition);
   const remainingEdges = (next.edges || []).filter((edge) => edge !== original);
-  const originalSourcePort = original.source_port || original.sourceHandle || displayPortForEdgeKind(original.kind || "next");
-  const originalKind = canonicalEdgeKindForPort(original.kind || originalSourcePort || "next");
-  const originalTargetPort = original.target_port || original.targetHandle || "in";
+  const requestedSourcePort = original.source_port || original.sourceHandle || displayPortForEdgeKind(original.kind || "next");
+  const originalKind = canonicalEdgeKindForPort(original.kind || requestedSourcePort || "next");
+  const originalSourcePort = declaredNodePort(sourceNode, "output", requestedSourcePort);
+  const originalTargetPort = declaredNodePort(targetNode, "input", original.target_port || original.targetHandle || "in");
   const firstEdge: RunnerEdge = {
     id: uniqueId(`${original.source}-${inserted.id}-${originalKind}`, remainingEdges),
     source: original.source,
     target: inserted.id,
     kind: originalKind,
-    source_port: originalSourcePort,
     target_port: "in",
   };
+  if (originalSourcePort) firstEdge.source_port = originalSourcePort;
   const secondEdge: RunnerEdge = {
     id: uniqueId(`${inserted.id}-${original.target}-next`, [...remainingEdges, firstEdge]),
     source: inserted.id,
     target: original.target,
     kind: "next",
     source_port: "next",
-    target_port: originalTargetPort,
   };
+  if (originalTargetPort) secondEdge.target_port = originalTargetPort;
   next.nodes = [...(next.nodes || []), inserted];
   next.edges = [...remainingEdges, firstEdge, secondEdge];
   return next;

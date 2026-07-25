@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "aiops.workflow-canvas.fixture/v1",
+  "fixtureId": "G-delete",
+  "kind": "grant",
+  "data": {
+    "grant": {
+      "id": "grant-delete",
+      "state": "active",
+      "riskCeiling": "high",
+      "allowedOperations": [
+        "delete_node"
+      ]
+    }
+  }
+}

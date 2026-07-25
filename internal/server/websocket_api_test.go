@@ -12,6 +12,8 @@ import (
 	"aiops-v2/internal/projection"
 	"aiops-v2/internal/runtimekernel"
 	"golang.org/x/net/websocket"
+	"runner/workflow/edit"
+	"runner/workflow/visual"
 )
 
 type websocketAPITestRuntime struct{}
@@ -103,6 +105,54 @@ func TestAppWebSocket_InitialSnapshotMatchesStateAPI(t *testing.T) {
 	}
 	if wsSnapshot.SessionID != stateSnapshot.SessionID || wsSnapshot.Kind != stateSnapshot.Kind || wsSnapshot.SelectedHostID != stateSnapshot.SelectedHostID {
 		t.Fatalf("ws snapshot = %+v, want same session/kind/host as state %+v", wsSnapshot, stateSnapshot)
+	}
+}
+
+func TestAppWebSocket_InitialSnapshotIncludesWorkflowProjectionBoundBeforeSubscribe(t *testing.T) {
+	httpServer := NewHTTPServer(
+		appui.NewServices(websocketAPITestRuntime{}, runtimekernel.NewSessionManager()),
+		WithAppWebSocketHeartbeat(time.Hour),
+	)
+	key := edit.WorkflowKey{TenantID: "tenant-a", WorkflowID: "workflow-before-subscribe"}
+	wantRevision := edit.Revision{
+		ResourceVersion: "rv-before-subscribe",
+		SemanticHash:    "semantic-before-subscribe",
+		LayoutHash:      "layout-before-subscribe",
+	}
+	httpServer.appSnapshots.OnWorkflowSnapshot(appui.WorkflowAuthoritativeSnapshot{
+		WorkflowKey: key,
+		Revision:    wantRevision,
+		Graph:       visual.Graph{},
+		Sequence:    7,
+		LoadedAt:    time.Now().UTC(),
+	})
+
+	ts := httptest.NewServer(httpServer.Handler())
+	defer ts.Close()
+	conn, err := websocket.Dial("ws"+strings.TrimPrefix(ts.URL, "http")+"/ws", "", "http://example.test/")
+	if err != nil {
+		t.Fatalf("websocket dial error = %v", err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	var initial appui.StateSnapshot
+	if err := websocket.JSON.Receive(conn, &initial); err != nil {
+		t.Fatalf("receive initial snapshot: %v", err)
+	}
+	encoded, err := json.Marshal(initial.Config[appui.WorkflowWorkspaceSnapshotKey])
+	if err != nil {
+		t.Fatalf("marshal workflow projection: %v", err)
+	}
+	var projection appui.WorkflowEventProjection
+	if err := json.Unmarshal(encoded, &projection); err != nil {
+		t.Fatalf("decode workflow projection: %v", err)
+	}
+	if projection.Committed == nil || projection.WorkflowKey == nil {
+		t.Fatalf("initial workflow projection = %+v, want committed workspace", projection)
+	}
+	if *projection.WorkflowKey != key || projection.Committed.Revision != wantRevision || projection.LastSequence != 7 {
+		t.Fatalf("initial workflow projection = %+v, want key=%+v revision=%+v sequence=7", projection, key, wantRevision)
 	}
 }
 
