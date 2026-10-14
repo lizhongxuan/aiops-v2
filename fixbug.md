@@ -1,5 +1,14 @@
 # Fix Bug 记录
 
+## 2026-10-14 02:53 - 并发恢复同一 session 返回不同状态对象
+
+- 修复时间：2026-10-14 02:53（UTC）。
+- Bug 现象：同一 SessionManager 在缓存未命中时并发恢复或创建相同 session ID，调用方可能收到不同的 `*SessionState`，后完成的调用还会覆盖缓存对象，导致同一会话状态分叉。
+- 根因：GetOrCreate/Get 在 repository 查询期间释放锁，读回数据后没有在锁内重新检查缓存；创建路径也没有在发布前选定已有缓存对象。
+- 修复方式：repository hydration 和新建 session 发布前在锁内复查缓存，并复用先完成的对象；新增屏障式 repository 回归覆盖并发恢复、并发创建和 Get hydration。
+- 验证结果：修复前并发 hydration 定向测试失败（返回两个不同指针）；修复后目标测试 race detector 重复 25 次通过，`internal/runtimekernel`、`internal/appui`、`internal/server` 全包测试通过。
+- 风险与后续：只收敛同一 SessionManager 的缓存对象身份；没有运行生产数据库或真实模型环境。
+
 ## 2026-07-21 - Workflow 只读请求被 revision 哈希中的 `df` 误判为主机执行
 
 - 修复时间：2026-07-21

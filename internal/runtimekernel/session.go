@@ -71,6 +71,10 @@ func (sm *SessionManager) GetOrCreate(sessionID string, sessionType SessionType,
 			if persisted, err := repo.GetSession(sessionID); err == nil && persisted != nil {
 				snapshot, snapshotErr := cloneSessionSnapshot(persisted)
 				sm.mu.Lock()
+				if existing, ok := sm.sessions[persisted.ID]; ok {
+					sm.mu.Unlock()
+					return existing
+				}
 				sm.sessions[persisted.ID] = persisted
 				sm.publishSnapshotLocked(persisted.ID, snapshot, snapshotErr)
 				sm.mu.Unlock()
@@ -97,6 +101,10 @@ func (sm *SessionManager) GetOrCreate(sessionID string, sessionType SessionType,
 
 	snapshot, snapshotErr := cloneSessionSnapshot(session)
 	sm.mu.Lock()
+	if existing, ok := sm.sessions[id]; ok {
+		sm.mu.Unlock()
+		return existing
+	}
 	sm.sessions[id] = session
 	sm.publishSnapshotLocked(id, snapshot, snapshotErr)
 	repo := sm.repo
@@ -121,6 +129,10 @@ func (sm *SessionManager) Get(sessionID string) *SessionState {
 		if persisted, err := repo.GetSession(sessionID); err == nil && persisted != nil {
 			snapshot, snapshotErr := cloneSessionSnapshot(persisted)
 			sm.mu.Lock()
+			if existing, ok := sm.sessions[persisted.ID]; ok {
+				sm.mu.Unlock()
+				return existing
+			}
 			sm.sessions[persisted.ID] = persisted
 			sm.publishSnapshotLocked(persisted.ID, snapshot, snapshotErr)
 			sm.mu.Unlock()
