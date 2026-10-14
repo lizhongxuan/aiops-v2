@@ -630,6 +630,15 @@ func (k *RuntimeKernel) RunTurn(ctx context.Context, req TurnRequest) (result Tu
 
 	// Step 1: Get/create session
 	session := k.sessions.GetOrCreate(req.SessionID, req.SessionType, req.Mode)
+	if pendingTurn := session.CurrentTurn; pendingTurn != nil && !pendingTurn.Lifecycle.IsTerminal() && (pendingTurn.ControlledToolTurn != nil ||
+		pendingTurn.ResumeState == TurnResumeStatePendingApproval ||
+		pendingTurn.ResumeState == TurnResumeStatePendingEvidence) {
+		return TurnResult{
+			SessionType: req.SessionType, Mode: req.Mode, SessionID: session.ID, TurnID: pendingTurn.ID,
+			ClientTurnID: req.ClientTurnID, ClientMessageID: req.ClientMessageID,
+			Status: "blocked", Error: "a pending approval or evidence request must be resolved before this session accepts another turn",
+		}, nil
+	}
 	if activeTurn, ok := runningRegularTurnForPendingInput(session, turnID); ok {
 		pending := appendPendingInputToActiveTurn(session, activeTurn, req)
 		k.persistTurnSnapshot(session, activeTurn)

@@ -144,6 +144,80 @@ func TestControlledToolTurnApprovedExecutesExactlyOnceAndReplaysResult(t *testin
 	}
 }
 
+func TestRunTurnDoesNotReplacePendingControlledToolApproval(t *testing.T) {
+	fixture := newControlledToolFixture(t, nil, nil)
+	pending, err := fixture.kernel.BeginControlledToolTurn(context.Background(), fixture.request)
+	if err != nil || pending.Approval == nil {
+		t.Fatalf("BeginControlledToolTurn() = %#v, %v", pending, err)
+	}
+
+	result, err := fixture.kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: fixture.request.Turn.SessionID, SessionType: SessionTypeHost,
+		Mode: ModeExecute, TurnID: "turn-duplicate-submit", HostID: fixture.request.Turn.HostID,
+		Input: "repeat the same workflow change",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "blocked" || result.TurnID != pending.TurnID {
+		t.Fatalf("RunTurn() = %#v, want blocked on existing turn %q", result, pending.TurnID)
+	}
+
+	state := fixture.kernel.sessions.Get(pending.SessionID)
+	if state == nil || state.CurrentTurn == nil || state.CurrentTurn.ID != pending.TurnID {
+		t.Fatalf("current turn = %#v, want original pending turn %q", state, pending.TurnID)
+	}
+	if len(state.PendingApprovals) != 1 || state.PendingApprovals[0].ID != pending.Approval.ApprovalID {
+		t.Fatalf("pending approvals = %#v, want original approval %q", state.PendingApprovals, pending.Approval.ApprovalID)
+	}
+	if len(state.Messages) != 0 || len(state.CurrentTurn.PendingInputs) != 0 {
+		t.Fatalf("duplicate request was recorded: messages=%#v pendingInputs=%#v", state.Messages, state.CurrentTurn.PendingInputs)
+	}
+	if fixture.executed.Load() != 0 {
+		t.Fatalf("execution count = %d, want no mutation before approval", fixture.executed.Load())
+	}
+}
+
+func TestRunTurnDoesNotReplacePendingApproval(t *testing.T) {
+	kernel := newTestKernel(nil)
+	now := time.Now().UTC()
+	session := kernel.sessions.GetOrCreate("session-pending-approval", SessionTypeHost, ModeChat)
+	approval := PendingApproval{
+		ID: "approval-pending", SessionID: session.ID, TurnID: "turn-pending",
+		ToolCallID: "call-pending", ToolName: "synthetic.read", Status: "pending",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	session.CurrentTurn = &TurnSnapshot{
+		ID: "turn-pending", SessionID: session.ID, SessionType: session.Type, Mode: session.Mode,
+		Lifecycle: TurnLifecycleSuspended, ResumeState: TurnResumeStatePendingApproval,
+		StartedAt: now, UpdatedAt: now, PendingApprovals: []PendingApproval{approval},
+	}
+	session.PendingApprovals = []PendingApproval{approval}
+	kernel.sessions.Update(session)
+
+	result, err := kernel.RunTurn(context.Background(), TurnRequest{
+		SessionID: session.ID, SessionType: session.Type, Mode: session.Mode,
+		TurnID: "turn-duplicate-submit", Input: "repeat the pending operation",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.Status != "blocked" || result.TurnID != session.CurrentTurn.ID {
+		t.Fatalf("RunTurn() = %#v, want blocked on existing turn %q", result, session.CurrentTurn.ID)
+	}
+
+	state := kernel.sessions.Get(session.ID)
+	if state == nil || state.CurrentTurn == nil || state.CurrentTurn.ID != "turn-pending" {
+		t.Fatalf("current turn = %#v, want original pending turn", state)
+	}
+	if len(state.PendingApprovals) != 1 || state.PendingApprovals[0].ID != approval.ID {
+		t.Fatalf("pending approvals = %#v, want approval %q", state.PendingApprovals, approval.ID)
+	}
+	if len(state.Messages) != 0 || len(state.CurrentTurn.PendingInputs) != 0 {
+		t.Fatalf("duplicate request was recorded: messages=%#v pendingInputs=%#v", state.Messages, state.CurrentTurn.PendingInputs)
+	}
+}
+
 func TestControlledToolTurnTypedToolFailureIsTerminalErrorAndReplaysWithoutExecution(t *testing.T) {
 	fixture := newControlledToolFixture(t, nil, nil)
 	*fixture.result = tooling.ToolResult{
