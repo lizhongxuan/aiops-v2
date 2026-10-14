@@ -1,5 +1,14 @@
 # Fix Bug 记录
 
+## 2026-10-14 03:56 - 待审批 Runner 操作可被新 turn 覆盖，确认后界面未显示处理中
+
+- 修复时间：2026-10-14 03:56 UTC
+- Bug 现象：已有非终态 pending approval/evidence 的会话若再收到普通 `RunTurn`，会继续 admission 并可能替换当前 turn；Runner Candidate Apply 在用户确认后也没有对所有 approval 来源一致显示等待状态，重复确认可发出多次决策，焦点可能落在已禁用按钮上。
+- 根因：`RuntimeKernel.RunTurn` 只把 running regular turn 视为可追加输入，没有先拦截挂起的 controlled approval/evidence turn；Candidate Apply 的 artifact 分支在更新 pending 状态前提前返回，只有 server-controlled 分支做了防重复。
+- 修复方式：`runtime_kernel.go` 在新 turn admission 前阻止覆盖非终态 controlled/pending approval/pending evidence 状态并返回原 turn ID；Runner Apply 统一 artifact/server-controlled decision 的身份去重和待处理状态，等待权威 transport 消费/移除 approval 后才恢复，pending 状态提供可访问提示和焦点目标。
+- 验证结果：回归用例覆盖两种 pending 状态，保证原 turn/approval 未被覆盖、无重复消息且未执行 mutation；`go test ./internal/runtimekernel ./internal/appui ./internal/server -count=1` 通过，Runner 两个 ActionBar Vitest `36/36`、`npm run typecheck`、Chromium Apply pending Playwright `1/1` 通过；snapshot 已目检。完整命令与环境限制见实施清单第 7 节。
+- 风险与后续：跨进程/多实例 admission 未在本次验证。Runner UI 仍依赖服务端 transport 权威 approval 状态；本次截图只验证 Chromium 的该 fixture。
+
 ## 2026-07-21 - Workflow 只读请求被 revision 哈希中的 `df` 误判为主机执行
 
 - 修复时间：2026-07-21
