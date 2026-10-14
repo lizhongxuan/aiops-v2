@@ -129,7 +129,7 @@ describe("WorkflowCandidateWorkspaceActionBar", () => {
     });
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(owner.hasAttribute("inert")).toBe(false);
-    expect(document.activeElement).toBe(container.querySelector('[data-testid="workflow-candidate-apply"]'));
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="workflow-candidate-apply-status"]'));
 
     await act(async () => {
       ([...container.querySelectorAll("button")].find((button) => button.textContent?.includes("放弃修改")) as HTMLButtonElement).click();
@@ -438,8 +438,10 @@ describe("WorkflowCandidateWorkspaceActionBar", () => {
     expect(apply.disabled).toBe(false);
     await act(async () => apply.click());
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    const confirmButton = document.body.querySelector('[data-testid="workflow-candidate-confirm-apply"]') as HTMLButtonElement;
     await act(async () => {
-      (document.body.querySelector('[data-testid="workflow-candidate-confirm-apply"]') as HTMLButtonElement).click();
+      confirmButton.click();
+      confirmButton.click();
     });
 
     expect(mocks.sendTransportCommand).toHaveBeenCalledTimes(1);
@@ -451,6 +453,23 @@ describe("WorkflowCandidateWorkspaceActionBar", () => {
       decision: "accept",
     });
     expect(artifactConfirmation).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+    expect(container.textContent).toContain("确认已提交，正在等待服务端审批结果");
+    const applyWhilePending = container.querySelector('[data-testid="workflow-candidate-apply"]') as HTMLButtonElement;
+    expect(applyWhilePending.disabled).toBe(true);
+    expect(applyWhilePending.textContent).toContain("审批中");
+    await act(async () => applyWhilePending.click());
+    expect(mocks.sendTransportCommand).toHaveBeenCalledTimes(1);
+
+    mocks.state = {
+      ...mocks.state,
+      pendingApprovals: {},
+      runtimeLiveness: { ...mocks.state.runtimeLiveness!, pendingApprovals: {} },
+    };
+    mocks.workspace = { ...mocks.workspace, candidateApplyApproval: undefined };
+    await render();
+    expect(container.textContent).not.toContain("审批中");
+    expect((container.querySelector('[data-testid="workflow-candidate-apply"]') as HTMLButtonElement).disabled).toBe(false);
     window.removeEventListener(WORKFLOW_CANDIDATE_APPLY_CONFIRMED_EVENT, artifactConfirmation);
   });
 

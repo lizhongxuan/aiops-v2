@@ -1,0 +1,565 @@
+diff --git a/packages/sdk/protocol/README.md b/packages/sdk/protocol/README.md
+index 89bbe15040..728a740db6 100644
+--- a/packages/sdk/protocol/README.md
++++ b/packages/sdk/protocol/README.md
+@@ -52,0 +53,6 @@ Both wire ends share one method set: six client-to-server requests and four serv
++### Opt-in AIOps host bridge
++
++`initialize` can negotiate the private `aiops-dsh-bridge.v1` extension and receive an exact host-supplied `aiopsTools` surface. The server registers only proxy tools for those schemas and restricts each bridged Agent to that same name set. A proxy call is a server-to-client JSON-RPC request (`aiops.tool.dispatch`); the host must send the result only after its own dispatcher, policy, approval, and cancellation path settles. The extension does not grant the model or DSH process authority to execute a host tool.
++
++The extension adds `turnId` to `session/prompt` and committed `session.event` notifications, plus `session/cancel` for the exact active Go turn, `session/replay` after a durable event cursor, transient `assistant.stream` frames, and `aiops.tool.cancel` for an aborted proxy request. A prompt receipt and `session.status: idle` remain non-terminal signals. Replay contains durable Session events only; stream frames are not durable. The host must persist event sequence and attribution atomically, deduplicate by session and sequence, and recover a tail before deciding the DSH turn settled. After a process restart, a configured session-persistence backend lets the server resume the stored Session; an interrupted Agent turn is repaired by the Agent runtime, and the host must never infer that a mutation should be retried from replay.
++
+@@ -117,3 +123,3 @@ These limits define what the protocol does not cover or promise. They are curren
+-- **No protocol-version negotiation** — the handshake carries only `serverInfo.version` (`0.0.1`, unvalidated by clients); pre-release stance, no compatibility promise.
+-- **No cancel or session-close methods** — a client abandons a turn by closing the runtime process; see the [JSON-RPC serving plugin](../server/README.md).
+-- **Server→client requests are a dead capability** — the transport supports them, but the server never sends one; the Python SDK's responder surface exists for future approval flows.
++- **The stock SDK protocol has no general protocol-version negotiation or cancel method** — the AIOps extension is separately opted into by exact version and does not add a general session-close operation.
++- **The opt-in host bridge is not part of the stock TypeScript or Python SDK surface** — a host must implement its tool dispatcher and persist event cursors; an unrecognized or missing extension capability must fail initialization.
++- **The extension does not provide business-level exactly-once execution** — Go must keep its idempotency ledger and treat ambiguous mutation outcomes as pending verification; replay never authorizes automatic execution.
+diff --git a/packages/sdk/protocol/src/transport.ts b/packages/sdk/protocol/src/transport.ts
+index 36574f46bf..c38e9890ae 100644
+--- a/packages/sdk/protocol/src/transport.ts
++++ b/packages/sdk/protocol/src/transport.ts
+@@ -42 +42 @@ export interface JsonRpcTransportPeer {
+-  request(method: string, params: object): Promise<unknown>
++  request(method: string, params: object, signal?: AbortSignal): Promise<unknown>
+diff --git a/packages/sdk/protocol/src/types.ts b/packages/sdk/protocol/src/types.ts
+index 9c2fd6335d..00c480ff58 100644
+--- a/packages/sdk/protocol/src/types.ts
++++ b/packages/sdk/protocol/src/types.ts
+@@ -11 +11 @@
+-import type { ContentBlock, ReasoningEffortId } from '@deepseek-ai/dsh-llm'
++import type { ContentBlock, ReasoningEffortId, ToolSchema } from '@deepseek-ai/dsh-llm'
+@@ -26,0 +27,4 @@ export interface InitializeParams {
++  /** Optional, explicitly negotiated AIOps host bridge. Omitted for the stock SDK protocol. */
++  aiopsBridgeVersion?: string
++  /** Exact model-visible tool surface provided by the trusted Go host. */
++  aiopsTools?: AiopsToolSchema[]
+@@ -32,0 +37,3 @@ export interface InitializeResult {
++  /** Present only when the AIOps host bridge was explicitly negotiated. */
++  aiopsBridgeVersion?: string
++  aiopsCapabilities?: string[]
+@@ -34,0 +42,3 @@ export interface InitializeResult {
++/** One tool schema supplied from Go's assembled and policy-filtered tool surface. */
++export type AiopsToolSchema = ToolSchema
++
+@@ -38,0 +49,2 @@ export interface SessionPromptParams {
++  /** Go-owned turn identity; required by the AIOps bridge and omitted by stock SDK clients. */
++  turnId?: string
+@@ -66,0 +79,18 @@ export interface SessionWaitParams {
++/** Cancel exactly the currently active Go-mapped turn for one SDK session. */
++export interface SessionCancelParams {
++  sessionId: string
++  turnId: string
++}
++
++/** Recover durable session events after a Go-owned sequence cursor. */
++export interface SessionReplayParams {
++  sessionId: string
++  afterSeq: number
++}
++
++/** Durable replay page. Assistant stream frames are transient and are not replayed here. */
++export interface SessionReplayResult {
++  sessionId: string
++  events: SessionEvent[]
++}
++
+@@ -91,0 +122,2 @@ export interface SessionEventNotification {
++  /** Go-owned turn identity captured when this event was committed. */
++  turnId?: string
+@@ -95,0 +128,29 @@ export interface SessionEventNotification {
++/** Cursorless, non-durable assistant stream frame for immediate UI rendering. */
++export interface AssistantStreamNotification {
++  sessionId: string
++  turnId: string
++  frame: Record<string, unknown>
++}
++
++/** Server-to-client request emitted by a registered AIOps proxy tool. */
++export interface AiopsToolDispatchRequest {
++  sessionId: string
++  turnId: string
++  callId: string
++  toolName: string
++  arguments: unknown
++}
++
++/** Result returned only after Go policy, approval, and ToolDispatcher handling settles. */
++export interface AiopsToolDispatchResult {
++  content: ContentBlock[]
++  isError: boolean
++}
++
++/** Cancellation notice for an in-flight Go tool dispatch. */
++export interface AiopsToolCancelNotification {
++  sessionId: string
++  turnId: string
++  callId: string
++}
++
+@@ -133,0 +195,2 @@ export interface HarnessSdkNotificationMap {
++  'assistant.stream': AssistantStreamNotification
++  'aiops.tool.cancel': AiopsToolCancelNotification
+@@ -142,0 +206,2 @@ export interface HarnessSdkRequestMap {
++  'session/cancel': { params: SessionCancelParams; result: { accepted: true } }
++  'session/replay': { params: SessionReplayParams; result: SessionReplayResult }
+diff --git a/packages/sdk/server/README.md b/packages/sdk/server/README.md
+index cc5061f3e4..4bf1592d63 100644
+--- a/packages/sdk/server/README.md
++++ b/packages/sdk/server/README.md
+@@ -35,0 +36,2 @@ The plugin creates one agent per `sessionId` on first use. A registered model ad
++With `aiopsBridgeVersion: "aiops-dsh-bridge.v1"`, initialization also requires a non-empty host tool surface. The server registers proxy definitions for those exact schemas, restricts each Agent to that set, and routes every model tool call back to the host using `aiops.tool.dispatch`. The host owns the only dispatcher and must retain its target binding, permission snapshot, resource locks, ActionToken, durable approval, and idempotency checks. Never compose an additional direct-execution tool surface into a bridged Agent. The extension is opt-in; stock SDK clients and sessions retain their existing protocol.
++
+@@ -53,0 +56,2 @@ Stdout carries only JSON-RPC frames, so clients can parse every byte; diagnostic
++For a negotiated AIOps session, `session/prompt` requires a host-owned `turnId`; overlapping prompts for that session are rejected. The server tags committed events and assistant stream frames while that binding is active. `session/cancel` checks the exact `(sessionId, turnId)` pair and `session/replay` returns durable Session events after the requested sequence. If a session-persistence backend is configured, the server resumes an existing stored Session before creating a new one; only a typed “not found” result falls back to first creation. The host still needs to replay the durable tail and must not treat `session/wait` or `session.status: idle` as the business terminal.
++
+@@ -128 +132 @@ These limits define when the plugin needs special operational care. They are cur
+-- **The wire has no per-session close or prompt-cancel method** — SDK-created agents remain live until process shutdown.
++- **The stock wire has no per-session close or prompt-cancel method** — the opt-in AIOps extension adds exact-turn cancel but not a general session-close method.
+@@ -129,0 +134 @@ These limits define when the plugin needs special operational care. They are cur
++- **AIOps restart recovery depends on configured session persistence and the host's durable cursor** — the server can resume the DSH log, but only the host owns Go approval, ActionToken, and mutation recovery state.
+diff --git a/packages/sdk/server/package.json b/packages/sdk/server/package.json
+index b3cffc809c..b316ecd823 100644
+--- a/packages/sdk/server/package.json
++++ b/packages/sdk/server/package.json
+@@ -41,0 +42 @@
++    "@deepseek-ai/dsh-session-persistence": "workspace:*",
+@@ -42,0 +44 @@
++    "@deepseek-ai/dsh-tools": "workspace:*",
+@@ -56,0 +59 @@
++    "@deepseek-ai/dsh-session-persistence": "workspace:*",
+@@ -59,0 +63 @@
++    "@deepseek-ai/dsh-tools": "workspace:*",
+diff --git a/packages/sdk/server/src/index.ts b/packages/sdk/server/src/index.ts
+index 6fdd9398a9..0d56218e1a 100644
+--- a/packages/sdk/server/src/index.ts
++++ b/packages/sdk/server/src/index.ts
+@@ -21 +21 @@ export const name = 'sdk-jsonrpc-server'
+-export const inject = ['agents', 'workingDirectory']
++export const inject = ['agents', 'workingDirectory', 'tools']
+diff --git a/packages/sdk/server/src/server.ts b/packages/sdk/server/src/server.ts
+index ab5084ffb7..18aedd5128 100644
+--- a/packages/sdk/server/src/server.ts
++++ b/packages/sdk/server/src/server.ts
+@@ -11,0 +12 @@ import type { Agent, AgentHandle } from '@deepseek-ai/dsh-agent'
++import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
+@@ -15,0 +17 @@ import type { SessionId, SessionLogOffset } from '@deepseek-ai/dsh-session'
++import { SessionPersistenceNotFoundError } from '@deepseek-ai/dsh-session-persistence'
+@@ -22,0 +25 @@ import type {
++  AiopsToolSchema,
+@@ -23,0 +27 @@ import type {
++  SessionCancelParams,
+@@ -26,0 +31,2 @@ import type {
++  SessionReplayParams,
++  SessionReplayResult,
+@@ -37,0 +44 @@ interface SessionRecord {
++  activeTurnId: string | undefined
+@@ -89,0 +97,2 @@ export class HarnessSdkJsonRpcServer {
++  private aiopsBridgeVersion: string | undefined
++  private aiopsToolNames: string[] = []
+@@ -103,0 +113 @@ export class HarnessSdkJsonRpcServer {
++      const turnId = record?.activeTurnId
+@@ -108 +118,5 @@ export class HarnessSdkJsonRpcServer {
+-      const payload: SessionEventNotification = { sessionId: String(session.id), event }
++      const payload: SessionEventNotification = {
++        sessionId: String(session.id),
++        ...turnId === undefined ? {} : { turnId },
++        event,
++      }
+@@ -109,0 +124,10 @@ export class HarnessSdkJsonRpcServer {
++      if (event.type === 'turn/end' && record?.activeTurnId === turnId) record.activeTurnId = undefined
++    }))
++    this.disposers.push(ctx.on('agent/assistant-stream', ({ agent, frame }) => {
++      const record = this.sessions.get(agent.session.id)
++      if (record?.activeTurnId === undefined) return
++      this.transport.notify('assistant.stream', {
++        sessionId: String(agent.session.id),
++        turnId: record.activeTurnId,
++        frame,
++      })
+@@ -180,0 +205,7 @@ export class HarnessSdkJsonRpcServer {
++    if (params.aiopsBridgeVersion !== undefined || params.aiopsTools !== undefined) {
++      if (params.aiopsBridgeVersion !== 'aiops-dsh-bridge.v1' || !Array.isArray(params.aiopsTools) || params.aiopsTools.length === 0) {
++        throw new TypeError('AIOps bridge initialization requires version aiops-dsh-bridge.v1 and a non-empty tool surface')
++      }
++      this.installAiopsTools(params.aiopsTools)
++      this.aiopsBridgeVersion = params.aiopsBridgeVersion
++    }
+@@ -187 +218,65 @@ export class HarnessSdkJsonRpcServer {
+-    return { serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' } }
++    return {
++      serverInfo: { name: 'deepseek-harness-sdk-runtime', version: '0.0.1' },
++      ...(this.aiopsBridgeVersion === undefined ? {} : {
++        aiopsBridgeVersion: this.aiopsBridgeVersion,
++        aiopsCapabilities: ['session/cancel', 'session/replay', 'assistant.stream', 'aiops.tool.dispatch'],
++      }),
++    }
++  }
++
++  private installAiopsTools(schemas: AiopsToolSchema[]): void {
++    const names = new Set<string>()
++    const installed: (() => void)[] = []
++    try {
++      for (const schema of schemas) {
++        if (!schema || typeof schema.name !== 'string' || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(schema.name)
++          || typeof schema.description !== 'string' || schema.description.trim().length === 0
++          || !schema.parameters || typeof schema.parameters !== 'object' || Array.isArray(schema.parameters)
++          || names.has(schema.name) || this.ctx.tools.get(schema.name) !== undefined) {
++          throw new TypeError('AIOps tool surface contains an invalid, duplicate, or conflicting tool schema')
++        }
++        names.add(schema.name)
++        const definition: ToolDefinition = {
++          name: schema.name,
++          description: schema.description,
++          parameters: schema.parameters,
++          output: {
++            schema: { type: 'array', items: { type: 'object', additionalProperties: true } },
++            render: (_args, value): ContentBlock[] => value as ContentBlock[],
++          },
++          execute: async (args, exec) => {
++            const agent = exec.agent
++            if (agent === undefined) throw new Error('AIOps tool dispatch requires its owning Agent')
++            const sessionId = String(agent.session.id)
++            const record = this.sessions.get(sessionId)
++            const turnId = record?.activeTurnId
++            if (turnId === undefined) throw new Error('AIOps tool dispatch has no active Go turn binding')
++            const callId = String(exec.callId)
++            const onAbort = (): void => this.transport.notify('aiops.tool.cancel', { sessionId, turnId, callId })
++            exec.signal.addEventListener('abort', onAbort, { once: true })
++            try {
++              const result = await this.transport.request('aiops.tool.dispatch', {
++                sessionId, turnId, callId, toolName: schema.name, arguments: args,
++              }, exec.signal) as { content?: unknown; isError?: unknown }
++              if (!Array.isArray(result?.content) || !result.content.every(block => (
++                block !== null && typeof block === 'object' && !Array.isArray(block) && typeof block.type === 'string'
++              )) || typeof result.isError !== 'boolean') {
++                throw new TypeError('AIOps tool dispatcher returned an invalid result')
++              }
++              if (result.isError === true) {
++                throw new Error('Go ToolDispatcher rejected the tool call')
++              }
++              return result.content
++            } finally {
++              exec.signal.removeEventListener('abort', onAbort)
++            }
++          },
++        }
++        installed.push(this.ctx.tools.register(definition))
++      }
++    } catch (error) {
++      for (const dispose of installed.reverse()) dispose()
++      throw error
++    }
++    this.aiopsToolNames = [...names]
++    this.disposers.push(...installed)
+@@ -198,14 +293,21 @@ export class HarnessSdkJsonRpcServer {
+-    // An agent-loop-only reload disposes the loop's agents while this record
+-    // survives; a retained agent accepts followup() silently, so validate the
+-    // record against the live registry before delivery.
+-    this.assertLiveAgent(rec, params.sessionId)
+-    const content = await durablePromptContent(this.ctx, params.contentBlocks)
+-    // Attachment admission crosses an async boundary where shutdown or an
+-    // agent-loop reload may detach the retained handle.
+-    this.assertLiveAgent(rec, params.sessionId)
+-    const message = createUserMessage({
+-      content,
+-      source: { kind: 'user' },
+-    })
+-    rec.handle.agent.followup(message)
+-    return { messageId: message.id }
++    if (this.aiopsBridgeVersion !== undefined
++      && (typeof params.turnId !== 'string' || params.turnId.length === 0 || rec.activeTurnId !== undefined)) {
++      throw new TypeError('AIOps session/prompt requires a unique active Go turn binding')
++    }
++    if (this.aiopsBridgeVersion !== undefined) rec.activeTurnId = params.turnId
++    try {
++      // An agent-loop-only reload disposes the loop's agents while this record
++      // survives; a retained agent accepts followup() silently, so validate the
++      // record against the live registry before delivery.
++      this.assertLiveAgent(rec, params.sessionId)
++      const content = await durablePromptContent(this.ctx, params.contentBlocks)
++      // Attachment admission crosses an async boundary where shutdown or an
++      // agent-loop reload may detach the retained handle.
++      this.assertLiveAgent(rec, params.sessionId)
++      const message = createUserMessage({ content, source: { kind: 'user' } })
++      rec.handle.agent.followup(message)
++      return { messageId: message.id }
++    } catch (error) {
++      if (rec.activeTurnId === params.turnId) rec.activeTurnId = undefined
++      throw error
++    }
+@@ -239,0 +342,20 @@ export class HarnessSdkJsonRpcServer {
++  async cancel(params: SessionCancelParams): Promise<{ accepted: true }> {
++    if (this.aiopsBridgeVersion === undefined) throw new Error('session/cancel requires the negotiated AIOps bridge')
++    const rec = this.sessions.get(params.sessionId)
++    if (rec === undefined || rec.activeTurnId !== params.turnId) throw new Error('session/cancel target does not match the active Go turn')
++    this.assertLiveAgent(rec, params.sessionId)
++    rec.handle.agent.cancel({ kind: 'user' }, { keepInbox: true })
++    return { accepted: true }
++  }
++
++  async replay(params: SessionReplayParams): Promise<SessionReplayResult> {
++    if (this.aiopsBridgeVersion === undefined) throw new Error('session/replay requires the negotiated AIOps bridge')
++    if (!Number.isSafeInteger(params.afterSeq) || params.afterSeq < -1) throw new TypeError('session/replay afterSeq is invalid')
++    const rec = await this.getOrCreateSession(params.sessionId)
++    this.assertLiveAgent(rec, params.sessionId)
++    return {
++      sessionId: params.sessionId,
++      events: rec.handle.agent.session.snapshotEvents().filter(event => Number(event.seq) > params.afterSeq),
++    }
++  }
++
+@@ -334,0 +457,16 @@ export class HarnessSdkJsonRpcServer {
++      case 'session/cancel': {
++        const sessionId = params?.sessionId
++        const turnId = params?.turnId
++        if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof turnId !== 'string' || turnId.length === 0) {
++          throw new TypeError('session/cancel requires non-empty sessionId and turnId strings')
++        }
++        return this.cancel({ sessionId, turnId })
++      }
++      case 'session/replay': {
++        const sessionId = params?.sessionId
++        const afterSeq = params?.afterSeq
++        if (typeof sessionId !== 'string' || sessionId.length === 0 || typeof afterSeq !== 'number') {
++          throw new TypeError('session/replay requires a sessionId string and numeric afterSeq')
++        }
++        return this.replay({ sessionId, afterSeq })
++      }
+@@ -373,11 +511,34 @@ export class HarnessSdkJsonRpcServer {
+-    const handle = await this.ctx.agents.create({
+-      sessionId: brandString<SessionId>(sessionId),
+-      meta: { cwd: this.cwd },
+-      agentOptions: {
+-        provider: this.provider,
+-        model: this.model,
+-        ...this.reasoningEffort === undefined ? {} : { reasoningEffort: this.reasoningEffort },
+-        ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
+-      },
+-    })
+-    const rec: SessionRecord = { handle, failure: undefined }
++    const agentOptions = {
++      provider: this.provider,
++      model: this.model,
++      ...this.reasoningEffort === undefined ? {} : { reasoningEffort: this.reasoningEffort },
++      ...this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens },
++    }
++    let handle: AgentHandle
++    const persistence = this.ctx.get('sessionPersistence')
++    if (persistence !== undefined) {
++      try {
++        handle = await this.ctx.agents.resume({
++          resumeSessionId: brandString<SessionId>(sessionId),
++          agentOptions,
++        })
++      } catch (error: unknown) {
++        // Only an absent persisted log means this is the first use of a
++        // session id. Corruption, ownership conflicts, and backend failures
++        // must not silently replace the durable session with an empty one.
++        if (!(error instanceof SessionPersistenceNotFoundError)) throw error
++        handle = await this.ctx.agents.create({
++          sessionId: brandString<SessionId>(sessionId),
++          meta: { cwd: this.cwd },
++          agentOptions,
++        })
++      }
++    } else {
++      handle = await this.ctx.agents.create({
++        sessionId: brandString<SessionId>(sessionId),
++        meta: { cwd: this.cwd },
++        agentOptions,
++      })
++    }
++    const rec: SessionRecord = { handle, failure: undefined, activeTurnId: undefined }
++    if (this.aiopsBridgeVersion !== undefined) handle.agent.ctx.tools.restrict({ allow: this.aiopsToolNames })
+diff --git a/packages/sdk/server/tests/server.spec.ts b/packages/sdk/server/tests/server.spec.ts
+index 4eee2a2d82..5631e68c7b 100644
+--- a/packages/sdk/server/tests/server.spec.ts
++++ b/packages/sdk/server/tests/server.spec.ts
+@@ -17 +17 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
+-import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
++import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+@@ -27,0 +28,2 @@ class FakeTransport implements JsonRpcTransportPeer {
++  requests: { method: string; params: object; signal?: AbortSignal }[] = []
++  requestHandler?: (method: string, params: object, signal?: AbortSignal) => Promise<unknown>
+@@ -29 +31,3 @@ class FakeTransport implements JsonRpcTransportPeer {
+-  async request(method: string, params: object): Promise<unknown> {
++  async request(method: string, params: object, signal?: AbortSignal): Promise<unknown> {
++    this.requests.push({ method, params, signal })
++    if (this.requestHandler !== undefined) return this.requestHandler(method, params, signal)
+@@ -132,0 +137,162 @@ describe('HarnessSdkJsonRpcServer', () => {
++  it('uses a negotiated Go-only tool surface and keeps pending approval, stream, and replay separate', async () => {
++    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-aiops-'))
++    const ctx = await makeHarness(storageDir)
++    const approval = Promise.withResolvers<unknown>()
++    const transport = new FakeTransport()
++    transport.requestHandler = async (method, params) => {
++      expect(method).toBe('aiops.tool.dispatch')
++      expect(params).toMatchObject({
++        sessionId: 'bridge-session', turnId: 'go-turn-1', callId: 'call-1',
++        toolName: 'go_read', arguments: { target: 'service-a' },
++      })
++      return approval.promise
++    }
++    ctx.llm.registerAdapter(['mock'], new MockAdapter([
++      toolCallResponse('call-1', 'go_read', { target: 'service-a' }),
++      textResponse('read complete'),
++    ]))
++    ctx.tools.register({
++      name: 'unsafe_shell',
++      description: 'must not reach a bridged agent',
++      parameters: { type: 'object', properties: {}, additionalProperties: false },
++      output: { schema: { type: 'null' }, render: () => [] },
++      execute: async () => null,
++    })
++    const server = new HarnessSdkJsonRpcServer(ctx, transport)
++    try {
++      const initialized = await server.initialize({
++        cwd: storageDir,
++        provider: 'mock',
++        model: 'mock',
++        aiopsBridgeVersion: 'aiops-dsh-bridge.v1',
++        aiopsTools: [{
++          name: 'go_read',
++          description: 'Read an authorized AIOps resource through Go.',
++          parameters: {
++            type: 'object',
++            properties: { target: { type: 'string' } },
++            required: ['target'],
++            additionalProperties: false,
++          },
++        }],
++      })
++      expect(initialized.aiopsBridgeVersion).toBe('aiops-dsh-bridge.v1')
++      expect(initialized.aiopsCapabilities).toEqual(expect.arrayContaining(['session/cancel', 'session/replay', 'assistant.stream', 'aiops.tool.dispatch']))
++      await server.prompt({
++        sessionId: 'bridge-session',
++        turnId: 'go-turn-1',
++        contentBlocks: [{ type: 'text', text: 'read the service' }],
++      })
++      const agent = ctx.agents.get(SessionId('bridge-session'))!
++      expect(agent.ctx.tools.schemas().map(tool => tool.name)).toEqual(['go_read'])
++      await vi.waitFor(() => expect(transport.requests).toHaveLength(1))
++      expect(agent.session.snapshotEvents().some(event => event.type === 'tool/result')).toBe(false)
++      let waitSettled = false
++      const waiting = server.wait({ sessionId: 'bridge-session' }).then(() => { waitSettled = true })
++      await Promise.resolve()
++      expect(waitSettled).toBe(false)
++      approval.resolve({ content: [{ type: 'text', text: 'Go-approved result' }], isError: false })
++      await waiting
++      expect(transport.notifications.some(notification => notification.method === 'assistant.stream')).toBe(true)
++      expect(transport.notifications.filter(notification => notification.method === 'session.event'
++        && notification.params?.turnId === 'go-turn-1')).not.toHaveLength(0)
++      const replay = await server.replay({ sessionId: 'bridge-session', afterSeq: -1 })
++      expect(replay.events.some(event => event.type === 'tool/result')).toBe(true)
++      expect(replay.events.some(event => event.type === 'turn/end')).toBe(true)
++      await server.shutdown()
++    } finally {
++      await server.shutdown()
++      await ctx.fiber.dispose()
++      await rm(storageDir, { recursive: true, force: true })
++    }
++  })
++
++  it('cancels only the matching Go-mapped turn and signals its outstanding Go tool request', async () => {
++    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-aiops-cancel-'))
++    const ctx = await makeHarness(storageDir)
++    const transport = new FakeTransport()
++    transport.requestHandler = (_method, _params, signal) => new Promise((_resolve, reject) => {
++      if (signal?.aborted) reject(new Error('aborted'))
++      else signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
++    })
++    ctx.llm.registerAdapter(['mock'], new MockAdapter([toolCallResponse('call-cancel', 'go_read', {})]))
++    const server = new HarnessSdkJsonRpcServer(ctx, transport)
++    try {
++      await server.initialize({
++        cwd: storageDir,
++        provider: 'mock',
++        model: 'mock',
++        aiopsBridgeVersion: 'aiops-dsh-bridge.v1',
++        aiopsTools: [{
++          name: 'go_read',
++          description: 'Read through Go.',
++          parameters: { type: 'object', properties: {}, additionalProperties: false },
++        }],
++      })
++      await server.prompt({ sessionId: 'bridge-cancel', turnId: 'go-turn-cancel', contentBlocks: [{ type: 'text', text: 'read' }] })
++      await vi.waitFor(() => expect(transport.requests).toHaveLength(1))
++      await expect(server.cancel({ sessionId: 'bridge-cancel', turnId: 'wrong-turn' })).rejects.toThrow('does not match')
++      await expect(server.cancel({ sessionId: 'bridge-cancel', turnId: 'go-turn-cancel' })).resolves.toEqual({ accepted: true })
++      await ctx.agents.get(SessionId('bridge-cancel'))!.whenIdle()
++      expect(transport.notifications).toContainEqual({
++        method: 'aiops.tool.cancel',
++        params: { sessionId: 'bridge-cancel', turnId: 'go-turn-cancel', callId: 'call-cancel' },
++      })
++      await server.shutdown()
++    } finally {
++      await server.shutdown()
++      await ctx.fiber.dispose()
++      await rm(storageDir, { recursive: true, force: true })
++    }
++  })
++
++  it('restores the persisted DSH session and replays its durable event tail after server restart', async () => {
++    const storageDir = await mkdtemp(join(tmpdir(), 'dsh-jsonrpc-aiops-replay-'))
++    const firstCtx = await makeHarness(storageDir)
++    firstCtx.llm.registerAdapter(['mock'], new MockAdapter([textResponse('durable answer')]))
++    const firstServer = new HarnessSdkJsonRpcServer(firstCtx, new FakeTransport())
++    let firstSeqs: number[] = []
++    const bridgeParams = {
++      cwd: storageDir,
++      provider: 'mock',
++      model: 'mock',
++      aiopsBridgeVersion: 'aiops-dsh-bridge.v1',
++      aiopsTools: [{
++        name: 'go_read',
++        description: 'Read through Go.',
++        parameters: { type: 'object', properties: {}, additionalProperties: false },
++      }],
++    }
++    try {
++      await firstServer.initialize(bridgeParams)
++      await firstServer.prompt({
++        sessionId: 'bridge-restart',
++        turnId: 'go-turn-before-restart',
++        contentBlocks: [{ type: 'text', text: 'answer without tools' }],
++      })
++      await firstServer.wait({ sessionId: 'bridge-restart' })
++      const firstEvents = firstCtx.agents.get(SessionId('bridge-restart'))!.session.snapshotEvents()
++      firstSeqs = firstEvents.map(event => Number(event.seq))
++      expect(firstEvents.some(event => event.type === 'turn/end')).toBe(true)
++      await firstServer.shutdown()
++    } finally {
++      await firstServer.shutdown()
++      await firstCtx.fiber.dispose()
++    }
++
++    const secondCtx = await makeHarness(storageDir)
++    secondCtx.llm.registerAdapter(['mock'], new MockAdapter([]))
++    const secondServer = new HarnessSdkJsonRpcServer(secondCtx, new FakeTransport())
++    try {
++      await secondServer.initialize(bridgeParams)
++      const replay = await secondServer.replay({ sessionId: 'bridge-restart', afterSeq: -1 })
++      expect(replay.events.map(event => Number(event.seq))).toEqual(firstSeqs)
++      expect(replay.events.some(event => event.type === 'assistant/message')).toBe(true)
++      expect(replay.events.some(event => event.type === 'turn/end')).toBe(true)
++    } finally {
++      await secondServer.shutdown()
++      await secondCtx.fiber.dispose()
++      await rm(storageDir, { recursive: true, force: true })
++    }
++  })
++
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index dfaa16532d..242781a985 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -7741,0 +7742,3 @@ importers:
++      '@deepseek-ai/dsh-session-persistence':
++        specifier: workspace:*
++        version: link:../../session/session-persistence
+@@ -11677,0 +11681,3 @@ importers:
++      '@deepseek-ai/dsh-tools':
++        specifier: workspace:*
++        version: link:../../core/tools

@@ -57,6 +57,23 @@ describe("WorkflowCandidateActionBar", () => {
     await act(async () => resolveApply?.());
   });
 
+  it("marks a pending decision and disables only the duplicate Apply entry point", async () => {
+    const onApply = vi.fn();
+    const onDiscard = vi.fn();
+    await act(async () => root.render(
+      <WorkflowCandidateActionBar binding={binding} approval={approval("decision_pending")} changeCount={2} onApply={onApply} onDiscard={onDiscard} />,
+    ));
+    expect(container.textContent).toContain("确认已提交，正在等待服务端审批结果");
+    const apply = container.querySelector('[data-testid="workflow-candidate-apply"]') as HTMLButtonElement;
+    const discard = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("放弃修改")) as HTMLButtonElement;
+    expect(apply.disabled).toBe(true);
+    expect(apply.textContent).toContain("审批中");
+    expect(discard.disabled).toBe(false);
+    await act(async () => discard.click());
+    expect(onDiscard).toHaveBeenCalledWith(binding);
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
   it.each(["expired", "revoked", "conflict"] as const)("offers one recovery action for %s", async (status) => {
     const onRecover = vi.fn();
     const onApply = vi.fn();
