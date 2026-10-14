@@ -9,7 +9,7 @@ export type WorkflowCandidateActionBinding = {
 };
 
 export type WorkflowCandidateApprovalFact = {
-  status: "ready" | "requested" | "approved" | "applying" | "expired" | "revoked" | "conflict" | "apply_response_lost";
+  status: "ready" | "requested" | "approved" | "applying" | "decision_pending" | "expired" | "revoked" | "conflict" | "apply_response_lost";
   binding: WorkflowCandidateActionBinding;
   approvalId?: string;
   expiresAt?: string;
@@ -102,13 +102,27 @@ export function WorkflowCandidateActionBar({
     );
   }
 
+  const decisionPending = effectiveStatus === "decision_pending";
   const applying = effectiveStatus === "applying" || pendingAction === "apply";
   const applyRequest = { ...boundIdentity!, ...(approval.approvalId ? { approvalId: approval.approvalId } : {}) };
   return (
     <aside className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 bg-white px-4 py-3" aria-label="候选修改操作" data-testid="workflow-candidate-action-bar">
       <div className="min-w-0">
-        <p className="text-sm font-semibold text-slate-950">{applying ? `正在应用 ${changeCount} 项修改` : `${changeCount} 项修改尚未应用`}</p>
-        <p className="text-xs text-slate-500">应用时将核对当前候选版本和画布版本。</p>
+        <p
+          className="text-sm font-semibold text-slate-950"
+          data-testid="workflow-candidate-apply-status"
+          tabIndex={decisionPending || applying ? -1 : undefined}
+          role={decisionPending || applying ? "status" : undefined}
+        >
+          {decisionPending
+            ? "确认已提交，正在等待服务端审批结果"
+            : applying
+              ? `正在应用 ${changeCount} 项修改`
+              : `${changeCount} 项修改尚未应用`}
+        </p>
+        <p className="text-xs text-slate-500">
+          {decisionPending ? "等待期间不能重复提交同一待确认修改。" : "应用时将核对当前候选版本和画布版本。"}
+        </p>
       </div>
       <div className="flex items-center gap-2">
         {onDiscard ? (
@@ -124,11 +138,11 @@ export function WorkflowCandidateActionBar({
         <button
           type="button"
           data-testid="workflow-candidate-apply"
-          disabled={pendingRef.current || effectiveStatus === "applying" || !onApply || changeCount <= 0}
+          disabled={pendingRef.current || effectiveStatus === "applying" || decisionPending || !onApply || changeCount <= 0}
           className="inline-flex min-h-10 items-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-medium text-white disabled:bg-slate-200 disabled:text-slate-500"
           onClick={() => runOnce("apply", () => onApply?.(applyRequest))}
         >
-          <ShieldCheck className="h-4 w-4" aria-hidden="true" />{applying ? "正在应用" : `应用 ${changeCount} 项修改`}
+          <ShieldCheck className="h-4 w-4" aria-hidden="true" />{decisionPending ? "审批中" : applying ? "正在应用" : `应用 ${changeCount} 项修改`}
         </button>
       </div>
     </aside>

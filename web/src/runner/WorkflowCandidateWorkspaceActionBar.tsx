@@ -59,8 +59,9 @@ export function WorkflowCandidateWorkspaceActionBar({ className = "" }: Workflow
   const returnFocusRef = useRef<HTMLElement | null>(null);
   const wasDialogOpenRef = useRef(false);
   const approvalRequestRef = useRef<{ identity: string; request: Promise<unknown> } | undefined>(undefined);
-  const decidedControlledApprovalsRef = useRef(new Set<string>());
+  const decidedApplyApprovalsRef = useRef(new Set<string>());
   const [confirmation, setConfirmation] = useState<WorkflowCandidateApplyConfirmation>();
+  const [decisionPending, setDecisionPending] = useState<{ identity: string; approvalId: string }>();
   const presentation = useMemo(
     () => candidatePresentation(workspace.state),
     [workspace.state],
@@ -99,6 +100,7 @@ export function WorkflowCandidateWorkspaceActionBar({ className = "" }: Workflow
     workspace.requestCandidateApplyApproval,
   ]);
   const openConfirmation = useCallback((next: AuthorizedApply, current: CandidatePresentation) => {
+    if (decidedApplyApprovalsRef.current.has(applyApprovalIdentity(next, current.binding))) return;
     const applyOwner = candidateOwnerRef.current?.querySelector<HTMLElement>('[data-testid="workflow-candidate-apply"]');
     if (applyOwner) returnFocusRef.current = applyOwner;
     setConfirmation({
@@ -113,31 +115,41 @@ export function WorkflowCandidateWorkspaceActionBar({ className = "" }: Workflow
   const confirmApply = useCallback((confirmed: WorkflowCandidateApplyConfirmation) => {
     if (!presentation || !authorized
       || !confirmationMatchesAuthorization(confirmed, authorized, presentation)) return;
-    if (authorized.source === "artifact") {
-      dispatchWorkflowCandidateApplyConfirmation(confirmed);
-      return;
+    let current = authorized;
+    if (authorized.source === "server-controlled") {
+      // Re-evaluate the live transport snapshot at the irreversible boundary.
+      // The HTTP response proves the exact Candidate binding, while only this
+      // current blocked transport turn proves that the approval is still live.
+      const latest = authorizedServerControlledApply(
+        transport,
+        workspace.state,
+        presentation,
+        workspace.candidateApplyApproval,
+      );
+      if (!latest || !sameAuthorization(latest, authorized)) return;
+      current = latest;
     }
-
-    // Re-evaluate the live transport snapshot at the irreversible boundary.
-    // The HTTP response proves the exact Candidate binding, while only this
-    // current blocked transport turn proves that the approval is still live.
-    const latest = authorizedServerControlledApply(
-      transport,
-      workspace.state,
-      presentation,
-      workspace.candidateApplyApproval,
-    );
-    if (!latest || !sameAuthorization(latest, authorized)) return;
-    const decisionIdentity = controlledApprovalIdentity(latest, presentation.binding);
-    if (decidedControlledApprovalsRef.current.has(decisionIdentity)) return;
-    decidedControlledApprovalsRef.current.add(decisionIdentity);
-    (sendTransportCommand as unknown as (command: AiopsTransportCommand) => void)({
-      type: "aiops.approval-decision",
-      sessionId: latest.sessionId,
-      turnId: latest.turnId,
-      approvalId: latest.approvalId,
-      decision: "accept",
-    });
+    const decisionIdentity = applyApprovalIdentity(current, presentation.binding);
+    if (decidedApplyApprovalsRef.current.has(decisionIdentity)) return;
+    decidedApplyApprovalsRef.current.add(decisionIdentity);
+    setDecisionPending({ identity: decisionIdentity, approvalId: current.approvalId });
+    try {
+      if (current.source === "artifact") {
+        dispatchWorkflowCandidateApplyConfirmation(confirmed);
+      } else {
+        (sendTransportCommand as unknown as (command: AiopsTransportCommand) => void)({
+          type: "aiops.approval-decision",
+          sessionId: current.sessionId,
+          turnId: current.turnId,
+          approvalId: current.approvalId,
+          decision: "accept",
+        });
+      }
+      setConfirmation(undefined);
+    } catch {
+      decidedApplyApprovalsRef.current.delete(decisionIdentity);
+      setDecisionPending(undefined);
+    }
   }, [
     authorized,
     presentation,
@@ -171,6 +183,16 @@ export function WorkflowCandidateWorkspaceActionBar({ className = "" }: Workflow
       setConfirmation(undefined);
     }
   }, [authorized, confirmation, presentation]);
+
+  useEffect(() => {
+    if (!decisionPending || transport.schemaVersion !== "aiops.transport.v2"
+      || !transport.pendingApprovals || !transport.runtimeLiveness?.pendingApprovals) return;
+    const approval = transport.pendingApprovals[decisionPending.approvalId];
+    if (approval && transport.runtimeLiveness.pendingApprovals[decisionPending.approvalId] === true
+      && isPendingApprovalStatus(approval.status)) return;
+    decidedApplyApprovalsRef.current.delete(decisionPending.identity);
+    setDecisionPending(undefined);
+  }, [decisionPending, transport.pendingApprovals, transport.runtimeLiveness, transport.schemaVersion]);
 
   useEffect(() => {
     const wasOpen = wasDialogOpenRef.current;
@@ -329,7 +351,11 @@ export function WorkflowCandidateWorkspaceActionBar({ className = "" }: Workflow
         <WorkflowCandidateActionBar
           binding={presentation.binding}
           approval={{
-            status: authorized || requestedCandidateApproval ? "requested" : "ready",
+            status: authorized
+              ? decisionPending?.identity === applyApprovalIdentity(authorized, presentation.binding)
+                ? "decision_pending"
+                : "requested"
+              : requestedCandidateApproval ? "requested" : "ready",
             binding: presentation.binding,
             ...(authorized
               ? { approvalId: authorized.approvalId }
@@ -658,7 +684,7 @@ function sameAuthorization(left: AuthorizedApply, right: AuthorizedApply): boole
     );
 }
 
-function controlledApprovalIdentity(
+function applyApprovalIdentity(
   authorized: AuthorizedApply,
   binding: WorkflowCandidateActionBinding,
 ): string {
@@ -683,7 +709,7 @@ function candidateReturnFocusTarget(
 ): HTMLElement | null {
   if (canReceiveCandidateFocus(previous)) return previous;
   const current = owner?.querySelector<HTMLElement>(
-    '[data-testid="workflow-candidate-apply"]:not(:disabled), [data-testid="workflow-candidate-request-approval"]:not(:disabled)',
+    '[data-testid="workflow-candidate-apply"]:not(:disabled), [data-testid="workflow-candidate-request-approval"]:not(:disabled), [data-testid="workflow-candidate-apply-status"][tabindex="-1"]',
   );
   if (canReceiveCandidateFocus(current)) return current;
   const workbench = document.querySelector<HTMLElement>('[data-testid="workflow-workbench-trigger"]');

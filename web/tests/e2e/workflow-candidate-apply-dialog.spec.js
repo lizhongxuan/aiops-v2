@@ -113,7 +113,7 @@ test.describe("Workflow Candidate final confirmation browser contract", () => {
     await expect(dialog).toHaveCount(0);
     await expect(owner).toHaveAttribute("aria-hidden", "false");
     await expect(owner).not.toHaveAttribute("inert");
-    await expect(apply).toBeFocused();
+    await expect(owner.getByTestId("workflow-candidate-apply-status")).toBeFocused();
     await expect.poll(() => approvalDecisionCommands(transportRequests)).toHaveLength(1);
     expect(approvalDecisionCommands(transportRequests)[0]).toMatchObject({
       type: "aiops.approval-decision",
@@ -121,6 +121,11 @@ test.describe("Workflow Candidate final confirmation browser contract", () => {
       turnId: TURN_ID,
       approvalId: APPROVAL_ID,
       decision: "accept",
+    });
+    await expect(owner).toContainText("确认已提交，正在等待服务端审批结果");
+    await expect(apply).toBeDisabled();
+    await expect(owner).toHaveScreenshot("candidate-apply-decision-pending.png", {
+      animations: "disabled",
     });
 
     await page.getByTestId("workflow-context-tab-ai").click();
