@@ -1,6 +1,6 @@
 # aiops-v2 DSH 实施任务与依赖
 
-更新：2026-10-14 UTC｜状态：bridge 级 POC 仍通过既有测试；已继续核查 RuntimeKernel 并补写单会话行为契约和安全接线设计，尚未改生产代码；RuntimeKernel/AssistantTransport/持久化 EventStore 仍未接线；pinned DSH patch 的 TypeScript/Vitest 未运行；P0 未验收；Draft PR #22 最新 CI 结果见第 9 节
+更新：2026-10-14 UTC｜状态：bridge 级 POC 仍通过既有测试；RuntimeKernel 接线设计已写入 section 10.1，生产集成待接口边界审阅；P0 未验收；Draft PR #22 head 811a3f3 的最新 CI：web 通过，backend hardening 与 Workflow Canvas snapshot 失败，详见 section 10.2
 
 ## 1. 当前进度与范围
 
@@ -167,3 +167,11 @@
 5. 将实现拆成可审核里程碑：A) RuntimeKernel engine ownership 与 legacy characterization；B) frozen step/dispatcher/finalizer 的共享契约与 production-path fake-peer red/green；C) GORM transactional EventStore 与 pending approval recovery；D) AssistantTransport events/stream replay；E) pinned DSH process launcher、终止/重启和端到端测试。每阶段独立提交，单提交遵守仓库 5 文件 / 500 production-line 预算。
 
 本阶段结论：根据仓库 AGENTS.md 的“跨越三个以上 runtime layers 时先完成接口/契约设计并取得确认”停止条件，本轮先交付以上接口评估，不改 production code。现有已确认方案给出了方向，但尚未确认共享 Go finalizer / per-step dispatch API 这一具体边界；在此边界获接受前，继续拼接会跳过现有 final gate 或把旧 loop 与 DSH 同时跑。下一步应以这份设计为审阅对象确认接口边界，再从 A/B 开始实现。此结论不是 DSH 协议不可兼容；它是当前 RuntimeKernel 没有支持两个 engine 共用相同安全/lifecycle 机制的抽象。
+
+### 10.2 Draft PR #22 当前 CI 结果
+
+- Commit：811a3f37a6d30181bbb24690b010ce8d30b033ec；CI run：38513834983，已完成，aggregate conclusion 为 failure。
+- web：通过（unit tests 与 web build 均成功）。
+- backend-agent-harness：失败于 agent harness hardening gate 最后的 forbidden residue scan；命中既有 workflow 代码中的 candidateState（例如 workflowInteractionContract.test.ts、workflowWorkspaceSelectors.ts、RunnerCanvas.tsx）。PR diff 只修改本计划文档，没有改这些文件。
+- workflow-canvas-pr：失败于 web/tests/workflow-studio.snapshot.spec.js:65；workflow-scheme-c-overlay.png 有 13,790 像素（0.02 比例）不一致。该 spec 和截图基线不在本次 diff，没有更新或绕过快照。
+- run 链接：https://github.com/lizhongxuan/aiops-v2/actions/runs/38513834983
