@@ -1,11 +1,11 @@
 # aiops-v2 DSH 实施任务与依赖
 
-更新：2026-10-14 UTC｜状态：bridge 级 Go 审批挂起/恢复与取消补充已完成且本地测试通过；RuntimeKernel/AssistantTransport/持久化 EventStore 仍未接线；pinned DSH patch 仅完成 clean-check 与语法构建，TypeScript/Vitest 未运行；P0 未验收；Draft PR #22 新 head CI：web 通过，backend gate 与 Workflow Canvas snapshot 失败，详见第 9 节
+更新：2026-10-14 UTC｜状态：bridge 级 POC 仍通过既有测试；已继续核查 RuntimeKernel 并补写单会话行为契约和安全接线设计，尚未改生产代码；RuntimeKernel/AssistantTransport/持久化 EventStore 仍未接线；pinned DSH patch 的 TypeScript/Vitest 未运行；P0 未验收；Draft PR #22 最新 CI 结果见第 9 节
 
 ## 1. 当前进度与范围
 
 - 已完成：基于 aiops-v2 `ce539e3`、DSH `d743267` 的只读调研；迁移方案已交付并获确认；T1 本地基线检查通过。
-- 当前实现：本任务在独立工作区 `/Users/zhongxuan_li/Documents/Codex/2026-10-14/task-2/aiops-v2`、分支 `dsh-harness-poc`，基线 `ce539e3634f678c74b801b1b5cbcfd718ebaedf9`。与 sibling bug checkout 分离；该工作区已有的未跟踪 runtime trace 保留，未复制 sibling 未提交变更。
+- 当前实现：本任务使用独立工作区 `/Users/zhongxuan_li/Desktop/dot/aiops-v2-dsh-harness-current`、分支 `dsh-harness-poc`，当前 HEAD `19a1ed3`，上游 `https://github.com/lizhongxuan/aiops-v2.git`。另外两份旧 checkout（Desktop `aiops-v2-dsh-harness-poc` 与 Documents `task-2/aiops-v2`）均保留且未在本阶段修改；Documents checkout 的未跟踪 `internal/runtimekernel/.data/` 仍留在原处。
 - 已完成 POC 部分：新增 `internal/dshbridge` stdio JSON-RPC host bridge 与无密钥模拟测试；pinned DSH 扩展源码基于 `d743267388641bc76f17c45ce8b4c231aed1d32c` 修改，并将作为 patch 交付。Go 测试覆盖审批等待、精确 turn/call 绑定、取消与 Go dispatch 静止、durable turn/end、stream 不进事件游标和游标后恢复。
 - 尚未接线：当前 Go bridge 的 `ToolDispatcher` seam 是强制注入接口，但尚未由生产 `RuntimeKernel` 提供；没有修改 RuntimeGateway/modelrouter/appui transport 来启动 DSH 并把用户 turn 映射到该 seam。因此这些测试验证协议桥和安全契约，不冒充生产端到端运行。
 - 单独处理：小 bug 任务 `01a13847-d8ac-7187-a273-b9bcabed4005` 使用独立分支/PR，不混入迁移。
@@ -136,3 +136,34 @@
 - PR 最新已完成 CI run `38512186242`（head `521a59c`）：`web` 通过；`backend-agent-harness` 失败于 `scripts/check-aiops-single-assistant-message.sh` repo-wide residue scan，命中既有 `candidateState` 字符串（例如 `web/src/runner/workspace/workflowInteractionContract.test.ts`、`web/src/runner/workspace/workflowWorkspaceSelectors.ts` 和 `web/src/components/runner/RunnerCanvas.tsx`）。这些路径不在本 PR diff；未改该无关 UI 行为或修改 gate。`workflow-canvas-pr` 失败于 `web/tests/workflow-studio.snapshot.spec.js:65`，`workflow-scheme-c-overlay.png` 与截图基线有 13,790 像素（0.02 比例）差异；本 PR 未修改该 spec 或其基线。PR 保持 Draft、不合并。
 - pinned Harness patch 状态不变：base `d743267388641bc76f17c45ce8b4c231aed1d32c` 上 clean `git apply --unidiff-zero --check` 通过；应用后 Bun server bundle/syntax 构建通过（93 modules），不是 typecheck/Vitest。pnpm 目标目录重定向后依赖安装仍约 90 秒无输出并中止，故上游 TypeScript typecheck 和 SDK Vitest 未运行。没有真实模型 key、生产工具或部署。
 - 该增量完成的是可审查的 bridge compatibility seam，不是生产迁移阶段完成：仍须把它接到 `RuntimeKernel.RunTurn/ResumeTurn/CancelTurn`，持久化 pending RPC mapping 与 DSH SessionEvent，接好 event/stream projection、启动和进程恢复，并保留 per-session legacy engine rollback。P0 继续未验收。
+
+## 10. RuntimeKernel 单会话集成行为契约（2026-10-14）
+
+- 用户可见现象：当前 PR 只有 dshbridge 协议 seam；生产 RuntimeKernel.RunTurn 仍直接调用旧 runHostIterationLoop，因此 UI turn 不会进入 DSH。
+- 已确认根因：RunTurn 的输入准入、用户消息/checkpoint 持久化、模型采样、tool dispatch 和最终 Assistant 输出都在同一 RuntimeKernel 路径；ResumeTurn 对审批验证 ActionToken 并执行 resumePendingToolCall 后仍调用旧 loop；CancelTurn 只取消 in-flight Go context。bridge 尚未作为 session engine 接入，也没有可复用的外部最终输出提交入口。
+- 生产调用链：ChatCommand → appui admission → RuntimeKernel.RunTurn → turn assembly / checkpoint → 当前旧 runHostIterationLoop → ToolDispatcher / FinalContract → AiopsTransportState / AssistantTransport。DSH 路径必须由同一 RuntimeKernel 管理准入、session/turn identity、工具权限、approval/resume、cancel、终态、checkpoint 和 UI projection。
+- 权威事实源：持久化 SessionState / TurnSnapshot、canonical rollout/checkpoint、Go ToolDispatcher、Go PendingApproval 与 ActionToken、AssistantTransport 投影；DSH 事件仅能按稳定 session/turn binding 重放，idle/queue receipt/transient stream 不表示业务完成。
+- 必须保持：默认旧引擎；已归属旧引擎的会话不自动切换；新 DSH 会话需由 host 配置选择并持久化归属；同一 turn 不能双执行；工具执行必须调用 Go dispatcher；target、tool surface、permission snapshot、ActionToken、resource lock 和幂等约束不变；最终状态只能由结构化状态提交；取消必须停止精确 turn 并先撤销未决 Go approval。
+- 失败复现（待先加并运行）：新增生产 RunTurn 集成用例，注入假 DSH peer，要求被显式选为 DSH 的单会话确实调用 DSH peer；要求受限 tool call 只进入 Go dispatcher，审批挂起时不返回 Harness 成功、Resume 使用原 DSH callId、Cancel 阻止后续 mutation、终态仅由 durable turn/end 决定。修复前该用例应因 RuntimeKernel 没有 DSH engine seam 而失败。
+- 验收命令：go test ./internal/runtimekernel ./internal/dshbridge ./internal/appui -run 'TestRunTurn_DSH|TestResumeTurn_DSH|TestCancelTurn_DSH|TestRecoverTurn_DSH' -count=1，另加受影响包完整测试和 race。失败与未运行结果均需记录。
+- 实施边界：先建立 RuntimeKernel 单会话 contract 和 production-path red/green，再评估是否能在 5 个生产文件 / 500 行及不跨 3 个以上 runtime layer 的预算内接线。若 final gate、pending approval recovery 或事件持久化要求突破边界，先形成接口/迁移设计和具体证据；期间 DSH 选择必须 fail closed，禁止用简化 loop 或仅 SDK.run 演示冒充集成。
+
+### 10.1 接口评估与分阶段设计
+
+源码证据（当前 HEAD 19a1ed3）：
+
+- internal/runtimekernel/runtime_kernel.go:576 的 RunTurn 在 admission、message/checkpoint persistence 后直接进入 runHostIterationLoop（调用点约 775）；internal/runtimekernel/runtime_kernel.go:952 的 ResumeTurn 验证 ActionToken、调用 resumePendingToolCall 后仍进入同一个旧 loop（调用点约 1132）；CancelTurn 在 1567 只请求取消已注册的 Go context。
+- runHostIterationLoop 从约 1994 行起构建 context、tool surface、TurnAssembly/StepContext 和 checkpoint。step dispatcher 在收到旧模型响应之后、tool dispatch 之前创建（约 3034）；tool 结果 materialization、canonical checkpoint、transport projection 与 completion/final gate 也在同一 loop 的局部处理闭包/代码段里。把 DSH 放在 loop 前面会缺少经过冻结的 StepContext 和 dispatcher；把它放在 loop 后面则会重复调用模型。
+- ResumeTurn 的 resumePendingToolCall（约 5195）会用当前 Go ActionToken 和重新构建的 dispatcher 执行工具，但只把已校验结果交回旧 loop；它没有恢复 DSH 挂起的 JSON-RPC request。CancelTurn 没有调用 bridge 的 session/cancel；没有生产 adapter 时既无法确保远端循环停止，也无法在取消前撤销 DSH 映射的 approval。
+- internal/dshbridge.Bridge 的 active turn、request ID 和 pending call 在内存 map 中；EventStore 只有接口与测试 memory store，没有生产事务实现。internal/appui 没有 DSH event/stream 到 canonical TurnSnapshot / AssistantTransport 的生产映射。
+- 这些证据说明协议层可通过 pinned patch 扩展，但生产接线不能只给 RuntimeKernelConfig 填一个 runner。直接接入需同时改变 RuntimeKernel 生命周期/dispatcher、bridge pending handles、持久 EventStore 和 appui transport（超过 3 个 runtime layers）。
+
+推荐的实现设计（沿已确认迁移方向，不更换模型配置）：
+
+1. Go RuntimeKernel 保留唯一公开 turn admission 与最终状态提交职责；新增 typed session-engine owner，默认 legacy，且由 host 配置仅对新 session 选择 DSH。持久化 owner 字段，拒绝从普通用户 metadata 接收引擎切换。已有 legacy session 不变；engine owner 只允许在无 active/pending turn 时由受控管理路径回切。
+2. 抽取共享的 Go turn services：从旧 loop 中形成可供两个 engine 使用的 step preparation、dispatch-result materialization/checkpoint 和 FinalContract finalization 边界。DSH engine 只驱动模型循环；每个可见 tool schema 必须来源于当前冻结的 TurnAssembly/StepContext，Go callback 通过既有 ToolDispatcher 执行，禁止 sdk-minimal shell 或 Harness 原生执行 surface。
+3. 将 session.event、sequence cursor 与事件原子提交到生产数据库；pending Go approval 与 DSH JSON-RPC request id/call id/binding 的映射按 session/turn/call 持久保存。Resume 仅在 Go 完成 ActionToken 校验和 Approved dispatch 后回答原 request；Cancel 先取消并排空 Go dispatch、撤销 pending approval，再发精确的 DSH session/cancel。
+4. DSH durable events 投影成 TurnSnapshot / AgentItems / checkpoint，transient assistant.stream 只更新现有 AssistantTransport streaming state；queue receipt、idle 和 stream 结束均不可完成业务 turn。完整 durable turn/end 后由共享 Go FinalContract 路径校验并提交。
+5. 将实现拆成可审核里程碑：A) RuntimeKernel engine ownership 与 legacy characterization；B) frozen step/dispatcher/finalizer 的共享契约与 production-path fake-peer red/green；C) GORM transactional EventStore 与 pending approval recovery；D) AssistantTransport events/stream replay；E) pinned DSH process launcher、终止/重启和端到端测试。每阶段独立提交，单提交遵守仓库 5 文件 / 500 production-line 预算。
+
+本阶段结论：根据仓库 AGENTS.md 的“跨越三个以上 runtime layers 时先完成接口/契约设计并取得确认”停止条件，本轮先交付以上接口评估，不改 production code。现有已确认方案给出了方向，但尚未确认共享 Go finalizer / per-step dispatch API 这一具体边界；在此边界获接受前，继续拼接会跳过现有 final gate 或把旧 loop 与 DSH 同时跑。下一步应以这份设计为审阅对象确认接口边界，再从 A/B 开始实现。此结论不是 DSH 协议不可兼容；它是当前 RuntimeKernel 没有支持两个 engine 共用相同安全/lifecycle 机制的抽象。
