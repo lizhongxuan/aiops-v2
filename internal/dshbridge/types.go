@@ -3,6 +3,7 @@ package dshbridge
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"regexp"
 	"sync"
@@ -15,6 +16,16 @@ const (
 )
 
 var toolNamePattern = regexp.MustCompile(`^[a-zA-Z0-9_.:-]{1,128}$`)
+
+// ErrApprovalPending tells the bridge that the Go runtime has durably created
+// an approval for this exact call. The bridge keeps DSH's JSON-RPC request
+// unanswered until ResolveToolCall is called after Go validates and resumes it.
+var ErrApprovalPending = errors.New("Go approval is pending")
+
+// ErrTurnSuspendedForApproval is returned by WaitTurn while Go owns an open
+// approval. The caller can return a blocked RuntimeKernel result and resume
+// this same DSH turn after Go resolves the approval.
+var ErrTurnSuspendedForApproval = errors.New("DSH turn suspended for Go approval")
 
 // ToolSchema is copied from the Go-assembled, policy-filtered tool surface.
 // It is the only set of names the DSH agent can see or call.
@@ -55,6 +66,13 @@ type ToolResult struct {
 // is not supported.
 type ToolDispatcher interface {
 	Dispatch(context.Context, TurnBinding, ToolCall) (ToolResult, error)
+}
+
+// PendingApprovalCanceler revokes the persisted Go approval for an exact DSH
+// call. A bridge with an open approval refuses turn cancellation unless the
+// Go adapter can revoke it first.
+type PendingApprovalCanceler interface {
+	CancelPendingApproval(context.Context, TurnBinding, ToolCall) error
 }
 
 // EventStore commits durable DSH session events idempotently by (session, seq).
@@ -118,14 +136,23 @@ type Bridge struct {
 }
 
 type activeTurn struct {
-	binding   TurnBinding
-	startSeq  int64
-	done      chan struct{}
-	terminal  bool
-	canceling bool
-	settling  bool
-	calls     map[string]struct{}
-	inFlight  sync.WaitGroup
+	binding          TurnBinding
+	startSeq         int64
+	done             chan struct{}
+	approvalChanged  chan struct{}
+	terminal         bool
+	canceling        bool
+	cancelInProgress bool
+	settling         bool
+	calls            map[string]struct{}
+	pendingCalls     map[string]pendingToolCall
+	inFlight         sync.WaitGroup
+}
+
+type pendingToolCall struct {
+	rpcID     json.RawMessage
+	call      ToolCall
+	resolving bool
 }
 
 type rpcFrame struct {

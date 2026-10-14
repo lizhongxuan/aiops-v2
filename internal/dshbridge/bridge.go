@@ -97,7 +97,11 @@ func (b *Bridge) Prompt(ctx context.Context, binding TurnBinding, content []json
 	if err != nil {
 		return PromptReceipt{}, err
 	}
-	turn := &activeTurn{binding: binding, startSeq: cursor, done: make(chan struct{}), calls: make(map[string]struct{})}
+	turn := &activeTurn{
+		binding: binding, startSeq: cursor, done: make(chan struct{}),
+		approvalChanged: make(chan struct{}, 1), calls: make(map[string]struct{}),
+		pendingCalls: make(map[string]pendingToolCall),
+	}
 	b.mu.Lock()
 	if _, exists := b.active[binding.SessionID]; exists {
 		b.mu.Unlock()
@@ -119,8 +123,9 @@ func (b *Bridge) Prompt(ctx context.Context, binding TurnBinding, content []json
 	return receipt, nil
 }
 
-// WaitTurn waits for DSH idle and then a durable turn/end event. Idle and the
-// prompt receipt alone never establish business completion.
+// WaitTurn waits for a durable turn/end event. Prompt receipts and idle
+// notifications never establish business completion. A durable Go approval
+// suspends this call so RuntimeKernel can return its existing blocked result.
 func (b *Bridge) WaitTurn(ctx context.Context, binding TurnBinding) error {
 	turn, err := b.activeTurn(binding)
 	if err != nil {
@@ -133,21 +138,72 @@ func (b *Bridge) WaitTurn(ctx context.Context, binding TurnBinding) error {
 		}
 		return err
 	}
-	if b.isTerminal(turn) {
-		return nil
+	for {
+		b.mu.Lock()
+		terminal := turn.terminal
+		pendingApproval := len(turn.pendingCalls) > 0
+		b.mu.Unlock()
+		if terminal {
+			return nil
+		}
+		if pendingApproval {
+			return ErrTurnSuspendedForApproval
+		}
+		select {
+		case <-turn.done:
+			return nil
+		case <-turn.approvalChanged:
+			// Recheck the pending set. Resolution can race this notification.
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-b.done:
+			return b.closedError()
+		}
 	}
-	var ignored map[string]any
-	if err := b.request(ctx, "session/wait", map[string]string{"sessionId": binding.SessionID}, &ignored); err != nil {
+}
+
+// ResolveToolCall delivers the result of Go's already-approved and settled
+// tool execution to the original DSH request. The exact host session, turn,
+// and call must match; a result cannot be replayed or supplied while cancelling.
+func (b *Bridge) ResolveToolCall(ctx context.Context, binding TurnBinding, callID string, result ToolResult) error {
+	if err := validateBinding(binding); err != nil {
 		return err
 	}
-	select {
-	case <-turn.done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-b.done:
-		return b.closedError()
+	if ctx == nil || strings.TrimSpace(callID) == "" || !validToolResult(result) {
+		return errors.New("DSH approval resolution requires a context, call ID, and valid Go tool result")
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	turn := b.active[binding.SessionID]
+	if turn == nil || turn.binding.TurnID != binding.TurnID || turn.terminal {
+		b.mu.Unlock()
+		return errors.New("Go turn binding is not active in this DSH session")
+	}
+	if turn.canceling || turn.settling {
+		b.mu.Unlock()
+		return errors.New("cannot resolve a DSH tool call while its Go turn is cancelling or settling")
+	}
+	pending, exists := turn.pendingCalls[callID]
+	if !exists || pending.resolving {
+		b.mu.Unlock()
+		return errors.New("DSH tool call has no pending Go approval")
+	}
+	pending.resolving = true
+	turn.pendingCalls[callID] = pending
+	b.mu.Unlock()
+	if err := b.writeFrame(map[string]any{"jsonrpc": "2.0", "id": pending.rpcID, "result": result}); err != nil {
+		b.fail(err)
+		return err
+	}
+	b.mu.Lock()
+	if current, ok := turn.pendingCalls[callID]; ok && current.resolving {
+		delete(turn.pendingCalls, callID)
+		b.notifyApprovalChangedLocked(turn)
+	}
+	b.mu.Unlock()
+	return nil
 }
 
 // CancelTurn cancels the exact host-bound turn and first cancels any local
@@ -158,32 +214,78 @@ func (b *Bridge) CancelTurn(ctx context.Context, binding TurnBinding) error {
 		return err
 	}
 	b.mu.Lock()
-	if turn.canceling {
+	if turn.cancelInProgress {
 		b.mu.Unlock()
 		return errors.New("Go turn cancellation is already in progress")
 	}
+	for _, pending := range turn.pendingCalls {
+		if pending.resolving {
+			b.mu.Unlock()
+			return errors.New("cannot cancel a DSH turn while a Go approval result is being delivered")
+		}
+	}
+	if len(turn.pendingCalls) > 0 {
+		if _, ok := b.config.Dispatcher.(PendingApprovalCanceler); !ok {
+			b.mu.Unlock()
+			return errors.New("Go dispatcher cannot revoke the pending approval; refusing to cancel DSH first")
+		}
+	}
 	turn.canceling = true
+	turn.cancelInProgress = true
 	for key, cancel := range b.dispatches {
 		if strings.HasPrefix(key, binding.SessionID+"\x00"+binding.TurnID+"\x00") {
 			cancel()
 		}
 	}
 	b.mu.Unlock()
+	defer func() {
+		b.mu.Lock()
+		turn.cancelInProgress = false
+		b.mu.Unlock()
+	}()
+	if err := b.waitForDispatches(ctx, turn); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	pendingCalls := make([]pendingToolCall, 0, len(turn.pendingCalls))
+	for _, pending := range turn.pendingCalls {
+		pendingCalls = append(pendingCalls, pending)
+	}
+	canceler, canCancelPending := b.config.Dispatcher.(PendingApprovalCanceler)
+	if len(pendingCalls) > 0 && !canCancelPending {
+		b.mu.Unlock()
+		return errors.New("Go dispatcher cannot revoke the pending approval; refusing to cancel DSH first")
+	}
+	b.mu.Unlock()
+	for _, pending := range pendingCalls {
+		if err := canceler.CancelPendingApproval(ctx, binding, pending.call); err != nil {
+			return fmt.Errorf("revoke pending Go approval before DSH cancellation: %w", err)
+		}
+	}
 	var result struct {
 		Accepted bool `json:"accepted"`
 	}
 	requestErr := b.request(ctx, "session/cancel", map[string]string{
 		"sessionId": binding.SessionID, "turnId": binding.TurnID,
 	}, &result)
-	if err := b.waitForDispatches(ctx, turn); err != nil {
-		return err
-	}
 	if requestErr != nil {
+		b.fail(fmt.Errorf("DSH cancellation outcome is ambiguous after Go approval revocation: %w", requestErr))
 		return requestErr
 	}
 	if !result.Accepted {
+		b.mu.Lock()
+		clear(turn.pendingCalls)
+		b.notifyApprovalChangedLocked(turn)
+		b.mu.Unlock()
+		for _, pending := range pendingCalls {
+			b.sendToolError(pending.rpcID, "Go runtime revoked this approval because the turn is cancelling.")
+		}
 		return errors.New("DSH did not accept cancellation for the bound Go turn")
 	}
+	b.mu.Lock()
+	clear(turn.pendingCalls)
+	b.notifyApprovalChangedLocked(turn)
+	b.mu.Unlock()
 	return nil
 }
 
@@ -197,7 +299,11 @@ func (b *Bridge) RecoverTurn(ctx context.Context, binding TurnBinding) error {
 	if err != nil {
 		return err
 	}
-	turn := &activeTurn{binding: binding, startSeq: cursor, done: make(chan struct{}), calls: make(map[string]struct{})}
+	turn := &activeTurn{
+		binding: binding, startSeq: cursor, done: make(chan struct{}),
+		approvalChanged: make(chan struct{}, 1), calls: make(map[string]struct{}),
+		pendingCalls: make(map[string]pendingToolCall),
+	}
 	b.mu.Lock()
 	if _, exists := b.active[binding.SessionID]; exists {
 		b.mu.Unlock()
@@ -240,4 +346,11 @@ func (b *Bridge) RecoverTurn(ctx context.Context, binding TurnBinding) error {
 func (b *Bridge) Close() error {
 	b.fail(errors.New("dsh bridge closed"))
 	return nil
+}
+
+func (b *Bridge) notifyApprovalChangedLocked(turn *activeTurn) {
+	select {
+	case turn.approvalChanged <- struct{}{}:
+	default:
+	}
 }

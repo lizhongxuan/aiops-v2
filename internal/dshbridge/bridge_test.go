@@ -90,6 +90,21 @@ type drainingDispatcher struct {
 	release  chan struct{}
 }
 
+type pendingApprovalDispatcher struct {
+	entered chan ToolCall
+	revoked chan ToolCall
+}
+
+func (d *pendingApprovalDispatcher) Dispatch(_ context.Context, _ TurnBinding, call ToolCall) (ToolResult, error) {
+	d.entered <- call
+	return ToolResult{}, ErrApprovalPending
+}
+
+func (d *pendingApprovalDispatcher) CancelPendingApproval(_ context.Context, _ TurnBinding, call ToolCall) error {
+	d.revoked <- call
+	return nil
+}
+
 func (d *drainingDispatcher) Dispatch(ctx context.Context, _ TurnBinding, _ ToolCall) (ToolResult, error) {
 	d.entered <- struct{}{}
 	<-ctx.Done()
@@ -299,8 +314,7 @@ func TestPromptReceiptAndAgentIdleDoNotCompleteTurnBeforeDurableEnd(t *testing.T
 
 	waitResult := make(chan error, 1)
 	go func() { waitResult <- bridge.WaitTurn(context.Background(), binding) }()
-	waitRequest := peer.nextRequest(t, "session/wait")
-	peer.respond(t, waitRequest, map[string]any{})
+	peer.notify(t, "session.idle", map[string]string{"sessionId": binding.SessionID})
 	select {
 	case err := <-waitResult:
 		t.Fatalf("WaitTurn resolved on queue receipt/idle: %v", err)
@@ -339,6 +353,100 @@ func TestPromptReceiptAndAgentIdleDoNotCompleteTurnBeforeDurableEnd(t *testing.T
 	cursor, err := events.Cursor(context.Background(), binding.SessionID)
 	if err != nil || cursor != 1 {
 		t.Fatalf("event cursor = %d, %v; assistant stream must not advance it", cursor, err)
+	}
+}
+
+func TestPendingGoApprovalKeepsOriginalDshRequestOpenUntilResume(t *testing.T) {
+	events := newMemoryEventStore()
+	dispatcher := &pendingApprovalDispatcher{entered: make(chan ToolCall, 1), revoked: make(chan ToolCall, 1)}
+	bridge, peer := startTestBridge(t, events, dispatcher, nil)
+	binding := fixtureBinding("session-pending-approval", "turn-pending-approval")
+	promptFixture(t, bridge, peer, binding)
+	peer.request(t, "dsh-approval-request", "aiops.tool.dispatch", map[string]any{
+		"sessionId": binding.SessionID, "turnId": binding.TurnID, "callId": "call-approval",
+		"toolName": "go_read", "arguments": map[string]string{"target": "service-a"},
+	})
+	call := <-dispatcher.entered
+	if call.CallID != "call-approval" || !strings.HasPrefix(call.ArgumentsHash, "sha256:") {
+		t.Fatalf("Go dispatcher call = %#v", call)
+	}
+	if err := bridge.WaitTurn(context.Background(), binding); !errors.Is(err, ErrTurnSuspendedForApproval) {
+		t.Fatalf("WaitTurn() while Go approval is pending = %v", err)
+	}
+	select {
+	case response := <-peer.responses:
+		var id string
+		_ = json.Unmarshal(response.ID, &id)
+		if id == "dsh-approval-request" {
+			t.Fatal("DSH tool request was answered before Go resumed its approval")
+		}
+	case <-time.After(30 * time.Millisecond):
+	}
+	if err := bridge.commitEvent(DurableEvent{
+		SessionID: binding.SessionID, TurnID: binding.TurnID, Seq: 0, Type: "turn/end",
+		Data: json.RawMessage(`{"reason":{"kind":"completed"}}`),
+	}); err == nil {
+		t.Fatal("DSH turn/end was accepted while a Go approval remained pending")
+	}
+	if err := bridge.ResolveToolCall(context.Background(), fixtureBinding(binding.SessionID, "wrong-turn"), call.CallID, ToolResult{}); err == nil {
+		t.Fatal("wrong Go turn resolved a pending DSH tool request")
+	}
+	result := ToolResult{Content: []json.RawMessage{json.RawMessage(`{"type":"text","text":"approved by Go"}`)}}
+	if err := bridge.ResolveToolCall(context.Background(), binding, call.CallID, result); err != nil {
+		t.Fatalf("ResolveToolCall() = %v", err)
+	}
+	response := peer.response(t, "dsh-approval-request")
+	var actual ToolResult
+	if err := json.Unmarshal(response.Result, &actual); err != nil || !reflect.DeepEqual(actual, result) {
+		t.Fatalf("resolved tool result = %#v, %v", actual, err)
+	}
+	if err := bridge.ResolveToolCall(context.Background(), binding, call.CallID, result); err == nil {
+		t.Fatal("Go replayed the same DSH approval result")
+	}
+	peer.notify(t, "session.event", map[string]any{
+		"sessionId": binding.SessionID, "turnId": binding.TurnID,
+		"event": map[string]any{"seq": 0, "time": 1, "type": "turn/start", "data": map[string]any{}},
+	})
+	peer.notify(t, "session.event", map[string]any{
+		"sessionId": binding.SessionID, "turnId": binding.TurnID,
+		"event": map[string]any{"seq": 1, "time": 2, "type": "turn/end", "data": map[string]any{"reason": map[string]string{"kind": "completed"}}},
+	})
+	if err := bridge.WaitTurn(context.Background(), binding); err != nil {
+		t.Fatalf("WaitTurn() after Go approval resume = %v", err)
+	}
+}
+
+func TestCancelPendingApprovalRevokesGoApprovalBeforeDshCancel(t *testing.T) {
+	events := newMemoryEventStore()
+	dispatcher := &pendingApprovalDispatcher{entered: make(chan ToolCall, 1), revoked: make(chan ToolCall, 1)}
+	bridge, peer := startTestBridge(t, events, dispatcher, nil)
+	binding := fixtureBinding("session-cancel-pending", "turn-cancel-pending")
+	promptFixture(t, bridge, peer, binding)
+	peer.request(t, "dsh-cancel-pending", "aiops.tool.dispatch", map[string]any{
+		"sessionId": binding.SessionID, "turnId": binding.TurnID, "callId": "call-pending-cancel",
+		"toolName": "go_read", "arguments": map[string]string{"target": "service-a"},
+	})
+	<-dispatcher.entered
+	if err := bridge.WaitTurn(context.Background(), binding); !errors.Is(err, ErrTurnSuspendedForApproval) {
+		t.Fatalf("WaitTurn() while Go approval is pending = %v", err)
+	}
+	canceled := make(chan error, 1)
+	go func() { canceled <- bridge.CancelTurn(context.Background(), binding) }()
+	revoked := <-dispatcher.revoked
+	if revoked.CallID != "call-pending-cancel" {
+		t.Fatalf("revoked call = %#v", revoked)
+	}
+	request := peer.nextRequest(t, "session/cancel")
+	peer.respond(t, request, map[string]bool{"accepted": true})
+	if err := <-canceled; err != nil {
+		t.Fatalf("CancelTurn() = %v", err)
+	}
+	peer.notify(t, "session.event", map[string]any{
+		"sessionId": binding.SessionID, "turnId": binding.TurnID,
+		"event": map[string]any{"seq": 0, "time": 1, "type": "turn/end", "data": map[string]any{"reason": map[string]string{"kind": "cancelled"}}},
+	})
+	if err := bridge.WaitTurn(context.Background(), binding); err != nil {
+		t.Fatalf("WaitTurn() after cancellation = %v", err)
 	}
 }
 

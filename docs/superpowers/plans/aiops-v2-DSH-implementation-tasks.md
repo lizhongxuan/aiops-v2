@@ -1,6 +1,6 @@
 # aiops-v2 DSH 实施任务与依赖
 
-更新：2026-10-14 UTC｜状态：T0/T1 完成；桥接 POC 回归通过；pinned patch clean-check 与语法构建通过；上游 TypeScript/Vitest 仍在依赖安装验证；RuntimeKernel 生产接线有审批 continuation 与事件持久化缺口；P0 未验收；Draft PR #22 已创建，重推后待新 CI
+更新：2026-10-14 UTC｜状态：bridge 级 Go 审批挂起/恢复与取消补充已完成且本地测试通过；RuntimeKernel/AssistantTransport/持久化 EventStore 仍未接线；pinned DSH patch 仅完成 clean-check 与语法构建，TypeScript/Vitest 未运行；P0 未验收；Draft PR #22 新 head CI：web 通过，backend gate 与 Workflow Canvas snapshot 失败，详见第 9 节
 
 ## 1. 当前进度与范围
 
@@ -18,7 +18,7 @@
 目标链：React → 现有 Go runtime 入口 → DSH 进程 → 工具桥 → Go ToolDispatcher → host-agent / Runner / MCP。
 
 - **引擎接口**：在 `runtimekernel` 入口选择实现；Go 管理会话准入和引擎归属，DSH 驱动其会话的模型/工具循环。同一 turn 只能有一个 driver。
-- **协议接口**：新增 `internal/dshbridge/`，使用官方 SDK stdio JSON-RPC。启动握手、入队、事件、wait、退出分别处理；stdout 只允许协议帧。
+- **协议接口**：新增 `internal/dshbridge/`，使用 pinned SDK stdio JSON-RPC 扩展。启动握手、入队、事件、turn/call 取消、退出分别处理；stdout 只允许协议帧。
 - **工具接口**：新增 `dsh/plugins/aiops-tools/`；schema 来自统一 tooling assembly。调用携带 session/turn/call ID、目标及参数指纹，执行必须回到 `dispatch.go` / `tool_dispatch_pipeline.go`。模型不能提供可信授权结论。
 - **状态接口**：DSH 日志保存模型上下文；Go 保存审批、业务记录与 UI 投影。维护 session/turn/事件游标映射，明确唯一写入方、持久化顺序和去重键。
 - **界面接口**：事件映射进入 `appui/transport_*`，继续使用 AssistantTransport；不增加页面自己的流或从 final 文本推断执行状态。
@@ -33,14 +33,14 @@
 | T0 | 调研、迁移方案、实施授权 | 已完成；基线 `ce539e3` / `d743267` 已确认 | 完成（父线程已交付并获授权） |
 | T1 | 独立迁移分支；行为契约与旧引擎基线 | 记录现有命令及结果；确认未带入 bug 分支改动 | 完成（独立 clone；四个 Go 包基线测试全通过） |
 | T2 | `internal/dshbridge/`、固定版本 profile、进程隔离 | 初始化协商、严格 JSON-RPC framing、stdout 错误 fail-closed；待进程 launcher、stderr 日志和上游类型/运行测试 | 进行中（Go bridge 测试与 race 通过；pinned patch 可应用且 Bun 语法构建通过；进程 launcher、上游类型与运行测试待完成） |
-| T3 | 工具桥与审批恢复，保留 Go Dispatcher | schema 限定到 Go surface；请求回 Go 注入 dispatcher；挂起期间不回结果；取消/超时/拒绝保持 fail-closed；生产 dispatcher 必须接 RuntimeKernel 和 durable approval | 进行中（模拟审批门与精确 call 去重通过；真实 `RuntimeKernel` dispatch adapter 未实现，不能声称通过 ActionToken/资源锁端到端） |
+| T3 | 工具桥与审批恢复，保留 Go Dispatcher | schema 限定到 Go surface；请求回 Go 注入 dispatcher；挂起期间不回结果；取消/超时/拒绝保持 fail-closed；生产 dispatcher 必须接 RuntimeKernel 和 durable approval | 协议层完成（`ErrApprovalPending` 保留原 JSON-RPC request，`ResolveToolCall` 按原 binding/call 恢复，取消先撤销 Go approval；真实 `RuntimeKernel` dispatch adapter 未实现，不能声称通过 ActionToken/资源锁端到端） |
 | T4 | `session.go` / `types.go`、`appui/transport_*` | 取消确实停止执行；重连去重；崩溃后无重复变更；流、pending、终态和刷新显示一致 | 进行中（Go durable cursor/replay、stream 与 end 语义模拟测试通过；DSH 源码补丁增加持久 Session 恢复、流和取消；未连到 AssistantTransport/appui） |
 | T5 | promptcompiler / agentassembly / modelrouter 单会话适配 | 工具面一致；主机作用域不扩大；模型参数/错误/fallback 契约测试通过；新旧会话正确分流 | 待开始（P0 评审通过后） |
 | T6 | agentmgr、多主机资源锁、压缩、MCP/Skill、Runner | 无跨主机串线；子 Agent 状态正确；压缩后审批/目标保留；真实隔离工作流完成预检→审批→执行→验证→Run Record | 待开始（P1 通过后） |
 | T7 | 启动脚本、Docker/K8s 配置、日志和操作文档 | 固定依赖可构建；数据持久化与健康检查有效；密钥不进日志；启动、停止、恢复、回滚步骤可复现 | 待开始（本地云预览安全约束已补充） |
-| T8 | 集成回归、Agent Eval、故障演练与 PR 材料 | 最终提交完成适用检查；记录通过/失败/未运行；审阅用 PR 或 PR 草稿材料就绪；不合并、不部署 | 进行中（本地定向 Go/Web 验证通过；尚无 CI；branch 已推送，Draft PR #22 已创建；首次 CI 已出结果：web 通过，backend hardening 因提交超预算/缺 baseline ack 失败，workflow-canvas 因既有 workflow-studio 截图视觉差异失败；提交已按每项变更预算拆分并补 baseline trailer，待新 CI） |
+| T8 | 集成回归、Agent Eval、故障演练与 PR 材料 | 最终提交完成适用检查；记录通过/失败/未运行；审阅用 PR 或 PR 草稿材料就绪；不合并、不部署 | 进行中（最新 head CI：web 通过；backend hardening 因未改动旧 UI 字段扫描命中失败；workflow-canvas 因未改动的 workflow-studio screenshot 失败。不是全绿，详情见第 9 节） |
 
-**依赖顺序**：T0 → T1 → T2 → T3/T4 → P0 评审门 → T5 → T6 → T8。当前下一依赖是验证上游补丁，再实现 RuntimeKernel-owned DSH turn/dispatcher 接线和 AssistantTransport projection；P0 门未过前不扩展 T5/T6。T7 在 T2 后可并行设计，最终验收依赖 T5/T6；T8 同时依赖 T7。
+**依赖顺序**：T0 → T1 → T2 → T3/T4 → P0 评审门 → T5 → T6 → T8。当前下一依赖是验证上游补丁，并为 RuntimeKernel 实现 DSH turn/dispatcher 接线、挂起审批恢复、持久化 EventStore 和 AssistantTransport projection；P0 门未过前不扩展 T5/T6。T7 在 T2 后可并行设计，最终验收依赖 T5/T6；T8 同时依赖 T7。
 
 **里程碑**：P0＝T1–T4 通过，证明接入与安全语义可保持；P1＝T5 单会话可用；P2＝T6 完整业务闭环；P3＝T7–T8 验证、文档和审阅材料齐备。P0 前不承诺工期；失败门槛未解决不得扩大切换。
 
@@ -48,7 +48,7 @@
 
 - **官方 SDK 原始协议缺口；本分支提出的 pinned 补丁**：基线 `d743267` 无 turn cancel、server-to-client 审批请求、assistant stream 转发或 protocol negotiation。本分支补丁为 `aiops-dsh-bridge.v1` 增加显式版本/工具 schema 协商、服务端 `aiops.tool.dispatch` 请求、精确 turn cancel、assistant stream 与 durable event replay；这些能力仅存在于补丁，尚未运行上游测试，不代表官方 SDK 已提供。
 - **审批执行边界**：补丁把模型 tool call 转成 Go host request，并把 Agent tool scope 限制为 Go 传入的 exact schema。Go `ToolDispatcher`/ActionToken/目标与参数校验仍需 RuntimeKernel adapter 接线；当前模拟 callback 不代表生产审批已接通。审批桥不可用时须拒绝执行，不降级为自动允许。
-- **入队、idle 与结果不等价**：Go bridge 把 prompt receipt 和 `session/wait` 当作非终态，仅在 durable `turn/end` 事件写入 Go EventStore 后结束 DSH turn。assistant stream 帧是瞬态 UI 数据，不能推进 durable cursor；DSH session replay 也不授权重放变更操作。
+- **入队、idle 与结果不等价**：Go bridge 把 prompt receipt、idle notification 当作非终态，仅在 durable `turn/end` 事件写入 Go EventStore 后结束 DSH turn。assistant stream 帧是瞬态 UI 数据，不能推进 durable cursor；DSH session replay 也不授权重放变更操作。
 - **执行后、记账前崩溃**：以调用 ID、参数指纹和执行台账对账；结果不明标记“待核实”，不自动重试变更操作。只读重试也须限次、可观测。
 - **协议/版本变化**：固定 DSH 版本；握手和事件 schema 不匹配时停止接入，保留日志。不得把未知字段/状态默认为成功。
 - **回滚**：停止新建 DSH 会话，安全结束/取消活动任务，切回旧引擎和已验证镜像。保留数据库备份与 DSH 日志；不强转活动 checkpoint，不做双引擎生产执行。
@@ -123,7 +123,16 @@
 - pinned DSH：从干净 worktree 检查 commit `d743267388641bc76f17c45ce8b4c231aed1d32c` 后，`git apply --unidiff-zero --check docs/superpowers/patches/deepseek-harness-d743-aiops-bridge.patch` — 通过。应用补丁后 `bun build packages/sdk/server/src/index.ts --target=bun --packages=external --outdir=/tmp/dsh-aiops-syntax-check` — 通过（93 modules）。该命令只验证可转译/打包，不是 TypeScript typecheck 或 Vitest。先前默认 pnpm install 报 `ERR_PNPM_LOCKFILE_WRITE_FILE`，目标为只读的 `~/Library/pnpm/global/v11`；将 `PNPM_HOME`、`XDG_CONFIG_HOME`、npm cache、pnpm store/global-dir 全重定向到 `/tmp` 后再次运行 `pnpm install --frozen-lockfile --filter=@deepseek-ai/dsh-sdk-jsonrpc-server... --ignore-scripts`，仍静默约 90 秒，手动中止（exit 130），无 `node_modules/.bin/vitest`；TypeScript typecheck/Vitest 仍未运行。
 - RuntimeKernel 核验发现直接 dispatcher 注入尚不构成安全接线：
   1. `RunTurn` 由 `runHostIterationLoop` 独占管理 prompt/StepContext/dispatch/final gate；工具结果在 `processDispatchResult` 挂起时会执行 `markTurnBlocked` 并把 `blocked` 返回给调用方（`internal/runtimekernel/runtime_kernel.go`）。
-  2. 现有 `ResumeTurn` 验证 ActionToken 后调用 `resumePendingToolCall`，随后继续旧的 `runHostIterationLoop`（同文件）。DSH patch 只有同步 `aiops.tool.dispatch` 请求/响应；Go bridge 的 `ToolDispatcher.Dispatch` 接口也只能立即返回 `ToolResult` 或 error。当前 patch 没有可以按原 `callId` 恢复 pending proxy request 的 `aiops.tool.resolve` / `session/toolResult` 方法。把 approval 当普通 tool error 回给 DSH 会让 Harness 循环继续，违反“审批期间不交付成功结果”的门槛；等待旧函数返回则会把 DSH 的活动 call 与 Go 的 pending turn 生命周期断开。
+  2. 现有 `ResumeTurn` 验证 ActionToken 后调用 `resumePendingToolCall`，随后继续旧的 `runHostIterationLoop`（同文件）。上游 DSH 没有专门的恢复 RPC，但 JSON-RPC 原 request ID 可由 Go 挂起并稍后回答。本轮新增 bridge 级 continuation：dispatcher 仅在 Go approval 已持久化后返回 `ErrApprovalPending`；bridge 保存原 request ID，`WaitTurn` 返回 `ErrTurnSuspendedForApproval`，宿主返回现有 blocked 状态；Go `ResumeTurn` 完成并校验对应操作后，宿主调用 `ResolveToolCall` 回答同一 request。取消要求 `PendingApprovalCanceler` 先撤销持久化 Go approval。该机制目前是 in-memory protocol POC，未连生产 RuntimeKernel，也不能跨进程恢复。
   3. 仓库没有 DSH `SessionEvent` 持久化表/接口。现有 `AgentEventService` 自己分配 per-session `Seq`，GORM 记录是 `aiops_agent_events`，且 append 与 projection save 是两个存储操作；它不能直接满足 DSH `(sessionID, seq)` 原子去重游标及准确 turn attribution。
-  4. 因此 P0 不能通过简单增加 `RuntimeKernelConfig.DSHRunner` 完成。推荐的安全适配方案是：增加可恢复的挂起工具请求协议（Go 收到 DSH call 后由 Go 创建并持久化 approval；DSH 保持该 call pending；Go ResumeTurn 完成 ActionToken/资源锁/dispatcher 后以同一 `(session, turn, call)` 给 DSH 注入 tool result），增加具备原子序号/turn 归属的 SessionEvent store，并把 DSH event/stream 映射到既有 `TurnSnapshot`、checkpoint 和 AssistantTransport。引擎归属应写入 session，并保留旧引擎按会话恢复；模型继续通过现有 ModelRouter 解析。此方案保留 Harness 编排并满足原授权方向，完成前保持 fail closed。
+  4. 因此 P0 不能通过简单增加 `RuntimeKernelConfig.DSHRunner` 完成。仍需将上述挂起调用 seam 接入 RuntimeKernel `RunTurn`/`ResumeTurn`/`CancelTurn` 生命周期，给 EventStore 增加原子序号/turn 归属并持久保存 pending call→request handle 映射，还需把 DSH event/stream 映射到既有 `TurnSnapshot`、checkpoint 和 AssistantTransport。引擎归属应写入 session，并保留旧引擎按会话恢复；模型继续通过现有 ModelRouter 解析。此方案保留 Harness 编排并满足原授权方向，完成前保持 fail closed。
 - 状态：已完成 bridge protocol POC、安全 admission guard 和 UI waiting 修复；生产 RuntimeKernel/AssistantTransport 适配仍阻塞，P0 未验收。没有真实模型、真实运维工具、双执行、部署或合并。
+
+### 9. Go approval continuation 补充与最新 CI（2026-10-14）
+
+- 新增协议 continuation：`ToolDispatcher.Dispatch` 可在 Go 已持久化准确审批后返回 `ErrApprovalPending`。bridge 保留原始 JSON-RPC request ID 和 `ToolCall`，不向 DSH 返回 success/error；`WaitTurn` 返回 `ErrTurnSuspendedForApproval`，宿主可映射为现有 blocked 结果。Go `ResumeTurn` 经过 ActionToken/参数/目标验证、执行且结果可确定后，接线方再以相同 host binding 与 `callId` 调用 `ResolveToolCall`；错 turn、重复 resolution、终态/cancel 中 resolution 都被拒绝。bridge 拒绝有未决 Go approval 的 `turn/end`。
+- pending cancellation：整个 turn 取消先停止本地 dispatch 并等待 quiesce；pending approval 必须由 `PendingApprovalCanceler` 按 binding 和原 `ToolCall` 撤销后，bridge 才发送 DSH `session/cancel`。没有撤销接口时拒绝取消；取消 RPC 结果不明时关闭 bridge，保持 fail closed。此逻辑仅是协议 seam，没有生产 RuntimeKernel adapter。pending request handle 仍驻留进程内；DSH 进程崩溃后审批恢复/重新绑定尚未实现。
+- 新增回归：`TestPendingGoApprovalKeepsOriginalDshRequestOpenUntilResume` 与 `TestCancelPendingApprovalRevokesGoApprovalBeforeDshCancel`；现有 stream/idle/end、call replay、turn cancel、dispatch drain 和 event replay tests 继续覆盖。命令：`env GOPROXY=https://proxy.golang.org,direct GOCACHE=/tmp/aiops-dsh-gocache GOPATH=/tmp/aiops-dsh-gopath GOMODCACHE=/tmp/aiops-dsh-gomodcache go test ./internal/dshbridge -count=1` — 通过；同环境 `go test -race ./internal/dshbridge -count=1` — 通过。
+- PR 最新已完成 CI run `38511254074`（该 run 的 head 是 `9477005`，此次 approval continuation 需要推送后触发下一 run）：`web` 通过；`backend-agent-harness` 失败于 `scripts/check-aiops-single-assistant-message.sh` repo-wide residue scan，命中既有 `candidateState` 字符串（例如 `web/src/runner/workspace/workflowInteractionContract.ts` 和 `web/src/components/runner/RunnerCanvas.tsx`）。这些路径不在本 PR diff；未改该无关 UI 行为或修改 gate。`workflow-canvas-pr` 失败于 `web/tests/workflow-studio.snapshot.spec.js:65`，`workflow-scheme-c-overlay.png` 与截图基线有 13,790 像素（0.02 比例）差异；本 PR 未修改该 spec 或其基线。PR 保持 Draft、不合并。
+- pinned Harness patch 状态不变：base `d743267388641bc76f17c45ce8b4c231aed1d32c` 上 clean `git apply --unidiff-zero --check` 通过；应用后 Bun server bundle/syntax 构建通过（93 modules），不是 typecheck/Vitest。pnpm 目标目录重定向后依赖安装仍约 90 秒无输出并中止，故上游 TypeScript typecheck 和 SDK Vitest 未运行。没有真实模型 key、生产工具或部署。
+- 该增量完成的是可审查的 bridge compatibility seam，不是生产迁移阶段完成：仍须把它接到 `RuntimeKernel.RunTurn/ResumeTurn/CancelTurn`，持久化 pending RPC mapping 与 DSH SessionEvent，接好 event/stream projection、启动和进程恢复，并保留 per-session legacy engine rollback。P0 继续未验收。
