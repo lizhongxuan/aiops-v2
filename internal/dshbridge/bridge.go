@@ -141,7 +141,13 @@ func (b *Bridge) WaitTurn(ctx context.Context, binding TurnBinding) error {
 	for {
 		b.mu.Lock()
 		terminal := turn.terminal
-		pendingApproval := len(turn.pendingCalls) > 0
+		pendingApproval := false
+		for _, pending := range turn.pendingCalls {
+			if !pending.resolving {
+				pendingApproval = true
+				break
+			}
+		}
 		b.mu.Unlock()
 		if terminal {
 			return nil
@@ -192,7 +198,9 @@ func (b *Bridge) ResolveToolCall(ctx context.Context, binding TurnBinding, callI
 	}
 	pending.resolving = true
 	turn.pendingCalls[callID] = pending
+	turn.inFlight.Add(1)
 	b.mu.Unlock()
+	defer turn.inFlight.Done()
 	if err := b.writeFrame(map[string]any{"jsonrpc": "2.0", "id": pending.rpcID, "result": result}); err != nil {
 		b.fail(err)
 		return err
@@ -261,6 +269,12 @@ func (b *Bridge) CancelTurn(ctx context.Context, binding TurnBinding) error {
 		if err := canceler.CancelPendingApproval(ctx, binding, pending.call); err != nil {
 			return fmt.Errorf("revoke pending Go approval before DSH cancellation: %w", err)
 		}
+	}
+	if len(pendingCalls) > 0 {
+		b.mu.Lock()
+		clear(turn.pendingCalls)
+		b.notifyApprovalChangedLocked(turn)
+		b.mu.Unlock()
 	}
 	var result struct {
 		Accepted bool `json:"accepted"`

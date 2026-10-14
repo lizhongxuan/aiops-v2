@@ -96,7 +96,7 @@ func (b *Bridge) handleNotification(method string, raw json.RawMessage) error {
 			return errors.New("invalid DSH aiops.tool.cancel notification")
 		}
 		b.cancelOneDispatch(payload)
-		go b.cancelPendingToolCall(payload)
+		return b.cancelPendingToolCall(payload)
 	default:
 		// Status/child notifications never establish business completion.
 	}
@@ -220,7 +220,13 @@ func (b *Bridge) commitEvent(event DurableEvent) error {
 	b.mu.Unlock()
 	if event.Type == "turn/end" && event.TurnID != "" && turn != nil && turn.binding.TurnID == event.TurnID {
 		b.mu.Lock()
-		pendingApproval := len(turn.pendingCalls) > 0
+		pendingApproval := false
+		for _, pending := range turn.pendingCalls {
+			if !pending.resolving {
+				pendingApproval = true
+				break
+			}
+		}
 		b.mu.Unlock()
 		if pendingApproval {
 			return errors.New("DSH emitted turn/end while a Go approval request was still pending")
@@ -277,17 +283,17 @@ func (b *Bridge) cancelOneDispatch(params toolCancelParams) {
 	}
 }
 
-func (b *Bridge) cancelPendingToolCall(params toolCancelParams) {
+func (b *Bridge) cancelPendingToolCall(params toolCancelParams) error {
 	b.mu.Lock()
 	turn := b.active[params.SessionID]
 	if turn == nil || turn.binding.TurnID != params.TurnID || turn.canceling || turn.settling {
 		b.mu.Unlock()
-		return
+		return nil
 	}
 	pending, exists := turn.pendingCalls[params.CallID]
 	if !exists || pending.resolving {
 		b.mu.Unlock()
-		return
+		return nil
 	}
 	pending.resolving = true
 	turn.pendingCalls[params.CallID] = pending
@@ -295,12 +301,10 @@ func (b *Bridge) cancelPendingToolCall(params toolCancelParams) {
 
 	canceler, ok := b.config.Dispatcher.(PendingApprovalCanceler)
 	if !ok {
-		b.fail(errors.New("Go dispatcher cannot revoke a pending approval cancelled by DSH"))
-		return
+		return errors.New("Go dispatcher cannot revoke a pending approval cancelled by DSH")
 	}
 	if err := canceler.CancelPendingApproval(b.ctx, turn.binding, pending.call); err != nil {
-		b.fail(fmt.Errorf("revoke pending Go approval cancelled by DSH: %w", err))
-		return
+		return fmt.Errorf("revoke pending Go approval cancelled by DSH: %w", err)
 	}
 	b.mu.Lock()
 	if current, ok := turn.pendingCalls[params.CallID]; ok && current.resolving {
@@ -309,6 +313,7 @@ func (b *Bridge) cancelPendingToolCall(params toolCancelParams) {
 	}
 	b.mu.Unlock()
 	b.sendToolError(pending.rpcID, "Go runtime cancelled this pending approval.")
+	return nil
 }
 
 func (b *Bridge) cancelAndWait(turn *activeTurn) error {
